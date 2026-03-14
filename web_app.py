@@ -8,8 +8,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional
 
-from database.db import init_db, save_job, get_all_jobs, get_connection
-from modules.scraper import scrape_jobs
+from database.db import init_db, save_job, get_all_jobs, get_connection, update_job_status, save_application
+from modules.platforms import get_enabled_platforms
 from modules.filters import filter_jobs
 from modules.telegram_bot import send_notification
 from modules.email_parser import check_email_responses
@@ -27,19 +27,24 @@ class CoverLetterRequest(BaseModel):
     job_id: int
 
 
+class AutoApplyRequest(BaseModel):
+    job_id: int
+
+
 class ProfileUpdate(BaseModel):
     name: str = ""
     email: str = ""
     keywords: List[str] = []
     location: str = "remote"
     job_type: str = "full-time"
+    platforms: List[str] = ["remoteok"]
 
 
 def load_profile():
     if os.path.exists(PROFILE_PATH):
         with open(PROFILE_PATH, "r") as f:
             return json.load(f)
-    return {"name": "", "email": "", "keywords": ["marketing", "content", "automation"], "location": "remote", "job_type": "full-time"}
+    return {"name": "", "email": "", "keywords": ["marketing", "content", "automation"], "location": "remote", "job_type": "full-time", "platforms": ["remoteok"]}
 
 
 def save_profile(data):
@@ -54,16 +59,38 @@ def dashboard():
 
 @app.post("/api/find-jobs")
 def find_jobs():
-    jobs = scrape_jobs()
-    if not jobs:
-        return {"count": 0, "message": "No jobs found from API"}
-    filtered = filter_jobs(jobs)
+    profile = load_profile()
+    platforms = get_enabled_platforms(profile)
+    all_jobs = []
+    searched_platforms = []
+    for platform in platforms:
+        jobs = platform.scrape(
+            keywords=profile.get("keywords", []),
+            location=profile.get("location", "remote"),
+            max_results=25
+        )
+        all_jobs.extend(jobs)
+        searched_platforms.append(platform.display_name)
+
+    if not all_jobs:
+        return {"count": 0, "message": f"No jobs found from {', '.join(searched_platforms)}", "platforms": searched_platforms}
+
+    filtered = filter_jobs(all_jobs)
     if not filtered:
-        return {"count": 0, "message": "No new jobs matching keywords"}
+        return {"count": 0, "message": "No new jobs matching keywords", "platforms": searched_platforms}
+
     for job in filtered:
-        save_job(job["title"], job["company"], job["link"])
-    send_notification(f"JobFlow: {len(filtered)} new jobs found!")
-    return {"count": len(filtered), "message": f"{len(filtered)} new jobs saved"}
+        save_job(
+            title=job["title"], company=job["company"], link=job["link"],
+            platform=job.get("platform", "unknown"),
+            description=job.get("description", ""),
+            location=job.get("location", ""),
+            job_type=job.get("job_type", "")
+        )
+
+    msg = f"JobFlow: {len(filtered)} new jobs found on {', '.join(searched_platforms)}!"
+    send_notification(msg)
+    return {"count": len(filtered), "message": f"{len(filtered)} new jobs saved", "platforms": searched_platforms}
 
 
 @app.get("/api/jobs")
@@ -77,6 +104,7 @@ def get_jobs():
             "link": job["link"],
             "status": job["status"],
             "date_found": job["date_found"],
+            "platform": job["platform"] if "platform" in job.keys() else "remoteok",
         }
         for job in jobs
     ]
@@ -92,13 +120,51 @@ def cover_letter(req: CoverLetterRequest):
             break
     if not job:
         return JSONResponse(status_code=404, content={"error": "Job not found"})
-    letter = generate_cover_letter({"title": job["title"], "company": job["company"]})
+    letter = generate_cover_letter({
+        "title": job["title"],
+        "company": job["company"],
+        "description": job["description"] if "description" in job.keys() else "",
+    })
     return {"letter": letter, "job_title": job["title"], "company": job["company"]}
+
+
+@app.post("/api/auto-apply")
+def auto_apply(req: AutoApplyRequest):
+    jobs = get_all_jobs()
+    job = None
+    for j in jobs:
+        if j["id"] == req.job_id:
+            job = j
+            break
+    if not job:
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+    if job["status"] == "applied":
+        return JSONResponse(status_code=400, content={"error": "Already applied to this job"})
+
+    letter = generate_cover_letter({
+        "title": job["title"],
+        "company": job["company"],
+        "description": job["description"] if "description" in job.keys() else "",
+    })
+
+    update_job_status(job["id"], "applied")
+    save_application(job["id"], letter)
+    send_notification(f"JobFlow: Applied to {job['title']} at {job['company']}!")
+
+    return {
+        "message": f"Applied to {job['title']} at {job['company']}",
+        "letter": letter,
+        "job_title": job["title"],
+        "company": job["company"],
+    }
 
 
 @app.get("/api/email-check")
 def email_check():
     responses = check_email_responses()
+    if responses:
+        for r in responses:
+            send_notification(f"JobFlow Email: {r['subject']}\nFrom: {r['sender']}")
     return {"count": len(responses), "emails": responses}
 
 
@@ -121,6 +187,7 @@ async def upload_resume(file: UploadFile = File(...)):
     if not file.filename.lower().endswith(".pdf"):
         return JSONResponse(status_code=400, content={"error": "Only PDF files accepted"})
     contents = await file.read()
+    os.makedirs(DATA_DIR, exist_ok=True)
     with open(RESUME_PATH, "wb") as f:
         f.write(contents)
     return {"message": "Resume uploaded successfully", "filename": file.filename}
@@ -139,6 +206,7 @@ def get_profile():
 @app.post("/api/profile")
 def update_profile(profile: ProfileUpdate):
     data = profile.dict()
+    os.makedirs(DATA_DIR, exist_ok=True)
     save_profile(data)
     return {"message": "Profile saved", "profile": data}
 
@@ -148,6 +216,7 @@ def checklist():
     profile = load_profile()
     has_resume = os.path.exists(RESUME_PATH)
     has_keywords = len(profile.get("keywords", [])) > 0
+    has_platforms = len(profile.get("platforms", [])) > 0
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM jobs")
@@ -156,7 +225,7 @@ def checklist():
     return {
         "resume": has_resume,
         "keywords": has_keywords,
-        "platform": True,
+        "platform": has_platforms,
         "search": has_searched,
         "complete": has_resume and has_keywords and has_searched,
     }
@@ -184,7 +253,6 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
 a{color:var(--accent2);text-decoration:none}
 
-/* Intro.js dark theme overrides */
 .introjs-tooltip{background:var(--surface)!important;color:var(--text)!important;border:1px solid var(--border)!important;border-radius:14px!important;box-shadow:0 20px 60px rgba(0,0,0,.5)!important}
 .introjs-tooltiptext{color:var(--text)!important;font-size:14px!important;line-height:1.6!important}
 .introjs-arrow.top{border-bottom-color:var(--surface)!important}
@@ -205,7 +273,6 @@ a{color:var(--accent2);text-decoration:none}
 .introjs-progressbar{background:var(--accent)!important}
 .introjs-progress{background:var(--surface2)!important}
 
-/* Header */
 .header{background:var(--surface);border-bottom:1px solid var(--border);padding:16px 32px;display:flex;align-items:center;justify-content:space-between}
 .logo{display:flex;align-items:center;gap:12px;font-size:22px;font-weight:700}
 .logo-icon{width:36px;height:36px;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px}
@@ -217,14 +284,12 @@ a{color:var(--accent2);text-decoration:none}
 .btn-icon{width:40px;height:40px;border-radius:10px;background:var(--surface2);border:1px solid var(--border);color:var(--text);cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;transition:all .2s}
 .btn-icon:hover{border-color:var(--accent);color:var(--accent2)}
 
-/* Layout */
 .container{max-width:1400px;margin:0 auto;padding:24px 32px}
 .grid{display:grid;grid-template-columns:1fr 340px;gap:24px}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:24px;margin-bottom:24px}
 .card-title{font-size:16px;font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:8px}
 .card-title .dot{width:8px;height:8px;border-radius:50%}
 
-/* Setup Checklist */
 .checklist{background:linear-gradient(135deg,rgba(108,92,231,.1),rgba(167,139,250,.05));border:1px solid rgba(108,92,231,.3);border-radius:14px;padding:24px;margin-bottom:24px}
 .checklist-title{font-size:16px;font-weight:700;margin-bottom:4px;color:var(--accent2)}
 .checklist-sub{font-size:13px;color:var(--text2);margin-bottom:16px}
@@ -237,7 +302,6 @@ a{color:var(--accent2);text-decoration:none}
 .checklist-progress{margin-top:14px;height:4px;background:var(--surface2);border-radius:2px;overflow:hidden}
 .checklist-progress-bar{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:2px;transition:width .4s}
 
-/* Action Bar */
 .action-bar{display:flex;gap:12px;align-items:center;margin-bottom:24px;flex-wrap:wrap}
 .btn{padding:12px 28px;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;transition:all .2s}
 .btn-primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}
@@ -248,15 +312,15 @@ a{color:var(--accent2);text-decoration:none}
 .btn-sm{padding:6px 14px;font-size:12px;border-radius:8px}
 .btn-green{background:var(--green);color:#fff;border:none}
 .btn-green:hover{opacity:.9}
+.btn-blue{background:var(--blue);color:#fff;border:none}
+.btn-blue:hover{opacity:.9}
 
-/* Resume Upload */
 .resume-section{display:flex;align-items:center;gap:12px}
 .resume-badge{display:flex;align-items:center;gap:6px;padding:6px 12px;border-radius:8px;font-size:12px;font-weight:600}
 .resume-badge.uploaded{background:rgba(16,185,129,.15);color:var(--green)}
 .resume-badge.missing{background:rgba(239,68,68,.15);color:var(--red)}
 input[type="file"]{display:none}
 
-/* Table */
 .table-wrap{overflow-x:auto}
 table{width:100%;border-collapse:collapse}
 th{text-align:left;padding:10px 14px;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text2);border-bottom:1px solid var(--border)}
@@ -266,10 +330,11 @@ tr:hover td{background:var(--surface2)}
 .status-new{background:rgba(16,185,129,.15);color:var(--green)}
 .status-applied{background:rgba(59,130,246,.15);color:var(--blue)}
 .status-interview{background:rgba(245,158,11,.15);color:var(--yellow)}
+.platform-tag{padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;background:rgba(108,92,231,.15);color:var(--accent2)}
 
-/* Platforms */
 .platform-list{display:flex;flex-direction:column;gap:10px}
-.platform{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--surface2);border-radius:10px}
+.platform{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:var(--surface2);border-radius:10px;cursor:pointer;transition:all .2s}
+.platform:hover{border-color:var(--accent)}
 .platform-info{display:flex;align-items:center;gap:10px}
 .platform-dot{width:10px;height:10px;border-radius:50%}
 .platform-dot.active{background:var(--green)}
@@ -277,21 +342,26 @@ tr:hover td{background:var(--surface2)}
 .platform-name{font-size:14px;font-weight:500}
 .platform-badge{font-size:11px;padding:3px 8px;border-radius:6px;font-weight:600}
 .badge-connected{background:rgba(16,185,129,.15);color:var(--green)}
-.badge-soon{background:rgba(147,149,165,.1);color:var(--text2)}
+.badge-off{background:rgba(147,149,165,.1);color:var(--text2)}
 
-/* Activity Log */
+/* Toggle Switch */
+.toggle{position:relative;width:44px;height:24px;flex-shrink:0}
+.toggle input{opacity:0;width:0;height:0}
+.toggle-slider{position:absolute;cursor:pointer;top:0;left:0;right:0;bottom:0;background:var(--border);border-radius:12px;transition:.3s}
+.toggle-slider:before{position:absolute;content:"";height:18px;width:18px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s}
+.toggle input:checked+.toggle-slider{background:var(--green)}
+.toggle input:checked+.toggle-slider:before{transform:translateX(20px)}
+
 .log{display:flex;flex-direction:column;gap:8px;max-height:300px;overflow-y:auto}
 .log-item{display:flex;align-items:flex-start;gap:10px;padding:8px 12px;background:var(--surface2);border-radius:8px;font-size:13px}
 .log-time{color:var(--text2);font-size:11px;white-space:nowrap;min-width:55px}
 .log-msg{color:var(--text)}
 
-/* Email */
 .email-list{display:flex;flex-direction:column;gap:8px}
 .email-item{padding:12px;background:var(--surface2);border-radius:10px}
 .email-subject{font-weight:600;font-size:14px;margin-bottom:4px}
 .email-meta{font-size:12px;color:var(--text2)}
 
-/* Modal */
 .modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.6);z-index:100;align-items:center;justify-content:center}
 .modal-overlay.active{display:flex}
 .modal{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:32px;max-width:640px;width:90%;max-height:80vh;overflow-y:auto}
@@ -300,7 +370,6 @@ tr:hover td{background:var(--surface2)}
 .modal-close:hover{color:var(--text)}
 .letter-content{white-space:pre-wrap;line-height:1.7;font-size:14px;background:var(--surface2);padding:20px;border-radius:10px}
 
-/* Settings Panel */
 .settings-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.4);z-index:200}
 .settings-overlay.active{display:block}
 .settings-panel{position:fixed;top:0;right:-440px;width:440px;height:100%;background:var(--surface);border-left:1px solid var(--border);z-index:201;transition:right .3s ease;overflow-y:auto;padding:32px}
@@ -314,7 +383,6 @@ tr:hover td{background:var(--surface2)}
 .form-select:focus{border-color:var(--accent)}
 .form-section{font-size:14px;font-weight:600;color:var(--accent2);margin:28px 0 16px;padding-top:20px;border-top:1px solid var(--border)}
 
-/* Tags Input */
 .tags-container{display:flex;flex-wrap:wrap;gap:8px;padding:10px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;min-height:44px;cursor:text}
 .tags-container:focus-within{border-color:var(--accent)}
 .tag{display:flex;align-items:center;gap:4px;padding:4px 10px;background:rgba(108,92,231,.2);border:1px solid rgba(108,92,231,.3);border-radius:6px;font-size:13px;color:var(--accent2)}
@@ -323,17 +391,19 @@ tr:hover td{background:var(--surface2)}
 .tag-input{border:none;background:none;color:var(--text);font-size:14px;outline:none;min-width:80px;flex:1}
 .tag-input::placeholder{color:var(--text2)}
 
-/* Spinner */
+.platform-toggle{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;margin-bottom:8px}
+.platform-toggle-name{font-size:14px;font-weight:500}
+
 .spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--accent2);border-radius:50%;animation:spin .6s linear infinite;vertical-align:middle;margin-right:8px}
 @keyframes spin{to{transform:rotate(360deg)}}
 
-/* Empty */
 .empty{text-align:center;padding:40px;color:var(--text2)}
 
-/* Scrollbar */
 ::-webkit-scrollbar{width:6px}
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+.btn-actions{display:flex;gap:6px}
 </style>
 </head>
 <body>
@@ -354,6 +424,10 @@ tr:hover td{background:var(--surface2)}
         <div class="lbl">New Today</div>
       </div>
       <div class="header-stat">
+        <div class="val" id="stat-applied">-</div>
+        <div class="lbl">Applied</div>
+      </div>
+      <div class="header-stat">
         <div class="val" id="stat-emails">-</div>
         <div class="lbl">Responses</div>
       </div>
@@ -363,7 +437,6 @@ tr:hover td{background:var(--surface2)}
 </div>
 
 <div class="container">
-  <!-- Setup Checklist -->
   <div class="checklist" id="setup-checklist" style="display:none">
     <div class="checklist-title">Complete Your Setup</div>
     <div class="checklist-sub">Finish these steps to get the most out of JobFlow</div>
@@ -376,11 +449,11 @@ tr:hover td{background:var(--surface2)}
         <span class="check-icon">&#10003;</span>
         <span>Set Keywords</span>
       </div>
-      <div class="checklist-item done" id="cl-platform">
+      <div class="checklist-item" id="cl-platform" onclick="openSettings()" data-intro="Enable the job platforms you want to search." data-step="4" data-title="Choose Platforms">
         <span class="check-icon">&#10003;</span>
-        <span>Connect Platform</span>
+        <span>Enable Platforms</span>
       </div>
-      <div class="checklist-item" id="cl-search" onclick="findJobs()" data-intro="Click Find Jobs to search connected platforms for matching opportunities." data-step="4" data-title="Find Jobs">
+      <div class="checklist-item" id="cl-search" onclick="findJobs()" data-intro="Click Find Jobs to search all enabled platforms for matching opportunities." data-step="5" data-title="Find Jobs">
         <span class="check-icon">&#10003;</span>
         <span>Start First Search</span>
       </div>
@@ -392,7 +465,7 @@ tr:hover td{background:var(--surface2)}
     <button class="btn btn-primary" id="btn-find" onclick="findJobs()">Find Jobs</button>
     <button class="btn btn-secondary" onclick="refreshJobs()">Refresh Table</button>
     <button class="btn btn-secondary" onclick="checkEmails()">Check Emails</button>
-    <div class="resume-section" data-intro="Once you find a great match, generate a personalized cover letter with one click." data-step="5" data-title="Generate Cover Letters">
+    <div class="resume-section" data-intro="Once you find a great match, generate a personalized AI cover letter with one click." data-step="6" data-title="AI Cover Letters">
       <label class="btn btn-secondary btn-sm" for="resume-input" id="resume-upload-btn">Upload Resume</label>
       <input type="file" id="resume-input" accept=".pdf" onchange="uploadResume(this)">
       <span id="resume-status"></span>
@@ -402,20 +475,18 @@ tr:hover td{background:var(--surface2)}
 
   <div class="grid">
     <div>
-      <!-- Jobs Table -->
       <div class="card">
         <div class="card-title"><span class="dot" style="background:var(--green)"></span>Job Listings</div>
         <div class="table-wrap">
           <table>
             <thead>
-              <tr><th>Title</th><th>Company</th><th>Date</th><th>Status</th><th>Action</th></tr>
+              <tr><th>Title</th><th>Company</th><th>Platform</th><th>Date</th><th>Status</th><th>Actions</th></tr>
             </thead>
-            <tbody id="jobs-table"><tr><td colspan="5" class="empty">No jobs yet. Click "Find Jobs" to start.</td></tr></tbody>
+            <tbody id="jobs-table"><tr><td colspan="6" class="empty">No jobs yet. Click "Find Jobs" to start.</td></tr></tbody>
           </table>
         </div>
       </div>
 
-      <!-- Email Responses -->
       <div class="card">
         <div class="card-title"><span class="dot" style="background:var(--blue)"></span>Email Responses</div>
         <div class="email-list" id="email-list">
@@ -425,34 +496,11 @@ tr:hover td{background:var(--surface2)}
     </div>
 
     <div>
-      <!-- Platforms -->
-      <div class="card">
+      <div class="card" id="platforms-card">
         <div class="card-title"><span class="dot" style="background:var(--accent)"></span>Platforms</div>
-        <div class="platform-list">
-          <div class="platform">
-            <div class="platform-info"><div class="platform-dot active"></div><span class="platform-name">RemoteOK</span></div>
-            <span class="platform-badge badge-connected">Connected</span>
-          </div>
-          <div class="platform">
-            <div class="platform-info"><div class="platform-dot inactive"></div><span class="platform-name">Indeed</span></div>
-            <span class="platform-badge badge-soon">Coming Soon</span>
-          </div>
-          <div class="platform">
-            <div class="platform-info"><div class="platform-dot inactive"></div><span class="platform-name">Wellfound</span></div>
-            <span class="platform-badge badge-soon">Coming Soon</span>
-          </div>
-          <div class="platform">
-            <div class="platform-info"><div class="platform-dot inactive"></div><span class="platform-name">Greenhouse</span></div>
-            <span class="platform-badge badge-soon">Coming Soon</span>
-          </div>
-          <div class="platform">
-            <div class="platform-info"><div class="platform-dot inactive"></div><span class="platform-name">Lever</span></div>
-            <span class="platform-badge badge-soon">Coming Soon</span>
-          </div>
-        </div>
+        <div class="platform-list" id="platform-list"></div>
       </div>
 
-      <!-- Activity Log -->
       <div class="card">
         <div class="card-title"><span class="dot" style="background:var(--yellow)"></span>Activity Log</div>
         <div class="log" id="activity-log">
@@ -519,6 +567,22 @@ tr:hover td{background:var(--surface2)}
     </select>
   </div>
 
+  <div class="form-section">Platforms</div>
+  <div class="form-group">
+    <div class="platform-toggle">
+      <span class="platform-toggle-name">RemoteOK</span>
+      <label class="toggle"><input type="checkbox" id="plt-remoteok" value="remoteok" checked><span class="toggle-slider"></span></label>
+    </div>
+    <div class="platform-toggle">
+      <span class="platform-toggle-name">Indeed</span>
+      <label class="toggle"><input type="checkbox" id="plt-indeed" value="indeed"><span class="toggle-slider"></span></label>
+    </div>
+    <div class="platform-toggle">
+      <span class="platform-toggle-name">Wellfound</span>
+      <label class="toggle"><input type="checkbox" id="plt-wellfound" value="wellfound"><span class="toggle-slider"></span></label>
+    </div>
+  </div>
+
   <div class="form-section">Resume</div>
   <div class="form-group">
     <label class="btn btn-secondary" for="resume-input-panel" style="display:inline-block;cursor:pointer">Choose PDF File</label>
@@ -534,35 +598,72 @@ tr:hover td{background:var(--surface2)}
 const statusEl = document.getElementById('action-status');
 const logEl = document.getElementById('activity-log');
 let currentTags = [];
+let currentPlatforms = ['remoteok'];
+const ALL_PLATFORMS = {remoteok:'RemoteOK', indeed:'Indeed', wellfound:'Wellfound'};
 
 function log(msg) {
   const now = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
   const item = document.createElement('div');
   item.className = 'log-item';
-  item.innerHTML = '<span class="log-time">' + now + '</span><span class="log-msg">' + msg + '</span>';
+  item.innerHTML = '<span class="log-time">' + now + '</span><span class="log-msg">' + escapeHtml(msg) + '</span>';
   logEl.prepend(item);
 }
 
-function setStatus(msg, loading) {
-  statusEl.innerHTML = (loading ? '<span class="spinner"></span>' : '') + msg;
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
 }
 
-// Stats
+function setStatus(msg, loading) {
+  statusEl.innerHTML = (loading ? '<span class="spinner"></span>' : '') + escapeHtml(msg);
+}
+
+// Platforms display
+function renderPlatforms() {
+  const el = document.getElementById('platform-list');
+  el.innerHTML = Object.entries(ALL_PLATFORMS).map(([key, name]) => {
+    const active = currentPlatforms.includes(key);
+    return '<div class="platform" onclick="togglePlatform(\\'' + key + '\\')">' +
+      '<div class="platform-info"><div class="platform-dot ' + (active ? 'active' : 'inactive') + '"></div><span class="platform-name">' + name + '</span></div>' +
+      '<span class="platform-badge ' + (active ? 'badge-connected' : 'badge-off') + '">' + (active ? 'Enabled' : 'Disabled') + '</span>' +
+    '</div>';
+  }).join('');
+}
+
+function togglePlatform(key) {
+  if (currentPlatforms.includes(key)) {
+    if (currentPlatforms.length > 1) currentPlatforms = currentPlatforms.filter(p => p !== key);
+  } else {
+    currentPlatforms.push(key);
+  }
+  renderPlatforms();
+  updatePlatformToggles();
+}
+
+function updatePlatformToggles() {
+  Object.keys(ALL_PLATFORMS).forEach(key => {
+    const cb = document.getElementById('plt-' + key);
+    if (cb) cb.checked = currentPlatforms.includes(key);
+  });
+}
+
 async function loadStats() {
   try {
     const res = await fetch('/api/stats');
     const data = await res.json();
     document.getElementById('stat-total').textContent = data.total_jobs;
     document.getElementById('stat-today').textContent = data.new_today;
+    document.getElementById('stat-applied').textContent = data.total_applications;
   } catch(e) {}
 }
 
-// Jobs
 async function findJobs() {
   const btn = document.getElementById('btn-find');
   btn.disabled = true;
-  setStatus('Searching RemoteOK...', true);
-  log('Started job search on RemoteOK');
+  const names = currentPlatforms.map(p => ALL_PLATFORMS[p]).join(', ');
+  setStatus('Searching ' + names + '...', true);
+  log('Started job search on ' + names);
   try {
     const res = await fetch('/api/find-jobs', {method:'POST'});
     const data = await res.json();
@@ -584,25 +685,29 @@ async function refreshJobs() {
     const jobs = await res.json();
     const tbody = document.getElementById('jobs-table');
     if (!jobs.length) {
-      tbody.innerHTML = '<tr><td colspan="5" class="empty">No jobs yet. Click "Find Jobs" to start.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" class="empty">No jobs yet. Click "Find Jobs" to start.</td></tr>';
       return;
     }
-    tbody.innerHTML = jobs.map(j => `
-      <tr>
-        <td><a href="${j.link}" target="_blank">${j.title}</a></td>
-        <td>${j.company}</td>
-        <td>${j.date_found.slice(0,10)}</td>
-        <td><span class="status status-${j.status}">${j.status}</span></td>
-        <td><button class="btn btn-secondary btn-sm" onclick="genCoverLetter(${j.id})">Cover Letter</button></td>
-      </tr>
-    `).join('');
+    tbody.innerHTML = jobs.map(j => {
+      const pName = ALL_PLATFORMS[j.platform] || j.platform;
+      const actions = j.status === 'applied'
+        ? '<button class="btn btn-secondary btn-sm" onclick="genCoverLetter(' + j.id + ')">Letter</button>'
+        : '<div class="btn-actions"><button class="btn btn-secondary btn-sm" onclick="genCoverLetter(' + j.id + ')">Letter</button><button class="btn btn-blue btn-sm" onclick="autoApply(' + j.id + ')">Apply</button></div>';
+      return '<tr>' +
+        '<td><a href="' + escapeHtml(j.link) + '" target="_blank">' + escapeHtml(j.title) + '</a></td>' +
+        '<td>' + escapeHtml(j.company) + '</td>' +
+        '<td><span class="platform-tag">' + escapeHtml(pName) + '</span></td>' +
+        '<td>' + j.date_found.slice(0,10) + '</td>' +
+        '<td><span class="status status-' + j.status + '">' + j.status + '</span></td>' +
+        '<td>' + actions + '</td>' +
+      '</tr>';
+    }).join('');
   } catch(e) {}
 }
 
-// Cover Letter
 async function genCoverLetter(jobId) {
   document.getElementById('modal').classList.add('active');
-  document.getElementById('modal-body').textContent = 'Generating...';
+  document.getElementById('modal-body').textContent = 'Generating with AI...';
   document.getElementById('modal-title').textContent = 'Cover Letter';
   try {
     const res = await fetch('/api/cover-letter', {
@@ -613,9 +718,35 @@ async function genCoverLetter(jobId) {
     const data = await res.json();
     document.getElementById('modal-title').textContent = 'Cover Letter \\u2014 ' + data.job_title + ' at ' + data.company;
     document.getElementById('modal-body').textContent = data.letter;
-    log('Generated cover letter for ' + data.company);
+    log('Generated AI cover letter for ' + data.company);
   } catch(e) {
     document.getElementById('modal-body').textContent = 'Error generating cover letter.';
+  }
+}
+
+async function autoApply(jobId) {
+  if (!confirm('Generate cover letter and mark as applied?')) return;
+  setStatus('Applying...', true);
+  try {
+    const res = await fetch('/api/auto-apply', {
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({job_id: jobId})
+    });
+    const data = await res.json();
+    if (res.ok) {
+      setStatus(data.message, false);
+      log(data.message);
+      await refreshJobs();
+      await loadStats();
+      document.getElementById('modal').classList.add('active');
+      document.getElementById('modal-title').textContent = 'Applied \\u2014 ' + data.job_title + ' at ' + data.company;
+      document.getElementById('modal-body').textContent = data.letter;
+    } else {
+      setStatus(data.error, false);
+    }
+  } catch(e) {
+    setStatus('Apply failed: ' + e.message, false);
   }
 }
 
@@ -629,7 +760,6 @@ function copyLetter() {
   log('Cover letter copied to clipboard');
 }
 
-// Emails
 async function checkEmails() {
   setStatus('Checking emails...', true);
   log('Checking email responses');
@@ -644,12 +774,7 @@ async function checkEmails() {
       log('No email responses found');
       return;
     }
-    el.innerHTML = data.emails.map(e => `
-      <div class="email-item">
-        <div class="email-subject">${e.subject}</div>
-        <div class="email-meta">${e.sender} &middot; ${e.date}</div>
-      </div>
-    `).join('');
+    el.innerHTML = data.emails.map(e => '<div class="email-item"><div class="email-subject">' + escapeHtml(e.subject) + '</div><div class="email-meta">' + escapeHtml(e.sender) + ' &middot; ' + escapeHtml(e.date) + '</div></div>').join('');
     setStatus(data.count + ' email responses found', false);
     log(data.count + ' email responses found');
   } catch(e) {
@@ -658,7 +783,6 @@ async function checkEmails() {
   }
 }
 
-// Resume Upload
 async function uploadResume(input) {
   const file = input.files[0];
   if (!file) return;
@@ -698,7 +822,6 @@ async function loadResumeStatus() {
   } catch(e) {}
 }
 
-// Settings Panel
 function openSettings() {
   document.getElementById('settings-overlay').classList.add('active');
   document.getElementById('settings-panel').classList.add('active');
@@ -719,17 +842,28 @@ async function loadProfile() {
     document.getElementById('set-location').value = data.location || 'remote';
     document.getElementById('set-jobtype').value = data.job_type || 'full-time';
     currentTags = data.keywords || [];
+    currentPlatforms = data.platforms || ['remoteok'];
     renderTags();
+    renderPlatforms();
+    updatePlatformToggles();
   } catch(e) {}
 }
 
 async function saveSettings() {
+  currentPlatforms = [];
+  Object.keys(ALL_PLATFORMS).forEach(key => {
+    const cb = document.getElementById('plt-' + key);
+    if (cb && cb.checked) currentPlatforms.push(key);
+  });
+  if (!currentPlatforms.length) currentPlatforms = ['remoteok'];
+
   const profile = {
     name: document.getElementById('set-name').value,
     email: document.getElementById('set-email').value,
     keywords: currentTags,
     location: document.getElementById('set-location').value,
-    job_type: document.getElementById('set-jobtype').value
+    job_type: document.getElementById('set-jobtype').value,
+    platforms: currentPlatforms
   };
   try {
     const res = await fetch('/api/profile', {
@@ -741,13 +875,13 @@ async function saveSettings() {
     log('Settings saved');
     setStatus('Settings saved!', false);
     closeSettings();
+    renderPlatforms();
     loadChecklist();
   } catch(e) {
     setStatus('Failed to save settings', false);
   }
 }
 
-// Tags Input
 function renderTags() {
   const container = document.getElementById('tags-container');
   const input = document.getElementById('tag-input');
@@ -755,7 +889,7 @@ function renderTags() {
   currentTags.forEach((tag, i) => {
     const el = document.createElement('span');
     el.className = 'tag';
-    el.innerHTML = tag + '<span class="tag-remove" onclick="removeTag(' + i + ')">&times;</span>';
+    el.innerHTML = escapeHtml(tag) + '<span class="tag-remove" onclick="removeTag(' + i + ')">&times;</span>';
     container.insertBefore(el, input);
   });
 }
@@ -781,7 +915,6 @@ document.getElementById('tag-input').addEventListener('keydown', function(e) {
   }
 });
 
-// Setup Checklist
 async function loadChecklist() {
   try {
     const res = await fetch('/api/checklist');
@@ -807,7 +940,6 @@ function toggleCheckItem(id, done) {
   else el.classList.remove('done');
 }
 
-// Onboarding Tour
 function startTour() {
   introJs().setOptions({
     showProgress: true,
@@ -828,6 +960,7 @@ loadStats();
 refreshJobs();
 loadResumeStatus();
 loadChecklist();
+loadProfile().then(() => renderPlatforms());
 
 if (!localStorage.getItem('jobflow_tour_done')) {
   setTimeout(startTour, 500);

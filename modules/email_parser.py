@@ -11,7 +11,12 @@ def decode_header_value(value):
     result = ""
     for part, charset in decoded_parts:
         if isinstance(part, bytes):
-            result += part.decode(charset or "utf-8", errors="replace")
+            if not charset or charset.lower() in ("unknown-8bit", "unknown"):
+                charset = "utf-8"
+            try:
+                result += part.decode(charset, errors="replace")
+            except (LookupError, UnicodeDecodeError):
+                result += part.decode("utf-8", errors="replace")
         else:
             result += part
     return result

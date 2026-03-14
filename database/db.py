@@ -21,7 +21,11 @@ def init_db():
             company TEXT NOT NULL,
             link TEXT NOT NULL,
             status TEXT DEFAULT 'new',
-            date_found TEXT NOT NULL
+            date_found TEXT NOT NULL,
+            platform TEXT DEFAULT 'remoteok',
+            description TEXT DEFAULT '',
+            location TEXT DEFAULT '',
+            job_type TEXT DEFAULT ''
         )
     """)
     cursor.execute("""
@@ -30,19 +34,26 @@ def init_db():
             job_id INTEGER NOT NULL,
             date_applied TEXT NOT NULL,
             status TEXT DEFAULT 'applied',
+            cover_letter TEXT DEFAULT '',
             FOREIGN KEY (job_id) REFERENCES jobs (id)
         )
     """)
+    # Migrate existing tables if needed
+    for col, default in [("platform", "'remoteok'"), ("description", "''"), ("location", "''"), ("job_type", "''")]:
+        try:
+            cursor.execute(f"ALTER TABLE jobs ADD COLUMN {col} TEXT DEFAULT {default}")
+        except sqlite3.OperationalError:
+            pass
     conn.commit()
     conn.close()
 
 
-def save_job(title, company, link, status="new"):
+def save_job(title, company, link, status="new", platform="remoteok", description="", location="", job_type=""):
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(
-        "INSERT INTO jobs (title, company, link, status, date_found) VALUES (?, ?, ?, ?, ?)",
-        (title, company, link, status, datetime.now().isoformat()),
+        "INSERT INTO jobs (title, company, link, status, date_found, platform, description, location, job_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (title, company, link, status, datetime.now().isoformat(), platform, description, location, job_type),
     )
     conn.commit()
     job_id = cursor.lastrowid
@@ -66,3 +77,22 @@ def job_exists(link):
     exists = cursor.fetchone() is not None
     conn.close()
     return exists
+
+
+def update_job_status(job_id, status):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE jobs SET status = ? WHERE id = ?", (status, job_id))
+    conn.commit()
+    conn.close()
+
+
+def save_application(job_id, cover_letter=""):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "INSERT INTO applications (job_id, date_applied, cover_letter) VALUES (?, ?, ?)",
+        (job_id, datetime.now().isoformat(), cover_letter),
+    )
+    conn.commit()
+    conn.close()
