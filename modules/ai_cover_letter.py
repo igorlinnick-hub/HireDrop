@@ -8,13 +8,14 @@ PROFILE_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "profile.js
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "..", "templates", "cover_letter.txt")
 
 
-def load_resume_text():
+def load_resume_text(max_chars=2000):
     if not os.path.exists(RESUME_PATH):
         return ""
     try:
         import pdfplumber
         with pdfplumber.open(RESUME_PATH) as pdf:
-            return "\n".join(page.extract_text() or "" for page in pdf.pages)
+            text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+            return text[:max_chars]
     except Exception:
         return ""
 
@@ -70,17 +71,19 @@ def generate_cover_letter(job, profile=None):
     writing_style = profile.get("writing_style", "")
     system = build_system_prompt(writing_style)
 
+    description = job.get('description', 'Not available')[:500]
+
     prompt = f"""Write a cover letter for this job application.
 
 Job Title: {job.get('title', '')}
 Company: {job.get('company', '')}
-Job Description: {job.get('description', 'Not available')}
+Job Description: {description}
 
 Applicant Name: {profile.get('name', '')}
 Applicant Email: {profile.get('email', '')}
 
-Resume:
-{resume_text if resume_text else 'No resume provided.'}"""
+Candidate background (from resume):
+{resume_text if resume_text else 'Not provided.'}"""
 
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)

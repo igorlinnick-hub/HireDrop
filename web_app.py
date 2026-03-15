@@ -476,6 +476,14 @@ tr:hover td{background:var(--surface2)}
 .status-new{background:rgba(16,185,129,.15);color:var(--green)}
 .status-applied{background:rgba(59,130,246,.15);color:var(--blue)}
 .status-interview{background:rgba(245,158,11,.15);color:var(--yellow)}
+.status-response{background:rgba(139,92,246,.15);color:#a78bfa}
+.status-rejected{background:rgba(239,68,68,.15);color:#f87171}
+.btn-view{padding:4px 10px;border-radius:6px;font-size:11px;font-weight:600;background:var(--surface2);color:var(--muted);border:1px solid var(--border);cursor:pointer;transition:all .2s;text-decoration:none;display:inline-flex;align-items:center;gap:3px}
+.btn-view:hover{color:var(--text);border-color:var(--accent)}
+.job-filter-tabs{display:flex;gap:6px;margin-bottom:14px}
+.job-filter-tab{padding:5px 12px;border-radius:6px;font-size:12px;font-weight:600;background:var(--surface2);color:var(--muted);border:1px solid transparent;cursor:pointer;transition:all .2s}
+.job-filter-tab:hover{color:var(--text)}
+.job-filter-tab.active{background:var(--accent);color:#fff;border-color:var(--accent)}
 .platform-tag{padding:3px 8px;border-radius:6px;font-size:11px;font-weight:600;background:rgba(108,92,231,.15);color:var(--accent2)}
 
 .platform-list{display:flex;flex-direction:column;gap:10px}
@@ -763,6 +771,9 @@ tr:hover td{background:var(--surface2)}
       <button class="btn btn-secondary btn-sm" onclick="regenerateLetter()" id="regen-btn">Regenerate</button>
     </div>
     <textarea id="cover-letter-preview" rows="6" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;color:var(--text);font-size:13px;line-height:1.7;resize:vertical;font-family:inherit" placeholder="Fill in keywords above and click Regenerate to generate your cover letter..."></textarea>
+    <div id="cover-letter-resume-warning" style="display:none;margin-top:10px;padding:10px 14px;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.3);border-radius:8px;font-size:13px;color:var(--yellow)">
+      &#9888; Upload your resume for a personalized letter — <label for="resume-input" style="color:var(--accent2);cursor:pointer;text-decoration:underline">Upload Resume</label>
+    </div>
     <div style="margin-top:10px;display:flex;align-items:center;justify-content:space-between">
       <div style="font-size:12px;color:var(--text2)"><strong>Edit this to sound like YOU.</strong> Each letter will be slightly customized per job automatically.</div>
       <button class="btn btn-secondary btn-sm" onclick="saveLetterTemplate()" id="save-letter-btn">Save as Template</button>
@@ -773,6 +784,7 @@ tr:hover td{background:var(--surface2)}
     <div>
       <div class="card">
         <div class="card-title"><span class="dot" style="background:var(--green)"></span>Job Listings</div>
+        <div class="job-filter-tabs" id="job-filter-tabs"></div>
         <div class="table-wrap">
           <table>
             <thead>
@@ -1069,29 +1081,69 @@ async function findJobs() {
   btn.disabled = false;
 }
 
+let allJobs = [];
+let jobFilterStatus = 'all';
+const STATUS_ICONS = {new:'🟢',applied:'✅',interview:'📋',response:'📧',rejected:'❌'};
+
+function renderJobFilterTabs() {
+  const counts = {all:allJobs.length, new:0, applied:0, response:0};
+  allJobs.forEach(j => { if (counts[j.status] !== undefined) counts[j.status]++; else if (j.status === 'interview') counts.response = (counts.response||0); });
+  // count responses+interview together
+  counts.response = allJobs.filter(j => j.status === 'response' || j.status === 'interview').length;
+  const tabs = [
+    {key:'all', label:'All'},
+    {key:'new', label:'New'},
+    {key:'applied', label:'Applied'},
+    {key:'response', label:'Responses'},
+  ];
+  document.getElementById('job-filter-tabs').innerHTML = tabs.map(t =>
+    '<button class="job-filter-tab' + (jobFilterStatus===t.key?' active':'') + '" onclick="setJobFilter(\'' + t.key + '\')">' + t.label + ' (' + (counts[t.key]||0) + ')</button>'
+  ).join('');
+}
+
+function setJobFilter(status) {
+  jobFilterStatus = status;
+  renderJobFilterTabs();
+  renderJobRows();
+}
+
+function renderJobRows() {
+  const tbody = document.getElementById('jobs-table');
+  const filtered = jobFilterStatus === 'all' ? allJobs
+    : jobFilterStatus === 'response' ? allJobs.filter(j => j.status === 'response' || j.status === 'interview')
+    : allJobs.filter(j => j.status === jobFilterStatus);
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="empty">No jobs in this filter.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = filtered.map(j => {
+    const pName = ALL_PLATFORMS[j.platform] || j.platform;
+    const icon = STATUS_ICONS[j.status] || '';
+    const dateStr = j.date_found ? j.date_found.slice(5,10) : '';
+    const viewBtn = j.link ? '<a href="' + escapeHtml(j.link) + '" target="_blank" class="btn-view">View &#8599;</a>' : '';
+    return '<tr>' +
+      '<td>' + escapeHtml(j.title) + '</td>' +
+      '<td>' + escapeHtml(j.company) + '</td>' +
+      '<td><span class="platform-tag">' + escapeHtml(pName) + '</span></td>' +
+      '<td>' + dateStr + '</td>' +
+      '<td><span class="status status-' + j.status + '">' + icon + ' ' + j.status + '</span></td>' +
+      '<td>' + viewBtn + '</td>' +
+    '</tr>';
+  }).join('');
+}
+
 async function refreshJobs() {
   try {
     const res = await fetch('/api/jobs');
-    const jobs = await res.json();
+    allJobs = await res.json();
     const tbody = document.getElementById('jobs-table');
-    if (!jobs.length) {
+    if (!allJobs.length) {
       tbody.innerHTML = '<tr><td colspan="6" class="empty">No jobs yet. Click "Find Jobs" to start.</td></tr>';
+      document.getElementById('job-filter-tabs').innerHTML = '';
       return;
     }
-    tbody.innerHTML = jobs.map(j => {
-      const pName = ALL_PLATFORMS[j.platform] || j.platform;
-      const actions = j.status === 'applied'
-        ? '<button class="btn btn-secondary btn-sm" onclick="genCoverLetter(' + j.id + ')">Letter</button>'
-        : '<div class="btn-actions"><button class="btn btn-secondary btn-sm" onclick="genCoverLetter(' + j.id + ')">Letter</button><button class="btn btn-blue btn-sm" onclick="autoApply(' + j.id + ')">Apply</button></div>';
-      return '<tr>' +
-        '<td><a href="' + escapeHtml(j.link) + '" target="_blank">' + escapeHtml(j.title) + '</a></td>' +
-        '<td>' + escapeHtml(j.company) + '</td>' +
-        '<td><span class="platform-tag">' + escapeHtml(pName) + '</span></td>' +
-        '<td>' + j.date_found.slice(0,10) + '</td>' +
-        '<td><span class="status status-' + j.status + '">' + j.status + '</span></td>' +
-        '<td>' + actions + '</td>' +
-      '</tr>';
-    }).join('');
+    renderJobFilterTabs();
+    renderJobRows();
   } catch(e) {}
 }
 
@@ -1185,8 +1237,9 @@ async function uploadResume(input) {
     if (res.ok) {
       setStatus('Resume uploaded!', false);
       log('Resume uploaded: ' + file.name);
-      loadResumeStatus();
+      await loadResumeStatus();
       loadChecklist();
+      regenerateLetter();
     } else {
       setStatus(data.error, false);
     }
@@ -1196,18 +1249,23 @@ async function uploadResume(input) {
   input.value = '';
 }
 
+let resumeUploaded = false;
 async function loadResumeStatus() {
   try {
     const res = await fetch('/api/resume-status');
     const data = await res.json();
+    resumeUploaded = data.uploaded;
     const el = document.getElementById('resume-status');
     const el2 = document.getElementById('resume-status-panel');
+    const warn = document.getElementById('cover-letter-resume-warning');
     if (data.uploaded) {
       el.innerHTML = '<span class="resume-badge uploaded">&#10003; Resume uploaded</span>';
       if (el2) el2.textContent = 'resume.pdf uploaded';
+      if (warn) warn.style.display = 'none';
     } else {
       el.innerHTML = '<span class="resume-badge missing">No resume</span>';
       if (el2) el2.textContent = 'No resume uploaded';
+      if (warn) warn.style.display = '';
     }
   } catch(e) {}
 }
@@ -1802,10 +1860,9 @@ function syncFilterBar(profile) {
 // Init
 loadStats();
 refreshJobs();
-loadResumeStatus();
+loadResumeStatus().then(() => { if (resumeUploaded) regenerateLetter(); });
 loadChecklist();
-loadPlatformStatus();
-loadProfile().then(() => { renderPlatforms(); renderFilterPlatforms(); syncFilterBar({keywords:currentTags, location:'remote', job_type:'full-time', platforms:currentPlatforms}); });
+loadPlatformStatus().then(() => loadProfile());
 
 if (!localStorage.getItem('jobflow_tour_done')) {
   setTimeout(startTour, 500);
