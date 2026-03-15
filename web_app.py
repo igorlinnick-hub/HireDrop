@@ -46,12 +46,6 @@ class ProfileUpdate(BaseModel):
     writing_style: str = ""
 
 
-class PlatformConnectRequest(BaseModel):
-    platform: str
-    email: str
-    password: str
-
-
 class LetterPreviewRequest(BaseModel):
     keywords: str
 
@@ -218,74 +212,38 @@ async def apply_stream():
     )
 
 
+class PlatformConnectRequest(BaseModel):
+    platform: str
+
+
 @app.post("/api/platform/connect")
 async def connect_platform(req: PlatformConnectRequest):
-    """Test login with Playwright, save encrypted credentials if success."""
-    from modules.encryption import encrypt_password
-    from playwright.async_api import async_playwright
+    """Open visible browser for user to log in manually. Saves session cookies."""
+    from modules.applicator import connect_platform_interactive
 
     try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            page = await browser.new_page()
-            success = False
-
-            if req.platform == "remoteok":
-                await page.goto("https://remoteok.com/login", timeout=10000)
-                await page.fill('input[type="email"]', req.email)
-                await page.fill('input[type="password"]', req.password)
-                await page.click('button[type="submit"]')
-                await page.wait_for_timeout(3000)
-                content = await page.content()
-                success = "logout" in content.lower() or "profile" in page.url
-
-            elif req.platform == "indeed":
-                await page.goto("https://secure.indeed.com/auth", timeout=10000)
-                await page.fill('input[name="__email"]', req.email)
-                await page.click('button[type="submit"]')
-                try:
-                    await page.wait_for_selector('input[name="__password"]', timeout=5000)
-                    await page.fill('input[name="__password"]', req.password)
-                    await page.click('button[type="submit"]')
-                    await page.wait_for_timeout(3000)
-                    success = "indeed.com/account" in page.url or "dashboard" in page.url
-                except Exception:
-                    success = False
-
-            elif req.platform == "wellfound":
-                await page.goto("https://wellfound.com/login", timeout=10000)
-                await page.fill('input[name="user[email]"]', req.email)
-                await page.fill('input[name="user[password]"]', req.password)
-                await page.click('input[type="submit"]')
-                await page.wait_for_timeout(3000)
-                success = "wellfound.com/jobs" in page.url or "dashboard" in page.url
-
-            await browser.close()
-
+        success = await connect_platform_interactive(req.platform)
         if success:
-            profile = load_profile()
-            if "platform_credentials" not in profile:
-                profile["platform_credentials"] = {}
-            profile["platform_credentials"][req.platform] = {
-                "connected": True,
-                "email": req.email,
-                "password_enc": encrypt_password(req.password),
-            }
-            save_profile(profile)
             return {"connected": True, "platform": req.platform}
         else:
-            return JSONResponse(status_code=400, content={"error": "Login failed. Check your credentials."})
-
+            return JSONResponse(status_code=400, content={"error": "Login timed out or failed. Try again."})
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+@app.post("/api/platform/disconnect")
+async def disconnect_platform(req: PlatformConnectRequest):
+    """Remove saved cookies for a platform."""
+    from modules.applicator import delete_cookies
+    delete_cookies(req.platform)
+    return {"disconnected": True, "platform": req.platform}
+
+
 @app.get("/api/platform/status")
 def platform_status():
-    profile = load_profile()
-    creds = profile.get("platform_credentials", {})
+    from modules.applicator import is_platform_connected
     return {
-        p: creds.get(p, {}).get("connected", False)
+        p: is_platform_connected(p)
         for p in ["remoteok", "indeed", "wellfound"]
     }
 
@@ -861,19 +819,12 @@ tr:hover td{background:var(--surface2)}
       <h3 id="connect-modal-title">Connect Platform</h3>
       <button class="modal-close" onclick="closeConnectModal()">&times;</button>
     </div>
-    <p style="font-size:13px;color:var(--text2);margin-bottom:20px">Your credentials are encrypted and stored locally. We never share them.</p>
-    <div class="form-group">
-      <label class="form-label">Email</label>
-      <input type="email" class="form-input" id="connect-email" placeholder="your@email.com">
-    </div>
-    <div class="form-group">
-      <label class="form-label">Password</label>
-      <input type="password" class="form-input" id="connect-password" placeholder="password">
-    </div>
+    <p style="font-size:13px;color:var(--text2);margin-bottom:16px">A browser window will open where you can log in normally. Your saved passwords will work. We never see or store your password — only session cookies.</p>
+    <div id="connect-status" style="font-size:14px;margin-bottom:16px;display:none"></div>
     <div id="connect-error" style="color:var(--red);font-size:13px;margin-bottom:12px;display:none"></div>
     <div style="display:flex;gap:10px;justify-content:flex-end">
       <button class="btn btn-secondary" onclick="closeConnectModal()">Cancel</button>
-      <button class="btn btn-primary" id="connect-submit-btn" onclick="submitConnect()">Connect &amp; Test Login</button>
+      <button class="btn btn-primary" id="connect-submit-btn" onclick="submitConnect()">Open Login Window</button>
     </div>
   </div>
 </div>
@@ -1435,28 +1386,51 @@ let connectingPlatform = '';
 function openConnectModal(platformKey, platformName) {
   connectingPlatform = platformKey;
   document.getElementById('connect-modal-title').textContent = 'Connect ' + platformName;
-  document.getElementById('connect-email').value = '';
-  document.getElementById('connect-password').value = '';
   document.getElementById('connect-error').style.display = 'none';
+  document.getElementById('connect-status').style.display = 'none';
+  document.getElementById('connect-submit-btn').disabled = false;
+  document.getElementById('connect-submit-btn').textContent = 'Open Login Window';
   document.getElementById('connect-modal').classList.add('active');
 }
 function closeConnectModal() {
   document.getElementById('connect-modal').classList.remove('active');
 }
 async function submitConnect() {
-  const email = document.getElementById('connect-email').value.trim();
-  const password = document.getElementById('connect-password').value;
   const errEl = document.getElementById('connect-error');
+  const statusEl = document.getElementById('connect-status');
   const btn = document.getElementById('connect-submit-btn');
-  if (!email || !password) { errEl.textContent = 'Please enter email and password.'; errEl.style.display = 'block'; return; }
-  btn.disabled = true; btn.textContent = 'Testing login...'; errEl.style.display = 'none';
+  btn.disabled = true;
+  btn.textContent = 'Waiting for login...';
+  errEl.style.display = 'none';
+  statusEl.style.display = 'block';
+  statusEl.innerHTML = '<span class="spinner"></span> Browser window opened. Log in and it will close automatically.';
   try {
-    const res = await fetch('/api/platform/connect', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({platform:connectingPlatform, email, password})});
+    const res = await fetch('/api/platform/connect', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({platform:connectingPlatform})});
     const data = await res.json();
-    if (res.ok && data.connected) { closeConnectModal(); log('Connected to ' + connectingPlatform); await loadPlatformStatus(); }
-    else { errEl.textContent = data.error || 'Connection failed.'; errEl.style.display = 'block'; }
-  } catch(e) { errEl.textContent = 'Network error: ' + e.message; errEl.style.display = 'block'; }
-  finally { btn.disabled = false; btn.textContent = 'Connect & Test Login'; }
+    if (res.ok && data.connected) {
+      statusEl.style.display = 'none';
+      closeConnectModal();
+      log('Connected to ' + (ALL_PLATFORMS[connectingPlatform] || connectingPlatform));
+      await loadPlatformStatus();
+    } else {
+      statusEl.style.display = 'none';
+      errEl.textContent = data.error || 'Connection failed.';
+      errEl.style.display = 'block';
+    }
+  } catch(e) {
+    statusEl.style.display = 'none';
+    errEl.textContent = 'Network error: ' + e.message;
+    errEl.style.display = 'block';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Open Login Window';
+  }
+}
+async function disconnectPlatform(platformKey) {
+  if (!confirm('Disconnect ' + (ALL_PLATFORMS[platformKey] || platformKey) + '?')) return;
+  await fetch('/api/platform/disconnect', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({platform:platformKey})});
+  log('Disconnected ' + (ALL_PLATFORMS[platformKey] || platformKey));
+  await loadPlatformStatus();
 }
 
 // Platform Status (sidebar connect buttons)
@@ -1471,7 +1445,7 @@ async function loadPlatformStatus() {
         const connected = status[key];
         return '<div class="platform"><div class="platform-info"><div class="platform-dot ' + (connected ? 'active' : 'inactive') + '"></div><span class="platform-name">' + name + '</span></div>' +
           (connected
-            ? '<span class="platform-badge badge-connected">Connected</span>'
+            ? '<button class="btn btn-sm" style="background:#e74c3c;color:#fff;border:none;font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer" onclick="disconnectPlatform(\\'' + key + '\\')">Disconnect</button>'
             : '<button class="btn btn-sm btn-secondary" onclick="openConnectModal(\\'' + key + '\\',\\'' + name + '\\')">Connect</button>'
           ) + '</div>';
       }).join('');

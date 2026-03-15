@@ -5,3 +5,4 @@ __pycache__/
 *.db
 data/resume.pdf
 data/profile.json
+data/cookies_*.json
