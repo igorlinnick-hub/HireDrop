@@ -37,14 +37,40 @@ def fallback_template(job):
     return letter
 
 
-def generate_cover_letter(job):
+def build_system_prompt(writing_style=""):
+    style_instruction = ""
+    if writing_style:
+        style_instruction = f"""
+WRITING STYLE TO MATCH:
+\"\"\"{writing_style}\"\"\"
+Match this person's tone, vocabulary, and rhythm exactly.
+"""
+    return f"""You write job application cover letters for real humans.
+
+STRICT RULES:
+- Sound like the person wrote it themselves, NOT like an AI assistant
+- NO buzzwords: leverage, passionate, synergy, excited to apply, unique opportunity, thrilled
+- NO formal openers like "I am writing to express my interest" or "I hope this message finds you well"
+- Short paragraphs. Max 2-3 sentences each.
+- Natural rhythm. Occasional imperfection is fine and actually good.
+- Max 120 words total. Be concise.
+- Be direct: what you did, why this job, one specific thing that interests you about the company.
+- Do NOT list your skills like a resume. Tell a micro-story instead.
+{style_instruction}"""
+
+
+def generate_cover_letter(job, profile=None):
     if not ANTHROPIC_API_KEY:
         return fallback_template(job)
 
-    resume_text = load_resume_text()
-    profile = load_profile()
+    if profile is None:
+        profile = load_profile()
 
-    prompt = f"""Write a professional, personalized cover letter for this job application.
+    resume_text = load_resume_text()
+    writing_style = profile.get("writing_style", "")
+    system = build_system_prompt(writing_style)
+
+    prompt = f"""Write a cover letter for this job application.
 
 Job Title: {job.get('title', '')}
 Company: {job.get('company', '')}
@@ -54,19 +80,14 @@ Applicant Name: {profile.get('name', '')}
 Applicant Email: {profile.get('email', '')}
 
 Resume:
-{resume_text if resume_text else 'No resume provided.'}
-
-Instructions:
-- Keep it concise (3-4 paragraphs)
-- Be specific about how the applicant's experience matches the role
-- Professional but not overly formal tone
-- Do not fabricate skills or experience not in the resume"""
+{resume_text if resume_text else 'No resume provided.'}"""
 
     try:
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
-            max_tokens=1024,
+            max_tokens=512,
+            system=system,
             messages=[{"role": "user", "content": prompt}],
         )
         return message.content[0].text

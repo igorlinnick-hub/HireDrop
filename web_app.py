@@ -23,6 +23,7 @@ app = FastAPI(title="JobFlow")
 init_db()
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 RESUME_PATH = os.path.join(DATA_DIR, "resume.pdf")
 PROFILE_PATH = os.path.join(DATA_DIR, "profile.json")
 
@@ -42,13 +43,28 @@ class ProfileUpdate(BaseModel):
     location: str = "remote"
     job_type: str = "full-time"
     platforms: List[str] = ["remoteok"]
+    writing_style: str = ""
+
+
+class PlatformConnectRequest(BaseModel):
+    platform: str
+    email: str
+    password: str
+
+
+class LetterPreviewRequest(BaseModel):
+    keywords: str
+
+
+class TemplateRequest(BaseModel):
+    template: str
 
 
 def load_profile():
     if os.path.exists(PROFILE_PATH):
         with open(PROFILE_PATH, "r") as f:
             return json.load(f)
-    return {"name": "", "email": "", "keywords": ["marketing", "content", "automation"], "location": "remote", "job_type": "full-time", "platforms": ["remoteok"]}
+    return {"name": "", "email": "", "keywords": ["marketing", "content", "automation"], "location": "remote", "job_type": "full-time", "platforms": ["remoteok"], "writing_style": "", "platform_credentials": {}}
 
 
 def save_profile(data):
@@ -165,79 +181,134 @@ def auto_apply(req: AutoApplyRequest):
 
 @app.get("/api/apply-stream")
 async def apply_stream():
-    """SSE endpoint - streams apply events in real time."""
-    async def event_generator():
-        jobs = get_all_jobs()
-        new_jobs = [j for j in jobs if j["status"] == "new"]
+    """SSE endpoint - streams apply events in real time using Playwright."""
+    from modules.applicator import apply_to_jobs
 
-        if not new_jobs:
-            yield f"data: {json_lib.dumps({'type':'done','message':'No new jobs to apply to'})}\n\n"
-            return
+    profile = load_profile()
+    jobs = get_all_jobs()
+    queue = asyncio.Queue()
 
-        to_apply = new_jobs[:DAILY_APPLY_LIMIT]
-        total = len(to_apply)
+    async def callback(event):
+        await queue.put(event)
 
-        yield f"data: {json_lib.dumps({'type':'start','total':total,'message':f'Starting application process for {total} jobs...'})}\n\n"
-        await asyncio.sleep(0.3)
-
-        platforms_order = {}
-        for job in to_apply:
-            p = job["platform"] if "platform" in job.keys() else "remoteok"
-            if p not in platforms_order:
-                platforms_order[p] = []
-            platforms_order[p].append(job)
-
-        applied_count = 0
-
-        for platform_key, platform_jobs in platforms_order.items():
-            platform_names = {"remoteok": "RemoteOK", "indeed": "Indeed", "wellfound": "Wellfound"}
-            pname = platform_names.get(platform_key, platform_key.upper())
-
-            yield f"data: {json_lib.dumps({'type':'platform_start','platform':pname,'count':len(platform_jobs),'message':f'--- Starting {pname} ({len(platform_jobs)} jobs) ---'})}\n\n"
-            await asyncio.sleep(0.5)
-
-            for i, job in enumerate(platform_jobs):
-                title = job["title"]
-                company = job["company"]
-
-                yield f"data: {json_lib.dumps({'type':'generating','platform':pname,'job_id':job['id'],'message':f'[{pname}] Generating cover letter for {title} @ {company}...'})}\n\n"
-                await asyncio.sleep(0.2)
-
-                try:
-                    letter = generate_cover_letter({
-                        "title": title,
-                        "company": company,
-                        "description": job["description"] if "description" in job.keys() else "",
-                    })
-                    update_job_status(job["id"], "applied")
-                    save_application(job["id"], letter)
-                    applied_count += 1
-
-                    yield f"data: {json_lib.dumps({'type':'applied','platform':pname,'job_id':job['id'],'title':title,'company':company,'applied':applied_count,'total':total,'message':f'[{pname}] Applied: {title} @ {company}'})}\n\n"
-                    await asyncio.sleep(0.8)
-
-                except Exception as e:
-                    yield f"data: {json_lib.dumps({'type':'error','platform':pname,'job_id':job['id'],'message':f'[{pname}] Failed: {title} @ {company} - {str(e)}'})}\n\n"
-                    await asyncio.sleep(0.3)
-
-            yield f"data: {json_lib.dumps({'type':'platform_done','platform':pname,'message':f'--- {pname} done: {len(platform_jobs)} jobs processed ---'})}\n\n"
-            await asyncio.sleep(0.5)
-
+    async def run():
         try:
-            send_notification(f"JobFlow: Applied to {applied_count} jobs today!")
+            await apply_to_jobs(jobs, profile, callback)
+        except Exception as e:
+            await queue.put({"type": "error", "message": f"Process error: {str(e)}"})
+        try:
+            send_notification(f"JobFlow: Application process completed!")
         except Exception:
             pass
+        await queue.put(None)
 
-        yield f"data: {json_lib.dumps({'type':'done','applied':applied_count,'total':total,'message':f'Done! Applied to {applied_count}/{total} jobs today.'})}\n\n"
+    asyncio.create_task(run())
+
+    async def generate():
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            yield f"data: {json_lib.dumps(event)}\n\n"
 
     return StreamingResponse(
-        event_generator(),
+        generate(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        }
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@app.post("/api/platform/connect")
+async def connect_platform(req: PlatformConnectRequest):
+    """Test login with Playwright, save encrypted credentials if success."""
+    from modules.encryption import encrypt_password
+    from playwright.async_api import async_playwright
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+            success = False
+
+            if req.platform == "remoteok":
+                await page.goto("https://remoteok.com/login", timeout=10000)
+                await page.fill('input[type="email"]', req.email)
+                await page.fill('input[type="password"]', req.password)
+                await page.click('button[type="submit"]')
+                await page.wait_for_timeout(3000)
+                content = await page.content()
+                success = "logout" in content.lower() or "profile" in page.url
+
+            elif req.platform == "indeed":
+                await page.goto("https://secure.indeed.com/auth", timeout=10000)
+                await page.fill('input[name="__email"]', req.email)
+                await page.click('button[type="submit"]')
+                try:
+                    await page.wait_for_selector('input[name="__password"]', timeout=5000)
+                    await page.fill('input[name="__password"]', req.password)
+                    await page.click('button[type="submit"]')
+                    await page.wait_for_timeout(3000)
+                    success = "indeed.com/account" in page.url or "dashboard" in page.url
+                except Exception:
+                    success = False
+
+            elif req.platform == "wellfound":
+                await page.goto("https://wellfound.com/login", timeout=10000)
+                await page.fill('input[name="user[email]"]', req.email)
+                await page.fill('input[name="user[password]"]', req.password)
+                await page.click('input[type="submit"]')
+                await page.wait_for_timeout(3000)
+                success = "wellfound.com/jobs" in page.url or "dashboard" in page.url
+
+            await browser.close()
+
+        if success:
+            profile = load_profile()
+            if "platform_credentials" not in profile:
+                profile["platform_credentials"] = {}
+            profile["platform_credentials"][req.platform] = {
+                "connected": True,
+                "email": req.email,
+                "password_enc": encrypt_password(req.password),
+            }
+            save_profile(profile)
+            return {"connected": True, "platform": req.platform}
+        else:
+            return JSONResponse(status_code=400, content={"error": "Login failed. Check your credentials."})
+
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/api/platform/status")
+def platform_status():
+    profile = load_profile()
+    creds = profile.get("platform_credentials", {})
+    return {
+        p: creds.get(p, {}).get("connected", False)
+        for p in ["remoteok", "indeed", "wellfound"]
+    }
+
+
+@app.post("/api/cover-letter-preview")
+def cover_letter_preview(req: LetterPreviewRequest):
+    """Generate a sample cover letter based on current keywords."""
+    profile = load_profile()
+    letter = generate_cover_letter({
+        "title": req.keywords or "the position",
+        "company": "your company",
+        "description": f"Role related to: {req.keywords}",
+    }, profile)
+    return {"letter": letter}
+
+
+@app.post("/api/cover-letter-template")
+def save_letter_template(req: TemplateRequest):
+    """Save user-edited letter as the base template."""
+    os.makedirs(TEMPLATES_DIR, exist_ok=True)
+    with open(os.path.join(TEMPLATES_DIR, "cover_letter.txt"), "w") as f:
+        f.write(req.template)
+    return {"saved": True}
 
 
 @app.get("/api/email-check")
@@ -286,7 +357,10 @@ def get_profile():
 
 @app.post("/api/profile")
 def update_profile(profile: ProfileUpdate):
+    existing = load_profile()
     data = profile.dict()
+    # Preserve platform_credentials from existing profile
+    data["platform_credentials"] = existing.get("platform_credentials", {})
     os.makedirs(DATA_DIR, exist_ok=True)
     save_profile(data)
     return {"message": "Profile saved", "profile": data}
@@ -639,6 +713,19 @@ tr:hover td{background:var(--surface2)}
     <span id="action-status" style="color:var(--text2);font-size:13px;margin-left:8px"></span>
   </div>
 
+  <!-- Cover Letter Preview -->
+  <div class="card" id="cover-letter-preview-card">
+    <div class="card-title" style="justify-content:space-between">
+      <span><span class="dot" style="background:var(--accent2)"></span> Cover Letter Preview</span>
+      <button class="btn btn-secondary btn-sm" onclick="regenerateLetter()" id="regen-btn">Regenerate</button>
+    </div>
+    <textarea id="cover-letter-preview" rows="6" style="width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px;color:var(--text);font-size:13px;line-height:1.7;resize:vertical;font-family:inherit" placeholder="Fill in keywords above and click Regenerate to generate your cover letter..."></textarea>
+    <div style="margin-top:10px;display:flex;align-items:center;justify-content:space-between">
+      <div style="font-size:12px;color:var(--text2)"><strong>Edit this to sound like YOU.</strong> Each letter will be slightly customized per job automatically.</div>
+      <button class="btn btn-secondary btn-sm" onclick="saveLetterTemplate()" id="save-letter-btn">Save as Template</button>
+    </div>
+  </div>
+
   <div class="grid">
     <div>
       <div class="card">
@@ -665,6 +752,7 @@ tr:hover td{background:var(--surface2)}
       <div class="card" id="platforms-card">
         <div class="card-title"><span class="dot" style="background:var(--accent)"></span>Platforms</div>
         <div class="platform-list" id="platform-list"></div>
+        <div class="platform-list" id="platform-list-sidebar" style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px"></div>
       </div>
 
       <div class="card">
@@ -733,6 +821,13 @@ tr:hover td{background:var(--surface2)}
     </select>
   </div>
 
+  <div class="form-section">Your Writing Style</div>
+  <div class="form-group">
+    <label class="form-label">Write 2-3 sentences in your own voice. The AI will match your tone.</label>
+    <textarea id="set-writing-style" class="form-input" rows="4" placeholder="Example: Hey, I'm Igor. I've spent the last 3 years building marketing systems that actually work. I hate fluff and I get things done." style="resize:vertical"></textarea>
+    <div style="font-size:11px;color:var(--text2);margin-top:6px">The more natural and specific, the better. Just be yourself.</div>
+  </div>
+
   <div class="form-section">Platforms</div>
   <div class="form-group">
     <div class="platform-toggle">
@@ -757,6 +852,30 @@ tr:hover td{background:var(--surface2)}
   </div>
 
   <button class="btn btn-green" onclick="saveSettings()" style="width:100%;margin-top:12px">Save Settings</button>
+</div>
+
+<!-- Connect Platform Modal -->
+<div class="modal-overlay" id="connect-modal">
+  <div class="modal" style="max-width:420px">
+    <div class="modal-header">
+      <h3 id="connect-modal-title">Connect Platform</h3>
+      <button class="modal-close" onclick="closeConnectModal()">&times;</button>
+    </div>
+    <p style="font-size:13px;color:var(--text2);margin-bottom:20px">Your credentials are encrypted and stored locally. We never share them.</p>
+    <div class="form-group">
+      <label class="form-label">Email</label>
+      <input type="email" class="form-input" id="connect-email" placeholder="your@email.com">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Password</label>
+      <input type="password" class="form-input" id="connect-password" placeholder="password">
+    </div>
+    <div id="connect-error" style="color:var(--red);font-size:13px;margin-bottom:12px;display:none"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end">
+      <button class="btn btn-secondary" onclick="closeConnectModal()">Cancel</button>
+      <button class="btn btn-primary" id="connect-submit-btn" onclick="submitConnect()">Connect &amp; Test Login</button>
+    </div>
+  </div>
 </div>
 
 <!-- Application Process Panel -->
@@ -1034,6 +1153,7 @@ async function loadProfile() {
     document.getElementById('set-jobtype').value = data.job_type || 'full-time';
     currentTags = data.keywords || [];
     currentPlatforms = data.platforms || ['remoteok'];
+    document.getElementById('set-writing-style').value = data.writing_style || '';
     renderTags();
     renderPlatforms();
     updatePlatformToggles();
@@ -1055,7 +1175,8 @@ async function saveSettings() {
     keywords: currentTags,
     location: document.getElementById('set-location').value,
     job_type: document.getElementById('set-jobtype').value,
-    platforms: currentPlatforms
+    platforms: currentPlatforms,
+    writing_style: document.getElementById('set-writing-style').value
   };
   try {
     const res = await fetch('/api/profile', {
@@ -1309,6 +1430,84 @@ function startApplyStream() {
   };
 }
 
+// Platform Connect Modal
+let connectingPlatform = '';
+function openConnectModal(platformKey, platformName) {
+  connectingPlatform = platformKey;
+  document.getElementById('connect-modal-title').textContent = 'Connect ' + platformName;
+  document.getElementById('connect-email').value = '';
+  document.getElementById('connect-password').value = '';
+  document.getElementById('connect-error').style.display = 'none';
+  document.getElementById('connect-modal').classList.add('active');
+}
+function closeConnectModal() {
+  document.getElementById('connect-modal').classList.remove('active');
+}
+async function submitConnect() {
+  const email = document.getElementById('connect-email').value.trim();
+  const password = document.getElementById('connect-password').value;
+  const errEl = document.getElementById('connect-error');
+  const btn = document.getElementById('connect-submit-btn');
+  if (!email || !password) { errEl.textContent = 'Please enter email and password.'; errEl.style.display = 'block'; return; }
+  btn.disabled = true; btn.textContent = 'Testing login...'; errEl.style.display = 'none';
+  try {
+    const res = await fetch('/api/platform/connect', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({platform:connectingPlatform, email, password})});
+    const data = await res.json();
+    if (res.ok && data.connected) { closeConnectModal(); log('Connected to ' + connectingPlatform); await loadPlatformStatus(); }
+    else { errEl.textContent = data.error || 'Connection failed.'; errEl.style.display = 'block'; }
+  } catch(e) { errEl.textContent = 'Network error: ' + e.message; errEl.style.display = 'block'; }
+  finally { btn.disabled = false; btn.textContent = 'Connect & Test Login'; }
+}
+
+// Platform Status (sidebar connect buttons)
+async function loadPlatformStatus() {
+  try {
+    const res = await fetch('/api/platform/status');
+    const status = await res.json();
+    const el = document.getElementById('platform-list-sidebar');
+    const names = {remoteok:'RemoteOK', indeed:'Indeed', wellfound:'Wellfound'};
+    el.innerHTML = '<div style="font-size:12px;color:var(--text2);margin-bottom:8px">Account Connections</div>' +
+      Object.entries(names).map(([key, name]) => {
+        const connected = status[key];
+        return '<div class="platform"><div class="platform-info"><div class="platform-dot ' + (connected ? 'active' : 'inactive') + '"></div><span class="platform-name">' + name + '</span></div>' +
+          (connected
+            ? '<span class="platform-badge badge-connected">Connected</span>'
+            : '<button class="btn btn-sm btn-secondary" onclick="openConnectModal(\\'' + key + '\\',\\'' + name + '\\')">Connect</button>'
+          ) + '</div>';
+      }).join('');
+    // Disable apply button if no platforms connected
+    const anyConnected = Object.values(status).some(v => v);
+    const applyBtn = document.getElementById('btn-apply-all');
+    if (applyBtn) {
+      applyBtn.disabled = !anyConnected;
+      applyBtn.title = anyConnected ? '' : 'Connect at least one platform first';
+    }
+  } catch(e) {}
+}
+
+// Cover Letter Preview
+async function regenerateLetter() {
+  const btn = document.getElementById('regen-btn');
+  btn.disabled = true; btn.textContent = 'Generating...';
+  const keywords = filterTags.join(', ') || currentTags.join(', ');
+  try {
+    const res = await fetch('/api/cover-letter-preview', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({keywords})});
+    const data = await res.json();
+    document.getElementById('cover-letter-preview').value = data.letter;
+  } catch(e) { console.error(e); }
+  finally { btn.disabled = false; btn.textContent = 'Regenerate'; }
+}
+
+async function saveLetterTemplate() {
+  const letter = document.getElementById('cover-letter-preview').value;
+  if (!letter.trim()) return;
+  await fetch('/api/cover-letter-template', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({template:letter})});
+  log('Cover letter template saved');
+  const btn = document.getElementById('save-letter-btn');
+  btn.textContent = 'Saved!';
+  setTimeout(() => btn.textContent = 'Save as Template', 2000);
+}
+
 // Sync filter bar with profile
 function syncFilterBar(profile) {
   filterTags = profile.keywords || [];
@@ -1324,6 +1523,7 @@ loadStats();
 refreshJobs();
 loadResumeStatus();
 loadChecklist();
+loadPlatformStatus();
 loadProfile().then(() => { renderPlatforms(); renderFilterPlatforms(); syncFilterBar({keywords:currentTags, location:'remote', job_type:'full-time', platforms:currentPlatforms}); });
 
 if (!localStorage.getItem('jobflow_tour_done')) {

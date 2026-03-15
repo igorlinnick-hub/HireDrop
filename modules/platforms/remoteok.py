@@ -12,6 +12,7 @@ class RemoteOKPlatform(JobPlatform):
         try:
             response = requests.get(REMOTEOK_API, headers={"User-Agent": "JobFlow/1.0"}, timeout=15)
             response.raise_for_status()
+            response.encoding = "utf-8"
             data = response.json()
         except requests.RequestException as e:
             print(f"[remoteok] Request failed: {e}")
