@@ -10,7 +10,7 @@ from database.db import update_job_status, save_application
 DAILY_LIMIT_PER_PLATFORM = 50
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
 PLATFORM_NAMES = {
-    "remoteok": "RemoteOK", "indeed": "Indeed", "linkedin": "LinkedIn",
+    "remoteok": "RemoteOK", "indeed": "Indeed",
     "wellfound": "Wellfound", "glassdoor": "Glassdoor", "ziprecruiter": "ZipRecruiter",
     "google_jobs": "Google Jobs", "dice": "Dice",
     "toptal": "Toptal", "hired": "Hired", "flexjobs": "FlexJobs",
@@ -19,7 +19,7 @@ PLATFORM_NAMES = {
 PLATFORM_LOGIN_URLS = {
     "remoteok": "https://remoteok.com/login",
     "indeed": "https://secure.indeed.com/auth",
-    "linkedin": "https://www.linkedin.com/login",
+
     "wellfound": "https://wellfound.com/login",
     "glassdoor": "https://www.glassdoor.com/profile/login_input.htm",
     "ziprecruiter": "https://www.ziprecruiter.com/login",
@@ -33,7 +33,7 @@ PLATFORM_LOGIN_URLS = {
 PLATFORM_VERIFY_URLS = {
     "remoteok": "https://remoteok.com",
     "indeed": "https://indeed.com",
-    "linkedin": "https://www.linkedin.com/jobs",
+
     "wellfound": "https://wellfound.com",
     "glassdoor": "https://www.glassdoor.com",
     "ziprecruiter": "https://www.ziprecruiter.com",

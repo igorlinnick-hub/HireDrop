@@ -252,7 +252,7 @@ def platform_open_verify(req: PlatformConnectRequest):
 def platform_status():
     from modules.applicator import is_platform_connected
     all_keys = [
-        "remoteok", "indeed", "linkedin", "wellfound", "glassdoor",
+        "remoteok", "indeed", "wellfound", "glassdoor",
         "ziprecruiter", "google_jobs", "dice",
         "toptal", "hired", "flexjobs",
     ]
@@ -308,7 +308,7 @@ def daily_limits():
     """Return per-platform daily application counts and limits."""
     counts = get_today_applications_by_platform()
     all_keys = [
-        "remoteok", "indeed", "linkedin", "wellfound", "glassdoor",
+        "remoteok", "indeed", "wellfound", "glassdoor",
         "ziprecruiter", "google_jobs", "dice",
         "toptal", "hired", "flexjobs",
     ]
@@ -963,11 +963,11 @@ let currentTags = [];
 let filterTags = [];
 let currentPlatforms = ['remoteok'];
 const ALL_PLATFORMS = {
-  remoteok:'RemoteOK', indeed:'Indeed', linkedin:'LinkedIn', wellfound:'Wellfound',
+  remoteok:'RemoteOK', indeed:'Indeed', wellfound:'Wellfound',
   glassdoor:'Glassdoor', ziprecruiter:'ZipRecruiter', google_jobs:'Google Jobs', dice:'Dice',
   toptal:'Toptal', hired:'Hired', flexjobs:'FlexJobs'
 };
-const FREE_PLATFORMS = ['remoteok','indeed','linkedin','wellfound','glassdoor','ziprecruiter','google_jobs','dice'];
+const FREE_PLATFORMS = ['remoteok','indeed','wellfound','glassdoor','ziprecruiter','google_jobs','dice'];
 const PAID_PLATFORMS = ['toptal','hired','flexjobs'];
 const PAID_URLS = {
   toptal:'https://www.toptal.com', hired:'https://hired.com', flexjobs:'https://www.flexjobs.com'
