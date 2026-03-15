@@ -4,9 +4,13 @@ import json
 sys.path.insert(0, os.path.dirname(__file__))
 
 from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
+import asyncio
+import json as json_lib
+
+DAILY_APPLY_LIMIT = 50
 
 from database.db import init_db, save_job, get_all_jobs, get_connection, update_job_status, save_application
 from modules.platforms import get_enabled_platforms
@@ -157,6 +161,83 @@ def auto_apply(req: AutoApplyRequest):
         "job_title": job["title"],
         "company": job["company"],
     }
+
+
+@app.get("/api/apply-stream")
+async def apply_stream():
+    """SSE endpoint - streams apply events in real time."""
+    async def event_generator():
+        jobs = get_all_jobs()
+        new_jobs = [j for j in jobs if j["status"] == "new"]
+
+        if not new_jobs:
+            yield f"data: {json_lib.dumps({'type':'done','message':'No new jobs to apply to'})}\n\n"
+            return
+
+        to_apply = new_jobs[:DAILY_APPLY_LIMIT]
+        total = len(to_apply)
+
+        yield f"data: {json_lib.dumps({'type':'start','total':total,'message':f'Starting application process for {total} jobs...'})}\n\n"
+        await asyncio.sleep(0.3)
+
+        platforms_order = {}
+        for job in to_apply:
+            p = job["platform"] if "platform" in job.keys() else "remoteok"
+            if p not in platforms_order:
+                platforms_order[p] = []
+            platforms_order[p].append(job)
+
+        applied_count = 0
+
+        for platform_key, platform_jobs in platforms_order.items():
+            platform_names = {"remoteok": "RemoteOK", "indeed": "Indeed", "wellfound": "Wellfound"}
+            pname = platform_names.get(platform_key, platform_key.upper())
+
+            yield f"data: {json_lib.dumps({'type':'platform_start','platform':pname,'count':len(platform_jobs),'message':f'--- Starting {pname} ({len(platform_jobs)} jobs) ---'})}\n\n"
+            await asyncio.sleep(0.5)
+
+            for i, job in enumerate(platform_jobs):
+                title = job["title"]
+                company = job["company"]
+
+                yield f"data: {json_lib.dumps({'type':'generating','platform':pname,'job_id':job['id'],'message':f'[{pname}] Generating cover letter for {title} @ {company}...'})}\n\n"
+                await asyncio.sleep(0.2)
+
+                try:
+                    letter = generate_cover_letter({
+                        "title": title,
+                        "company": company,
+                        "description": job["description"] if "description" in job.keys() else "",
+                    })
+                    update_job_status(job["id"], "applied")
+                    save_application(job["id"], letter)
+                    applied_count += 1
+
+                    yield f"data: {json_lib.dumps({'type':'applied','platform':pname,'job_id':job['id'],'title':title,'company':company,'applied':applied_count,'total':total,'message':f'[{pname}] Applied: {title} @ {company}'})}\n\n"
+                    await asyncio.sleep(0.8)
+
+                except Exception as e:
+                    yield f"data: {json_lib.dumps({'type':'error','platform':pname,'job_id':job['id'],'message':f'[{pname}] Failed: {title} @ {company} - {str(e)}'})}\n\n"
+                    await asyncio.sleep(0.3)
+
+            yield f"data: {json_lib.dumps({'type':'platform_done','platform':pname,'message':f'--- {pname} done: {len(platform_jobs)} jobs processed ---'})}\n\n"
+            await asyncio.sleep(0.5)
+
+        try:
+            send_notification(f"JobFlow: Applied to {applied_count} jobs today!")
+        except Exception:
+            pass
+
+        yield f"data: {json_lib.dumps({'type':'done','applied':applied_count,'total':total,'message':f'Done! Applied to {applied_count}/{total} jobs today.'})}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        }
+    )
 
 
 @app.get("/api/email-check")
@@ -404,6 +485,54 @@ tr:hover td{background:var(--surface2)}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
 
 .btn-actions{display:flex;gap:6px}
+
+/* Filter Bar */
+.filter-bar{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px 24px;margin-bottom:24px}
+.filter-bar-title{font-size:14px;font-weight:600;margin-bottom:14px;color:var(--accent2);display:flex;align-items:center;gap:8px}
+.filter-row{display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap}
+.filter-group{display:flex;flex-direction:column;gap:6px}
+.filter-group label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text2)}
+.filter-group select{padding:8px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;outline:none;min-width:140px}
+.filter-group select:focus{border-color:var(--accent)}
+.filter-tags{display:flex;flex-wrap:wrap;gap:6px;padding:8px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;min-height:38px;min-width:220px;cursor:text;align-items:center}
+.filter-tags:focus-within{border-color:var(--accent)}
+.filter-tags .tag{font-size:12px;padding:2px 8px}
+.filter-tags input{border:none;background:none;color:var(--text);font-size:13px;outline:none;min-width:60px;flex:1}
+.filter-tags input::placeholder{color:var(--text2)}
+.filter-platforms{display:flex;gap:8px;align-items:center}
+.filter-plt{display:flex;align-items:center;gap:4px;padding:6px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;font-size:12px;cursor:pointer;transition:all .2s;user-select:none}
+.filter-plt:hover{border-color:var(--accent)}
+.filter-plt.active{background:rgba(108,92,231,.2);border-color:var(--accent);color:var(--accent2)}
+.filter-plt input{display:none}
+.filter-actions{display:flex;gap:10px;align-items:flex-end}
+
+/* Application Process Panel */
+.apply-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.4);z-index:300}
+.apply-overlay.active{display:block}
+.apply-panel{position:fixed;top:0;right:-520px;width:520px;height:100%;background:#0d1117;border-left:1px solid var(--border);z-index:301;transition:right .3s ease;display:flex;flex-direction:column}
+.apply-panel.active{right:0}
+.apply-header{padding:20px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--surface)}
+.apply-header-left{display:flex;align-items:center;gap:12px}
+.apply-dot{width:10px;height:10px;border-radius:50%;background:var(--green)}
+.apply-dot.pulsing{animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.apply-title{font-size:18px;font-weight:700}
+.apply-progress{padding:16px 24px;border-bottom:1px solid var(--border);background:var(--surface)}
+.apply-progress-bar{height:6px;background:var(--surface2);border-radius:3px;overflow:hidden;margin-top:8px}
+.apply-progress-fill{height:100%;background:linear-gradient(90deg,var(--green),var(--accent2));border-radius:3px;transition:width .4s;width:0%}
+.apply-progress-text{display:flex;justify-content:space-between;font-size:12px;color:var(--text2)}
+.apply-platforms{display:flex;gap:8px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface)}
+.apply-plt-tab{padding:6px 14px;border-radius:8px;font-size:12px;font-weight:600;background:var(--surface2);color:var(--text2);border:1px solid var(--border)}
+.apply-plt-tab.active{background:rgba(108,92,231,.2);color:var(--accent2);border-color:var(--accent)}
+.apply-plt-tab.done{background:rgba(16,185,129,.15);color:var(--green);border-color:var(--green)}
+.apply-log{flex:1;overflow-y:auto;padding:16px 24px;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:13px;line-height:1.8}
+.apply-log-line{padding:2px 0}
+.apply-log-line.platform-header{color:var(--blue);font-weight:600;margin-top:8px}
+.apply-log-line.generating{color:var(--text2)}
+.apply-log-line.applied{color:var(--green)}
+.apply-log-line.error{color:var(--red)}
+.apply-log-line.done{color:var(--yellow);font-weight:600;margin-top:8px}
+.apply-footer{padding:16px 24px;border-top:1px solid var(--border);background:var(--surface);text-align:right}
 </style>
 </head>
 <body>
@@ -461,11 +590,48 @@ tr:hover td{background:var(--surface2)}
     <div class="checklist-progress"><div class="checklist-progress-bar" id="cl-progress" style="width:25%"></div></div>
   </div>
 
+  <!-- Filter Bar -->
+  <div class="filter-bar" data-intro="Set your filters and search across all platforms at once." data-step="6" data-title="Filter & Search">
+    <div class="filter-bar-title">Search Filters</div>
+    <div class="filter-row">
+      <div class="filter-group">
+        <label>Keywords</label>
+        <div class="filter-tags" id="filter-tags" onclick="document.getElementById('filter-tag-input').focus()">
+          <input id="filter-tag-input" type="text" placeholder="Add keyword...">
+        </div>
+      </div>
+      <div class="filter-group">
+        <label>Location</label>
+        <select id="filter-location">
+          <option value="remote">Remote</option>
+          <option value="usa">USA</option>
+          <option value="europe">Europe</option>
+          <option value="">Any</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>Job Type</label>
+        <select id="filter-jobtype">
+          <option value="full-time">Full-time</option>
+          <option value="part-time">Part-time</option>
+          <option value="contract">Contract</option>
+        </select>
+      </div>
+      <div class="filter-group">
+        <label>Platforms</label>
+        <div class="filter-platforms" id="filter-platforms"></div>
+      </div>
+      <div class="filter-actions">
+        <button class="btn btn-primary" id="btn-find" onclick="findJobsWithFilters()">Find Jobs</button>
+        <button class="btn btn-green" id="btn-apply-all" onclick="openApplyPanel()">Start Application Process</button>
+      </div>
+    </div>
+  </div>
+
   <div class="action-bar">
-    <button class="btn btn-primary" id="btn-find" onclick="findJobs()">Find Jobs</button>
     <button class="btn btn-secondary" onclick="refreshJobs()">Refresh Table</button>
     <button class="btn btn-secondary" onclick="checkEmails()">Check Emails</button>
-    <div class="resume-section" data-intro="Once you find a great match, generate a personalized AI cover letter with one click." data-step="6" data-title="AI Cover Letters">
+    <div class="resume-section">
       <label class="btn btn-secondary btn-sm" for="resume-input" id="resume-upload-btn">Upload Resume</label>
       <input type="file" id="resume-input" accept=".pdf" onchange="uploadResume(this)">
       <span id="resume-status"></span>
@@ -593,11 +759,36 @@ tr:hover td{background:var(--surface2)}
   <button class="btn btn-green" onclick="saveSettings()" style="width:100%;margin-top:12px">Save Settings</button>
 </div>
 
+<!-- Application Process Panel -->
+<div class="apply-overlay" id="apply-overlay" onclick="closeApplyPanel()"></div>
+<div class="apply-panel" id="apply-panel">
+  <div class="apply-header">
+    <div class="apply-header-left">
+      <div class="apply-dot" id="apply-dot"></div>
+      <span class="apply-title">Application Process</span>
+    </div>
+    <button class="modal-close" onclick="closeApplyPanel()">&times;</button>
+  </div>
+  <div class="apply-progress">
+    <div class="apply-progress-text">
+      <span id="apply-count">0 / 0 applied</span>
+      <span id="apply-limit">Daily limit: 50</span>
+    </div>
+    <div class="apply-progress-bar"><div class="apply-progress-fill" id="apply-progress-fill"></div></div>
+  </div>
+  <div class="apply-platforms" id="apply-platforms"></div>
+  <div class="apply-log" id="apply-log"></div>
+  <div class="apply-footer">
+    <button class="btn btn-secondary btn-sm" onclick="closeApplyPanel()">Close</button>
+  </div>
+</div>
+
 <script src="https://cdn.jsdelivr.net/npm/intro.js@7.2.0/intro.min.js"></script>
 <script>
 const statusEl = document.getElementById('action-status');
 const logEl = document.getElementById('activity-log');
 let currentTags = [];
+let filterTags = [];
 let currentPlatforms = ['remoteok'];
 const ALL_PLATFORMS = {remoteok:'RemoteOK', indeed:'Indeed', wellfound:'Wellfound'};
 
@@ -846,6 +1037,7 @@ async function loadProfile() {
     renderTags();
     renderPlatforms();
     updatePlatformToggles();
+    syncFilterBar(data);
   } catch(e) {}
 }
 
@@ -955,12 +1147,184 @@ function startTour() {
   }).start();
 }
 
+// Filter Bar - Tags
+function renderFilterTags() {
+  const container = document.getElementById('filter-tags');
+  const input = document.getElementById('filter-tag-input');
+  container.querySelectorAll('.tag').forEach(t => t.remove());
+  filterTags.forEach((tag, i) => {
+    const el = document.createElement('span');
+    el.className = 'tag';
+    el.innerHTML = escapeHtml(tag) + '<span class="tag-remove" onclick="removeFilterTag(' + i + ')">&times;</span>';
+    container.insertBefore(el, input);
+  });
+}
+function removeFilterTag(i) { filterTags.splice(i, 1); renderFilterTags(); }
+document.getElementById('filter-tag-input').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && this.value.trim()) {
+    e.preventDefault();
+    const val = this.value.trim().toLowerCase();
+    if (!filterTags.includes(val)) { filterTags.push(val); renderFilterTags(); }
+    this.value = '';
+  }
+  if (e.key === 'Backspace' && !this.value && filterTags.length) { filterTags.pop(); renderFilterTags(); }
+});
+
+// Filter Bar - Platforms
+function renderFilterPlatforms() {
+  const el = document.getElementById('filter-platforms');
+  el.innerHTML = Object.entries(ALL_PLATFORMS).map(([key, name]) => {
+    const active = currentPlatforms.includes(key);
+    return '<div class="filter-plt ' + (active ? 'active' : '') + '" onclick="toggleFilterPlatform(\\'' + key + '\\')">' + name + '</div>';
+  }).join('');
+}
+function toggleFilterPlatform(key) {
+  if (currentPlatforms.includes(key)) {
+    if (currentPlatforms.length > 1) currentPlatforms = currentPlatforms.filter(p => p !== key);
+  } else {
+    currentPlatforms.push(key);
+  }
+  renderFilterPlatforms();
+  renderPlatforms();
+  updatePlatformToggles();
+}
+
+// Find Jobs with filter bar values
+async function findJobsWithFilters() {
+  // Save filter bar values to profile first
+  const profile = {
+    name: '',
+    email: '',
+    keywords: filterTags,
+    location: document.getElementById('filter-location').value,
+    job_type: document.getElementById('filter-jobtype').value,
+    platforms: currentPlatforms
+  };
+  // Try to preserve name/email from existing profile
+  try {
+    const res = await fetch('/api/profile');
+    const existing = await res.json();
+    profile.name = existing.name || '';
+    profile.email = existing.email || '';
+  } catch(e) {}
+  await fetch('/api/profile', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(profile)});
+  // Now search
+  await findJobs();
+}
+
+// Application Process Panel
+function openApplyPanel() {
+  document.getElementById('apply-overlay').classList.add('active');
+  document.getElementById('apply-panel').classList.add('active');
+  document.getElementById('apply-dot').classList.add('pulsing');
+  document.getElementById('apply-log').innerHTML = '';
+  document.getElementById('apply-count').textContent = '0 / 0 applied';
+  document.getElementById('apply-progress-fill').style.width = '0%';
+  // Show platform tabs
+  document.getElementById('apply-platforms').innerHTML = currentPlatforms.map(p =>
+    '<div class="apply-plt-tab" id="apply-tab-' + p + '">' + ALL_PLATFORMS[p] + '</div>'
+  ).join('');
+  startApplyStream();
+}
+function closeApplyPanel() {
+  document.getElementById('apply-overlay').classList.remove('active');
+  document.getElementById('apply-panel').classList.remove('active');
+  document.getElementById('apply-dot').classList.remove('pulsing');
+  refreshJobs();
+  loadStats();
+}
+
+function startApplyStream() {
+  const logEl = document.getElementById('apply-log');
+  const es = new EventSource('/api/apply-stream');
+  let currentPlatformTab = null;
+
+  es.onmessage = function(event) {
+    const data = JSON.parse(event.data);
+    const line = document.createElement('div');
+    line.className = 'apply-log-line';
+
+    switch(data.type) {
+      case 'start':
+        line.className += ' platform-header';
+        line.textContent = data.message;
+        document.getElementById('apply-count').textContent = '0 / ' + data.total + ' applied';
+        break;
+      case 'platform_start':
+        line.className += ' platform-header';
+        line.textContent = data.message;
+        if (currentPlatformTab) {
+          const prevTab = document.getElementById('apply-tab-' + currentPlatformTab);
+          if (prevTab) prevTab.className = 'apply-plt-tab done';
+        }
+        currentPlatformTab = Object.entries(ALL_PLATFORMS).find(([k,v]) => v === data.platform)?.[0];
+        if (currentPlatformTab) {
+          const tab = document.getElementById('apply-tab-' + currentPlatformTab);
+          if (tab) tab.className = 'apply-plt-tab active';
+        }
+        break;
+      case 'generating':
+        line.className += ' generating';
+        line.textContent = data.message;
+        break;
+      case 'applied':
+        line.className += ' applied';
+        line.textContent = data.message;
+        document.getElementById('apply-count').textContent = data.applied + ' / ' + data.total + ' applied';
+        document.getElementById('apply-progress-fill').style.width = (data.applied / data.total * 100) + '%';
+        log('Applied: ' + data.title + ' @ ' + data.company);
+        break;
+      case 'error':
+        line.className += ' error';
+        line.textContent = data.message;
+        break;
+      case 'platform_done':
+        line.className += ' platform-header';
+        line.textContent = data.message;
+        if (currentPlatformTab) {
+          const tab = document.getElementById('apply-tab-' + currentPlatformTab);
+          if (tab) tab.className = 'apply-plt-tab done';
+        }
+        break;
+      case 'done':
+        line.className += ' done';
+        line.textContent = data.message;
+        document.getElementById('apply-dot').classList.remove('pulsing');
+        es.close();
+        refreshJobs();
+        loadStats();
+        break;
+    }
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+
+  es.onerror = function() {
+    es.close();
+    const line = document.createElement('div');
+    line.className = 'apply-log-line error';
+    line.textContent = 'Connection lost.';
+    logEl.appendChild(line);
+    document.getElementById('apply-dot').classList.remove('pulsing');
+  };
+}
+
+// Sync filter bar with profile
+function syncFilterBar(profile) {
+  filterTags = profile.keywords || [];
+  renderFilterTags();
+  document.getElementById('filter-location').value = profile.location || 'remote';
+  document.getElementById('filter-jobtype').value = profile.job_type || 'full-time';
+  currentPlatforms = profile.platforms || ['remoteok'];
+  renderFilterPlatforms();
+}
+
 // Init
 loadStats();
 refreshJobs();
 loadResumeStatus();
 loadChecklist();
-loadProfile().then(() => renderPlatforms());
+loadProfile().then(() => { renderPlatforms(); renderFilterPlatforms(); syncFilterBar({keywords:currentTags, location:'remote', job_type:'full-time', platforms:currentPlatforms}); });
 
 if (!localStorage.getItem('jobflow_tour_done')) {
   setTimeout(startTour, 500);
