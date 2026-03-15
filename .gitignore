@@ -6,3 +6,4 @@ __pycache__/
 data/resume.pdf
 data/profile.json
 data/cookies_*.json
+data/connections.json

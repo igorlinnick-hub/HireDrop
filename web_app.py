@@ -216,27 +216,36 @@ class PlatformConnectRequest(BaseModel):
     platform: str
 
 
-@app.post("/api/platform/connect")
-async def connect_platform(req: PlatformConnectRequest):
-    """Open visible browser for user to log in manually. Saves session cookies."""
-    from modules.applicator import connect_platform_interactive
+@app.post("/api/platform/open-login")
+def platform_open_login(req: PlatformConnectRequest):
+    """Open the platform login page in the user's system browser."""
+    from modules.applicator import open_platform_login
+    opened = open_platform_login(req.platform)
+    return {"opened": opened, "platform": req.platform}
 
-    try:
-        success = await connect_platform_interactive(req.platform)
-        if success:
-            return {"connected": True, "platform": req.platform}
-        else:
-            return JSONResponse(status_code=400, content={"error": "Login timed out or failed. Try again."})
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
+
+@app.post("/api/platform/confirm-connected")
+def platform_confirm_connected(req: PlatformConnectRequest):
+    """User confirms they logged in — mark platform as connected."""
+    from modules.applicator import set_platform_connected
+    set_platform_connected(req.platform, True)
+    return {"connected": True, "platform": req.platform}
 
 
 @app.post("/api/platform/disconnect")
-async def disconnect_platform(req: PlatformConnectRequest):
-    """Remove saved cookies for a platform."""
-    from modules.applicator import delete_cookies
-    delete_cookies(req.platform)
+def platform_disconnect(req: PlatformConnectRequest):
+    """Mark platform as disconnected."""
+    from modules.applicator import disconnect_platform as do_disconnect
+    do_disconnect(req.platform)
     return {"disconnected": True, "platform": req.platform}
+
+
+@app.post("/api/platform/open-verify")
+def platform_open_verify(req: PlatformConnectRequest):
+    """Open platform in system browser so user can check if still logged in."""
+    from modules.applicator import open_platform_verify
+    opened = open_platform_verify(req.platform)
+    return {"opened": opened, "platform": req.platform}
 
 
 @app.get("/api/platform/status")
@@ -549,30 +558,33 @@ tr:hover td{background:var(--surface2)}
 .filter-tags input{border:none;background:none;color:var(--text);font-size:13px;outline:none;min-width:60px;flex:1}
 .filter-tags input::placeholder{color:var(--text2)}
 .filter-platforms{display:flex;gap:8px;align-items:center}
-.filter-plt{display:flex;align-items:center;gap:4px;padding:6px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;font-size:12px;cursor:pointer;transition:all .2s;user-select:none}
+.filter-plt{display:flex;align-items:center;gap:6px;padding:6px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;font-size:12px;cursor:pointer;transition:all .2s;user-select:none;position:relative}
 .filter-plt:hover{border-color:var(--accent)}
 .filter-plt.active{background:rgba(108,92,231,.2);border-color:var(--accent);color:var(--accent2)}
+.filter-plt.disconnected{opacity:.7}
+.filter-plt .plt-status{font-size:10px;line-height:1}.filter-plt.active .plt-status{color:var(--green)}
+.filter-plt .plt-connect-btn{font-size:10px;padding:2px 6px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;margin-left:2px;white-space:nowrap}
+.filter-plt .plt-connect-btn:hover{opacity:.85}
 .filter-plt input{display:none}
 .filter-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 
-/* Application Process Panel */
-.apply-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.4);z-index:300}
-.apply-overlay.active{display:block}
-.apply-panel{position:fixed;top:0;right:-600px;width:600px;height:100%;background:#0d1117;border-left:1px solid var(--border);z-index:301;transition:right .3s ease;display:flex;flex-direction:column}
-.apply-panel.active{right:0}
-.apply-header{padding:20px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--surface)}
-.apply-header-left{display:flex;align-items:center;gap:12px}
-.apply-dot{width:10px;height:10px;border-radius:50%;background:var(--green)}
-.apply-dot.pulsing{animation:pulse 1.5s infinite}
+/* Campaign Fullscreen Modal */
+.campaign-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:300;align-items:center;justify-content:center}
+.campaign-overlay.active{display:flex}
+.campaign-modal{background:#0d1117;border:1px solid var(--border);border-radius:16px;width:94vw;max-width:900px;height:85vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,.6)}
+.campaign-header{padding:20px 28px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--surface);flex-shrink:0}
+.campaign-header-left{display:flex;align-items:center;gap:12px}
+.campaign-dot{width:10px;height:10px;border-radius:50%;background:var(--green)}
+.campaign-dot.pulsing{animation:pulse 1.5s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-.apply-title{font-size:18px;font-weight:700}
+.campaign-title{font-size:20px;font-weight:700}
 
 /* Campaign Cards */
-.campaign-cards{display:flex;gap:12px;padding:16px 24px;border-bottom:1px solid var(--border);background:var(--surface)}
-.campaign-card{flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px 16px;cursor:pointer;transition:all .2s;min-width:0}
+.campaign-cards{display:flex;gap:14px;padding:20px 28px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0}
+.campaign-card{flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:16px 18px;cursor:pointer;transition:all .2s;min-width:0}
 .campaign-card:hover{border-color:var(--accent)}
 .campaign-card.selected{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
-.campaign-card-name{font-size:14px;font-weight:600;margin-bottom:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.campaign-card-name{font-size:15px;font-weight:600;margin-bottom:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .campaign-bar-wrap{height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:8px}
 .campaign-bar-fill{height:100%;border-radius:4px;transition:width .4s}
 .campaign-bar-fill.running{background:linear-gradient(90deg,var(--green),var(--accent2))}
@@ -580,7 +592,7 @@ tr:hover td{background:var(--surface2)}
 .campaign-bar-fill.done{background:var(--green)}
 .campaign-bar-fill.failed{background:var(--red)}
 .campaign-bar-fill.limit{background:var(--yellow)}
-.campaign-count{font-size:12px;color:var(--text2);font-weight:600;margin-bottom:6px;font-variant-numeric:tabular-nums}
+.campaign-count{font-size:13px;color:var(--text2);font-weight:600;margin-bottom:6px;font-variant-numeric:tabular-nums}
 .campaign-status{font-size:12px;display:flex;align-items:center;gap:6px}
 .campaign-status.waiting{color:var(--text2)}
 .campaign-status.running{color:var(--green)}
@@ -588,20 +600,21 @@ tr:hover td{background:var(--surface2)}
 .campaign-status.failed{color:var(--red)}
 .campaign-status.limit{color:var(--yellow)}
 
-/* Apply panel views */
-.apply-view{flex:1;overflow-y:auto;display:none;flex-direction:column}
-.apply-view.active{display:flex}
-.apply-log{flex:1;overflow-y:auto;padding:16px 24px;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:13px;line-height:1.8}
-.apply-log-line{padding:2px 0}
-.apply-log-line.platform-header{color:var(--blue);font-weight:600;margin-top:8px}
-.apply-log-line.generating{color:var(--text2)}
-.apply-log-line.applied{color:var(--green)}
-.apply-log-line.error{color:var(--red)}
-.apply-log-line.done{color:var(--yellow);font-weight:600;margin-top:8px}
+/* Campaign body: log + history */
+.campaign-body{flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.campaign-view{flex:1;overflow-y:auto;display:none;flex-direction:column}
+.campaign-view.active{display:flex}
+.campaign-log{flex:1;overflow-y:auto;padding:20px 28px;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:13px;line-height:2}
+.campaign-log-line{padding:2px 0}
+.campaign-log-line.platform-header{color:var(--blue);font-weight:600;margin-top:10px}
+.campaign-log-line.generating{color:var(--text2)}
+.campaign-log-line.applied{color:var(--green)}
+.campaign-log-line.error{color:var(--red)}
+.campaign-log-line.done{color:var(--yellow);font-weight:600;margin-top:10px}
 
 /* History list */
-.history-header{padding:16px 24px;font-size:14px;font-weight:600;color:var(--accent2);border-bottom:1px solid var(--border)}
-.history-list{flex:1;overflow-y:auto;padding:8px 24px}
+.history-header{padding:16px 28px;font-size:15px;font-weight:600;color:var(--accent2);border-bottom:1px solid var(--border);flex-shrink:0}
+.history-list{flex:1;overflow-y:auto;padding:8px 28px}
 .history-item{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--border);transition:background .15s}
 .history-item:hover{background:var(--surface2)}
 .history-item-left{display:flex;align-items:center;gap:10px;min-width:0;flex:1}
@@ -609,11 +622,11 @@ tr:hover td{background:var(--surface2)}
 .history-item-info{min-width:0}
 .history-item-title{font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .history-item-company{font-size:12px;color:var(--text2)}
-.history-item-link{color:var(--accent2);font-size:12px;text-decoration:none;white-space:nowrap;flex-shrink:0}
+.history-item-link{color:var(--accent2);font-size:13px;text-decoration:none;white-space:nowrap;flex-shrink:0}
 .history-item-link:hover{text-decoration:underline}
 
-.apply-footer{padding:16px 24px;border-top:1px solid var(--border);background:var(--surface);display:flex;justify-content:space-between;align-items:center}
-.apply-footer-info{font-size:12px;color:var(--text2)}
+.campaign-footer{padding:16px 28px;border-top:1px solid var(--border);background:var(--surface);display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
+.campaign-footer-info{font-size:13px;color:var(--text2)}
 
 /* Responsive: grid + sidebar + campaign cards */
 @media(max-width:1100px){
@@ -627,7 +640,7 @@ tr:hover td{background:var(--surface2)}
   .filter-row{flex-direction:column;gap:12px}
   .filter-actions{width:100%}
   .campaign-cards{flex-direction:column}
-  .apply-panel{width:100%;right:-100%}
+  .campaign-modal{width:100%;height:100%;max-width:100%;border-radius:0}
   .settings-panel{width:100%}
 }
 
@@ -879,42 +892,72 @@ tr:hover td{background:var(--surface2)}
 
 <!-- Connect Platform Modal -->
 <div class="modal-overlay" id="connect-modal">
-  <div class="modal" style="max-width:420px">
+  <div class="modal" style="max-width:440px">
     <div class="modal-header">
       <h3 id="connect-modal-title">Connect Platform</h3>
       <button class="modal-close" onclick="closeConnectModal()">&times;</button>
     </div>
-    <p style="font-size:13px;color:var(--text2);margin-bottom:16px">A browser window will open where you can log in normally. Your saved passwords will work. We never see or store your password — only session cookies.</p>
-    <div id="connect-status" style="font-size:14px;margin-bottom:16px;display:none"></div>
-    <div id="connect-error" style="color:var(--red);font-size:13px;margin-bottom:12px;display:none"></div>
-    <div style="display:flex;gap:10px;justify-content:flex-end">
-      <button class="btn btn-secondary" onclick="closeConnectModal()">Cancel</button>
-      <button class="btn btn-primary" id="connect-submit-btn" onclick="submitConnect()">Open Login Window</button>
+    <!-- Step 1: Open browser -->
+    <div id="connect-step1">
+      <p style="font-size:13px;color:var(--text2);margin-bottom:16px">Your default browser (Safari/Chrome) will open the login page. Log in with your saved passwords — we never see or store your credentials.</p>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn btn-secondary" onclick="closeConnectModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="connectStep1()">Open Login Page</button>
+      </div>
+    </div>
+    <!-- Step 2: Confirm -->
+    <div id="connect-step2" style="display:none">
+      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px">
+        <div style="font-size:14px;font-weight:600;margin-bottom:8px">Login page opened in your browser</div>
+        <div style="font-size:13px;color:var(--text2)">Log in to <span id="connect-platform-name" style="color:var(--accent2);font-weight:600"></span>, then come back here and confirm.</div>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <button class="btn btn-secondary" onclick="closeConnectModal()">Cancel</button>
+        <button class="btn btn-green" onclick="connectConfirm()">I'm Connected</button>
+      </div>
     </div>
   </div>
 </div>
 
-<!-- Application Process Panel -->
-<div class="apply-overlay" id="apply-overlay" onclick="closeApplyPanel()"></div>
-<div class="apply-panel" id="apply-panel">
-  <div class="apply-header">
-    <div class="apply-header-left">
-      <div class="apply-dot" id="apply-dot"></div>
-      <span class="apply-title">Campaign</span>
+<!-- Verify Connection Modal -->
+<div class="modal-overlay" id="verify-modal">
+  <div class="modal" style="max-width:400px">
+    <div class="modal-header">
+      <h3 id="verify-modal-title">Verify Connection</h3>
+      <button class="modal-close" onclick="closeVerifyModal()">&times;</button>
     </div>
-    <button class="modal-close" onclick="closeApplyPanel()">&times;</button>
+    <p style="font-size:13px;color:var(--text2);margin-bottom:16px">We opened <span id="verify-platform-name" style="color:var(--accent2);font-weight:600"></span> in your browser. Are you still logged in?</p>
+    <div style="display:flex;gap:10px;justify-content:flex-end">
+      <button class="btn btn-secondary" onclick="verifyNo()" style="color:var(--red)">No, Disconnect</button>
+      <button class="btn btn-green" onclick="verifyYes()">Yes, Still Connected</button>
+    </div>
   </div>
-  <div class="campaign-cards" id="campaign-cards"></div>
-  <div class="apply-view active" id="apply-view-log">
-    <div class="apply-log" id="apply-log"></div>
-  </div>
-  <div class="apply-view" id="apply-view-history">
-    <div class="history-header" id="history-header"></div>
-    <div class="history-list" id="history-list"></div>
-  </div>
-  <div class="apply-footer">
-    <span class="apply-footer-info" id="apply-footer-info"></span>
-    <button class="btn btn-secondary btn-sm" onclick="closeApplyPanel()">Close</button>
+</div>
+
+<!-- Campaign Modal (fullscreen) -->
+<div class="campaign-overlay" id="campaign-overlay">
+  <div class="campaign-modal">
+    <div class="campaign-header">
+      <div class="campaign-header-left">
+        <div class="campaign-dot" id="campaign-dot"></div>
+        <span class="campaign-title">Campaign</span>
+      </div>
+      <button class="modal-close" onclick="closeCampaign()">&times;</button>
+    </div>
+    <div class="campaign-cards" id="campaign-cards"></div>
+    <div class="campaign-body">
+      <div class="campaign-view active" id="campaign-view-log">
+        <div class="campaign-log" id="campaign-log"></div>
+      </div>
+      <div class="campaign-view" id="campaign-view-history">
+        <div class="history-header" id="history-header"></div>
+        <div class="history-list" id="history-list"></div>
+      </div>
+    </div>
+    <div class="campaign-footer">
+      <span class="campaign-footer-info" id="campaign-footer-info"></span>
+      <button class="btn btn-secondary btn-sm" onclick="closeCampaign()">Close</button>
+    </div>
   </div>
 </div>
 
@@ -926,6 +969,7 @@ let currentTags = [];
 let filterTags = [];
 let currentPlatforms = ['remoteok'];
 const ALL_PLATFORMS = {remoteok:'RemoteOK', indeed:'Indeed', wellfound:'Wellfound'};
+let platformConnected = {remoteok:false, indeed:false, wellfound:false};
 
 function log(msg) {
   const now = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
@@ -1307,12 +1351,16 @@ document.getElementById('filter-tag-input').addEventListener('keydown', function
   if (e.key === 'Backspace' && !this.value && filterTags.length) { filterTags.pop(); renderFilterTags(); }
 });
 
-// Filter Bar - Platforms
+// Filter Bar - Platforms with connection status
 function renderFilterPlatforms() {
   const el = document.getElementById('filter-platforms');
   el.innerHTML = Object.entries(ALL_PLATFORMS).map(([key, name]) => {
     const active = currentPlatforms.includes(key);
-    return '<div class="filter-plt ' + (active ? 'active' : '') + '" onclick="toggleFilterPlatform(\\'' + key + '\\')">' + name + '</div>';
+    const connected = platformConnected[key];
+    const cls = 'filter-plt' + (active ? ' active' : '') + (!connected ? ' disconnected' : '');
+    const icon = connected ? '<span class="plt-status" title="Connected">&#9679;</span>' : '<span class="plt-status" title="Not connected">&#128274;</span>';
+    const connectBtn = !connected ? '<button class="plt-connect-btn" onclick="event.stopPropagation();openConnectModal(\\'' + key + '\\',\\'' + name + '\\')">Connect</button>' : '';
+    return '<div class="' + cls + '" onclick="toggleFilterPlatform(\\'' + key + '\\')">' + icon + name + connectBtn + '</div>';
   }).join('');
 }
 function toggleFilterPlatform(key) {
@@ -1352,62 +1400,49 @@ async function findJobsWithFilters() {
 // Campaign state
 let campaignRunning = false;
 let campaignPlatformStats = {};
-let campaignAppliedJobs = {}; // {platform_key: [{title, company, link}, ...]}
-let campaignSelectedPlatform = null; // null = show log, string = show history
-let campaignLogLines = {}; // {platform_key: [line_html, ...], _all: [...]}
+let campaignAppliedJobs = {};
+let campaignSelectedPlatform = null;
 const LIMIT_PER_PLATFORM = 50;
 
-// Application Process Panel
+// Open campaign modal
 async function openApplyPanel() {
-  document.getElementById('apply-overlay').classList.add('active');
-  document.getElementById('apply-panel').classList.add('active');
-  document.getElementById('apply-dot').classList.add('pulsing');
-  document.getElementById('apply-log').innerHTML = '';
+  document.getElementById('campaign-overlay').classList.add('active');
+  document.getElementById('campaign-dot').classList.add('pulsing');
+  document.getElementById('campaign-log').innerHTML = '';
   campaignAppliedJobs = {};
-  campaignLogLines = {_all: []};
   campaignSelectedPlatform = null;
-  showApplyView('log');
+  showCampaignView('log');
 
-  // Check daily limits before starting
   let limits = {};
-  try {
-    const res = await fetch('/api/daily-limits');
-    limits = await res.json();
-  } catch(e) {}
+  try { const r = await fetch('/api/daily-limits'); limits = await r.json(); } catch(e) {}
 
-  // Init campaign cards
   campaignPlatformStats = {};
   currentPlatforms.forEach(p => {
     const lim = limits[p] || {applied: 0, limit: LIMIT_PER_PLATFORM};
-    const atLimit = lim.applied >= lim.limit;
     campaignPlatformStats[p] = {
       applied: 0, total: 0,
       already_today: lim.applied,
-      status: atLimit ? 'limit_reached' : 'waiting'
+      status: lim.applied >= lim.limit ? 'limit_reached' : 'waiting'
     };
     campaignAppliedJobs[p] = [];
-    campaignLogLines[p] = [];
   });
   renderCampaignCards();
 
-  // Check if all platforms hit limit
-  const allLimited = currentPlatforms.every(p => campaignPlatformStats[p].status === 'limit_reached');
-  if (allLimited) {
-    document.getElementById('apply-dot').classList.remove('pulsing');
-    document.getElementById('apply-footer-info').textContent = 'Limit reached — resets tomorrow';
-    addLogLine('_all', 'done', 'Daily limit reached on all platforms. Resets in 24 hours.');
+  if (currentPlatforms.every(p => campaignPlatformStats[p].status === 'limit_reached')) {
+    document.getElementById('campaign-dot').classList.remove('pulsing');
+    document.getElementById('campaign-footer-info').textContent = 'Limit reached — resets tomorrow';
+    addCampaignLog('_all', 'done', 'Daily limit reached on all platforms. Resets in 24 hours.');
     campaignRunning = false;
     return;
   }
 
   campaignRunning = true;
-  startApplyStream();
+  startCampaignStream();
 }
 
-function closeApplyPanel() {
-  document.getElementById('apply-overlay').classList.remove('active');
-  document.getElementById('apply-panel').classList.remove('active');
-  document.getElementById('apply-dot').classList.remove('pulsing');
+function closeCampaign() {
+  document.getElementById('campaign-overlay').classList.remove('active');
+  document.getElementById('campaign-dot').classList.remove('pulsing');
   refreshJobs();
   loadStats();
 }
@@ -1417,134 +1452,97 @@ function renderCampaignCards() {
   el.innerHTML = currentPlatforms.map(pk => {
     const s = campaignPlatformStats[pk] || {};
     const name = ALL_PLATFORMS[pk] || pk;
-    const total = s.total || 0;
     const applied = s.applied || 0;
+    const total = s.total || 0;
     const already = s.already_today || 0;
-    const pct = total > 0 ? (applied / total * 100) : (s.status === 'limit_reached' ? 100 : 0);
+
+    // Progress bar percentage (out of 50 limit)
+    const barApplied = already + applied;
+    const pct = Math.min(100, barApplied / LIMIT_PER_PLATFORM * 100);
 
     let statusClass = s.status || 'waiting';
     if (statusClass === 'limit_reached') statusClass = 'limit';
-    let barClass = statusClass;
+    const barClass = statusClass;
 
-    let statusIcon = '';
-    let statusText = '';
-    switch(s.status) {
-      case 'waiting': statusIcon = '&#9203;'; statusText = 'Waiting...'; break;
-      case 'running': statusIcon = '&#128994;'; statusText = 'Running...'; break;
-      case 'done': statusIcon = '&#10004;'; statusText = 'Done'; break;
-      case 'failed': statusIcon = '&#10008;'; statusText = 'Failed'; break;
-      case 'limit_reached': statusIcon = '&#128293;'; statusText = 'Limit reached'; barClass = 'limit'; break;
-      default: statusIcon = '&#9203;'; statusText = 'Waiting...';
-    }
-
+    const statusMap = {
+      waiting:       ['&#9203;', 'Waiting'],
+      running:       ['&#128994;', 'Running...'],
+      done:          ['&#10004;', 'Done'],
+      failed:        ['&#10008;', 'Failed'],
+      limit_reached: ['&#128293;', 'Limit reached']
+    };
+    const [icon, text] = statusMap[s.status] || statusMap.waiting;
     const selected = campaignSelectedPlatform === pk ? ' selected' : '';
-    const countText = s.status === 'limit_reached' ? (already + '/' + LIMIT_PER_PLATFORM) : (applied + '/' + (total || LIMIT_PER_PLATFORM));
+    const countText = barApplied + '/' + LIMIT_PER_PLATFORM;
 
     return '<div class="campaign-card' + selected + '" onclick="selectCampaignPlatform(\\'' + pk + '\\')">' +
       '<div class="campaign-card-name">' + name + '</div>' +
       '<div class="campaign-bar-wrap"><div class="campaign-bar-fill ' + barClass + '" style="width:' + pct + '%"></div></div>' +
       '<div class="campaign-count">' + countText + '</div>' +
-      '<div class="campaign-status ' + statusClass + '">' + statusIcon + ' ' + statusText + '</div>' +
+      '<div class="campaign-status ' + statusClass + '">' + icon + ' ' + text + '</div>' +
     '</div>';
   }).join('');
 }
 
 function selectCampaignPlatform(pk) {
   if (campaignSelectedPlatform === pk) {
-    // Deselect — go back to full log
     campaignSelectedPlatform = null;
-    showApplyView('log');
-    showFilteredLog(null);
+    showCampaignView('log');
+    filterCampaignLog(null);
   } else {
     campaignSelectedPlatform = pk;
-    if (!campaignRunning && campaignAppliedJobs[pk] && campaignAppliedJobs[pk].length > 0) {
-      // Show history view
-      showApplyView('history');
-      renderHistory(pk);
+    if (!campaignRunning && campaignAppliedJobs[pk]?.length > 0) {
+      showCampaignView('history');
+      renderCampaignHistory(pk);
     } else {
-      // Filter log to this platform
-      showApplyView('log');
-      showFilteredLog(pk);
+      showCampaignView('log');
+      filterCampaignLog(pk);
     }
   }
   renderCampaignCards();
 }
 
-function showApplyView(view) {
-  document.getElementById('apply-view-log').classList.toggle('active', view === 'log');
-  document.getElementById('apply-view-history').classList.toggle('active', view === 'history');
+function showCampaignView(view) {
+  document.getElementById('campaign-view-log').classList.toggle('active', view === 'log');
+  document.getElementById('campaign-view-history').classList.toggle('active', view === 'history');
 }
 
-function showFilteredLog(platformKey) {
-  const logEl = document.getElementById('apply-log');
-  const lines = logEl.querySelectorAll('.apply-log-line');
-  lines.forEach(line => {
-    if (!platformKey) {
-      line.style.display = '';
-    } else {
-      const linePk = line.dataset.platform;
-      line.style.display = (!linePk || linePk === platformKey) ? '' : 'none';
-    }
+function filterCampaignLog(pk) {
+  document.getElementById('campaign-log').querySelectorAll('.campaign-log-line').forEach(line => {
+    line.style.display = (!pk || !line.dataset.platform || line.dataset.platform === pk) ? '' : 'none';
   });
 }
 
-function addLogLine(platformKey, cls, text) {
-  const logEl = document.getElementById('apply-log');
+function addCampaignLog(pk, cls, text) {
+  const logEl = document.getElementById('campaign-log');
   const line = document.createElement('div');
-  line.className = 'apply-log-line ' + cls;
+  line.className = 'campaign-log-line ' + cls;
   line.textContent = text;
-  if (platformKey && platformKey !== '_all') {
-    line.dataset.platform = platformKey;
-  }
+  if (pk && pk !== '_all') line.dataset.platform = pk;
   logEl.appendChild(line);
   logEl.scrollTop = logEl.scrollHeight;
 }
 
-async function renderHistory(pk) {
+async function renderCampaignHistory(pk) {
   const name = ALL_PLATFORMS[pk] || pk;
-  const items = campaignAppliedJobs[pk] || [];
-
-  // Also fetch from API for full today's history
-  let allApps = items;
+  let apps = campaignAppliedJobs[pk] || [];
   try {
-    const res = await fetch('/api/campaign-history?platform=' + pk);
-    const data = await res.json();
-    if (data.applications && data.applications.length > items.length) {
-      allApps = data.applications;
-    }
+    const r = await fetch('/api/campaign-history?platform=' + pk);
+    const d = await r.json();
+    if (d.applications?.length > apps.length) apps = d.applications;
   } catch(e) {}
 
-  const s = campaignPlatformStats[pk] || {};
-  document.getElementById('history-header').textContent = name + ' — ' + allApps.length + ' applications today';
-
-  if (!allApps.length) {
-    document.getElementById('history-list').innerHTML = '<div style="padding:24px;text-align:center;color:var(--text2)">No applications yet</div>';
-    return;
-  }
-
-  document.getElementById('history-list').innerHTML = allApps.map(app => {
-    const title = escapeHtml(app.title || '');
-    const company = escapeHtml(app.company || '');
-    const link = app.link || '';
-    return '<div class="history-item">' +
-      '<div class="history-item-left">' +
-        '<span class="history-item-check">&#10003;</span>' +
-        '<div class="history-item-info">' +
-          '<div class="history-item-title">' + title + '</div>' +
-          '<div class="history-item-company">' + company + '</div>' +
-        '</div>' +
-      '</div>' +
-      (link ? '<a class="history-item-link" href="' + escapeHtml(link) + '" target="_blank">Open &#8599;</a>' : '') +
-    '</div>';
-  }).join('');
+  document.getElementById('history-header').textContent = name + ' — ' + apps.length + ' applications today';
+  document.getElementById('history-list').innerHTML = !apps.length
+    ? '<div style="padding:24px;text-align:center;color:var(--text2)">No applications yet</div>'
+    : apps.map(a => {
+        const t = escapeHtml(a.title||''), c = escapeHtml(a.company||''), l = a.link||'';
+        return '<div class="history-item"><div class="history-item-left"><span class="history-item-check">&#10003;</span><div class="history-item-info"><div class="history-item-title">' + t + '</div><div class="history-item-company">' + c + '</div></div></div>' +
+          (l ? '<a class="history-item-link" href="' + escapeHtml(l) + '" target="_blank">Open &#8599;</a>' : '') + '</div>';
+      }).join('');
 }
 
-function updateHeaderApplied(count) {
-  document.getElementById('stat-applied').textContent = count;
-}
-
-function startApplyStream() {
-  const logEl = document.getElementById('apply-log');
+function startCampaignStream() {
   const es = new EventSource('/api/apply-stream');
   let totalApplied = parseInt(document.getElementById('stat-applied').textContent) || 0;
 
@@ -1552,57 +1550,50 @@ function startApplyStream() {
     const data = JSON.parse(event.data);
     const pk = data.platform_key || '';
 
-    // Update platform_stats from server
     if (data.platform_stats) {
       Object.entries(data.platform_stats).forEach(([k, v]) => {
-        if (campaignPlatformStats[k]) {
-          campaignPlatformStats[k] = v;
-        }
+        if (campaignPlatformStats[k]) campaignPlatformStats[k] = v;
       });
       renderCampaignCards();
     }
 
     switch(data.type) {
       case 'start':
-        addLogLine('_all', 'platform-header', data.message);
+        addCampaignLog('_all', 'platform-header', data.message);
         break;
       case 'platform_start':
-        addLogLine(pk, 'platform-header', data.message);
+        addCampaignLog(pk, 'platform-header', data.message);
         break;
       case 'platform_skip':
-        addLogLine(pk, 'error', data.message);
+        addCampaignLog(pk, 'error', data.message);
         break;
       case 'generating':
-        addLogLine(pk, 'generating', data.message);
+        addCampaignLog(pk, 'generating', data.message);
         break;
       case 'applied':
-        addLogLine(pk, 'applied', data.message);
-        // Track for history
+        addCampaignLog(pk, 'applied', data.message);
         if (pk && campaignAppliedJobs[pk]) {
           campaignAppliedJobs[pk].push({title: data.title, company: data.company, link: data.link || ''});
         }
-        // Update header counter in real time
         totalApplied++;
-        updateHeaderApplied(totalApplied);
-        // Update footer
-        document.getElementById('apply-footer-info').textContent = data.applied + '/' + data.total + ' applied';
+        document.getElementById('stat-applied').textContent = totalApplied;
+        document.getElementById('campaign-footer-info').textContent = data.applied + '/' + data.total + ' applied';
         log('Applied: ' + data.title + ' @ ' + data.company);
         break;
       case 'error':
-        addLogLine(pk, 'error', data.message);
+        addCampaignLog(pk, 'error', data.message);
         break;
       case 'platform_done':
-        addLogLine(pk, 'platform-header', data.message);
-        // If user is viewing this platform's log, they can now click to see history
+        addCampaignLog(pk, 'platform-header', data.message);
         if (campaignSelectedPlatform === pk && campaignAppliedJobs[pk]?.length > 0) {
-          showApplyView('history');
-          renderHistory(pk);
+          showCampaignView('history');
+          renderCampaignHistory(pk);
         }
         break;
       case 'done':
-        addLogLine('_all', 'done', data.message);
-        document.getElementById('apply-dot').classList.remove('pulsing');
-        document.getElementById('apply-footer-info').textContent = data.message;
+        addCampaignLog('_all', 'done', data.message);
+        document.getElementById('campaign-dot').classList.remove('pulsing');
+        document.getElementById('campaign-footer-info').textContent = data.message;
         campaignRunning = false;
         es.close();
         refreshJobs();
@@ -1610,65 +1601,43 @@ function startApplyStream() {
         renderCampaignCards();
         break;
     }
-
-    // If filtering is active, apply filter
-    if (campaignSelectedPlatform) {
-      showFilteredLog(campaignSelectedPlatform);
-    }
+    if (campaignSelectedPlatform) filterCampaignLog(campaignSelectedPlatform);
   };
 
   es.onerror = function() {
     es.close();
-    addLogLine('_all', 'error', 'Connection lost.');
-    document.getElementById('apply-dot').classList.remove('pulsing');
+    addCampaignLog('_all', 'error', 'Connection lost.');
+    document.getElementById('campaign-dot').classList.remove('pulsing');
     campaignRunning = false;
   };
 }
 
-// Platform Connect Modal
+// Platform Connect Modal — native browser flow
 let connectingPlatform = '';
 function openConnectModal(platformKey, platformName) {
   connectingPlatform = platformKey;
   document.getElementById('connect-modal-title').textContent = 'Connect ' + platformName;
-  document.getElementById('connect-error').style.display = 'none';
-  document.getElementById('connect-status').style.display = 'none';
-  document.getElementById('connect-submit-btn').disabled = false;
-  document.getElementById('connect-submit-btn').textContent = 'Open Login Window';
+  document.getElementById('connect-platform-name').textContent = platformName;
+  document.getElementById('connect-step1').style.display = '';
+  document.getElementById('connect-step2').style.display = 'none';
   document.getElementById('connect-modal').classList.add('active');
 }
 function closeConnectModal() {
   document.getElementById('connect-modal').classList.remove('active');
 }
-async function submitConnect() {
-  const errEl = document.getElementById('connect-error');
-  const statusEl = document.getElementById('connect-status');
-  const btn = document.getElementById('connect-submit-btn');
-  btn.disabled = true;
-  btn.textContent = 'Waiting for login...';
-  errEl.style.display = 'none';
-  statusEl.style.display = 'block';
-  statusEl.innerHTML = '<span class="spinner"></span> Browser window opened. Log in and it will close automatically.';
-  try {
-    const res = await fetch('/api/platform/connect', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({platform:connectingPlatform})});
-    const data = await res.json();
-    if (res.ok && data.connected) {
-      statusEl.style.display = 'none';
-      closeConnectModal();
-      log('Connected to ' + (ALL_PLATFORMS[connectingPlatform] || connectingPlatform));
-      await loadPlatformStatus();
-    } else {
-      statusEl.style.display = 'none';
-      errEl.textContent = data.error || 'Connection failed.';
-      errEl.style.display = 'block';
-    }
-  } catch(e) {
-    statusEl.style.display = 'none';
-    errEl.textContent = 'Network error: ' + e.message;
-    errEl.style.display = 'block';
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Open Login Window';
-  }
+async function connectStep1() {
+  // Open login page in system browser
+  await fetch('/api/platform/open-login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({platform:connectingPlatform})});
+  // Show step 2
+  document.getElementById('connect-step1').style.display = 'none';
+  document.getElementById('connect-step2').style.display = '';
+}
+async function connectConfirm() {
+  // User confirms they logged in
+  await fetch('/api/platform/confirm-connected', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({platform:connectingPlatform})});
+  closeConnectModal();
+  log('Connected to ' + (ALL_PLATFORMS[connectingPlatform] || connectingPlatform));
+  await loadPlatformStatus();
 }
 async function disconnectPlatform(platformKey) {
   if (!confirm('Disconnect ' + (ALL_PLATFORMS[platformKey] || platformKey) + '?')) return;
@@ -1677,11 +1646,38 @@ async function disconnectPlatform(platformKey) {
   await loadPlatformStatus();
 }
 
+// Verify Connection Modal
+let verifyingPlatform = '';
+async function openVerifyModal(platformKey) {
+  verifyingPlatform = platformKey;
+  const name = ALL_PLATFORMS[platformKey] || platformKey;
+  document.getElementById('verify-modal-title').textContent = 'Verify ' + name;
+  document.getElementById('verify-platform-name').textContent = name;
+  // Open platform in system browser
+  await fetch('/api/platform/open-verify', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({platform:platformKey})});
+  document.getElementById('verify-modal').classList.add('active');
+}
+function closeVerifyModal() {
+  document.getElementById('verify-modal').classList.remove('active');
+}
+async function verifyYes() {
+  closeVerifyModal();
+  log((ALL_PLATFORMS[verifyingPlatform] || verifyingPlatform) + ' — still connected');
+}
+async function verifyNo() {
+  await fetch('/api/platform/disconnect', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({platform:verifyingPlatform})});
+  closeVerifyModal();
+  log('Disconnected ' + (ALL_PLATFORMS[verifyingPlatform] || verifyingPlatform));
+  await loadPlatformStatus();
+}
+
 // Platform Status (sidebar connect buttons)
 async function loadPlatformStatus() {
   try {
     const res = await fetch('/api/platform/status');
     const status = await res.json();
+    platformConnected = status;
+    renderFilterPlatforms();
     const el = document.getElementById('platform-list-sidebar');
     const names = {remoteok:'RemoteOK', indeed:'Indeed', wellfound:'Wellfound'};
     el.innerHTML = '<div style="font-size:12px;color:var(--text2);margin-bottom:8px">Account Connections</div>' +
@@ -1689,7 +1685,10 @@ async function loadPlatformStatus() {
         const connected = status[key];
         return '<div class="platform"><div class="platform-info"><div class="platform-dot ' + (connected ? 'active' : 'inactive') + '"></div><span class="platform-name">' + name + '</span></div>' +
           (connected
-            ? '<button class="btn btn-sm" style="background:#e74c3c;color:#fff;border:none;font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer" onclick="disconnectPlatform(\\'' + key + '\\')">Disconnect</button>'
+            ? '<div style="display:flex;gap:6px">' +
+              '<button class="btn btn-sm btn-secondary" style="font-size:11px;padding:4px 8px" onclick="openVerifyModal(\\'' + key + '\\')">Verify &#8635;</button>' +
+              '<button class="btn btn-sm" style="background:#e74c3c;color:#fff;border:none;font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer" onclick="disconnectPlatform(\\'' + key + '\\')">Disconnect</button>' +
+              '</div>'
             : '<button class="btn btn-sm btn-secondary" onclick="openConnectModal(\\'' + key + '\\',\\'' + name + '\\')">Connect</button>'
           ) + '</div>';
       }).join('');

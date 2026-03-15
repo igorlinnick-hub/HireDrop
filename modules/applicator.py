@@ -1,6 +1,8 @@
 import asyncio
 import json
 import os
+import webbrowser
+from datetime import datetime
 from playwright.async_api import async_playwright
 from modules.ai_cover_letter import generate_cover_letter
 from database.db import update_job_status, save_application
@@ -15,141 +17,61 @@ PLATFORM_LOGIN_URLS = {
     "wellfound": "https://wellfound.com/login",
 }
 
-PLATFORM_SUCCESS_INDICATORS = {
-    "remoteok": {"url_contains": ["remoteok.com"], "url_not_contains": ["/login"], "content_has": ["logout", "profile", "account"]},
-    "indeed": {"url_contains": ["indeed.com"], "url_not_contains": ["/auth", "/login"], "content_has": ["profile", "account", "dashboard"]},
-    "wellfound": {"url_contains": ["wellfound.com"], "url_not_contains": ["/login"], "content_has": ["profile", "dashboard", "logout"]},
+PLATFORM_VERIFY_URLS = {
+    "remoteok": "https://remoteok.com",
+    "indeed": "https://indeed.com",
+    "wellfound": "https://wellfound.com",
 }
 
-
-def cookies_path(platform):
-    return os.path.join(DATA_DIR, f"cookies_{platform}.json")
+CONNECTION_FILE = os.path.join(DATA_DIR, "connections.json")
 
 
-def save_cookies(platform, cookies):
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(cookies_path(platform), "w") as f:
-        json.dump(cookies, f, indent=2)
-
-
-def load_cookies(platform):
-    path = cookies_path(platform)
-    if os.path.exists(path):
-        with open(path, "r") as f:
+def _load_connections():
+    if os.path.exists(CONNECTION_FILE):
+        with open(CONNECTION_FILE, "r") as f:
             return json.load(f)
-    return None
+    return {}
 
 
-def delete_cookies(platform):
-    path = cookies_path(platform)
-    if os.path.exists(path):
-        os.remove(path)
+def _save_connections(data):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(CONNECTION_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
 
 def is_platform_connected(platform):
-    return os.path.exists(cookies_path(platform))
+    return _load_connections().get(platform, {}).get("connected", False)
 
 
-async def connect_platform_interactive(platform):
-    """
-    Open a visible browser for the user to log in manually.
-    Waits for successful login, saves cookies, closes browser.
-    Returns True if login succeeded.
-    """
-    login_url = PLATFORM_LOGIN_URLS.get(platform)
-    if not login_url:
-        return False
-
-    indicators = PLATFORM_SUCCESS_INDICATORS.get(platform, {})
-
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=False)
-        context = await browser.new_context()
-        page = await context.new_page()
-
-        await page.goto(login_url)
-
-        # Poll for successful login (check every 2 seconds, timeout 5 minutes)
-        for _ in range(150):
-            await asyncio.sleep(2)
-
-            try:
-                current_url = page.url.lower()
-
-                # Check if we're no longer on the login page
-                left_login = True
-                for blocked in indicators.get("url_not_contains", []):
-                    if blocked in current_url:
-                        left_login = False
-                        break
-
-                if left_login:
-                    # Verify we're on the right domain
-                    on_domain = any(d in current_url for d in indicators.get("url_contains", []))
-                    if on_domain:
-                        # Double check with page content
-                        content = (await page.content()).lower()
-                        has_indicator = any(kw in content for kw in indicators.get("content_has", []))
-                        if has_indicator:
-                            # Login successful — save cookies
-                            cookies = await context.cookies()
-                            save_cookies(platform, cookies)
-                            await browser.close()
-                            return True
-            except Exception:
-                # Page might be navigating, keep waiting
-                continue
-
-        # Timeout — user didn't complete login
-        await browser.close()
-        return False
+def set_platform_connected(platform, connected=True):
+    conns = _load_connections()
+    conns[platform] = {
+        "connected": connected,
+        "connected_at": datetime.now().isoformat() if connected else None,
+    }
+    _save_connections(conns)
 
 
-async def verify_cookies(platform):
-    """
-    Check if saved cookies are still valid by loading them and visiting the platform.
-    Returns True if session is still active.
-    """
-    cookies = load_cookies(platform)
-    if not cookies:
-        return False
+def disconnect_platform(platform):
+    set_platform_connected(platform, False)
 
-    indicators = PLATFORM_SUCCESS_INDICATORS.get(platform, {})
-    login_url = PLATFORM_LOGIN_URLS.get(platform, "")
 
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context()
-            await context.add_cookies(cookies)
-            page = await context.new_page()
+def open_platform_login(platform):
+    """Open the platform login page in the user's default system browser."""
+    url = PLATFORM_LOGIN_URLS.get(platform)
+    if url:
+        webbrowser.open(url)
+        return True
+    return False
 
-            # Visit the platform's main page
-            domain = login_url.split("/login")[0].split("/auth")[0]
-            await page.goto(domain, timeout=10000)
-            await page.wait_for_timeout(3000)
 
-            current_url = page.url.lower()
-            content = (await page.content()).lower()
-
-            await browser.close()
-
-            # If redirected to login, cookies are expired
-            for blocked in indicators.get("url_not_contains", []):
-                if blocked in current_url:
-                    delete_cookies(platform)
-                    return False
-
-            # Check for logged-in indicators
-            has_indicator = any(kw in content for kw in indicators.get("content_has", []))
-            if not has_indicator:
-                delete_cookies(platform)
-                return False
-
-            return True
-
-    except Exception:
-        return False
+def open_platform_verify(platform):
+    """Open the platform main page so user can check if they're still logged in."""
+    url = PLATFORM_VERIFY_URLS.get(platform)
+    if url:
+        webbrowser.open(url)
+        return True
+    return False
 
 
 async def apply_to_jobs(jobs, profile, callback):
@@ -224,31 +146,20 @@ async def apply_to_jobs(jobs, profile, callback):
             })
             await asyncio.sleep(0.5)
 
-            # Load saved cookies for this platform
-            cookies = load_cookies(platform_key)
             context = await browser.new_context()
-            logged_in = False
+            connected = is_platform_connected(platform_key)
 
-            if cookies:
-                try:
-                    await context.add_cookies(cookies)
-                    logged_in = True
-                    await callback({
-                        "type": "generating", "platform": pname,
-                        "platform_key": platform_key,
-                        "message": f"[{pname}] Session restored from saved cookies"
-                    })
-                except Exception as e:
-                    await callback({
-                        "type": "error", "platform": pname,
-                        "platform_key": platform_key,
-                        "message": f"[{pname}] Cookie restore failed: {str(e)[:60]} - generating letters only"
-                    })
+            if connected:
+                await callback({
+                    "type": "generating", "platform": pname,
+                    "platform_key": platform_key,
+                    "message": f"[{pname}] Platform connected — generating letters"
+                })
             else:
                 await callback({
                     "type": "error", "platform": pname,
                     "platform_key": platform_key,
-                    "message": f"[{pname}] Not connected - generating letters only"
+                    "message": f"[{pname}] Not connected — generating letters only"
                 })
 
             page = await context.new_page()
@@ -273,7 +184,7 @@ async def apply_to_jobs(jobs, profile, callback):
                     }, profile)
 
                     actually_applied = False
-                    if logged_in:
+                    if connected:
                         try:
                             actually_applied = await _submit_application(
                                 page, platform_key, job, letter, profile
@@ -314,19 +225,6 @@ async def apply_to_jobs(jobs, profile, callback):
 
             await page.close()
             await context.close()
-
-            # Refresh cookies after session
-            if logged_in and cookies:
-                try:
-                    ctx2 = await browser.new_context()
-                    await ctx2.add_cookies(cookies)
-                    pg2 = await ctx2.new_page()
-                    fresh_cookies = await ctx2.cookies()
-                    save_cookies(platform_key, fresh_cookies)
-                    await pg2.close()
-                    await ctx2.close()
-                except Exception:
-                    pass
 
             platform_stats[platform_key]["status"] = "done"
             await callback({
