@@ -251,10 +251,12 @@ def platform_open_verify(req: PlatformConnectRequest):
 @app.get("/api/platform/status")
 def platform_status():
     from modules.applicator import is_platform_connected
-    return {
-        p: is_platform_connected(p)
-        for p in ["remoteok", "indeed", "wellfound"]
-    }
+    all_keys = [
+        "remoteok", "indeed", "linkedin", "wellfound", "glassdoor",
+        "ziprecruiter", "google_jobs", "dice",
+        "toptal", "hired", "flexjobs",
+    ]
+    return {p: is_platform_connected(p) for p in all_keys}
 
 
 @app.post("/api/cover-letter-preview")
@@ -305,9 +307,14 @@ def stats():
 def daily_limits():
     """Return per-platform daily application counts and limits."""
     counts = get_today_applications_by_platform()
+    all_keys = [
+        "remoteok", "indeed", "linkedin", "wellfound", "glassdoor",
+        "ziprecruiter", "google_jobs", "dice",
+        "toptal", "hired", "flexjobs",
+    ]
     return {
         p: {"applied": counts.get(p, 0), "limit": DAILY_LIMIT_PER_PLATFORM}
-        for p in ["remoteok", "indeed", "wellfound"]
+        for p in all_keys
     }
 
 
@@ -865,20 +872,7 @@ tr:hover td{background:var(--surface2)}
   </div>
 
   <div class="form-section">Platforms</div>
-  <div class="form-group">
-    <div class="platform-toggle">
-      <span class="platform-toggle-name">RemoteOK</span>
-      <label class="toggle"><input type="checkbox" id="plt-remoteok" value="remoteok" checked><span class="toggle-slider"></span></label>
-    </div>
-    <div class="platform-toggle">
-      <span class="platform-toggle-name">Indeed</span>
-      <label class="toggle"><input type="checkbox" id="plt-indeed" value="indeed"><span class="toggle-slider"></span></label>
-    </div>
-    <div class="platform-toggle">
-      <span class="platform-toggle-name">Wellfound</span>
-      <label class="toggle"><input type="checkbox" id="plt-wellfound" value="wellfound"><span class="toggle-slider"></span></label>
-    </div>
-  </div>
+  <div class="form-group" id="settings-platforms"></div>
 
   <div class="form-section">Resume</div>
   <div class="form-group">
@@ -968,8 +962,17 @@ const logEl = document.getElementById('activity-log');
 let currentTags = [];
 let filterTags = [];
 let currentPlatforms = ['remoteok'];
-const ALL_PLATFORMS = {remoteok:'RemoteOK', indeed:'Indeed', wellfound:'Wellfound'};
-let platformConnected = {remoteok:false, indeed:false, wellfound:false};
+const ALL_PLATFORMS = {
+  remoteok:'RemoteOK', indeed:'Indeed', linkedin:'LinkedIn', wellfound:'Wellfound',
+  glassdoor:'Glassdoor', ziprecruiter:'ZipRecruiter', google_jobs:'Google Jobs', dice:'Dice',
+  toptal:'Toptal', hired:'Hired', flexjobs:'FlexJobs'
+};
+const FREE_PLATFORMS = ['remoteok','indeed','linkedin','wellfound','glassdoor','ziprecruiter','google_jobs','dice'];
+const PAID_PLATFORMS = ['toptal','hired','flexjobs'];
+const PAID_URLS = {
+  toptal:'https://www.toptal.com', hired:'https://hired.com', flexjobs:'https://www.flexjobs.com'
+};
+let platformConnected = {};
 
 function log(msg) {
   const now = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
@@ -989,10 +992,16 @@ function setStatus(msg, loading) {
   statusEl.innerHTML = (loading ? '<span class="spinner"></span>' : '') + escapeHtml(msg);
 }
 
-// Platforms display
+// Platforms display — show enabled platforms for search
 function renderPlatforms() {
   const el = document.getElementById('platform-list');
-  el.innerHTML = Object.entries(ALL_PLATFORMS).map(([key, name]) => {
+  const connectedKeys = Object.entries(platformConnected).filter(([k,v]) => v).map(([k]) => k);
+  if (!connectedKeys.length) {
+    el.innerHTML = '<div style="text-align:center;color:var(--text2);font-size:13px;padding:12px">Connect platforms in the sidebar below</div>';
+    return;
+  }
+  el.innerHTML = connectedKeys.map(key => {
+    const name = ALL_PLATFORMS[key] || key;
     const active = currentPlatforms.includes(key);
     return '<div class="platform" onclick="togglePlatform(\\'' + key + '\\')">' +
       '<div class="platform-info"><div class="platform-dot ' + (active ? 'active' : 'inactive') + '"></div><span class="platform-name">' + name + '</span></div>' +
@@ -1012,10 +1021,21 @@ function togglePlatform(key) {
 }
 
 function updatePlatformToggles() {
-  Object.keys(ALL_PLATFORMS).forEach(key => {
-    const cb = document.getElementById('plt-' + key);
-    if (cb) cb.checked = currentPlatforms.includes(key);
-  });
+  // Render settings platform toggles dynamically
+  const container = document.getElementById('settings-platforms');
+  if (container) {
+    let html = '<div style="font-size:11px;color:var(--green);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px">Free</div>';
+    FREE_PLATFORMS.forEach(key => {
+      const checked = currentPlatforms.includes(key) ? ' checked' : '';
+      html += '<div class="platform-toggle"><span class="platform-toggle-name">' + ALL_PLATFORMS[key] + '</span><label class="toggle"><input type="checkbox" id="plt-' + key + '" value="' + key + '"' + checked + '><span class="toggle-slider"></span></label></div>';
+    });
+    html += '<div style="font-size:11px;color:var(--yellow);text-transform:uppercase;letter-spacing:1px;margin:14px 0 8px">Premium</div>';
+    PAID_PLATFORMS.forEach(key => {
+      const checked = currentPlatforms.includes(key) ? ' checked' : '';
+      html += '<div class="platform-toggle"><span class="platform-toggle-name">' + ALL_PLATFORMS[key] + '</span><label class="toggle"><input type="checkbox" id="plt-' + key + '" value="' + key + '"' + checked + '><span class="toggle-slider"></span></label></div>';
+    });
+    container.innerHTML = html;
+  }
 }
 
 async function loadStats() {
@@ -1351,16 +1371,19 @@ document.getElementById('filter-tag-input').addEventListener('keydown', function
   if (e.key === 'Backspace' && !this.value && filterTags.length) { filterTags.pop(); renderFilterTags(); }
 });
 
-// Filter Bar - Platforms with connection status
+// Filter Bar - only show connected platforms
 function renderFilterPlatforms() {
   const el = document.getElementById('filter-platforms');
-  el.innerHTML = Object.entries(ALL_PLATFORMS).map(([key, name]) => {
+  const connectedKeys = Object.entries(platformConnected).filter(([k,v]) => v).map(([k]) => k);
+  if (!connectedKeys.length) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--text2)">No platforms connected</span>';
+    return;
+  }
+  el.innerHTML = connectedKeys.map(key => {
+    const name = ALL_PLATFORMS[key] || key;
     const active = currentPlatforms.includes(key);
-    const connected = platformConnected[key];
-    const cls = 'filter-plt' + (active ? ' active' : '') + (!connected ? ' disconnected' : '');
-    const icon = connected ? '<span class="plt-status" title="Connected">&#9679;</span>' : '<span class="plt-status" title="Not connected">&#128274;</span>';
-    const connectBtn = !connected ? '<button class="plt-connect-btn" onclick="event.stopPropagation();openConnectModal(\\'' + key + '\\',\\'' + name + '\\')">Connect</button>' : '';
-    return '<div class="' + cls + '" onclick="toggleFilterPlatform(\\'' + key + '\\')">' + icon + name + connectBtn + '</div>';
+    return '<div class="filter-plt ' + (active ? 'active' : '') + '" onclick="toggleFilterPlatform(\\'' + key + '\\')">' +
+      '<span class="plt-status" style="color:var(--green)">&#9679;</span>' + name + '</div>';
   }).join('');
 }
 function toggleFilterPlatform(key) {
@@ -1671,7 +1694,7 @@ async function verifyNo() {
   await loadPlatformStatus();
 }
 
-// Platform Status (sidebar connect buttons)
+// Platform Status (sidebar with Free/Paid sections)
 async function loadPlatformStatus() {
   try {
     const res = await fetch('/api/platform/status');
@@ -1679,26 +1702,50 @@ async function loadPlatformStatus() {
     platformConnected = status;
     renderFilterPlatforms();
     const el = document.getElementById('platform-list-sidebar');
-    const names = {remoteok:'RemoteOK', indeed:'Indeed', wellfound:'Wellfound'};
-    el.innerHTML = '<div style="font-size:12px;color:var(--text2);margin-bottom:8px">Account Connections</div>' +
-      Object.entries(names).map(([key, name]) => {
-        const connected = status[key];
-        return '<div class="platform"><div class="platform-info"><div class="platform-dot ' + (connected ? 'active' : 'inactive') + '"></div><span class="platform-name">' + name + '</span></div>' +
-          (connected
-            ? '<div style="display:flex;gap:6px">' +
-              '<button class="btn btn-sm btn-secondary" style="font-size:11px;padding:4px 8px" onclick="openVerifyModal(\\'' + key + '\\')">Verify &#8635;</button>' +
-              '<button class="btn btn-sm" style="background:#e74c3c;color:#fff;border:none;font-size:11px;padding:4px 10px;border-radius:6px;cursor:pointer" onclick="disconnectPlatform(\\'' + key + '\\')">Disconnect</button>' +
-              '</div>'
-            : '<button class="btn btn-sm btn-secondary" onclick="openConnectModal(\\'' + key + '\\',\\'' + name + '\\')">Connect</button>'
-          ) + '</div>';
-      }).join('');
-    // Check daily limits
+
+    function renderPlatformRow(key, name, connected, isPaid) {
+      const dot = connected ? 'active' : 'inactive';
+      let actions = '';
+      if (isPaid) {
+        if (connected) {
+          actions = '<div style="display:flex;gap:6px">' +
+            '<button class="btn btn-sm btn-secondary" style="font-size:11px;padding:4px 8px" onclick="openVerifyModal(\\'' + key + '\\')">Verify &#8635;</button>' +
+            '<button class="btn btn-sm" style="background:#e74c3c;color:#fff;border:none;font-size:11px;padding:4px 8px;border-radius:6px;cursor:pointer" onclick="disconnectPlatform(\\'' + key + '\\')">&#10005;</button>' +
+            '</div>';
+        } else {
+          actions = '<a class="btn btn-sm" style="background:var(--yellow);color:#000;border:none;font-size:11px;padding:4px 10px;border-radius:6px;text-decoration:none;cursor:pointer" href="' + (PAID_URLS[key]||'#') + '" target="_blank" title="This platform requires a paid subscription">Upgrade &#8599;</a>';
+        }
+      } else {
+        if (connected) {
+          actions = '<div style="display:flex;gap:6px">' +
+            '<button class="btn btn-sm btn-secondary" style="font-size:11px;padding:4px 8px" onclick="openVerifyModal(\\'' + key + '\\')">Verify &#8635;</button>' +
+            '<button class="btn btn-sm" style="background:#e74c3c;color:#fff;border:none;font-size:11px;padding:4px 8px;border-radius:6px;cursor:pointer" onclick="disconnectPlatform(\\'' + key + '\\')">&#10005;</button>' +
+            '</div>';
+        } else {
+          actions = '<button class="btn btn-sm btn-secondary" onclick="openConnectModal(\\'' + key + '\\',\\'' + name + '\\')">Connect</button>';
+        }
+      }
+      return '<div class="platform"><div class="platform-info"><div class="platform-dot ' + dot + '"></div><span class="platform-name">' + name + '</span></div>' + actions + '</div>';
+    }
+
+    let html = '<div style="font-size:12px;color:var(--green);margin-bottom:8px;font-weight:600">Free Platforms</div>';
+    FREE_PLATFORMS.forEach(key => {
+      html += renderPlatformRow(key, ALL_PLATFORMS[key], status[key], false);
+    });
+    html += '<div style="font-size:12px;color:var(--yellow);margin:14px 0 8px;font-weight:600">Premium Platforms</div>';
+    PAID_PLATFORMS.forEach(key => {
+      html += renderPlatformRow(key, ALL_PLATFORMS[key], status[key], true);
+    });
+    el.innerHTML = html;
+
+    // Check daily limits for campaign button
     let limits = {};
     try {
       const limRes = await fetch('/api/daily-limits');
       limits = await limRes.json();
     } catch(e2) {}
-    const anyConnected = Object.values(status).some(v => v);
+    const connectedPlatforms = Object.entries(status).filter(([k,v]) => v);
+    const anyConnected = connectedPlatforms.length > 0;
     const allAtLimit = currentPlatforms.every(p => (limits[p]?.applied || 0) >= LIMIT_PER_PLATFORM);
     const applyBtn = document.getElementById('btn-apply-all');
     if (applyBtn) {

@@ -9,18 +9,39 @@ from database.db import update_job_status, save_application
 
 DAILY_LIMIT_PER_PLATFORM = 50
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "data")
-PLATFORM_NAMES = {"remoteok": "RemoteOK", "indeed": "Indeed", "wellfound": "Wellfound"}
+PLATFORM_NAMES = {
+    "remoteok": "RemoteOK", "indeed": "Indeed", "linkedin": "LinkedIn",
+    "wellfound": "Wellfound", "glassdoor": "Glassdoor", "ziprecruiter": "ZipRecruiter",
+    "google_jobs": "Google Jobs", "dice": "Dice",
+    "toptal": "Toptal", "hired": "Hired", "flexjobs": "FlexJobs",
+}
 
 PLATFORM_LOGIN_URLS = {
     "remoteok": "https://remoteok.com/login",
     "indeed": "https://secure.indeed.com/auth",
+    "linkedin": "https://www.linkedin.com/login",
     "wellfound": "https://wellfound.com/login",
+    "glassdoor": "https://www.glassdoor.com/profile/login_input.htm",
+    "ziprecruiter": "https://www.ziprecruiter.com/login",
+    "google_jobs": "https://www.google.com/search?q=jobs",
+    "dice": "https://www.dice.com/dashboard/login",
+    "toptal": "https://www.toptal.com/users/login",
+    "hired": "https://hired.com/login",
+    "flexjobs": "https://www.flexjobs.com/login",
 }
 
 PLATFORM_VERIFY_URLS = {
     "remoteok": "https://remoteok.com",
     "indeed": "https://indeed.com",
+    "linkedin": "https://www.linkedin.com/jobs",
     "wellfound": "https://wellfound.com",
+    "glassdoor": "https://www.glassdoor.com",
+    "ziprecruiter": "https://www.ziprecruiter.com",
+    "google_jobs": "https://www.google.com/search?q=jobs",
+    "dice": "https://www.dice.com",
+    "toptal": "https://www.toptal.com",
+    "hired": "https://hired.com",
+    "flexjobs": "https://www.flexjobs.com",
 }
 
 CONNECTION_FILE = os.path.join(DATA_DIR, "connections.json")
