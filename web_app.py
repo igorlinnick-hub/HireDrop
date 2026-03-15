@@ -432,7 +432,7 @@ a{color:var(--accent2);text-decoration:none}
 .checklist-progress{margin-top:14px;height:4px;background:var(--surface2);border-radius:2px;overflow:hidden}
 .checklist-progress-bar{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:2px;transition:width .4s}
 
-.action-bar{display:flex;gap:12px;align-items:center;margin-bottom:24px;flex-wrap:wrap}
+.action-bar{display:none}
 .btn{padding:12px 28px;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;transition:all .2s}
 .btn-primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}
 .btn-primary:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(108,92,231,.4)}
@@ -538,7 +538,7 @@ tr:hover td{background:var(--surface2)}
 /* Filter Bar */
 .filter-bar{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:20px 24px;margin-bottom:24px}
 .filter-bar-title{font-size:14px;font-weight:600;margin-bottom:14px;color:var(--accent2);display:flex;align-items:center;gap:8px}
-.filter-row{display:flex;gap:16px;align-items:flex-end;flex-wrap:wrap}
+.filter-row{display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap}
 .filter-group{display:flex;flex-direction:column;gap:6px}
 .filter-group label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:var(--text2)}
 .filter-group select{padding:8px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:13px;outline:none;min-width:140px}
@@ -553,7 +553,7 @@ tr:hover td{background:var(--surface2)}
 .filter-plt:hover{border-color:var(--accent)}
 .filter-plt.active{background:rgba(108,92,231,.2);border-color:var(--accent);color:var(--accent2)}
 .filter-plt input{display:none}
-.filter-actions{display:flex;gap:10px;align-items:flex-end}
+.filter-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 
 /* Application Process Panel */
 .apply-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.4);z-index:300}
@@ -614,6 +614,27 @@ tr:hover td{background:var(--surface2)}
 
 .apply-footer{padding:16px 24px;border-top:1px solid var(--border);background:var(--surface);display:flex;justify-content:space-between;align-items:center}
 .apply-footer-info{font-size:12px;color:var(--text2)}
+
+/* Responsive: grid + sidebar + campaign cards */
+@media(max-width:1100px){
+  .grid{grid-template-columns:1fr}
+  .container{padding:16px}
+}
+@media(max-width:768px){
+  .header{padding:12px 16px;flex-wrap:wrap;gap:12px}
+  .header-stats{gap:12px}
+  .header-stat .val{font-size:18px}
+  .filter-row{flex-direction:column;gap:12px}
+  .filter-actions{width:100%}
+  .campaign-cards{flex-direction:column}
+  .apply-panel{width:100%;right:-100%}
+  .settings-panel{width:100%}
+}
+
+/* Platform sidebar: prevent overflow */
+.platform{min-width:0;overflow:hidden}
+.platform-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.platform-info{min-width:0;overflow:hidden}
 </style>
 </head>
 <body>
@@ -705,19 +726,14 @@ tr:hover td{background:var(--surface2)}
       <div class="filter-actions">
         <button class="btn btn-primary" id="btn-find" onclick="findJobsWithFilters()">Find Jobs</button>
         <button class="btn btn-green" id="btn-apply-all" onclick="openApplyPanel()">Start Campaign</button>
+        <button class="btn btn-secondary btn-sm" onclick="refreshJobs()">Refresh</button>
+        <button class="btn btn-secondary btn-sm" onclick="checkEmails()">Emails</button>
+        <label class="btn btn-secondary btn-sm" for="resume-input" id="resume-upload-btn" style="cursor:pointer;margin:0">Resume</label>
+        <input type="file" id="resume-input" accept=".pdf" onchange="uploadResume(this)">
+        <span id="resume-status"></span>
+        <span id="action-status" style="color:var(--text2);font-size:13px"></span>
       </div>
     </div>
-  </div>
-
-  <div class="action-bar">
-    <button class="btn btn-secondary" onclick="refreshJobs()">Refresh Table</button>
-    <button class="btn btn-secondary" onclick="checkEmails()">Check Emails</button>
-    <div class="resume-section">
-      <label class="btn btn-secondary btn-sm" for="resume-input" id="resume-upload-btn">Upload Resume</label>
-      <input type="file" id="resume-input" accept=".pdf" onchange="uploadResume(this)">
-      <span id="resume-status"></span>
-    </div>
-    <span id="action-status" style="color:var(--text2);font-size:13px;margin-left:8px"></span>
   </div>
 
   <!-- Cover Letter Preview -->
