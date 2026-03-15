@@ -1015,7 +1015,7 @@ function renderPlatforms() {
   el.innerHTML = connectedKeys.map(key => {
     const name = ALL_PLATFORMS[key] || key;
     const active = currentPlatforms.includes(key);
-    return '<div class="platform" onclick="togglePlatform(\\'' + key + '\\')">' +
+    return '<div class="platform" onclick="togglePlatform(&#39;' + key + '&#39;)">' +
       '<div class="platform-info"><div class="platform-dot ' + (active ? 'active' : 'inactive') + '"></div><span class="platform-name">' + name + '</span></div>' +
       '<span class="platform-badge ' + (active ? 'badge-connected' : 'badge-off') + '">' + (active ? 'Enabled' : 'Disabled') + '</span>' +
     '</div>';
@@ -1097,7 +1097,7 @@ function renderJobFilterTabs() {
     {key:'response', label:'Responses'},
   ];
   document.getElementById('job-filter-tabs').innerHTML = tabs.map(t =>
-    '<button class="job-filter-tab' + (jobFilterStatus===t.key?' active':'') + '" onclick="setJobFilter(\'' + t.key + '\')">' + t.label + ' (' + (counts[t.key]||0) + ')</button>'
+    '<button class="job-filter-tab' + (jobFilterStatus===t.key?' active':'') + '" onclick="setJobFilter(&#39;' + t.key + '&#39;)">' + t.label + ' (' + (counts[t.key]||0) + ')</button>'
   ).join('');
 }
 
@@ -1440,7 +1440,7 @@ function renderFilterPlatforms() {
   el.innerHTML = connectedKeys.map(key => {
     const name = ALL_PLATFORMS[key] || key;
     const active = currentPlatforms.includes(key);
-    return '<div class="filter-plt ' + (active ? 'active' : '') + '" onclick="toggleFilterPlatform(\\'' + key + '\\')">' +
+    return '<div class="filter-plt ' + (active ? 'active' : '') + '" onclick="toggleFilterPlatform(&#39;' + key + '&#39;)">' +
       '<span class="plt-status" style="color:var(--green)">&#9679;</span>' + name + '</div>';
   }).join('');
 }
@@ -1556,7 +1556,7 @@ function renderCampaignCards() {
     const selected = campaignSelectedPlatform === pk ? ' selected' : '';
     const countText = barApplied + '/' + LIMIT_PER_PLATFORM;
 
-    return '<div class="campaign-card' + selected + '" onclick="selectCampaignPlatform(\\'' + pk + '\\')">' +
+    return '<div class="campaign-card' + selected + '" onclick="selectCampaignPlatform(&#39;' + pk + '&#39;)">' +
       '<div class="campaign-card-name">' + name + '</div>' +
       '<div class="campaign-bar-wrap"><div class="campaign-bar-fill ' + barClass + '" style="width:' + pct + '%"></div></div>' +
       '<div class="campaign-count">' + countText + '</div>' +
@@ -1767,8 +1767,8 @@ async function loadPlatformStatus() {
       if (isPaid) {
         if (connected) {
           actions = '<div style="display:flex;gap:6px">' +
-            '<button class="btn btn-sm btn-secondary" style="font-size:11px;padding:4px 8px" onclick="openVerifyModal(\\'' + key + '\\')">Verify &#8635;</button>' +
-            '<button class="btn btn-sm" style="background:#e74c3c;color:#fff;border:none;font-size:11px;padding:4px 8px;border-radius:6px;cursor:pointer" onclick="disconnectPlatform(\\'' + key + '\\')">&#10005;</button>' +
+            '<button class="btn btn-sm btn-secondary" style="font-size:11px;padding:4px 8px" onclick="openVerifyModal(&#39;' + key + '&#39;)">Verify &#8635;</button>' +
+            '<button class="btn btn-sm" style="background:#e74c3c;color:#fff;border:none;font-size:11px;padding:4px 8px;border-radius:6px;cursor:pointer" onclick="disconnectPlatform(&#39;' + key + '&#39;)">&#10005;</button>' +
             '</div>';
         } else {
           actions = '<a class="btn btn-sm" style="background:var(--yellow);color:#000;border:none;font-size:11px;padding:4px 10px;border-radius:6px;text-decoration:none;cursor:pointer" href="' + (PAID_URLS[key]||'#') + '" target="_blank" title="This platform requires a paid subscription">Upgrade &#8599;</a>';
@@ -1776,11 +1776,11 @@ async function loadPlatformStatus() {
       } else {
         if (connected) {
           actions = '<div style="display:flex;gap:6px">' +
-            '<button class="btn btn-sm btn-secondary" style="font-size:11px;padding:4px 8px" onclick="openVerifyModal(\\'' + key + '\\')">Verify &#8635;</button>' +
-            '<button class="btn btn-sm" style="background:#e74c3c;color:#fff;border:none;font-size:11px;padding:4px 8px;border-radius:6px;cursor:pointer" onclick="disconnectPlatform(\\'' + key + '\\')">&#10005;</button>' +
+            '<button class="btn btn-sm btn-secondary" style="font-size:11px;padding:4px 8px" onclick="openVerifyModal(&#39;' + key + '&#39;)">Verify &#8635;</button>' +
+            '<button class="btn btn-sm" style="background:#e74c3c;color:#fff;border:none;font-size:11px;padding:4px 8px;border-radius:6px;cursor:pointer" onclick="disconnectPlatform(&#39;' + key + '&#39;)">&#10005;</button>' +
             '</div>';
         } else {
-          actions = '<button class="btn btn-sm btn-secondary" onclick="openConnectModal(\\'' + key + '\\',\\'' + name + '\\')">Connect</button>';
+          actions = '<button class="btn btn-sm btn-secondary" onclick="openConnectModal(&#39;' + key + '&#39;,&#39;' + name + '&#39;)">Connect</button>';
         }
       }
       return '<div class="platform"><div class="platform-info"><div class="platform-dot ' + dot + '"></div><span class="platform-name">' + name + '</span></div>' + actions + '</div>';
