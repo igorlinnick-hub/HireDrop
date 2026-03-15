@@ -10,9 +10,9 @@ from typing import List, Optional
 import asyncio
 import json as json_lib
 
-DAILY_APPLY_LIMIT = 50
+DAILY_LIMIT_PER_PLATFORM = 50
 
-from database.db import init_db, save_job, get_all_jobs, get_connection, update_job_status, save_application
+from database.db import init_db, save_job, get_all_jobs, get_connection, update_job_status, save_application, get_today_applications_by_platform, get_today_applications_detail
 from modules.platforms import get_enabled_platforms
 from modules.filters import filter_jobs
 from modules.telegram_bot import send_notification
@@ -292,6 +292,23 @@ def stats():
     return {"total_jobs": total_jobs, "total_applications": total_applications, "new_today": new_today}
 
 
+@app.get("/api/daily-limits")
+def daily_limits():
+    """Return per-platform daily application counts and limits."""
+    counts = get_today_applications_by_platform()
+    return {
+        p: {"applied": counts.get(p, 0), "limit": DAILY_LIMIT_PER_PLATFORM}
+        for p in ["remoteok", "indeed", "wellfound"]
+    }
+
+
+@app.get("/api/campaign-history")
+def campaign_history(platform: str = None):
+    """Return today's applications, optionally filtered by platform."""
+    apps = get_today_applications_detail(platform)
+    return {"applications": apps, "count": len(apps)}
+
+
 @app.post("/api/upload-resume")
 async def upload_resume(file: UploadFile = File(...)):
     if not file.filename.lower().endswith(".pdf"):
@@ -541,7 +558,7 @@ tr:hover td{background:var(--surface2)}
 /* Application Process Panel */
 .apply-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.4);z-index:300}
 .apply-overlay.active{display:block}
-.apply-panel{position:fixed;top:0;right:-520px;width:520px;height:100%;background:#0d1117;border-left:1px solid var(--border);z-index:301;transition:right .3s ease;display:flex;flex-direction:column}
+.apply-panel{position:fixed;top:0;right:-600px;width:600px;height:100%;background:#0d1117;border-left:1px solid var(--border);z-index:301;transition:right .3s ease;display:flex;flex-direction:column}
 .apply-panel.active{right:0}
 .apply-header{padding:20px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--surface)}
 .apply-header-left{display:flex;align-items:center;gap:12px}
@@ -549,14 +566,31 @@ tr:hover td{background:var(--surface2)}
 .apply-dot.pulsing{animation:pulse 1.5s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
 .apply-title{font-size:18px;font-weight:700}
-.apply-progress{padding:16px 24px;border-bottom:1px solid var(--border);background:var(--surface)}
-.apply-progress-bar{height:6px;background:var(--surface2);border-radius:3px;overflow:hidden;margin-top:8px}
-.apply-progress-fill{height:100%;background:linear-gradient(90deg,var(--green),var(--accent2));border-radius:3px;transition:width .4s;width:0%}
-.apply-progress-text{display:flex;justify-content:space-between;font-size:12px;color:var(--text2)}
-.apply-platforms{display:flex;gap:8px;padding:12px 24px;border-bottom:1px solid var(--border);background:var(--surface)}
-.apply-plt-tab{padding:6px 14px;border-radius:8px;font-size:12px;font-weight:600;background:var(--surface2);color:var(--text2);border:1px solid var(--border)}
-.apply-plt-tab.active{background:rgba(108,92,231,.2);color:var(--accent2);border-color:var(--accent)}
-.apply-plt-tab.done{background:rgba(16,185,129,.15);color:var(--green);border-color:var(--green)}
+
+/* Campaign Cards */
+.campaign-cards{display:flex;gap:12px;padding:16px 24px;border-bottom:1px solid var(--border);background:var(--surface)}
+.campaign-card{flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px 16px;cursor:pointer;transition:all .2s;min-width:0}
+.campaign-card:hover{border-color:var(--accent)}
+.campaign-card.selected{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
+.campaign-card-name{font-size:14px;font-weight:600;margin-bottom:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.campaign-bar-wrap{height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:8px}
+.campaign-bar-fill{height:100%;border-radius:4px;transition:width .4s}
+.campaign-bar-fill.running{background:linear-gradient(90deg,var(--green),var(--accent2))}
+.campaign-bar-fill.waiting{background:var(--border)}
+.campaign-bar-fill.done{background:var(--green)}
+.campaign-bar-fill.failed{background:var(--red)}
+.campaign-bar-fill.limit{background:var(--yellow)}
+.campaign-count{font-size:12px;color:var(--text2);font-weight:600;margin-bottom:6px;font-variant-numeric:tabular-nums}
+.campaign-status{font-size:12px;display:flex;align-items:center;gap:6px}
+.campaign-status.waiting{color:var(--text2)}
+.campaign-status.running{color:var(--green)}
+.campaign-status.done{color:var(--green)}
+.campaign-status.failed{color:var(--red)}
+.campaign-status.limit{color:var(--yellow)}
+
+/* Apply panel views */
+.apply-view{flex:1;overflow-y:auto;display:none;flex-direction:column}
+.apply-view.active{display:flex}
 .apply-log{flex:1;overflow-y:auto;padding:16px 24px;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:13px;line-height:1.8}
 .apply-log-line{padding:2px 0}
 .apply-log-line.platform-header{color:var(--blue);font-weight:600;margin-top:8px}
@@ -564,7 +598,22 @@ tr:hover td{background:var(--surface2)}
 .apply-log-line.applied{color:var(--green)}
 .apply-log-line.error{color:var(--red)}
 .apply-log-line.done{color:var(--yellow);font-weight:600;margin-top:8px}
-.apply-footer{padding:16px 24px;border-top:1px solid var(--border);background:var(--surface);text-align:right}
+
+/* History list */
+.history-header{padding:16px 24px;font-size:14px;font-weight:600;color:var(--accent2);border-bottom:1px solid var(--border)}
+.history-list{flex:1;overflow-y:auto;padding:8px 24px}
+.history-item{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--border);transition:background .15s}
+.history-item:hover{background:var(--surface2)}
+.history-item-left{display:flex;align-items:center;gap:10px;min-width:0;flex:1}
+.history-item-check{color:var(--green);font-size:16px;flex-shrink:0}
+.history-item-info{min-width:0}
+.history-item-title{font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.history-item-company{font-size:12px;color:var(--text2)}
+.history-item-link{color:var(--accent2);font-size:12px;text-decoration:none;white-space:nowrap;flex-shrink:0}
+.history-item-link:hover{text-decoration:underline}
+
+.apply-footer{padding:16px 24px;border-top:1px solid var(--border);background:var(--surface);display:flex;justify-content:space-between;align-items:center}
+.apply-footer-info{font-size:12px;color:var(--text2)}
 </style>
 </head>
 <body>
@@ -655,7 +704,7 @@ tr:hover td{background:var(--surface2)}
       </div>
       <div class="filter-actions">
         <button class="btn btn-primary" id="btn-find" onclick="findJobsWithFilters()">Find Jobs</button>
-        <button class="btn btn-green" id="btn-apply-all" onclick="openApplyPanel()">Start Application Process</button>
+        <button class="btn btn-green" id="btn-apply-all" onclick="openApplyPanel()">Start Campaign</button>
       </div>
     </div>
   </div>
@@ -835,20 +884,20 @@ tr:hover td{background:var(--surface2)}
   <div class="apply-header">
     <div class="apply-header-left">
       <div class="apply-dot" id="apply-dot"></div>
-      <span class="apply-title">Application Process</span>
+      <span class="apply-title">Campaign</span>
     </div>
     <button class="modal-close" onclick="closeApplyPanel()">&times;</button>
   </div>
-  <div class="apply-progress">
-    <div class="apply-progress-text">
-      <span id="apply-count">0 / 0 applied</span>
-      <span id="apply-limit">Daily limit: 50</span>
-    </div>
-    <div class="apply-progress-bar"><div class="apply-progress-fill" id="apply-progress-fill"></div></div>
+  <div class="campaign-cards" id="campaign-cards"></div>
+  <div class="apply-view active" id="apply-view-log">
+    <div class="apply-log" id="apply-log"></div>
   </div>
-  <div class="apply-platforms" id="apply-platforms"></div>
-  <div class="apply-log" id="apply-log"></div>
+  <div class="apply-view" id="apply-view-history">
+    <div class="history-header" id="history-header"></div>
+    <div class="history-list" id="history-list"></div>
+  </div>
   <div class="apply-footer">
+    <span class="apply-footer-info" id="apply-footer-info"></span>
     <button class="btn btn-secondary btn-sm" onclick="closeApplyPanel()">Close</button>
   </div>
 </div>
@@ -1284,20 +1333,61 @@ async function findJobsWithFilters() {
   await findJobs();
 }
 
+// Campaign state
+let campaignRunning = false;
+let campaignPlatformStats = {};
+let campaignAppliedJobs = {}; // {platform_key: [{title, company, link}, ...]}
+let campaignSelectedPlatform = null; // null = show log, string = show history
+let campaignLogLines = {}; // {platform_key: [line_html, ...], _all: [...]}
+const LIMIT_PER_PLATFORM = 50;
+
 // Application Process Panel
-function openApplyPanel() {
+async function openApplyPanel() {
   document.getElementById('apply-overlay').classList.add('active');
   document.getElementById('apply-panel').classList.add('active');
   document.getElementById('apply-dot').classList.add('pulsing');
   document.getElementById('apply-log').innerHTML = '';
-  document.getElementById('apply-count').textContent = '0 / 0 applied';
-  document.getElementById('apply-progress-fill').style.width = '0%';
-  // Show platform tabs
-  document.getElementById('apply-platforms').innerHTML = currentPlatforms.map(p =>
-    '<div class="apply-plt-tab" id="apply-tab-' + p + '">' + ALL_PLATFORMS[p] + '</div>'
-  ).join('');
+  campaignAppliedJobs = {};
+  campaignLogLines = {_all: []};
+  campaignSelectedPlatform = null;
+  showApplyView('log');
+
+  // Check daily limits before starting
+  let limits = {};
+  try {
+    const res = await fetch('/api/daily-limits');
+    limits = await res.json();
+  } catch(e) {}
+
+  // Init campaign cards
+  campaignPlatformStats = {};
+  currentPlatforms.forEach(p => {
+    const lim = limits[p] || {applied: 0, limit: LIMIT_PER_PLATFORM};
+    const atLimit = lim.applied >= lim.limit;
+    campaignPlatformStats[p] = {
+      applied: 0, total: 0,
+      already_today: lim.applied,
+      status: atLimit ? 'limit_reached' : 'waiting'
+    };
+    campaignAppliedJobs[p] = [];
+    campaignLogLines[p] = [];
+  });
+  renderCampaignCards();
+
+  // Check if all platforms hit limit
+  const allLimited = currentPlatforms.every(p => campaignPlatformStats[p].status === 'limit_reached');
+  if (allLimited) {
+    document.getElementById('apply-dot').classList.remove('pulsing');
+    document.getElementById('apply-footer-info').textContent = 'Limit reached — resets tomorrow';
+    addLogLine('_all', 'done', 'Daily limit reached on all platforms. Resets in 24 hours.');
+    campaignRunning = false;
+    return;
+  }
+
+  campaignRunning = true;
   startApplyStream();
 }
+
 function closeApplyPanel() {
   document.getElementById('apply-overlay').classList.remove('active');
   document.getElementById('apply-panel').classList.remove('active');
@@ -1306,78 +1396,216 @@ function closeApplyPanel() {
   loadStats();
 }
 
+function renderCampaignCards() {
+  const el = document.getElementById('campaign-cards');
+  el.innerHTML = currentPlatforms.map(pk => {
+    const s = campaignPlatformStats[pk] || {};
+    const name = ALL_PLATFORMS[pk] || pk;
+    const total = s.total || 0;
+    const applied = s.applied || 0;
+    const already = s.already_today || 0;
+    const pct = total > 0 ? (applied / total * 100) : (s.status === 'limit_reached' ? 100 : 0);
+
+    let statusClass = s.status || 'waiting';
+    if (statusClass === 'limit_reached') statusClass = 'limit';
+    let barClass = statusClass;
+
+    let statusIcon = '';
+    let statusText = '';
+    switch(s.status) {
+      case 'waiting': statusIcon = '&#9203;'; statusText = 'Waiting...'; break;
+      case 'running': statusIcon = '&#128994;'; statusText = 'Running...'; break;
+      case 'done': statusIcon = '&#10004;'; statusText = 'Done'; break;
+      case 'failed': statusIcon = '&#10008;'; statusText = 'Failed'; break;
+      case 'limit_reached': statusIcon = '&#128293;'; statusText = 'Limit reached'; barClass = 'limit'; break;
+      default: statusIcon = '&#9203;'; statusText = 'Waiting...';
+    }
+
+    const selected = campaignSelectedPlatform === pk ? ' selected' : '';
+    const countText = s.status === 'limit_reached' ? (already + '/' + LIMIT_PER_PLATFORM) : (applied + '/' + (total || LIMIT_PER_PLATFORM));
+
+    return '<div class="campaign-card' + selected + '" onclick="selectCampaignPlatform(\\'' + pk + '\\')">' +
+      '<div class="campaign-card-name">' + name + '</div>' +
+      '<div class="campaign-bar-wrap"><div class="campaign-bar-fill ' + barClass + '" style="width:' + pct + '%"></div></div>' +
+      '<div class="campaign-count">' + countText + '</div>' +
+      '<div class="campaign-status ' + statusClass + '">' + statusIcon + ' ' + statusText + '</div>' +
+    '</div>';
+  }).join('');
+}
+
+function selectCampaignPlatform(pk) {
+  if (campaignSelectedPlatform === pk) {
+    // Deselect — go back to full log
+    campaignSelectedPlatform = null;
+    showApplyView('log');
+    showFilteredLog(null);
+  } else {
+    campaignSelectedPlatform = pk;
+    if (!campaignRunning && campaignAppliedJobs[pk] && campaignAppliedJobs[pk].length > 0) {
+      // Show history view
+      showApplyView('history');
+      renderHistory(pk);
+    } else {
+      // Filter log to this platform
+      showApplyView('log');
+      showFilteredLog(pk);
+    }
+  }
+  renderCampaignCards();
+}
+
+function showApplyView(view) {
+  document.getElementById('apply-view-log').classList.toggle('active', view === 'log');
+  document.getElementById('apply-view-history').classList.toggle('active', view === 'history');
+}
+
+function showFilteredLog(platformKey) {
+  const logEl = document.getElementById('apply-log');
+  const lines = logEl.querySelectorAll('.apply-log-line');
+  lines.forEach(line => {
+    if (!platformKey) {
+      line.style.display = '';
+    } else {
+      const linePk = line.dataset.platform;
+      line.style.display = (!linePk || linePk === platformKey) ? '' : 'none';
+    }
+  });
+}
+
+function addLogLine(platformKey, cls, text) {
+  const logEl = document.getElementById('apply-log');
+  const line = document.createElement('div');
+  line.className = 'apply-log-line ' + cls;
+  line.textContent = text;
+  if (platformKey && platformKey !== '_all') {
+    line.dataset.platform = platformKey;
+  }
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+async function renderHistory(pk) {
+  const name = ALL_PLATFORMS[pk] || pk;
+  const items = campaignAppliedJobs[pk] || [];
+
+  // Also fetch from API for full today's history
+  let allApps = items;
+  try {
+    const res = await fetch('/api/campaign-history?platform=' + pk);
+    const data = await res.json();
+    if (data.applications && data.applications.length > items.length) {
+      allApps = data.applications;
+    }
+  } catch(e) {}
+
+  const s = campaignPlatformStats[pk] || {};
+  document.getElementById('history-header').textContent = name + ' — ' + allApps.length + ' applications today';
+
+  if (!allApps.length) {
+    document.getElementById('history-list').innerHTML = '<div style="padding:24px;text-align:center;color:var(--text2)">No applications yet</div>';
+    return;
+  }
+
+  document.getElementById('history-list').innerHTML = allApps.map(app => {
+    const title = escapeHtml(app.title || '');
+    const company = escapeHtml(app.company || '');
+    const link = app.link || '';
+    return '<div class="history-item">' +
+      '<div class="history-item-left">' +
+        '<span class="history-item-check">&#10003;</span>' +
+        '<div class="history-item-info">' +
+          '<div class="history-item-title">' + title + '</div>' +
+          '<div class="history-item-company">' + company + '</div>' +
+        '</div>' +
+      '</div>' +
+      (link ? '<a class="history-item-link" href="' + escapeHtml(link) + '" target="_blank">Open &#8599;</a>' : '') +
+    '</div>';
+  }).join('');
+}
+
+function updateHeaderApplied(count) {
+  document.getElementById('stat-applied').textContent = count;
+}
+
 function startApplyStream() {
   const logEl = document.getElementById('apply-log');
   const es = new EventSource('/api/apply-stream');
-  let currentPlatformTab = null;
+  let totalApplied = parseInt(document.getElementById('stat-applied').textContent) || 0;
 
   es.onmessage = function(event) {
     const data = JSON.parse(event.data);
-    const line = document.createElement('div');
-    line.className = 'apply-log-line';
+    const pk = data.platform_key || '';
+
+    // Update platform_stats from server
+    if (data.platform_stats) {
+      Object.entries(data.platform_stats).forEach(([k, v]) => {
+        if (campaignPlatformStats[k]) {
+          campaignPlatformStats[k] = v;
+        }
+      });
+      renderCampaignCards();
+    }
 
     switch(data.type) {
       case 'start':
-        line.className += ' platform-header';
-        line.textContent = data.message;
-        document.getElementById('apply-count').textContent = '0 / ' + data.total + ' applied';
+        addLogLine('_all', 'platform-header', data.message);
         break;
       case 'platform_start':
-        line.className += ' platform-header';
-        line.textContent = data.message;
-        if (currentPlatformTab) {
-          const prevTab = document.getElementById('apply-tab-' + currentPlatformTab);
-          if (prevTab) prevTab.className = 'apply-plt-tab done';
-        }
-        currentPlatformTab = Object.entries(ALL_PLATFORMS).find(([k,v]) => v === data.platform)?.[0];
-        if (currentPlatformTab) {
-          const tab = document.getElementById('apply-tab-' + currentPlatformTab);
-          if (tab) tab.className = 'apply-plt-tab active';
-        }
+        addLogLine(pk, 'platform-header', data.message);
+        break;
+      case 'platform_skip':
+        addLogLine(pk, 'error', data.message);
         break;
       case 'generating':
-        line.className += ' generating';
-        line.textContent = data.message;
+        addLogLine(pk, 'generating', data.message);
         break;
       case 'applied':
-        line.className += ' applied';
-        line.textContent = data.message;
-        document.getElementById('apply-count').textContent = data.applied + ' / ' + data.total + ' applied';
-        document.getElementById('apply-progress-fill').style.width = (data.applied / data.total * 100) + '%';
+        addLogLine(pk, 'applied', data.message);
+        // Track for history
+        if (pk && campaignAppliedJobs[pk]) {
+          campaignAppliedJobs[pk].push({title: data.title, company: data.company, link: data.link || ''});
+        }
+        // Update header counter in real time
+        totalApplied++;
+        updateHeaderApplied(totalApplied);
+        // Update footer
+        document.getElementById('apply-footer-info').textContent = data.applied + '/' + data.total + ' applied';
         log('Applied: ' + data.title + ' @ ' + data.company);
         break;
       case 'error':
-        line.className += ' error';
-        line.textContent = data.message;
+        addLogLine(pk, 'error', data.message);
         break;
       case 'platform_done':
-        line.className += ' platform-header';
-        line.textContent = data.message;
-        if (currentPlatformTab) {
-          const tab = document.getElementById('apply-tab-' + currentPlatformTab);
-          if (tab) tab.className = 'apply-plt-tab done';
+        addLogLine(pk, 'platform-header', data.message);
+        // If user is viewing this platform's log, they can now click to see history
+        if (campaignSelectedPlatform === pk && campaignAppliedJobs[pk]?.length > 0) {
+          showApplyView('history');
+          renderHistory(pk);
         }
         break;
       case 'done':
-        line.className += ' done';
-        line.textContent = data.message;
+        addLogLine('_all', 'done', data.message);
         document.getElementById('apply-dot').classList.remove('pulsing');
+        document.getElementById('apply-footer-info').textContent = data.message;
+        campaignRunning = false;
         es.close();
         refreshJobs();
         loadStats();
+        renderCampaignCards();
         break;
     }
-    logEl.appendChild(line);
-    logEl.scrollTop = logEl.scrollHeight;
+
+    // If filtering is active, apply filter
+    if (campaignSelectedPlatform) {
+      showFilteredLog(campaignSelectedPlatform);
+    }
   };
 
   es.onerror = function() {
     es.close();
-    const line = document.createElement('div');
-    line.className = 'apply-log-line error';
-    line.textContent = 'Connection lost.';
-    logEl.appendChild(line);
+    addLogLine('_all', 'error', 'Connection lost.');
     document.getElementById('apply-dot').classList.remove('pulsing');
+    campaignRunning = false;
   };
 }
 
@@ -1449,12 +1677,29 @@ async function loadPlatformStatus() {
             : '<button class="btn btn-sm btn-secondary" onclick="openConnectModal(\\'' + key + '\\',\\'' + name + '\\')">Connect</button>'
           ) + '</div>';
       }).join('');
-    // Disable apply button if no platforms connected
+    // Check daily limits
+    let limits = {};
+    try {
+      const limRes = await fetch('/api/daily-limits');
+      limits = await limRes.json();
+    } catch(e2) {}
     const anyConnected = Object.values(status).some(v => v);
+    const allAtLimit = currentPlatforms.every(p => (limits[p]?.applied || 0) >= LIMIT_PER_PLATFORM);
     const applyBtn = document.getElementById('btn-apply-all');
     if (applyBtn) {
-      applyBtn.disabled = !anyConnected;
-      applyBtn.title = anyConnected ? '' : 'Connect at least one platform first';
+      if (!anyConnected) {
+        applyBtn.disabled = true;
+        applyBtn.title = 'Connect at least one platform first';
+        applyBtn.textContent = 'Start Campaign';
+      } else if (allAtLimit) {
+        applyBtn.disabled = true;
+        applyBtn.title = 'Daily limit reached on all platforms';
+        applyBtn.textContent = 'Limit reached — resets tomorrow';
+      } else {
+        applyBtn.disabled = false;
+        applyBtn.title = '';
+        applyBtn.textContent = 'Start Campaign';
+      }
     }
   } catch(e) {}
 }

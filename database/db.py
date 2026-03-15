@@ -96,3 +96,46 @@ def save_application(job_id, cover_letter=""):
     )
     conn.commit()
     conn.close()
+
+
+def get_today_applications_by_platform():
+    """Return {platform: count} of today's applications."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT j.platform, COUNT(*) as cnt
+        FROM applications a
+        JOIN jobs j ON a.job_id = j.id
+        WHERE a.date_applied LIKE ?
+        GROUP BY j.platform
+    """, (today + "%",))
+    result = {row["platform"]: row["cnt"] for row in cursor.fetchall()}
+    conn.close()
+    return result
+
+
+def get_today_applications_detail(platform=None):
+    """Return list of today's applications with job details."""
+    today = datetime.now().strftime("%Y-%m-%d")
+    conn = get_connection()
+    cursor = conn.cursor()
+    if platform:
+        cursor.execute("""
+            SELECT j.id, j.title, j.company, j.link, j.platform, a.date_applied
+            FROM applications a
+            JOIN jobs j ON a.job_id = j.id
+            WHERE a.date_applied LIKE ? AND j.platform = ?
+            ORDER BY a.date_applied DESC
+        """, (today + "%", platform))
+    else:
+        cursor.execute("""
+            SELECT j.id, j.title, j.company, j.link, j.platform, a.date_applied
+            FROM applications a
+            JOIN jobs j ON a.job_id = j.id
+            WHERE a.date_applied LIKE ?
+            ORDER BY a.date_applied DESC
+        """, (today + "%",))
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
