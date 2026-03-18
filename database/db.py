@@ -44,6 +44,10 @@ def init_db():
             cursor.execute(f"ALTER TABLE jobs ADD COLUMN {col} TEXT DEFAULT {default}")
         except sqlite3.OperationalError:
             pass
+    try:
+        cursor.execute("ALTER TABLE applications ADD COLUMN cover_letter TEXT DEFAULT ''")
+    except sqlite3.OperationalError:
+        pass
     conn.commit()
     conn.close()
 

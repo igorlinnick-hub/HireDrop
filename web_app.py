@@ -68,6 +68,8 @@ def save_profile(data):
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
+    if not os.path.exists(PROFILE_PATH):
+        return ONBOARDING_HTML
     return DASHBOARD_HTML
 
 
@@ -282,11 +284,14 @@ def save_letter_template(req: TemplateRequest):
 
 @app.get("/api/email-check")
 def email_check():
+    from config import EMAIL_ADDRESS, EMAIL_PASSWORD
+    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
+        return {"configured": False, "count": 0, "emails": []}
     responses = check_email_responses()
     if responses:
         for r in responses:
             send_notification(f"JobFlow Email: {r['subject']}\nFrom: {r['sender']}")
-    return {"count": len(responses), "emails": responses}
+    return {"configured": True, "count": len(responses), "emails": responses}
 
 
 @app.get("/api/stats")
@@ -323,6 +328,32 @@ def campaign_history(platform: str = None):
     """Return today's applications, optionally filtered by platform."""
     apps = get_today_applications_detail(platform)
     return {"applications": apps, "count": len(apps)}
+
+
+PLATFORM_INBOX_URLS = {
+    "remoteok": "https://remoteok.com/messages",
+    "indeed": "https://messages.indeed.com/",
+    "wellfound": "https://wellfound.com/inbox",
+    "glassdoor": "https://www.glassdoor.com/member/inbox",
+    "ziprecruiter": "https://www.ziprecruiter.com/candidate/messages",
+    "google_jobs": "https://mail.google.com/",
+    "dice": "https://www.dice.com/dashboard/messages",
+    "toptal": "https://www.toptal.com/tracker",
+    "hired": "https://hired.com/messages",
+    "flexjobs": "https://www.flexjobs.com/MyFlexJobs",
+}
+
+
+@app.get("/api/platform/inbox-urls")
+def platform_inbox_urls():
+    from modules.applicator import is_platform_connected
+    profile = load_profile()
+    enabled = profile.get("platforms", [])
+    urls = {}
+    for p in enabled:
+        if is_platform_connected(p) and p in PLATFORM_INBOX_URLS:
+            urls[p] = PLATFORM_INBOX_URLS[p]
+    return urls
 
 
 @app.post("/api/upload-resume")
@@ -380,6 +411,307 @@ def checklist():
 def get_today():
     from datetime import datetime
     return datetime.now().strftime("%Y-%m-%d")
+
+
+ONBOARDING_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JobFlow — Setup</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0f1117;--surface:#1a1d27;--surface2:#242836;--border:#2e3348;
+  --text:#e4e4e7;--text2:#9395a5;--accent:#6c5ce7;--accent2:#a78bfa;
+  --green:#10b981;--red:#ef4444;--yellow:#f59e0b;--blue:#3b82f6;
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+.wizard{background:var(--surface);border:1px solid var(--border);border-radius:20px;padding:40px;width:100%;max-width:560px;box-shadow:0 20px 60px rgba(0,0,0,.4)}
+.logo{display:flex;align-items:center;gap:12px;font-size:24px;font-weight:700;margin-bottom:8px;justify-content:center}
+.logo-icon{width:40px;height:40px;background:linear-gradient(135deg,var(--accent),var(--accent2));border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:20px}
+.progress{display:flex;gap:8px;margin:24px 0 32px}
+.progress-step{flex:1;height:4px;border-radius:2px;background:var(--surface2);transition:background .3s}
+.progress-step.active{background:linear-gradient(90deg,var(--accent),var(--accent2))}
+.progress-step.done{background:var(--green)}
+.step{display:none}
+.step.active{display:block}
+.step-title{font-size:20px;font-weight:700;margin-bottom:6px}
+.step-sub{font-size:14px;color:var(--text2);margin-bottom:24px}
+.form-group{margin-bottom:20px}
+.form-label{font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--text2);margin-bottom:8px;display:block}
+.form-input{width:100%;padding:12px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:14px;outline:none;transition:border-color .2s}
+.form-input:focus{border-color:var(--accent)}
+.form-select{width:100%;padding:12px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:14px;outline:none;-webkit-appearance:none}
+.tags-container{display:flex;flex-wrap:wrap;gap:8px;padding:10px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;min-height:44px;cursor:text}
+.tags-container:focus-within{border-color:var(--accent)}
+.tag{display:flex;align-items:center;gap:4px;padding:4px 10px;background:rgba(108,92,231,.2);border:1px solid rgba(108,92,231,.3);border-radius:6px;font-size:13px;color:var(--accent2)}
+.tag-remove{cursor:pointer;font-size:16px;line-height:1;opacity:.7}
+.tag-remove:hover{opacity:1}
+.tag-input{border:none;background:none;color:var(--text);font-size:14px;outline:none;min-width:80px;flex:1}
+.tag-input::placeholder{color:var(--text2)}
+.platform-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.platform-opt{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;cursor:pointer;transition:all .2s;font-size:14px;user-select:none}
+.platform-opt:hover{border-color:var(--accent)}
+.platform-opt.selected{background:rgba(108,92,231,.15);border-color:var(--accent);color:var(--accent2)}
+.platform-opt input{display:none}
+.platform-check{width:20px;height:20px;border-radius:6px;border:2px solid var(--border);display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0;transition:all .2s}
+.platform-opt.selected .platform-check{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn-row{display:flex;gap:12px;margin-top:28px}
+.btn{padding:12px 28px;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;transition:all .2s;flex:1}
+.btn-primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff}
+.btn-primary:hover{transform:translateY(-1px);box-shadow:0 6px 20px rgba(108,92,231,.4)}
+.btn-primary:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+.btn-secondary{background:var(--surface2);color:var(--text);border:1px solid var(--border)}
+.btn-secondary:hover{border-color:var(--accent)}
+.btn-skip{background:none;border:none;color:var(--text2);font-size:13px;cursor:pointer;padding:8px}
+.btn-skip:hover{color:var(--text)}
+.upload-zone{border:2px dashed var(--border);border-radius:12px;padding:32px;text-align:center;cursor:pointer;transition:all .2s}
+.upload-zone:hover{border-color:var(--accent)}
+.upload-zone.uploaded{border-color:var(--green);background:rgba(16,185,129,.05)}
+.upload-icon{font-size:32px;margin-bottom:8px}
+.upload-text{font-size:14px;color:var(--text2)}
+.upload-name{font-size:14px;color:var(--green);font-weight:600;margin-top:8px}
+.row-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+@media(max-width:560px){
+  .wizard{padding:28px 20px}
+  .platform-grid{grid-template-columns:1fr}
+  .row-2{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+
+<div class="wizard">
+  <div class="logo"><div class="logo-icon">JF</div>JobFlow</div>
+  <div class="progress">
+    <div class="progress-step active" id="prog-1"></div>
+    <div class="progress-step" id="prog-2"></div>
+    <div class="progress-step" id="prog-3"></div>
+    <div class="progress-step" id="prog-4"></div>
+  </div>
+
+  <!-- Step 1: Welcome -->
+  <div class="step active" id="step-1">
+    <div class="step-title">Welcome to JobFlow</div>
+    <div class="step-sub">Let's set up your profile in under a minute.</div>
+    <div class="form-group">
+      <label class="form-label">Full Name</label>
+      <input class="form-input" id="ob-name" type="text" placeholder="Your name" autofocus>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Email</label>
+      <input class="form-input" id="ob-email" type="email" placeholder="you@example.com">
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" onclick="goStep(2)">Continue</button>
+    </div>
+  </div>
+
+  <!-- Step 2: Job Preferences -->
+  <div class="step" id="step-2">
+    <div class="step-title">Job Preferences</div>
+    <div class="step-sub">What kind of jobs are you looking for?</div>
+    <div class="form-group">
+      <label class="form-label">Keywords</label>
+      <div class="tags-container" id="ob-tags" onclick="document.getElementById('ob-tag-input').focus()">
+        <input class="tag-input" id="ob-tag-input" type="text" placeholder="Type and press Enter...">
+      </div>
+    </div>
+    <div class="row-2">
+      <div class="form-group">
+        <label class="form-label">Location</label>
+        <select class="form-select" id="ob-location">
+          <option value="remote">Remote</option>
+          <option value="usa">USA</option>
+          <option value="europe">Europe</option>
+          <option value="">Any</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Job Type</label>
+        <select class="form-select" id="ob-jobtype">
+          <option value="full-time">Full-time</option>
+          <option value="part-time">Part-time</option>
+          <option value="contract">Contract</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Platforms</label>
+      <div class="platform-grid" id="ob-platforms"></div>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="goStep(1)">Back</button>
+      <button class="btn btn-primary" onclick="goStep(3)">Continue</button>
+    </div>
+  </div>
+
+  <!-- Step 3: Resume -->
+  <div class="step" id="step-3">
+    <div class="step-title">Upload Resume</div>
+    <div class="step-sub">Your resume helps generate personalized cover letters.</div>
+    <div class="upload-zone" id="upload-zone" onclick="document.getElementById('ob-resume').click()">
+      <div class="upload-icon">&#128196;</div>
+      <div class="upload-text">Click to upload PDF</div>
+      <div class="upload-name" id="upload-name" style="display:none"></div>
+    </div>
+    <input type="file" id="ob-resume" accept=".pdf" style="display:none" onchange="handleResume(this)">
+    <div class="btn-row" style="justify-content:space-between;align-items:center">
+      <button class="btn btn-secondary" onclick="goStep(2)" style="flex:none;width:auto;padding:12px 24px">Back</button>
+      <button class="btn-skip" onclick="goStep(4)">Skip for now</button>
+      <button class="btn btn-primary" onclick="goStep(4)" style="flex:none;width:auto;padding:12px 24px">Continue</button>
+    </div>
+  </div>
+
+  <!-- Step 4: Writing Style -->
+  <div class="step" id="step-4">
+    <div class="step-title">Writing Style</div>
+    <div class="step-sub">Write a few sentences in your own voice so the AI can match your tone. Optional.</div>
+    <div class="form-group">
+      <textarea class="form-input" id="ob-style" rows="4" placeholder="Example: Hey, I'm a hands-on marketer who loves data-driven campaigns. I keep things direct and hate corporate fluff." style="resize:vertical"></textarea>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-secondary" onclick="goStep(3)">Back</button>
+      <button class="btn btn-primary" id="btn-complete" onclick="completeSetup()">Complete Setup</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const ALL_PLATFORMS = {
+  remoteok:'RemoteOK', indeed:'Indeed', wellfound:'Wellfound',
+  glassdoor:'Glassdoor', ziprecruiter:'ZipRecruiter', google_jobs:'Google Jobs', dice:'Dice',
+  toptal:'Toptal', hired:'Hired', flexjobs:'FlexJobs'
+};
+const FREE = ['remoteok','indeed','wellfound','glassdoor','ziprecruiter','google_jobs','dice'];
+let selectedPlatforms = ['remoteok'];
+let obTags = [];
+
+// Render platforms
+(function() {
+  const el = document.getElementById('ob-platforms');
+  el.innerHTML = FREE.map(key => {
+    const sel = selectedPlatforms.includes(key) ? ' selected' : '';
+    return '<div class="platform-opt' + sel + '" data-key="' + key + '" onclick="togglePlat(this,&#39;' + key + '&#39;)">' +
+      '<span class="platform-check">&#10003;</span>' + ALL_PLATFORMS[key] + '</div>';
+  }).join('');
+})();
+
+function togglePlat(el, key) {
+  if (selectedPlatforms.includes(key)) {
+    if (selectedPlatforms.length > 1) {
+      selectedPlatforms = selectedPlatforms.filter(p => p !== key);
+      el.classList.remove('selected');
+    }
+  } else {
+    selectedPlatforms.push(key);
+    el.classList.add('selected');
+  }
+}
+
+// Tags
+document.getElementById('ob-tag-input').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter' && this.value.trim()) {
+    e.preventDefault();
+    const val = this.value.trim().toLowerCase();
+    if (!obTags.includes(val)) {
+      obTags.push(val);
+      renderObTags();
+    }
+    this.value = '';
+  }
+  if (e.key === 'Backspace' && !this.value && obTags.length) {
+    obTags.pop();
+    renderObTags();
+  }
+});
+
+function renderObTags() {
+  const container = document.getElementById('ob-tags');
+  const input = document.getElementById('ob-tag-input');
+  container.querySelectorAll('.tag').forEach(t => t.remove());
+  obTags.forEach((tag, i) => {
+    const el = document.createElement('span');
+    el.className = 'tag';
+    el.innerHTML = escapeHtml(tag) + '<span class="tag-remove" onclick="removeObTag(' + i + ')">&times;</span>';
+    container.insertBefore(el, input);
+  });
+}
+
+function removeObTag(i) { obTags.splice(i, 1); renderObTags(); }
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Resume upload
+async function handleResume(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const formData = new FormData();
+  formData.append('file', file);
+  try {
+    const res = await fetch('/api/upload-resume', {method:'POST', body: formData});
+    if (res.ok) {
+      document.getElementById('upload-zone').classList.add('uploaded');
+      document.getElementById('upload-name').style.display = '';
+      document.getElementById('upload-name').textContent = file.name;
+      document.querySelector('.upload-text').textContent = 'Resume uploaded!';
+    }
+  } catch(e) {}
+}
+
+// Steps
+function goStep(n) {
+  document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
+  document.getElementById('step-' + n).classList.add('active');
+  for (let i = 1; i <= 4; i++) {
+    const p = document.getElementById('prog-' + i);
+    p.classList.remove('active', 'done');
+    if (i < n) p.classList.add('done');
+    else if (i === n) p.classList.add('active');
+  }
+}
+
+// Complete
+async function completeSetup() {
+  const btn = document.getElementById('btn-complete');
+  btn.disabled = true;
+  btn.textContent = 'Setting up...';
+
+  const profile = {
+    name: document.getElementById('ob-name').value.trim(),
+    email: document.getElementById('ob-email').value.trim(),
+    keywords: obTags.length ? obTags : ['marketing'],
+    location: document.getElementById('ob-location').value,
+    job_type: document.getElementById('ob-jobtype').value,
+    platforms: selectedPlatforms,
+    writing_style: document.getElementById('ob-style').value.trim()
+  };
+
+  try {
+    const res = await fetch('/api/profile', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(profile)
+    });
+    if (res.ok) {
+      window.location.href = '/';
+    } else {
+      btn.disabled = false;
+      btn.textContent = 'Complete Setup';
+    }
+  } catch(e) {
+    btn.disabled = false;
+    btn.textContent = 'Complete Setup';
+  }
+}
+</script>
+</body>
+</html>"""
 
 
 DASHBOARD_HTML = """<!DOCTYPE html>
@@ -686,10 +1018,6 @@ tr:hover td{background:var(--surface2)}
         <div class="val" id="stat-applied">-</div>
         <div class="lbl">Applied</div>
       </div>
-      <div class="header-stat">
-        <div class="val" id="stat-emails">-</div>
-        <div class="lbl">Responses</div>
-      </div>
     </div>
     <button class="btn-icon" onclick="openSettings()" title="Settings">&#9881;</button>
   </div>
@@ -755,7 +1083,6 @@ tr:hover td{background:var(--surface2)}
         <button class="btn btn-primary" id="btn-find" onclick="findJobsWithFilters()">Find Jobs</button>
         <button class="btn btn-green" id="btn-apply-all" onclick="openApplyPanel()">Start Campaign</button>
         <button class="btn btn-secondary btn-sm" onclick="refreshJobs()">Refresh</button>
-        <button class="btn btn-secondary btn-sm" onclick="checkEmails()">Emails</button>
         <label class="btn btn-secondary btn-sm" for="resume-input" id="resume-upload-btn" style="cursor:pointer;margin:0">Resume</label>
         <input type="file" id="resume-input" accept=".pdf" onchange="uploadResume(this)">
         <span id="resume-status"></span>
@@ -796,9 +1123,9 @@ tr:hover td{background:var(--surface2)}
       </div>
 
       <div class="card">
-        <div class="card-title"><span class="dot" style="background:var(--blue)"></span>Email Responses</div>
-        <div class="email-list" id="email-list">
-          <div class="empty">No email responses checked yet.</div>
+        <div class="card-title"><span class="dot" style="background:var(--blue)"></span>Check Responses</div>
+        <div id="response-links" style="display:flex;flex-direction:column;gap:8px">
+          <div class="empty">Connect platforms to see inbox links.</div>
         </div>
       </div>
     </div>
@@ -1202,27 +1529,28 @@ function copyLetter() {
   log('Cover letter copied to clipboard');
 }
 
-async function checkEmails() {
-  setStatus('Checking emails...', true);
-  log('Checking email responses');
+async function loadResponseLinks() {
   try {
-    const res = await fetch('/api/email-check');
-    const data = await res.json();
-    document.getElementById('stat-emails').textContent = data.count;
-    const el = document.getElementById('email-list');
-    if (!data.emails.length) {
-      el.innerHTML = '<div class="empty">No matching email responses found.</div>';
-      setStatus('No new email responses', false);
-      log('No email responses found');
+    const [urlsRes, statusRes] = await Promise.all([
+      fetch('/api/platform/inbox-urls'),
+      fetch('/api/platform/status')
+    ]);
+    const urls = await urlsRes.json();
+    const el = document.getElementById('response-links');
+    const keys = Object.keys(urls);
+    if (!keys.length) {
+      el.innerHTML = '<div class="empty">Connect platforms to see inbox links.</div>';
       return;
     }
-    el.innerHTML = data.emails.map(e => '<div class="email-item"><div class="email-subject">' + escapeHtml(e.subject) + '</div><div class="email-meta">' + escapeHtml(e.sender) + ' &middot; ' + escapeHtml(e.date) + '</div></div>').join('');
-    setStatus(data.count + ' email responses found', false);
-    log(data.count + ' email responses found');
-  } catch(e) {
-    setStatus('Email check failed', false);
-    log('Email check failed: ' + e.message);
-  }
+    el.innerHTML = keys.map(key => {
+      const name = ALL_PLATFORMS[key] || key;
+      return '<a href="' + escapeHtml(urls[key]) + '" target="_blank" style="display:flex;align-items:center;gap:10px;padding:12px 16px;background:var(--surface2);border-radius:10px;text-decoration:none;color:var(--text);transition:all .2s;border:1px solid var(--border)">' +
+        '<span style="font-size:16px">&#128233;</span>' +
+        '<span style="flex:1;font-size:14px;font-weight:500">' + escapeHtml(name) + '</span>' +
+        '<span style="font-size:12px;color:var(--accent2)">Open Inbox &#8599;</span>' +
+      '</a>';
+    }).join('');
+  } catch(e) {}
 }
 
 async function uploadResume(input) {
@@ -1719,12 +2047,14 @@ async function connectConfirm() {
   closeConnectModal();
   log('Connected to ' + (ALL_PLATFORMS[connectingPlatform] || connectingPlatform));
   await loadPlatformStatus();
+  loadResponseLinks();
 }
 async function disconnectPlatform(platformKey) {
   if (!confirm('Disconnect ' + (ALL_PLATFORMS[platformKey] || platformKey) + '?')) return;
   await fetch('/api/platform/disconnect', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({platform:platformKey})});
   log('Disconnected ' + (ALL_PLATFORMS[platformKey] || platformKey));
   await loadPlatformStatus();
+  loadResponseLinks();
 }
 
 // Verify Connection Modal
@@ -1750,6 +2080,7 @@ async function verifyNo() {
   closeVerifyModal();
   log('Disconnected ' + (ALL_PLATFORMS[verifyingPlatform] || verifyingPlatform));
   await loadPlatformStatus();
+  loadResponseLinks();
 }
 
 // Platform Status (sidebar with Free/Paid sections)
@@ -1862,7 +2193,7 @@ loadStats();
 refreshJobs();
 loadResumeStatus().then(() => { if (resumeUploaded) regenerateLetter(); });
 loadChecklist();
-loadPlatformStatus().then(() => loadProfile());
+loadPlatformStatus().then(() => { loadProfile(); loadResponseLinks(); });
 
 if (!localStorage.getItem('jobflow_tour_done')) {
   setTimeout(startTour, 500);
