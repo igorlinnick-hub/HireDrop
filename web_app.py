@@ -227,11 +227,11 @@ def platform_open_login(req: PlatformConnectRequest):
 
 
 @app.post("/api/platform/confirm-connected")
-def platform_confirm_connected(req: PlatformConnectRequest):
-    """User confirms they logged in — mark platform as connected."""
-    from modules.applicator import set_platform_connected
-    set_platform_connected(req.platform, True)
-    return {"connected": True, "platform": req.platform}
+async def platform_confirm_connected(req: PlatformConnectRequest):
+    """Launch visible Playwright browser for login, capture cookies, mark connected."""
+    from modules.applicator import capture_cookies_via_login
+    success = await capture_cookies_via_login(req.platform)
+    return {"connected": success, "platform": req.platform}
 
 
 @app.post("/api/platform/disconnect")
@@ -1230,23 +1230,22 @@ tr:hover td{background:var(--surface2)}
       <h3 id="connect-modal-title">Connect Platform</h3>
       <button class="modal-close" onclick="closeConnectModal()">&times;</button>
     </div>
-    <!-- Step 1: Open browser -->
+    <!-- Step 1: Explain -->
     <div id="connect-step1">
-      <p style="font-size:13px;color:var(--text2);margin-bottom:16px">Your default browser (Safari/Chrome) will open the login page. Log in with your saved passwords — we never see or store your credentials.</p>
+      <p style="font-size:13px;color:var(--text2);margin-bottom:16px">A browser window will open with the login page. Log in normally — your session cookies will be saved so JobFlow can apply on your behalf.</p>
       <div style="display:flex;gap:10px;justify-content:flex-end">
         <button class="btn btn-secondary" onclick="closeConnectModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="connectStep1()">Open Login Page</button>
+        <button class="btn btn-primary" onclick="connectConfirm()" id="connect-login-btn">Log In &amp; Connect</button>
       </div>
     </div>
-    <!-- Step 2: Confirm -->
+    <!-- Step 2: Waiting -->
     <div id="connect-step2" style="display:none">
       <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px">
-        <div style="font-size:14px;font-weight:600;margin-bottom:8px">Login page opened in your browser</div>
-        <div style="font-size:13px;color:var(--text2)">Log in to <span id="connect-platform-name" style="color:var(--accent2);font-weight:600"></span>, then come back here and confirm.</div>
+        <div style="font-size:14px;font-weight:600;margin-bottom:8px"><span class="spinner"></span> Browser opened — log in now</div>
+        <div style="font-size:13px;color:var(--text2)">Log in to <span id="connect-platform-name" style="color:var(--accent2);font-weight:600"></span> in the browser window that just opened. It will close automatically once you're logged in.</div>
       </div>
       <div style="display:flex;gap:10px;justify-content:flex-end">
         <button class="btn btn-secondary" onclick="closeConnectModal()">Cancel</button>
-        <button class="btn btn-green" onclick="connectConfirm()">I'm Connected</button>
       </div>
     </div>
   </div>
@@ -2034,18 +2033,19 @@ function openConnectModal(platformKey, platformName) {
 function closeConnectModal() {
   document.getElementById('connect-modal').classList.remove('active');
 }
-async function connectStep1() {
-  // Open login page in system browser
-  await fetch('/api/platform/open-login', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({platform:connectingPlatform})});
-  // Show step 2
+async function connectConfirm() {
+  // Show waiting state
   document.getElementById('connect-step1').style.display = 'none';
   document.getElementById('connect-step2').style.display = '';
-}
-async function connectConfirm() {
-  // User confirms they logged in
-  await fetch('/api/platform/confirm-connected', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({platform:connectingPlatform})});
+  // Launch Playwright browser for login + cookie capture
+  const res = await fetch('/api/platform/confirm-connected', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({platform:connectingPlatform})});
+  const data = await res.json();
   closeConnectModal();
-  log('Connected to ' + (ALL_PLATFORMS[connectingPlatform] || connectingPlatform));
+  if (data.connected) {
+    log('Connected to ' + (ALL_PLATFORMS[connectingPlatform] || connectingPlatform) + ' (cookies saved)');
+  } else {
+    log('Failed to connect ' + (ALL_PLATFORMS[connectingPlatform] || connectingPlatform) + ' — try again');
+  }
   await loadPlatformStatus();
   loadResponseLinks();
 }
