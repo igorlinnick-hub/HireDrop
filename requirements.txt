@@ -7,5 +7,4 @@ python-dotenv
 anthropic
 python-multipart
 pdfplumber
-playwright
 cryptography

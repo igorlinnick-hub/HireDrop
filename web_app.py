@@ -4,15 +4,12 @@ import json
 sys.path.insert(0, os.path.dirname(__file__))
 
 from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
-import asyncio
-import json as json_lib
 
-DAILY_LIMIT_PER_PLATFORM = 50
-
-from database.db import init_db, save_job, get_all_jobs, get_connection, update_job_status, save_application, get_today_applications_by_platform, get_today_applications_detail
+from database.db import init_db, save_job, get_all_jobs, get_connection, update_job_status, save_application, job_exists
 from modules.platforms import get_enabled_platforms
 from modules.filters import filter_jobs
 from modules.telegram_bot import send_notification
@@ -20,25 +17,30 @@ from modules.email_parser import check_email_responses
 from modules.ai_cover_letter import generate_cover_letter
 
 app = FastAPI(title="JobFlow")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=r"^chrome-extension://.*$",
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
+)
 init_db()
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "templates")
 RESUME_PATH = os.path.join(DATA_DIR, "resume.pdf")
 PROFILE_PATH = os.path.join(DATA_DIR, "profile.json")
+CAMPAIGN_STATE_PATH = os.path.join(DATA_DIR, "campaign_state.json")
 
 
 class CoverLetterRequest(BaseModel):
     job_id: int
 
 
-class AutoApplyRequest(BaseModel):
-    job_id: int
-
-
 class ProfileUpdate(BaseModel):
     name: str = ""
+    last_name: str = ""
     email: str = ""
+    phone: str = ""
     keywords: List[str] = []
     location: str = "remote"
     job_type: str = "full-time"
@@ -54,11 +56,27 @@ class TemplateRequest(BaseModel):
     template: str
 
 
+class ApplicationSaveRequest(BaseModel):
+    job_title: str
+    company: str
+    platform: str = ""
+    job_url: str = ""
+    cover_letter: str = ""
+    status: str = "applied"
+
+
+class CampaignStartRequest(BaseModel):
+    keywords: List[str] = []
+    platforms: List[str] = []
+    location: str = ""
+    job_type: str = ""
+
+
 def load_profile():
     if os.path.exists(PROFILE_PATH):
         with open(PROFILE_PATH, "r") as f:
             return json.load(f)
-    return {"name": "", "email": "", "keywords": ["marketing", "content", "automation"], "location": "remote", "job_type": "full-time", "platforms": ["remoteok"], "writing_style": "", "platform_credentials": {}}
+    return {"name": "", "last_name": "", "email": "", "phone": "", "keywords": ["marketing", "content", "automation"], "location": "remote", "job_type": "full-time", "platforms": ["remoteok"], "writing_style": "", "platform_credentials": {}}
 
 
 def save_profile(data):
@@ -144,123 +162,6 @@ def cover_letter(req: CoverLetterRequest):
     return {"letter": letter, "job_title": job["title"], "company": job["company"]}
 
 
-@app.post("/api/auto-apply")
-def auto_apply(req: AutoApplyRequest):
-    jobs = get_all_jobs()
-    job = None
-    for j in jobs:
-        if j["id"] == req.job_id:
-            job = j
-            break
-    if not job:
-        return JSONResponse(status_code=404, content={"error": "Job not found"})
-    if job["status"] == "applied":
-        return JSONResponse(status_code=400, content={"error": "Already applied to this job"})
-
-    letter = generate_cover_letter({
-        "title": job["title"],
-        "company": job["company"],
-        "description": job["description"] if "description" in job.keys() else "",
-    })
-
-    update_job_status(job["id"], "applied")
-    save_application(job["id"], letter)
-    send_notification(f"JobFlow: Applied to {job['title']} at {job['company']}!")
-
-    return {
-        "message": f"Applied to {job['title']} at {job['company']}",
-        "letter": letter,
-        "job_title": job["title"],
-        "company": job["company"],
-    }
-
-
-@app.get("/api/apply-stream")
-async def apply_stream():
-    """SSE endpoint - streams apply events in real time using Playwright."""
-    from modules.applicator import apply_to_jobs
-
-    profile = load_profile()
-    jobs = get_all_jobs()
-    queue = asyncio.Queue()
-
-    async def callback(event):
-        await queue.put(event)
-
-    async def run():
-        try:
-            await apply_to_jobs(jobs, profile, callback)
-        except Exception as e:
-            await queue.put({"type": "error", "message": f"Process error: {str(e)}"})
-        try:
-            send_notification(f"JobFlow: Application process completed!")
-        except Exception:
-            pass
-        await queue.put(None)
-
-    asyncio.create_task(run())
-
-    async def generate():
-        while True:
-            event = await queue.get()
-            if event is None:
-                break
-            yield f"data: {json_lib.dumps(event)}\n\n"
-
-    return StreamingResponse(
-        generate(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
-class PlatformConnectRequest(BaseModel):
-    platform: str
-
-
-@app.post("/api/platform/open-login")
-def platform_open_login(req: PlatformConnectRequest):
-    """Open the platform login page in the user's system browser."""
-    from modules.applicator import open_platform_login
-    opened = open_platform_login(req.platform)
-    return {"opened": opened, "platform": req.platform}
-
-
-@app.post("/api/platform/confirm-connected")
-async def platform_confirm_connected(req: PlatformConnectRequest):
-    """Launch visible Playwright browser for login, capture cookies, mark connected."""
-    from modules.applicator import capture_cookies_via_login
-    success = await capture_cookies_via_login(req.platform)
-    return {"connected": success, "platform": req.platform}
-
-
-@app.post("/api/platform/disconnect")
-def platform_disconnect(req: PlatformConnectRequest):
-    """Mark platform as disconnected."""
-    from modules.applicator import disconnect_platform as do_disconnect
-    do_disconnect(req.platform)
-    return {"disconnected": True, "platform": req.platform}
-
-
-@app.post("/api/platform/open-verify")
-def platform_open_verify(req: PlatformConnectRequest):
-    """Open platform in system browser so user can check if still logged in."""
-    from modules.applicator import open_platform_verify
-    opened = open_platform_verify(req.platform)
-    return {"opened": opened, "platform": req.platform}
-
-
-@app.get("/api/platform/status")
-def platform_status():
-    from modules.applicator import is_platform_connected
-    all_keys = [
-        "remoteok", "indeed", "wellfound", "glassdoor",
-        "ziprecruiter", "google_jobs", "dice",
-        "toptal", "hired", "flexjobs",
-    ]
-    return {p: is_platform_connected(p) for p in all_keys}
-
-
 @app.post("/api/cover-letter-preview")
 def cover_letter_preview(req: LetterPreviewRequest):
     """Generate a sample cover letter based on current keywords."""
@@ -308,26 +209,122 @@ def stats():
     return {"total_jobs": total_jobs, "total_applications": total_applications, "new_today": new_today}
 
 
-@app.get("/api/daily-limits")
-def daily_limits():
-    """Return per-platform daily application counts and limits."""
-    counts = get_today_applications_by_platform()
-    all_keys = [
-        "remoteok", "indeed", "wellfound", "glassdoor",
-        "ziprecruiter", "google_jobs", "dice",
-        "toptal", "hired", "flexjobs",
-    ]
+@app.post("/api/application/save")
+def save_application_endpoint(req: ApplicationSaveRequest):
+    """Save a completed application from the Chrome Extension."""
+    job_id = save_job(
+        title=req.job_title,
+        company=req.company,
+        link=req.job_url,
+        status=req.status,
+        platform=req.platform,
+    )
+    save_application(job_id, cover_letter=req.cover_letter)
+    update_job_status(job_id, req.status)
+    return {"saved": True, "job_id": job_id}
+
+
+def _load_campaign_state():
+    if os.path.exists(CAMPAIGN_STATE_PATH):
+        with open(CAMPAIGN_STATE_PATH, "r") as f:
+            return json.load(f)
+    return {"running": False, "filters": {}, "started_at": None}
+
+
+def _save_campaign_state(state):
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(CAMPAIGN_STATE_PATH, "w") as f:
+        json.dump(state, f, indent=2)
+
+
+LIMIT_PER_PLATFORM = 50
+
+
+@app.get("/api/campaign/status")
+def campaign_status():
+    """Return current campaign state and today's application count per platform."""
+    state = _load_campaign_state()
+    today = get_today()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT COUNT(*) FROM applications WHERE date_applied LIKE ?",
+        (today + "%",),
+    )
+    today_count = cursor.fetchone()[0]
+    cursor.execute("""
+        SELECT j.platform, COUNT(*) as cnt
+        FROM applications a
+        JOIN jobs j ON a.job_id = j.id
+        WHERE a.date_applied LIKE ?
+        GROUP BY j.platform
+    """, (today + "%",))
+    platform_counts = {row[0]: row[1] for row in cursor.fetchall()}
+    conn.close()
     return {
-        p: {"applied": counts.get(p, 0), "limit": DAILY_LIMIT_PER_PLATFORM}
-        for p in all_keys
+        "running": state.get("running", False),
+        "filters": state.get("filters", {}),
+        "started_at": state.get("started_at"),
+        "today_applications": today_count,
+        "platform_counts": platform_counts,
+        "limit_per_platform": LIMIT_PER_PLATFORM,
     }
 
 
-@app.get("/api/campaign-history")
-def campaign_history(platform: str = None):
-    """Return today's applications, optionally filtered by platform."""
-    apps = get_today_applications_detail(platform)
-    return {"applications": apps, "count": len(apps)}
+@app.get("/api/applications/history")
+def applications_history():
+    """Return last 50 applications with job details."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT jobs.title, jobs.company, jobs.platform, jobs.link,
+               applications.date_applied, applications.status, applications.cover_letter
+        FROM applications
+        JOIN jobs ON applications.job_id = jobs.id
+        ORDER BY applications.date_applied DESC
+        LIMIT 50
+    """)
+    rows = [
+        {
+            "title": row["title"],
+            "company": row["company"],
+            "platform": row["platform"],
+            "link": row["link"],
+            "date_applied": row["date_applied"],
+            "status": row["status"],
+            "cover_letter": row["cover_letter"],
+        }
+        for row in cursor.fetchall()
+    ]
+    conn.close()
+    return rows
+
+
+@app.post("/api/campaign/start")
+def campaign_start(req: CampaignStartRequest):
+    """Mark a campaign as started with the given filters."""
+    from datetime import datetime
+    state = {
+        "running": True,
+        "filters": {
+            "keywords": req.keywords,
+            "platforms": req.platforms,
+            "location": req.location,
+            "job_type": req.job_type,
+        },
+        "started_at": datetime.now().isoformat(),
+    }
+    _save_campaign_state(state)
+    return {"started": True, "state": state}
+
+
+@app.post("/api/campaign/stop")
+def campaign_stop():
+    """Mark the current campaign as stopped."""
+    state = _load_campaign_state()
+    state["running"] = False
+    _save_campaign_state(state)
+    return {"stopped": True}
 
 
 PLATFORM_INBOX_URLS = {
@@ -346,14 +343,9 @@ PLATFORM_INBOX_URLS = {
 
 @app.get("/api/platform/inbox-urls")
 def platform_inbox_urls():
-    from modules.applicator import is_platform_connected
     profile = load_profile()
     enabled = profile.get("platforms", [])
-    urls = {}
-    for p in enabled:
-        if is_platform_connected(p) and p in PLATFORM_INBOX_URLS:
-            urls[p] = PLATFORM_INBOX_URLS[p]
-    return urls
+    return {p: PLATFORM_INBOX_URLS[p] for p in enabled if p in PLATFORM_INBOX_URLS}
 
 
 @app.post("/api/upload-resume")
@@ -372,9 +364,21 @@ def resume_status():
     return {"uploaded": os.path.exists(RESUME_PATH)}
 
 
+@app.get("/api/resume-download")
+def resume_download():
+    """Download the uploaded resume PDF (used by Chrome Extension)."""
+    if not os.path.exists(RESUME_PATH):
+        return JSONResponse(status_code=404, content={"error": "No resume uploaded"})
+    return FileResponse(RESUME_PATH, media_type="application/pdf", filename="resume.pdf")
+
+
 @app.get("/api/profile")
 def get_profile():
-    return load_profile()
+    profile = load_profile()
+    # Ensure new fields have defaults for Chrome Extension compatibility
+    profile.setdefault("last_name", "")
+    profile.setdefault("phone", "")
+    return profile
 
 
 @app.post("/api/profile")
@@ -908,74 +912,11 @@ tr:hover td{background:var(--surface2)}
 .filter-plt{display:flex;align-items:center;gap:6px;padding:6px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;font-size:12px;cursor:pointer;transition:all .2s;user-select:none;position:relative}
 .filter-plt:hover{border-color:var(--accent)}
 .filter-plt.active{background:rgba(108,92,231,.2);border-color:var(--accent);color:var(--accent2)}
-.filter-plt.disconnected{opacity:.7}
 .filter-plt .plt-status{font-size:10px;line-height:1}.filter-plt.active .plt-status{color:var(--green)}
-.filter-plt .plt-connect-btn{font-size:10px;padding:2px 6px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;margin-left:2px;white-space:nowrap}
-.filter-plt .plt-connect-btn:hover{opacity:.85}
 .filter-plt input{display:none}
 .filter-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 
-/* Campaign Fullscreen Modal */
-.campaign-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.7);z-index:300;align-items:center;justify-content:center}
-.campaign-overlay.active{display:flex}
-.campaign-modal{background:#0d1117;border:1px solid var(--border);border-radius:16px;width:94vw;max-width:900px;height:85vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 80px rgba(0,0,0,.6)}
-.campaign-header{padding:20px 28px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;background:var(--surface);flex-shrink:0}
-.campaign-header-left{display:flex;align-items:center;gap:12px}
-.campaign-dot{width:10px;height:10px;border-radius:50%;background:var(--green)}
-.campaign-dot.pulsing{animation:pulse 1.5s infinite}
-@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
-.campaign-title{font-size:20px;font-weight:700}
-
-/* Campaign Cards */
-.campaign-cards{display:flex;gap:14px;padding:20px 28px;border-bottom:1px solid var(--border);background:var(--surface);flex-shrink:0}
-.campaign-card{flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:16px 18px;cursor:pointer;transition:all .2s;min-width:0}
-.campaign-card:hover{border-color:var(--accent)}
-.campaign-card.selected{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent)}
-.campaign-card-name{font-size:15px;font-weight:600;margin-bottom:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.campaign-bar-wrap{height:8px;background:var(--bg);border-radius:4px;overflow:hidden;margin-bottom:8px}
-.campaign-bar-fill{height:100%;border-radius:4px;transition:width .4s}
-.campaign-bar-fill.running{background:linear-gradient(90deg,var(--green),var(--accent2))}
-.campaign-bar-fill.waiting{background:var(--border)}
-.campaign-bar-fill.done{background:var(--green)}
-.campaign-bar-fill.failed{background:var(--red)}
-.campaign-bar-fill.limit{background:var(--yellow)}
-.campaign-count{font-size:13px;color:var(--text2);font-weight:600;margin-bottom:6px;font-variant-numeric:tabular-nums}
-.campaign-status{font-size:12px;display:flex;align-items:center;gap:6px}
-.campaign-status.waiting{color:var(--text2)}
-.campaign-status.running{color:var(--green)}
-.campaign-status.done{color:var(--green)}
-.campaign-status.failed{color:var(--red)}
-.campaign-status.limit{color:var(--yellow)}
-
-/* Campaign body: log + history */
-.campaign-body{flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0}
-.campaign-view{flex:1;overflow-y:auto;display:none;flex-direction:column}
-.campaign-view.active{display:flex}
-.campaign-log{flex:1;overflow-y:auto;padding:20px 28px;font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:13px;line-height:2}
-.campaign-log-line{padding:2px 0}
-.campaign-log-line.platform-header{color:var(--blue);font-weight:600;margin-top:10px}
-.campaign-log-line.generating{color:var(--text2)}
-.campaign-log-line.applied{color:var(--green)}
-.campaign-log-line.error{color:var(--red)}
-.campaign-log-line.done{color:var(--yellow);font-weight:600;margin-top:10px}
-
-/* History list */
-.history-header{padding:16px 28px;font-size:15px;font-weight:600;color:var(--accent2);border-bottom:1px solid var(--border);flex-shrink:0}
-.history-list{flex:1;overflow-y:auto;padding:8px 28px}
-.history-item{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid var(--border);transition:background .15s}
-.history-item:hover{background:var(--surface2)}
-.history-item-left{display:flex;align-items:center;gap:10px;min-width:0;flex:1}
-.history-item-check{color:var(--green);font-size:16px;flex-shrink:0}
-.history-item-info{min-width:0}
-.history-item-title{font-size:14px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.history-item-company{font-size:12px;color:var(--text2)}
-.history-item-link{color:var(--accent2);font-size:13px;text-decoration:none;white-space:nowrap;flex-shrink:0}
-.history-item-link:hover{text-decoration:underline}
-
-.campaign-footer{padding:16px 28px;border-top:1px solid var(--border);background:var(--surface);display:flex;justify-content:space-between;align-items:center;flex-shrink:0}
-.campaign-footer-info{font-size:13px;color:var(--text2)}
-
-/* Responsive: grid + sidebar + campaign cards */
+/* Responsive */
 @media(max-width:1100px){
   .grid{grid-template-columns:1fr}
   .container{padding:16px}
@@ -986,8 +927,6 @@ tr:hover td{background:var(--surface2)}
   .header-stat .val{font-size:18px}
   .filter-row{flex-direction:column;gap:12px}
   .filter-actions{width:100%}
-  .campaign-cards{flex-direction:column}
-  .campaign-modal{width:100%;height:100%;max-width:100%;border-radius:0}
   .settings-panel{width:100%}
 }
 
@@ -1081,7 +1020,6 @@ tr:hover td{background:var(--surface2)}
       </div>
       <div class="filter-actions">
         <button class="btn btn-primary" id="btn-find" onclick="findJobsWithFilters()">Find Jobs</button>
-        <button class="btn btn-green" id="btn-apply-all" onclick="openApplyPanel()">Start Campaign</button>
         <button class="btn btn-secondary btn-sm" onclick="refreshJobs()">Refresh</button>
         <label class="btn btn-secondary btn-sm" for="resume-input" id="resume-upload-btn" style="cursor:pointer;margin:0">Resume</label>
         <input type="file" id="resume-input" accept=".pdf" onchange="uploadResume(this)">
@@ -1125,7 +1063,7 @@ tr:hover td{background:var(--surface2)}
       <div class="card">
         <div class="card-title"><span class="dot" style="background:var(--blue)"></span>Check Responses</div>
         <div id="response-links" style="display:flex;flex-direction:column;gap:8px">
-          <div class="empty">Connect platforms to see inbox links.</div>
+          <div class="empty">Loading inbox links...</div>
         </div>
       </div>
     </div>
@@ -1135,6 +1073,16 @@ tr:hover td{background:var(--surface2)}
         <div class="card-title"><span class="dot" style="background:var(--accent)"></span>Platforms</div>
         <div class="platform-list" id="platform-list"></div>
         <div class="platform-list" id="platform-list-sidebar" style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px"></div>
+      </div>
+
+      <div class="card" id="campaign-card">
+        <div class="card-title"><span class="dot" id="campaign-dot" style="background:var(--text2)"></span>Auto-Apply Campaign</div>
+        <div id="campaign-status-row" style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+          <span id="campaign-status-text" style="font-size:14px;font-weight:600;color:var(--text2)">Idle</span>
+        </div>
+        <div id="campaign-today" style="font-size:13px;color:var(--text2);margin-bottom:12px">0 applications sent today</div>
+        <div style="font-size:12px;color:var(--text2);line-height:1.5;margin-bottom:14px">Use the JobFlow Chrome Extension to start auto-applying to jobs on Indeed.</div>
+        <button class="btn btn-secondary btn-sm" onclick="showExtensionInfo()" style="width:100%">Get Extension</button>
       </div>
 
       <div class="card">
@@ -1223,75 +1171,6 @@ tr:hover td{background:var(--surface2)}
   <button class="btn btn-green" onclick="saveSettings()" style="width:100%;margin-top:12px">Save Settings</button>
 </div>
 
-<!-- Connect Platform Modal -->
-<div class="modal-overlay" id="connect-modal">
-  <div class="modal" style="max-width:440px">
-    <div class="modal-header">
-      <h3 id="connect-modal-title">Connect Platform</h3>
-      <button class="modal-close" onclick="closeConnectModal()">&times;</button>
-    </div>
-    <!-- Step 1: Explain -->
-    <div id="connect-step1">
-      <p style="font-size:13px;color:var(--text2);margin-bottom:16px">A browser window will open with the login page. Log in normally — your session cookies will be saved so JobFlow can apply on your behalf.</p>
-      <div style="display:flex;gap:10px;justify-content:flex-end">
-        <button class="btn btn-secondary" onclick="closeConnectModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="connectConfirm()" id="connect-login-btn">Log In &amp; Connect</button>
-      </div>
-    </div>
-    <!-- Step 2: Waiting -->
-    <div id="connect-step2" style="display:none">
-      <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:16px">
-        <div style="font-size:14px;font-weight:600;margin-bottom:8px"><span class="spinner"></span> Browser opened — log in now</div>
-        <div style="font-size:13px;color:var(--text2)">Log in to <span id="connect-platform-name" style="color:var(--accent2);font-weight:600"></span> in the browser window that just opened. It will close automatically once you're logged in.</div>
-      </div>
-      <div style="display:flex;gap:10px;justify-content:flex-end">
-        <button class="btn btn-secondary" onclick="closeConnectModal()">Cancel</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- Verify Connection Modal -->
-<div class="modal-overlay" id="verify-modal">
-  <div class="modal" style="max-width:400px">
-    <div class="modal-header">
-      <h3 id="verify-modal-title">Verify Connection</h3>
-      <button class="modal-close" onclick="closeVerifyModal()">&times;</button>
-    </div>
-    <p style="font-size:13px;color:var(--text2);margin-bottom:16px">We opened <span id="verify-platform-name" style="color:var(--accent2);font-weight:600"></span> in your browser. Are you still logged in?</p>
-    <div style="display:flex;gap:10px;justify-content:flex-end">
-      <button class="btn btn-secondary" onclick="verifyNo()" style="color:var(--red)">No, Disconnect</button>
-      <button class="btn btn-green" onclick="verifyYes()">Yes, Still Connected</button>
-    </div>
-  </div>
-</div>
-
-<!-- Campaign Modal (fullscreen) -->
-<div class="campaign-overlay" id="campaign-overlay">
-  <div class="campaign-modal">
-    <div class="campaign-header">
-      <div class="campaign-header-left">
-        <div class="campaign-dot" id="campaign-dot"></div>
-        <span class="campaign-title">Campaign</span>
-      </div>
-      <button class="modal-close" onclick="closeCampaign()">&times;</button>
-    </div>
-    <div class="campaign-cards" id="campaign-cards"></div>
-    <div class="campaign-body">
-      <div class="campaign-view active" id="campaign-view-log">
-        <div class="campaign-log" id="campaign-log"></div>
-      </div>
-      <div class="campaign-view" id="campaign-view-history">
-        <div class="history-header" id="history-header"></div>
-        <div class="history-list" id="history-list"></div>
-      </div>
-    </div>
-    <div class="campaign-footer">
-      <span class="campaign-footer-info" id="campaign-footer-info"></span>
-      <button class="btn btn-secondary btn-sm" onclick="closeCampaign()">Close</button>
-    </div>
-  </div>
-</div>
 
 <script src="https://cdn.jsdelivr.net/npm/intro.js@7.2.0/intro.min.js"></script>
 <script>
@@ -1305,12 +1184,12 @@ const ALL_PLATFORMS = {
   glassdoor:'Glassdoor', ziprecruiter:'ZipRecruiter', google_jobs:'Google Jobs', dice:'Dice',
   toptal:'Toptal', hired:'Hired', flexjobs:'FlexJobs'
 };
+const BROWSE_ONLY = ['remoteok'];  // View links only
 const FREE_PLATFORMS = ['remoteok','indeed','wellfound','glassdoor','ziprecruiter','google_jobs','dice'];
 const PAID_PLATFORMS = ['toptal','hired','flexjobs'];
 const PAID_URLS = {
   toptal:'https://www.toptal.com', hired:'https://hired.com', flexjobs:'https://www.flexjobs.com'
 };
-let platformConnected = {};
 
 function log(msg) {
   const now = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
@@ -1333,17 +1212,15 @@ function setStatus(msg, loading) {
 // Platforms display — show enabled platforms for search
 function renderPlatforms() {
   const el = document.getElementById('platform-list');
-  const connectedKeys = Object.entries(platformConnected).filter(([k,v]) => v).map(([k]) => k);
-  if (!connectedKeys.length) {
-    el.innerHTML = '<div style="text-align:center;color:var(--text2);font-size:13px;padding:12px">Connect platforms in the sidebar below</div>';
+  if (!currentPlatforms.length) {
+    el.innerHTML = '<div style="text-align:center;color:var(--text2);font-size:13px;padding:12px">Enable platforms in Settings</div>';
     return;
   }
-  el.innerHTML = connectedKeys.map(key => {
+  el.innerHTML = currentPlatforms.map(key => {
     const name = ALL_PLATFORMS[key] || key;
-    const active = currentPlatforms.includes(key);
     return '<div class="platform" onclick="togglePlatform(&#39;' + key + '&#39;)">' +
-      '<div class="platform-info"><div class="platform-dot ' + (active ? 'active' : 'inactive') + '"></div><span class="platform-name">' + name + '</span></div>' +
-      '<span class="platform-badge ' + (active ? 'badge-connected' : 'badge-off') + '">' + (active ? 'Enabled' : 'Disabled') + '</span>' +
+      '<div class="platform-info"><div class="platform-dot active"></div><span class="platform-name">' + name + '</span></div>' +
+      '<span class="platform-badge badge-connected">Enabled</span>' +
     '</div>';
   }).join('');
 }
@@ -1412,15 +1289,19 @@ let jobFilterStatus = 'all';
 const STATUS_ICONS = {new:'🟢',applied:'✅',interview:'📋',response:'📧',rejected:'❌'};
 
 function renderJobFilterTabs() {
-  const counts = {all:allJobs.length, new:0, applied:0, response:0};
-  allJobs.forEach(j => { if (counts[j.status] !== undefined) counts[j.status]++; else if (j.status === 'interview') counts.response = (counts.response||0); });
-  // count responses+interview together
-  counts.response = allJobs.filter(j => j.status === 'response' || j.status === 'interview').length;
+  const counts = {
+    all: allJobs.length,
+    new: allJobs.filter(j => j.status === 'new' && !BROWSE_ONLY.includes(j.platform)).length,
+    applied: allJobs.filter(j => j.status === 'applied').length,
+    response: allJobs.filter(j => j.status === 'response' || j.status === 'interview').length,
+    browse: allJobs.filter(j => BROWSE_ONLY.includes(j.platform)).length,
+  };
   const tabs = [
     {key:'all', label:'All'},
     {key:'new', label:'New'},
     {key:'applied', label:'Applied'},
     {key:'response', label:'Responses'},
+    {key:'browse', label:'Browse Only'},
   ];
   document.getElementById('job-filter-tabs').innerHTML = tabs.map(t =>
     '<button class="job-filter-tab' + (jobFilterStatus===t.key?' active':'') + '" onclick="setJobFilter(&#39;' + t.key + '&#39;)">' + t.label + ' (' + (counts[t.key]||0) + ')</button>'
@@ -1435,9 +1316,19 @@ function setJobFilter(status) {
 
 function renderJobRows() {
   const tbody = document.getElementById('jobs-table');
-  const filtered = jobFilterStatus === 'all' ? allJobs
-    : jobFilterStatus === 'response' ? allJobs.filter(j => j.status === 'response' || j.status === 'interview')
-    : allJobs.filter(j => j.status === jobFilterStatus);
+  let filtered;
+  if (jobFilterStatus === 'all') {
+    filtered = allJobs;
+  } else if (jobFilterStatus === 'response') {
+    filtered = allJobs.filter(j => j.status === 'response' || j.status === 'interview');
+  } else if (jobFilterStatus === 'new') {
+    // "New" tab: only show jobs from connected platforms (exclude browse-only)
+    filtered = allJobs.filter(j => j.status === 'new' && !BROWSE_ONLY.includes(j.platform));
+  } else if (jobFilterStatus === 'browse') {
+    filtered = allJobs.filter(j => BROWSE_ONLY.includes(j.platform));
+  } else {
+    filtered = allJobs.filter(j => j.status === jobFilterStatus);
+  }
   if (!filtered.length) {
     tbody.innerHTML = '<tr><td colspan="6" class="empty">No jobs in this filter.</td></tr>';
     return;
@@ -1446,13 +1337,16 @@ function renderJobRows() {
     const pName = ALL_PLATFORMS[j.platform] || j.platform;
     const icon = STATUS_ICONS[j.status] || '';
     const dateStr = j.date_found ? j.date_found.slice(5,10) : '';
+    const isBrowseOnly = BROWSE_ONLY.includes(j.platform);
     const viewBtn = j.link ? '<a href="' + escapeHtml(j.link) + '" target="_blank" class="btn-view">View &#8599;</a>' : '';
+    const statusText = isBrowseOnly ? 'browse' : j.status;
+    const statusClass = isBrowseOnly ? 'new' : j.status;
     return '<tr>' +
       '<td>' + escapeHtml(j.title) + '</td>' +
       '<td>' + escapeHtml(j.company) + '</td>' +
       '<td><span class="platform-tag">' + escapeHtml(pName) + '</span></td>' +
       '<td>' + dateStr + '</td>' +
-      '<td><span class="status status-' + j.status + '">' + icon + ' ' + j.status + '</span></td>' +
+      '<td><span class="status status-' + statusClass + '">' + icon + ' ' + statusText + '</span></td>' +
       '<td>' + viewBtn + '</td>' +
     '</tr>';
   }).join('');
@@ -1492,31 +1386,6 @@ async function genCoverLetter(jobId) {
   }
 }
 
-async function autoApply(jobId) {
-  if (!confirm('Generate cover letter and mark as applied?')) return;
-  setStatus('Applying...', true);
-  try {
-    const res = await fetch('/api/auto-apply', {
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({job_id: jobId})
-    });
-    const data = await res.json();
-    if (res.ok) {
-      setStatus(data.message, false);
-      log(data.message);
-      await refreshJobs();
-      await loadStats();
-      document.getElementById('modal').classList.add('active');
-      document.getElementById('modal-title').textContent = 'Applied \\u2014 ' + data.job_title + ' at ' + data.company;
-      document.getElementById('modal-body').textContent = data.letter;
-    } else {
-      setStatus(data.error, false);
-    }
-  } catch(e) {
-    setStatus('Apply failed: ' + e.message, false);
-  }
-}
 
 function closeModal() {
   document.getElementById('modal').classList.remove('active');
@@ -1530,15 +1399,12 @@ function copyLetter() {
 
 async function loadResponseLinks() {
   try {
-    const [urlsRes, statusRes] = await Promise.all([
-      fetch('/api/platform/inbox-urls'),
-      fetch('/api/platform/status')
-    ]);
-    const urls = await urlsRes.json();
+    const res = await fetch('/api/platform/inbox-urls');
+    const urls = await res.json();
     const el = document.getElementById('response-links');
     const keys = Object.keys(urls);
     if (!keys.length) {
-      el.innerHTML = '<div class="empty">Connect platforms to see inbox links.</div>';
+      el.innerHTML = '<div class="empty">Enable platforms to see inbox links.</div>';
       return;
     }
     el.innerHTML = keys.map(key => {
@@ -1756,18 +1622,16 @@ document.getElementById('filter-tag-input').addEventListener('keydown', function
   if (e.key === 'Backspace' && !this.value && filterTags.length) { filterTags.pop(); renderFilterTags(); }
 });
 
-// Filter Bar - only show connected platforms
+// Filter Bar - show enabled platforms
 function renderFilterPlatforms() {
   const el = document.getElementById('filter-platforms');
-  const connectedKeys = Object.entries(platformConnected).filter(([k,v]) => v).map(([k]) => k);
-  if (!connectedKeys.length) {
-    el.innerHTML = '<span style="font-size:12px;color:var(--text2)">No platforms connected</span>';
+  if (!currentPlatforms.length) {
+    el.innerHTML = '<span style="font-size:12px;color:var(--text2)">No platforms enabled</span>';
     return;
   }
-  el.innerHTML = connectedKeys.map(key => {
+  el.innerHTML = currentPlatforms.map(key => {
     const name = ALL_PLATFORMS[key] || key;
-    const active = currentPlatforms.includes(key);
-    return '<div class="filter-plt ' + (active ? 'active' : '') + '" onclick="toggleFilterPlatform(&#39;' + key + '&#39;)">' +
+    return '<div class="filter-plt active" onclick="toggleFilterPlatform(&#39;' + key + '&#39;)">' +
       '<span class="plt-status" style="color:var(--green)">&#9679;</span>' + name + '</div>';
   }).join('');
 }
@@ -1805,354 +1669,28 @@ async function findJobsWithFilters() {
   await findJobs();
 }
 
-// Campaign state
-let campaignRunning = false;
-let campaignPlatformStats = {};
-let campaignAppliedJobs = {};
-let campaignSelectedPlatform = null;
-const LIMIT_PER_PLATFORM = 50;
-
-// Open campaign modal
-async function openApplyPanel() {
-  document.getElementById('campaign-overlay').classList.add('active');
-  document.getElementById('campaign-dot').classList.add('pulsing');
-  document.getElementById('campaign-log').innerHTML = '';
-  campaignAppliedJobs = {};
-  campaignSelectedPlatform = null;
-  showCampaignView('log');
-
-  let limits = {};
-  try { const r = await fetch('/api/daily-limits'); limits = await r.json(); } catch(e) {}
-
-  campaignPlatformStats = {};
-  currentPlatforms.forEach(p => {
-    const lim = limits[p] || {applied: 0, limit: LIMIT_PER_PLATFORM};
-    campaignPlatformStats[p] = {
-      applied: 0, total: 0,
-      already_today: lim.applied,
-      status: lim.applied >= lim.limit ? 'limit_reached' : 'waiting'
-    };
-    campaignAppliedJobs[p] = [];
+// Platform sidebar — show enabled platforms by category
+function renderPlatformSidebar() {
+  const el = document.getElementById('platform-list-sidebar');
+  let html = '<div style="font-size:12px;color:var(--green);margin-bottom:8px;font-weight:600">Free Platforms</div>';
+  FREE_PLATFORMS.forEach(key => {
+    const name = ALL_PLATFORMS[key];
+    const active = currentPlatforms.includes(key);
+    const dot = active ? 'active' : 'inactive';
+    const badge = active ? '<span class="platform-badge badge-connected">Enabled</span>' : '<span class="platform-badge badge-off">Disabled</span>';
+    html += '<div class="platform"><div class="platform-info"><div class="platform-dot ' + dot + '"></div><span class="platform-name">' + name + '</span></div>' + badge + '</div>';
   });
-  renderCampaignCards();
-
-  if (currentPlatforms.every(p => campaignPlatformStats[p].status === 'limit_reached')) {
-    document.getElementById('campaign-dot').classList.remove('pulsing');
-    document.getElementById('campaign-footer-info').textContent = 'Limit reached — resets tomorrow';
-    addCampaignLog('_all', 'done', 'Daily limit reached on all platforms. Resets in 24 hours.');
-    campaignRunning = false;
-    return;
-  }
-
-  campaignRunning = true;
-  startCampaignStream();
-}
-
-function closeCampaign() {
-  document.getElementById('campaign-overlay').classList.remove('active');
-  document.getElementById('campaign-dot').classList.remove('pulsing');
-  refreshJobs();
-  loadStats();
-}
-
-function renderCampaignCards() {
-  const el = document.getElementById('campaign-cards');
-  el.innerHTML = currentPlatforms.map(pk => {
-    const s = campaignPlatformStats[pk] || {};
-    const name = ALL_PLATFORMS[pk] || pk;
-    const applied = s.applied || 0;
-    const total = s.total || 0;
-    const already = s.already_today || 0;
-
-    // Progress bar percentage (out of 50 limit)
-    const barApplied = already + applied;
-    const pct = Math.min(100, barApplied / LIMIT_PER_PLATFORM * 100);
-
-    let statusClass = s.status || 'waiting';
-    if (statusClass === 'limit_reached') statusClass = 'limit';
-    const barClass = statusClass;
-
-    const statusMap = {
-      waiting:       ['&#9203;', 'Waiting'],
-      running:       ['&#128994;', 'Running...'],
-      done:          ['&#10004;', 'Done'],
-      failed:        ['&#10008;', 'Failed'],
-      limit_reached: ['&#128293;', 'Limit reached']
-    };
-    const [icon, text] = statusMap[s.status] || statusMap.waiting;
-    const selected = campaignSelectedPlatform === pk ? ' selected' : '';
-    const countText = barApplied + '/' + LIMIT_PER_PLATFORM;
-
-    return '<div class="campaign-card' + selected + '" onclick="selectCampaignPlatform(&#39;' + pk + '&#39;)">' +
-      '<div class="campaign-card-name">' + name + '</div>' +
-      '<div class="campaign-bar-wrap"><div class="campaign-bar-fill ' + barClass + '" style="width:' + pct + '%"></div></div>' +
-      '<div class="campaign-count">' + countText + '</div>' +
-      '<div class="campaign-status ' + statusClass + '">' + icon + ' ' + text + '</div>' +
-    '</div>';
-  }).join('');
-}
-
-function selectCampaignPlatform(pk) {
-  if (campaignSelectedPlatform === pk) {
-    campaignSelectedPlatform = null;
-    showCampaignView('log');
-    filterCampaignLog(null);
-  } else {
-    campaignSelectedPlatform = pk;
-    if (!campaignRunning && campaignAppliedJobs[pk]?.length > 0) {
-      showCampaignView('history');
-      renderCampaignHistory(pk);
+  html += '<div style="font-size:12px;color:var(--yellow);margin:14px 0 8px;font-weight:600">Premium Platforms</div>';
+  PAID_PLATFORMS.forEach(key => {
+    const name = ALL_PLATFORMS[key];
+    const active = currentPlatforms.includes(key);
+    if (active) {
+      html += '<div class="platform"><div class="platform-info"><div class="platform-dot active"></div><span class="platform-name">' + name + '</span></div><span class="platform-badge badge-connected">Enabled</span></div>';
     } else {
-      showCampaignView('log');
-      filterCampaignLog(pk);
+      html += '<div class="platform"><div class="platform-info"><div class="platform-dot inactive"></div><span class="platform-name">' + name + '</span></div><a class="btn btn-sm" style="background:var(--yellow);color:#000;border:none;font-size:11px;padding:4px 10px;border-radius:6px;text-decoration:none;cursor:pointer" href="' + (PAID_URLS[key]||'#') + '" target="_blank">Upgrade &#8599;</a></div>';
     }
-  }
-  renderCampaignCards();
-}
-
-function showCampaignView(view) {
-  document.getElementById('campaign-view-log').classList.toggle('active', view === 'log');
-  document.getElementById('campaign-view-history').classList.toggle('active', view === 'history');
-}
-
-function filterCampaignLog(pk) {
-  document.getElementById('campaign-log').querySelectorAll('.campaign-log-line').forEach(line => {
-    line.style.display = (!pk || !line.dataset.platform || line.dataset.platform === pk) ? '' : 'none';
   });
-}
-
-function addCampaignLog(pk, cls, text) {
-  const logEl = document.getElementById('campaign-log');
-  const line = document.createElement('div');
-  line.className = 'campaign-log-line ' + cls;
-  line.textContent = text;
-  if (pk && pk !== '_all') line.dataset.platform = pk;
-  logEl.appendChild(line);
-  logEl.scrollTop = logEl.scrollHeight;
-}
-
-async function renderCampaignHistory(pk) {
-  const name = ALL_PLATFORMS[pk] || pk;
-  let apps = campaignAppliedJobs[pk] || [];
-  try {
-    const r = await fetch('/api/campaign-history?platform=' + pk);
-    const d = await r.json();
-    if (d.applications?.length > apps.length) apps = d.applications;
-  } catch(e) {}
-
-  document.getElementById('history-header').textContent = name + ' — ' + apps.length + ' applications today';
-  document.getElementById('history-list').innerHTML = !apps.length
-    ? '<div style="padding:24px;text-align:center;color:var(--text2)">No applications yet</div>'
-    : apps.map(a => {
-        const t = escapeHtml(a.title||''), c = escapeHtml(a.company||''), l = a.link||'';
-        return '<div class="history-item"><div class="history-item-left"><span class="history-item-check">&#10003;</span><div class="history-item-info"><div class="history-item-title">' + t + '</div><div class="history-item-company">' + c + '</div></div></div>' +
-          (l ? '<a class="history-item-link" href="' + escapeHtml(l) + '" target="_blank">Open &#8599;</a>' : '') + '</div>';
-      }).join('');
-}
-
-function startCampaignStream() {
-  const es = new EventSource('/api/apply-stream');
-  let totalApplied = parseInt(document.getElementById('stat-applied').textContent) || 0;
-
-  es.onmessage = function(event) {
-    const data = JSON.parse(event.data);
-    const pk = data.platform_key || '';
-
-    if (data.platform_stats) {
-      Object.entries(data.platform_stats).forEach(([k, v]) => {
-        if (campaignPlatformStats[k]) campaignPlatformStats[k] = v;
-      });
-      renderCampaignCards();
-    }
-
-    switch(data.type) {
-      case 'start':
-        addCampaignLog('_all', 'platform-header', data.message);
-        break;
-      case 'platform_start':
-        addCampaignLog(pk, 'platform-header', data.message);
-        break;
-      case 'platform_skip':
-        addCampaignLog(pk, 'error', data.message);
-        break;
-      case 'generating':
-        addCampaignLog(pk, 'generating', data.message);
-        break;
-      case 'applied':
-        addCampaignLog(pk, 'applied', data.message);
-        if (pk && campaignAppliedJobs[pk]) {
-          campaignAppliedJobs[pk].push({title: data.title, company: data.company, link: data.link || ''});
-        }
-        totalApplied++;
-        document.getElementById('stat-applied').textContent = totalApplied;
-        document.getElementById('campaign-footer-info').textContent = data.applied + '/' + data.total + ' applied';
-        log('Applied: ' + data.title + ' @ ' + data.company);
-        break;
-      case 'error':
-        addCampaignLog(pk, 'error', data.message);
-        break;
-      case 'platform_done':
-        addCampaignLog(pk, 'platform-header', data.message);
-        if (campaignSelectedPlatform === pk && campaignAppliedJobs[pk]?.length > 0) {
-          showCampaignView('history');
-          renderCampaignHistory(pk);
-        }
-        break;
-      case 'done':
-        addCampaignLog('_all', 'done', data.message);
-        document.getElementById('campaign-dot').classList.remove('pulsing');
-        document.getElementById('campaign-footer-info').textContent = data.message;
-        campaignRunning = false;
-        es.close();
-        refreshJobs();
-        loadStats();
-        renderCampaignCards();
-        break;
-    }
-    if (campaignSelectedPlatform) filterCampaignLog(campaignSelectedPlatform);
-  };
-
-  es.onerror = function() {
-    es.close();
-    addCampaignLog('_all', 'error', 'Connection lost.');
-    document.getElementById('campaign-dot').classList.remove('pulsing');
-    campaignRunning = false;
-  };
-}
-
-// Platform Connect Modal — native browser flow
-let connectingPlatform = '';
-function openConnectModal(platformKey, platformName) {
-  connectingPlatform = platformKey;
-  document.getElementById('connect-modal-title').textContent = 'Connect ' + platformName;
-  document.getElementById('connect-platform-name').textContent = platformName;
-  document.getElementById('connect-step1').style.display = '';
-  document.getElementById('connect-step2').style.display = 'none';
-  document.getElementById('connect-modal').classList.add('active');
-}
-function closeConnectModal() {
-  document.getElementById('connect-modal').classList.remove('active');
-}
-async function connectConfirm() {
-  // Show waiting state
-  document.getElementById('connect-step1').style.display = 'none';
-  document.getElementById('connect-step2').style.display = '';
-  // Launch Playwright browser for login + cookie capture
-  const res = await fetch('/api/platform/confirm-connected', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({platform:connectingPlatform})});
-  const data = await res.json();
-  closeConnectModal();
-  if (data.connected) {
-    log('Connected to ' + (ALL_PLATFORMS[connectingPlatform] || connectingPlatform) + ' (cookies saved)');
-  } else {
-    log('Failed to connect ' + (ALL_PLATFORMS[connectingPlatform] || connectingPlatform) + ' — try again');
-  }
-  await loadPlatformStatus();
-  loadResponseLinks();
-}
-async function disconnectPlatform(platformKey) {
-  if (!confirm('Disconnect ' + (ALL_PLATFORMS[platformKey] || platformKey) + '?')) return;
-  await fetch('/api/platform/disconnect', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({platform:platformKey})});
-  log('Disconnected ' + (ALL_PLATFORMS[platformKey] || platformKey));
-  await loadPlatformStatus();
-  loadResponseLinks();
-}
-
-// Verify Connection Modal
-let verifyingPlatform = '';
-async function openVerifyModal(platformKey) {
-  verifyingPlatform = platformKey;
-  const name = ALL_PLATFORMS[platformKey] || platformKey;
-  document.getElementById('verify-modal-title').textContent = 'Verify ' + name;
-  document.getElementById('verify-platform-name').textContent = name;
-  // Open platform in system browser
-  await fetch('/api/platform/open-verify', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({platform:platformKey})});
-  document.getElementById('verify-modal').classList.add('active');
-}
-function closeVerifyModal() {
-  document.getElementById('verify-modal').classList.remove('active');
-}
-async function verifyYes() {
-  closeVerifyModal();
-  log((ALL_PLATFORMS[verifyingPlatform] || verifyingPlatform) + ' — still connected');
-}
-async function verifyNo() {
-  await fetch('/api/platform/disconnect', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({platform:verifyingPlatform})});
-  closeVerifyModal();
-  log('Disconnected ' + (ALL_PLATFORMS[verifyingPlatform] || verifyingPlatform));
-  await loadPlatformStatus();
-  loadResponseLinks();
-}
-
-// Platform Status (sidebar with Free/Paid sections)
-async function loadPlatformStatus() {
-  try {
-    const res = await fetch('/api/platform/status');
-    const status = await res.json();
-    platformConnected = status;
-    renderFilterPlatforms();
-    const el = document.getElementById('platform-list-sidebar');
-
-    function renderPlatformRow(key, name, connected, isPaid) {
-      const dot = connected ? 'active' : 'inactive';
-      let actions = '';
-      if (isPaid) {
-        if (connected) {
-          actions = '<div style="display:flex;gap:6px">' +
-            '<button class="btn btn-sm btn-secondary" style="font-size:11px;padding:4px 8px" onclick="openVerifyModal(&#39;' + key + '&#39;)">Verify &#8635;</button>' +
-            '<button class="btn btn-sm" style="background:#e74c3c;color:#fff;border:none;font-size:11px;padding:4px 8px;border-radius:6px;cursor:pointer" onclick="disconnectPlatform(&#39;' + key + '&#39;)">&#10005;</button>' +
-            '</div>';
-        } else {
-          actions = '<a class="btn btn-sm" style="background:var(--yellow);color:#000;border:none;font-size:11px;padding:4px 10px;border-radius:6px;text-decoration:none;cursor:pointer" href="' + (PAID_URLS[key]||'#') + '" target="_blank" title="This platform requires a paid subscription">Upgrade &#8599;</a>';
-        }
-      } else {
-        if (connected) {
-          actions = '<div style="display:flex;gap:6px">' +
-            '<button class="btn btn-sm btn-secondary" style="font-size:11px;padding:4px 8px" onclick="openVerifyModal(&#39;' + key + '&#39;)">Verify &#8635;</button>' +
-            '<button class="btn btn-sm" style="background:#e74c3c;color:#fff;border:none;font-size:11px;padding:4px 8px;border-radius:6px;cursor:pointer" onclick="disconnectPlatform(&#39;' + key + '&#39;)">&#10005;</button>' +
-            '</div>';
-        } else {
-          actions = '<button class="btn btn-sm btn-secondary" onclick="openConnectModal(&#39;' + key + '&#39;,&#39;' + name + '&#39;)">Connect</button>';
-        }
-      }
-      return '<div class="platform"><div class="platform-info"><div class="platform-dot ' + dot + '"></div><span class="platform-name">' + name + '</span></div>' + actions + '</div>';
-    }
-
-    let html = '<div style="font-size:12px;color:var(--green);margin-bottom:8px;font-weight:600">Free Platforms</div>';
-    FREE_PLATFORMS.forEach(key => {
-      html += renderPlatformRow(key, ALL_PLATFORMS[key], status[key], false);
-    });
-    html += '<div style="font-size:12px;color:var(--yellow);margin:14px 0 8px;font-weight:600">Premium Platforms</div>';
-    PAID_PLATFORMS.forEach(key => {
-      html += renderPlatformRow(key, ALL_PLATFORMS[key], status[key], true);
-    });
-    el.innerHTML = html;
-
-    // Check daily limits for campaign button
-    let limits = {};
-    try {
-      const limRes = await fetch('/api/daily-limits');
-      limits = await limRes.json();
-    } catch(e2) {}
-    const connectedPlatforms = Object.entries(status).filter(([k,v]) => v);
-    const anyConnected = connectedPlatforms.length > 0;
-    const allAtLimit = currentPlatforms.every(p => (limits[p]?.applied || 0) >= LIMIT_PER_PLATFORM);
-    const applyBtn = document.getElementById('btn-apply-all');
-    if (applyBtn) {
-      if (!anyConnected) {
-        applyBtn.disabled = true;
-        applyBtn.title = 'Connect at least one platform first';
-        applyBtn.textContent = 'Start Campaign';
-      } else if (allAtLimit) {
-        applyBtn.disabled = true;
-        applyBtn.title = 'Daily limit reached on all platforms';
-        applyBtn.textContent = 'Limit reached — resets tomorrow';
-      } else {
-        applyBtn.disabled = false;
-        applyBtn.title = '';
-        applyBtn.textContent = 'Start Campaign';
-      }
-    }
-  } catch(e) {}
+  el.innerHTML = html;
 }
 
 // Cover Letter Preview
@@ -2188,12 +1726,48 @@ function syncFilterBar(profile) {
   renderFilterPlatforms();
 }
 
+// Campaign status
+async function loadCampaignStatus() {
+  try {
+    const res = await fetch('/api/campaign/status');
+    const data = await res.json();
+    const dot = document.getElementById('campaign-dot');
+    const text = document.getElementById('campaign-status-text');
+    const today = document.getElementById('campaign-today');
+    if (data.running) {
+      dot.style.background = 'var(--green)';
+      text.textContent = 'Running';
+      text.style.color = 'var(--green)';
+    } else {
+      dot.style.background = 'var(--text2)';
+      text.textContent = 'Idle';
+      text.style.color = 'var(--text2)';
+    }
+    today.textContent = (data.today_applications || 0) + ' applications sent today';
+  } catch(e) {}
+}
+
+function showExtensionInfo() {
+  document.getElementById('modal').classList.add('active');
+  document.getElementById('modal-title').textContent = 'Install JobFlow Extension';
+  document.getElementById('modal-body').textContent =
+    'To install the JobFlow Chrome Extension:\\n\\n' +
+    '1. Open chrome://extensions in your browser\\n' +
+    '2. Enable "Developer mode" (top right toggle)\\n' +
+    '3. Click "Load unpacked"\\n' +
+    '4. Select the chrome-extension/ folder from this project\\n' +
+    '5. The JobFlow icon will appear in your toolbar\\n\\n' +
+    'The extension auto-applies to Indeed jobs using your profile and resume.';
+}
+
 // Init
 loadStats();
 refreshJobs();
 loadResumeStatus().then(() => { if (resumeUploaded) regenerateLetter(); });
 loadChecklist();
-loadPlatformStatus().then(() => { loadProfile(); loadResponseLinks(); });
+loadCampaignStatus();
+setInterval(loadCampaignStatus, 10000);
+loadProfile().then(() => { renderPlatformSidebar(); loadResponseLinks(); });
 
 if (!localStorage.getItem('jobflow_tour_done')) {
   setTimeout(startTour, 500);
