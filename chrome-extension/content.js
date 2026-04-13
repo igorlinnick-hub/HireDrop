@@ -10,7 +10,6 @@
   if (window.__jobflow_loaded) return;
   window.__jobflow_loaded = true;
 
-  const API_BASE = "https://web-production-db45.up.railway.app";
   const MAX_APPLICATIONS_PER_PLATFORM = 50;
 
   // =========================================================================

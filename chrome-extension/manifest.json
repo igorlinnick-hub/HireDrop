@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "JobFlow",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "AI-powered job application automation. Auto-fill forms and track applications from your JobFlow dashboard.",
   "permissions": [
     "activeTab",
@@ -12,7 +12,8 @@
   ],
   "host_permissions": [
     "https://web-production-db45.up.railway.app/*",
-    "https://*.indeed.com/*"
+    "https://*.indeed.com/*",
+    "https://jobflow-website.vercel.app/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -29,6 +30,15 @@
     {
       "matches": ["https://*.indeed.com/*"],
       "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://localhost:*/*",
+        "https://web-production-db45.up.railway.app/*",
+        "https://jobflow-website.vercel.app/*"
+      ],
+      "js": ["ping.js"],
       "run_at": "document_idle"
     }
   ],

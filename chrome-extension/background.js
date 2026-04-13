@@ -1,24 +1,50 @@
 // JobFlow service worker
 // All API communication, campaign state, and tab management
 
-const API_BASE = "https://web-production-db45.up.railway.app";
+importScripts("config.js");
+
+// ---------------------------------------------------------------------------
+// Auth helpers
+// ---------------------------------------------------------------------------
+
+async function getAuthToken() {
+  const data = await chrome.storage.local.get("supabase_token");
+  return data.supabase_token || null;
+}
 
 // ---------------------------------------------------------------------------
 // API helpers
 // ---------------------------------------------------------------------------
 
 async function apiGet(path) {
-  const res = await fetch(`${API_BASE}${path}`);
+  const token = await getAuthToken();
+  const headers = token ? { Authorization: `Bearer ${token}` } : {};
+  const res = await fetch(`${CONFIG.API_BASE}${CONFIG.API_V1}${path}`, { headers });
+  if (res.status === 401) {
+    await chrome.storage.local.remove("supabase_token");
+    chrome.runtime.sendMessage({ type: "AUTH_EXPIRED" }).catch(() => {});
+    throw new Error("Authentication required — please reconnect your account");
+  }
   if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
   return res.json();
 }
 
 async function apiPost(path, body) {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const token = await getAuthToken();
+  const headers = {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+  const res = await fetch(`${CONFIG.API_BASE}${CONFIG.API_V1}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body),
   });
+  if (res.status === 401) {
+    await chrome.storage.local.remove("supabase_token");
+    chrome.runtime.sendMessage({ type: "AUTH_EXPIRED" }).catch(() => {});
+    throw new Error("Authentication required — please reconnect your account");
+  }
   if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
   return res.json();
 }
@@ -29,14 +55,14 @@ async function apiPost(path, body) {
 
 async function fetchAndCacheProfile() {
   try {
-    const profile = await apiGet("/api/profile");
+    const profile = await apiGet("/profile");
     await chrome.storage.local.set({
       profile,
       profileCachedAt: Date.now(),
     });
     return profile;
   } catch (err) {
-    // Network down — return whatever we have cached
+    // Network down or auth error — return whatever we have cached
     const data = await chrome.storage.local.get("profile");
     if (data.profile) return data.profile;
     throw err;
@@ -45,8 +71,11 @@ async function fetchAndCacheProfile() {
 
 async function getCachedProfile() {
   const data = await chrome.storage.local.get(["profile", "profileCachedAt"]);
-  const fiveMin = 5 * 60 * 1000;
-  if (data.profile && data.profileCachedAt && Date.now() - data.profileCachedAt < fiveMin) {
+  if (
+    data.profile &&
+    data.profileCachedAt &&
+    Date.now() - data.profileCachedAt < CONFIG.CACHE_TTL_MS
+  ) {
     return data.profile;
   }
   return fetchAndCacheProfile();
@@ -59,7 +88,6 @@ async function getCachedProfile() {
 const LIMIT_PER_PLATFORM = 50;
 
 chrome.runtime.onInstalled.addListener(async () => {
-  // Initialize storage defaults
   await chrome.storage.local.set({
     campaignRunning: false,
     campaignFilters: {},
@@ -70,18 +98,17 @@ chrome.runtime.onInstalled.addListener(async () => {
     todayDate: new Date().toISOString().slice(0, 10),
     currentJob: null,
   });
-  await fetchAndCacheProfile();
+  await fetchAndCacheProfile().catch(() => {});
   updateBadge();
 });
 
 chrome.runtime.onStartup.addListener(async () => {
-  // Reset daily counters if date rolled over
   const data = await chrome.storage.local.get("todayDate");
   const today = new Date().toISOString().slice(0, 10);
   if (data.todayDate !== today) {
     await chrome.storage.local.set({ todayCount: 0, platformCounts: {}, todayDate: today });
   }
-  await fetchAndCacheProfile();
+  await fetchAndCacheProfile().catch(() => {});
   updateBadge();
 });
 
@@ -105,7 +132,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 // ---------------------------------------------------------------------------
-// Activity log — same format as popup.js writes
+// Activity log
 // ---------------------------------------------------------------------------
 
 async function addToActivityLog(text, cls) {
@@ -126,37 +153,46 @@ async function addToActivityLog(text, cls) {
 
 function buildIndeedUrl(keywords, location, jobType) {
   const params = new URLSearchParams();
-
-  if (keywords && keywords.length) {
-    params.set("q", keywords.join(" "));
-  }
-
+  if (keywords && keywords.length) params.set("q", keywords.join(" "));
   const locMap = { usa: "United States", remote: "remote", europe: "" };
   const loc = locMap[location] !== undefined ? locMap[location] : location;
   if (loc) params.set("l", loc);
-
   const jtMap = { "full-time": "fulltime", "part-time": "parttime", contract: "contract" };
   if (jobType && jtMap[jobType]) params.set("jt", jtMap[jobType]);
-
-  // Easy Apply filter
   params.set("iafilter", "1");
-
   return `https://www.indeed.com/jobs?${params.toString()}`;
 }
 
 // ---------------------------------------------------------------------------
-// Message handler — single listener, all message types
+// Message handler
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   handleMessage(msg, sender)
     .then(sendResponse)
     .catch((err) => sendResponse({ error: err.message }));
-  return true; // keep channel open for async response
+  return true;
 });
 
 async function handleMessage(msg, sender) {
   switch (msg.type) {
+
+    // ----- Auth -----
+    case "STORE_TOKEN": {
+      await chrome.storage.local.set({ supabase_token: msg.token });
+      // Refresh profile cache with new token
+      await fetchAndCacheProfile().catch(() => {});
+      return { stored: true };
+    }
+    case "GET_AUTH_STATUS": {
+      const data = await chrome.storage.local.get("supabase_token");
+      return { authenticated: !!data.supabase_token };
+    }
+    case "LOGOUT": {
+      await chrome.storage.local.remove(["supabase_token", "profile", "profileCachedAt"]);
+      return { loggedOut: true };
+    }
+
     // ----- Profile -----
     case "GET_PROFILE":
       return await getCachedProfile();
@@ -166,7 +202,7 @@ async function handleMessage(msg, sender) {
 
     case "CHECK_CONNECTION": {
       try {
-        await apiGet("/api/stats");
+        await apiGet("/stats");
         return { connected: true };
       } catch {
         return { connected: false };
@@ -183,18 +219,15 @@ async function handleMessage(msg, sender) {
         job_type: profile.job_type || "",
       };
 
-      // Persist to server
       try {
-        await apiPost("/api/campaign/start", filters);
+        await apiPost("/campaign/start", filters);
       } catch {
-        // Continue even if server is down — we track locally too
+        // Continue even if server is down
       }
 
-      // Build Indeed search URL and open a tab
       const url = buildIndeedUrl(filters.keywords, filters.location, filters.job_type);
       const tab = await chrome.tabs.create({ url, active: true });
 
-      // Save campaign state locally
       await chrome.storage.local.set({
         campaignRunning: true,
         campaignFilters: filters,
@@ -204,7 +237,6 @@ async function handleMessage(msg, sender) {
       });
 
       updateBadge();
-
       return { started: true, tabId: tab.id, url };
     }
 
@@ -216,7 +248,6 @@ async function handleMessage(msg, sender) {
         currentJob: null,
       });
 
-      // Tell the content script on the campaign tab to stop
       try {
         const data = await chrome.storage.local.get("campaignTabId");
         if (data.campaignTabId) {
@@ -224,13 +255,11 @@ async function handleMessage(msg, sender) {
         }
       } catch {}
 
-      // Persist to server
       try {
-        await apiPost("/api/campaign/stop", {});
+        await apiPost("/campaign/stop", {});
       } catch {}
 
       updateBadge();
-
       return { stopped: true };
     }
 
@@ -241,10 +270,9 @@ async function handleMessage(msg, sender) {
         return { error: "Missing application data" };
       }
 
-      // Save to server
       let serverResult = null;
       try {
-        serverResult = await apiPost("/api/application/save", {
+        serverResult = await apiPost("/applications/save", {
           job_title: appData.job_title,
           company: appData.company || "",
           platform: appData.platform || "indeed",
@@ -253,11 +281,9 @@ async function handleMessage(msg, sender) {
           status: appData.status || "applied",
         });
       } catch (err) {
-        // Queue for retry? For now just log the error
         return { saved: false, error: err.message };
       }
 
-      // Increment today's total and per-platform counters
       const storageData = await chrome.storage.local.get(["todayCount", "platformCounts", "todayDate"]);
       const today = new Date().toISOString().slice(0, 10);
       let totalCount = storageData.todayCount || 0;
@@ -281,7 +307,6 @@ async function handleMessage(msg, sender) {
       });
 
       updateBadge();
-
       return { saved: true, todayCount: totalCount, platformCount: platformCounts[platform], job_id: serverResult?.job_id };
     }
 
@@ -298,7 +323,7 @@ async function handleMessage(msg, sender) {
 
       try {
         const result = await Promise.race([
-          apiPost("/api/cover-letter-preview", {
+          apiPost("/tools/cover-letter-preview", {
             keywords: [job.job_title, job.company].filter(Boolean).join(", "),
             style: profile?.writing_style || "",
             job_description: job.description || "",
@@ -311,7 +336,6 @@ async function handleMessage(msg, sender) {
         }
       } catch {}
 
-      // Fallback if API failed or returned nothing
       if (!letter) {
         const name = [profile?.name, profile?.last_name].filter(Boolean).join(" ") || "Applicant";
         const skills = (profile?.keywords || []).join(", ") || "relevant skills";
@@ -323,7 +347,6 @@ async function handleMessage(msg, sender) {
         source = "fallback";
       }
 
-      // Log to activity log
       await addToActivityLog(
         source === "AI"
           ? `Cover letter generated for ${job.job_title} @ ${job.company || "company"}`
@@ -334,11 +357,9 @@ async function handleMessage(msg, sender) {
       return { letter, source, job_title: job.job_title, company: job.company };
     }
 
-    // ----- Step failed (from content.js) -----
-    case "STEP_FAILED": {
-      // Just acknowledge — popup sees it via the LOG message the content script also sends
+    // ----- Step failed -----
+    case "STEP_FAILED":
       return { ok: true };
-    }
 
     // ----- Status (popup polls this) -----
     case "GET_STATUS": {
@@ -352,7 +373,6 @@ async function handleMessage(msg, sender) {
         "currentJob",
       ]);
 
-      // Reset counters if date changed
       const today = new Date().toISOString().slice(0, 10);
       let todayCount = data.todayCount || 0;
       let platformCounts = data.platformCounts || {};
@@ -362,10 +382,9 @@ async function handleMessage(msg, sender) {
         await chrome.storage.local.set({ todayCount: 0, platformCounts: {}, todayDate: today });
       }
 
-      // Also try to get total stats from server
       let serverStats = null;
       try {
-        serverStats = await apiGet("/api/stats");
+        serverStats = await apiGet("/stats");
       } catch {}
 
       return {
@@ -381,14 +400,13 @@ async function handleMessage(msg, sender) {
       };
     }
 
-    // ----- Fallback -----
     default:
       return { error: `Unknown message type: ${msg.type}` };
   }
 }
 
 // ---------------------------------------------------------------------------
-// Tab closed — if the campaign tab is closed, stop the campaign
+// Tab closed — stop campaign if campaign tab is closed
 // ---------------------------------------------------------------------------
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
@@ -399,7 +417,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
       campaignTabId: null,
       currentJob: null,
     });
-    try { await apiPost("/api/campaign/stop", {}); } catch {}
+    try { await apiPost("/campaign/stop", {}); } catch {}
     updateBadge();
   }
 });

@@ -1,4 +1,4 @@
-const API_BASE = "https://web-production-db45.up.railway.app";
+// CONFIG is loaded from config.js via popup.html
 
 const $ = (id) => document.getElementById(id);
 
@@ -226,7 +226,7 @@ async function addLog(text, cls) {
 // ---------------------------------------------------------------------------
 
 $("btn-dash").addEventListener("click", () => {
-  chrome.tabs.create({ url: API_BASE });
+  chrome.tabs.create({ url: CONFIG.DASHBOARD_URL });
 });
 
 // ---------------------------------------------------------------------------
