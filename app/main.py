@@ -13,6 +13,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://jobflow-website.vercel.app",
+        "https://jobflow-website-beaa.vercel.app",
         "http://localhost:3000",
     ],
     allow_origin_regex=r"^chrome-extension://.*$",
