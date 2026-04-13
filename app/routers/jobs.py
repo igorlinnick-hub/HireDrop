@@ -2,15 +2,12 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
 from app.deps import get_current_user
 from app.schemas import FindJobsRequest, JobStatusUpdate
-from database.db import (
-    get_all_jobs, save_job, update_job_status, job_exists, get_connection
-)
-from modules.platforms import get_enabled_platforms
+from app.db import jobs as jobs_db
 from modules.filters import filter_jobs
 from modules.telegram_bot import send_notification
 
@@ -22,74 +19,63 @@ STUB_PLATFORMS = ["glassdoor", "ziprecruiter"]
 
 @router.get("/jobs")
 def get_jobs(user=Depends(get_current_user)):
-    jobs = get_all_jobs()
-    return [
-        {
-            "id": job["id"],
-            "title": job["title"],
-            "company": job["company"],
-            "link": job["link"],
-            "status": job["status"],
-            "date_found": job["date_found"],
-            "platform": job["platform"] if "platform" in job.keys() else "remoteok",
-        }
-        for job in jobs
-    ]
+    return jobs_db.get_jobs(user.id)
 
 
 @router.post("/jobs/find")
 def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
-    from data_helpers import load_profile, load_connections
+    from app.db.profile import get_profile, get_connections
     from modules.platforms.registry import PLATFORMS
 
-    profile = load_profile()
-    conns = load_connections()
+    profile = get_profile(user.id)
+    conns = get_connections(user.id)
     requested = req.platforms if (req and req.platforms) else profile.get("platforms", ["remoteok"])
 
-    scrapeable = []
-    for p in requested:
-        if p == "remoteok":
-            scrapeable.append(p)
-        elif p in CONNECTABLE_PLATFORMS and conns.get(p, {}).get("connected"):
-            scrapeable.append(p)
-        elif p in STUB_PLATFORMS:
-            pass  # skip silently
+    scrapeable = [
+        p for p in requested
+        if p == "remoteok"
+        or (p in CONNECTABLE_PLATFORMS and conns.get(p, {}).get("connected"))
+    ]
 
     platforms = [PLATFORMS[p]() for p in scrapeable if p in PLATFORMS]
-    all_jobs = []
-    searched_platforms = []
+    all_jobs, searched = [], []
+
     for platform in platforms:
-        jobs = platform.scrape(
+        found = platform.scrape(
             keywords=profile.get("keywords", []),
             location=profile.get("location", "remote"),
             max_results=25,
         )
-        all_jobs.extend(jobs)
-        searched_platforms.append(platform.display_name)
+        all_jobs.extend(found)
+        searched.append(platform.display_name)
 
     if not all_jobs:
-        return {"count": 0, "message": f"No jobs found from {', '.join(searched_platforms)}", "platforms": searched_platforms}
+        return {"count": 0, "message": f"No jobs found from {', '.join(searched)}", "platforms": searched}
 
     filtered = filter_jobs(all_jobs)
     if not filtered:
-        return {"count": 0, "message": "No new jobs matching keywords", "platforms": searched_platforms}
+        return {"count": 0, "message": "No new jobs matching keywords", "platforms": searched}
 
+    saved = 0
     for job in filtered:
-        save_job(
-            title=job["title"],
-            company=job["company"],
-            link=job["link"],
-            platform=job.get("platform", "unknown"),
-            description=job.get("description", ""),
-            location=job.get("location", ""),
-            job_type=job.get("job_type", ""),
-        )
+        if not jobs_db.job_exists(user.id, job["link"]):
+            jobs_db.save_job(
+                user_id=user.id,
+                title=job["title"],
+                company=job["company"],
+                link=job["link"],
+                platform=job.get("platform", "unknown"),
+                description=job.get("description", ""),
+                location=job.get("location", ""),
+                job_type=job.get("job_type", ""),
+            )
+            saved += 1
 
-    send_notification(f"JobFlow: {len(filtered)} new jobs found on {', '.join(searched_platforms)}!")
-    return {"count": len(filtered), "message": f"{len(filtered)} new jobs saved", "platforms": searched_platforms}
+    send_notification(f"JobFlow: {saved} new jobs found on {', '.join(searched)}!")
+    return {"count": saved, "message": f"{saved} new jobs saved", "platforms": searched}
 
 
 @router.patch("/jobs/{job_id}/status")
-def patch_job_status(job_id: int, req: JobStatusUpdate, user=Depends(get_current_user)):
-    update_job_status(job_id, req.status)
+def patch_job_status(job_id: str, req: JobStatusUpdate, user=Depends(get_current_user)):
+    jobs_db.update_job_status(user.id, job_id, req.status)
     return {"updated": True, "job_id": job_id, "status": req.status}

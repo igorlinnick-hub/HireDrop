@@ -6,7 +6,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import jobs, applications, campaign, profile, tools
-from database.db import init_db
 
 app = FastAPI(title="JobFlow API", version="1.0.0")
 
@@ -21,9 +20,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Initialize SQLite on startup (Phase 1 — replaced by Supabase in Phase 2)
-init_db()
 
 app.include_router(jobs.router, prefix="/api/v1")
 app.include_router(applications.router, prefix="/api/v1")

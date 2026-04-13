@@ -7,38 +7,24 @@ from fastapi.responses import JSONResponse, FileResponse
 
 from app.deps import get_current_user
 from app.schemas import ProfileUpdate, ConnectPlatformRequest
+from app.db import profile as profile_db
 
 router = APIRouter(tags=["profile"])
 
+CONNECTABLE_PLATFORMS = ["indeed", "wellfound"]
 DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
 RESUME_PATH = os.path.join(DATA_DIR, "resume.pdf")
-CONNECTIONS_PATH = os.path.join(DATA_DIR, "connections.json")
-
-CONNECTABLE_PLATFORMS = ["indeed", "wellfound"]
 
 
 @router.get("/profile")
 def get_profile(user=Depends(get_current_user)):
-    from data_helpers import load_profile
-    profile = load_profile()
-    profile.setdefault("last_name", "")
-    profile.setdefault("phone", "")
-    return profile
+    return profile_db.get_profile(user.id)
 
 
 @router.post("/profile")
 def update_profile(profile: ProfileUpdate, user=Depends(get_current_user)):
-    import json
-    from data_helpers import load_profile
-
-    PROFILE_PATH = os.path.join(DATA_DIR, "profile.json")
-    existing = load_profile()
-    data = profile.dict()
-    data["platform_credentials"] = existing.get("platform_credentials", {})
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(PROFILE_PATH, "w") as f:
-        json.dump(data, f, indent=2)
-    return {"message": "Profile saved", "profile": data}
+    updated = profile_db.update_profile(user.id, profile.dict())
+    return {"message": "Profile saved", "profile": updated}
 
 
 @router.post("/profile/resume")
@@ -66,42 +52,26 @@ def resume_download(user=Depends(get_current_user)):
 
 @router.get("/connections")
 def get_connections(user=Depends(get_current_user)):
-    from data_helpers import load_connections
-    conns = load_connections()
-    result = {}
-    for p in CONNECTABLE_PLATFORMS:
-        c = conns.get(p, {})
-        result[p] = {"connected": c.get("connected", False), "connected_at": c.get("connected_at")}
-    return result
+    conns = profile_db.get_connections(user.id)
+    return {
+        p: {"connected": conns.get(p, {}).get("connected", False),
+            "connected_at": conns.get(p, {}).get("connected_at")}
+        for p in CONNECTABLE_PLATFORMS
+    }
 
 
 @router.post("/connections/connect")
 def connect_platform(req: ConnectPlatformRequest, user=Depends(get_current_user)):
-    import json
-    from datetime import datetime
-    from data_helpers import load_connections
-
     if req.platform not in CONNECTABLE_PLATFORMS:
         return JSONResponse(
             status_code=400,
-            content={"error": f"Platform '{req.platform}' is not connectable. Supported: {CONNECTABLE_PLATFORMS}"}
+            content={"error": f"Not connectable. Supported: {CONNECTABLE_PLATFORMS}"}
         )
-    conns = load_connections()
-    conns[req.platform] = {"connected": True, "connected_at": datetime.now().isoformat()}
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(CONNECTIONS_PATH, "w") as f:
-        json.dump(conns, f, indent=2)
+    profile_db.set_connection(user.id, req.platform, True)
     return {"connected": True, "platform": req.platform}
 
 
 @router.post("/connections/disconnect")
 def disconnect_platform(req: ConnectPlatformRequest, user=Depends(get_current_user)):
-    import json
-    from data_helpers import load_connections
-
-    conns = load_connections()
-    conns[req.platform] = {"connected": False, "connected_at": None}
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(CONNECTIONS_PATH, "w") as f:
-        json.dump(conns, f, indent=2)
+    profile_db.set_connection(user.id, req.platform, False)
     return {"disconnected": True, "platform": req.platform}

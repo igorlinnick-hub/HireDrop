@@ -4,17 +4,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, Response
-from datetime import datetime
 
 from app.deps import get_current_user
 from app.schemas import CoverLetterRequest, LetterPreviewRequest, TemplateRequest
-from database.db import get_all_jobs, get_connection
+from app.db import jobs as jobs_db
+from app.db import applications as apps_db
+from app.db.profile import get_profile
 from modules.ai_cover_letter import generate_cover_letter
 from modules.telegram_bot import send_notification
 
 router = APIRouter(tags=["tools"])
 
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "templates")
 
 PLATFORM_INBOX_URLS = {
@@ -29,64 +29,49 @@ PLATFORM_INBOX_URLS = {
 }
 
 
-def _get_today():
-    return datetime.now().strftime("%Y-%m-%d")
-
-
 @router.get("/stats")
 def stats(user=Depends(get_current_user)):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM jobs")
-    total_jobs = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM applications")
-    total_applications = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM jobs WHERE date_found LIKE ?", (_get_today() + "%",))
-    new_today = cursor.fetchone()[0]
-    conn.close()
-    return {"total_jobs": total_jobs, "total_applications": total_applications, "new_today": new_today}
+    return {
+        "total_jobs": jobs_db.count_jobs(user.id),
+        "total_applications": apps_db.count_applications(user.id),
+        "new_today": jobs_db.count_jobs_found_today(user.id),
+    }
 
 
 @router.get("/checklist")
 def checklist(user=Depends(get_current_user)):
-    from data_helpers import load_profile
-    profile = load_profile()
-    resume_path = os.path.join(DATA_DIR, "resume.pdf")
-    has_resume = os.path.exists(resume_path)
+    profile = get_profile(user.id)
+    has_resume = profile.get("resume_url") or os.path.exists(
+        os.path.join(os.path.dirname(__file__), "..", "..", "data", "resume.pdf")
+    )
     has_keywords = len(profile.get("keywords", [])) > 0
     has_platforms = len(profile.get("platforms", [])) > 0
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM jobs")
-    has_searched = cursor.fetchone()[0] > 0
-    conn.close()
+    has_searched = jobs_db.count_jobs(user.id) > 0
     return {
-        "resume": has_resume,
+        "resume": bool(has_resume),
         "keywords": has_keywords,
         "platform": has_platforms,
         "search": has_searched,
-        "complete": has_resume and has_keywords and has_searched,
+        "complete": bool(has_resume) and has_keywords and has_searched,
     }
 
 
 @router.post("/tools/cover-letter")
 def cover_letter(req: CoverLetterRequest, user=Depends(get_current_user)):
-    jobs = get_all_jobs()
-    job = next((j for j in jobs if str(j["id"]) == str(req.job_id)), None)
+    job = jobs_db.get_job_by_id(user.id, req.job_id)
     if not job:
         return JSONResponse(status_code=404, content={"error": "Job not found"})
-    letter = generate_cover_letter({
-        "title": job["title"],
-        "company": job["company"],
-        "description": job["description"] if "description" in job.keys() else "",
-    })
+    profile = get_profile(user.id)
+    letter = generate_cover_letter(
+        {"title": job["title"], "company": job["company"], "description": job.get("description", "")},
+        profile,
+    )
     return {"letter": letter, "job_title": job["title"], "company": job["company"]}
 
 
 @router.post("/tools/cover-letter-preview")
 def cover_letter_preview(req: LetterPreviewRequest, user=Depends(get_current_user)):
-    from data_helpers import load_profile
-    profile = load_profile()
+    profile = get_profile(user.id)
     letter = generate_cover_letter(
         {
             "title": req.keywords or "the position",
@@ -114,24 +99,21 @@ def email_check(user=Depends(get_current_user)):
     if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
         return {"configured": False, "count": 0, "emails": []}
     responses = check_email_responses()
-    if responses:
-        for r in responses:
-            send_notification(f"JobFlow Email: {r['subject']}\nFrom: {r['sender']}")
+    for r in responses:
+        send_notification(f"JobFlow Email: {r['subject']}\nFrom: {r['sender']}")
     return {"configured": True, "count": len(responses), "emails": responses}
 
 
 @router.get("/platform/inbox-urls")
 def platform_inbox_urls(user=Depends(get_current_user)):
-    from data_helpers import load_profile
-    profile = load_profile()
+    profile = get_profile(user.id)
     enabled = profile.get("platforms", [])
     return {p: PLATFORM_INBOX_URLS[p] for p in enabled if p in PLATFORM_INBOX_URLS}
 
 
 @router.get("/extension/download")
 def download_extension(user=Depends(get_current_user)):
-    import zipfile
-    import io
+    import zipfile, io
     ext_dir = os.path.join(os.path.dirname(__file__), "..", "..", "chrome-extension")
     if not os.path.isdir(ext_dir):
         return JSONResponse(status_code=404, content={"error": "Extension folder not found"})
