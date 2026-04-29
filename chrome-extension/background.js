@@ -209,6 +209,15 @@ async function handleMessage(msg, sender) {
       }
     }
 
+    case "GET_RESUME_URL": {
+      try {
+        const r = await apiGet("/profile/resume/url");
+        return { url: r.url, expires_in: r.expires_in };
+      } catch (err) {
+        return { error: err.message };
+      }
+    }
+
     // ----- Campaign start -----
     case "START_CAMPAIGN": {
       const profile = await getCachedProfile();
