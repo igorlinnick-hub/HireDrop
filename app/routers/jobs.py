@@ -52,7 +52,7 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
     if not all_jobs:
         return {"count": 0, "message": f"No jobs found from {', '.join(searched)}", "platforms": searched}
 
-    filtered = filter_jobs(all_jobs)
+    filtered = filter_jobs(all_jobs, profile)
     if not filtered:
         return {"count": 0, "message": "No new jobs matching keywords", "platforms": searched}
 
