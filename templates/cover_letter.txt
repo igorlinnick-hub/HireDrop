@@ -1,10 +1,7 @@
-Dear Hiring Team at {company},
+Hi {company} team,
 
-I am writing to express my interest in the {title} position at {company}. With my background in marketing, content strategy, and automation, I am confident I can contribute meaningfully to your team.
+I'd like to apply for the {title} role. My background fits the work — I've shipped projects in this space and would bring that experience to your team.
 
-I have experience building efficient workflows, creating compelling content, and leveraging data-driven strategies to achieve measurable results. I am passionate about remote collaboration and thrive in distributed team environments.
+Happy to share more if it's a fit.
 
-I would welcome the opportunity to discuss how my skills align with your needs. Thank you for considering my application.
-
-Best regards,
-Igor Linnik
+{name}

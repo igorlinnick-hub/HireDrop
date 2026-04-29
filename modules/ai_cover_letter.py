@@ -27,14 +27,18 @@ def load_profile():
     return {}
 
 
-def fallback_template(job):
+def fallback_template(job, profile=None):
     try:
         with open(TEMPLATE_PATH, "r") as f:
             template = f.read()
     except FileNotFoundError:
         return ""
-    letter = template.replace("{company}", job.get("company", ""))
-    letter = letter.replace("{title}", job.get("title", ""))
+    profile = profile or {}
+    name_parts = [profile.get("name", "").strip(), profile.get("last_name", "").strip()]
+    name = " ".join(p for p in name_parts if p) or "Applicant"
+    letter = template.replace("{company}", job.get("company", "") or "the team")
+    letter = letter.replace("{title}", job.get("title", "") or "the role")
+    letter = letter.replace("{name}", name)
     return letter
 
 
@@ -61,11 +65,11 @@ STRICT RULES:
 
 
 def generate_cover_letter(job, profile=None):
-    if not ANTHROPIC_API_KEY:
-        return fallback_template(job)
-
     if profile is None:
         profile = load_profile()
+
+    if not ANTHROPIC_API_KEY:
+        return fallback_template(job, profile)
 
     resume_text = load_resume_text()
     writing_style = profile.get("writing_style", "")
@@ -96,4 +100,4 @@ Candidate background (from resume):
         return message.content[0].text
     except Exception as e:
         print(f"[cover_letter] AI generation failed: {e}")
-        return fallback_template(job)
+        return fallback_template(job, profile)
