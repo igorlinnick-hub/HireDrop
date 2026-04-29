@@ -7,6 +7,18 @@ RESUME_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "resume.pdf"
 PROFILE_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "profile.json")
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "..", "templates", "cover_letter.txt")
 
+_anthropic_client: anthropic.Anthropic | None = None
+
+
+def get_anthropic_client() -> anthropic.Anthropic:
+    """Module-level singleton — created once per process, reused across requests."""
+    global _anthropic_client
+    if _anthropic_client is None:
+        if not ANTHROPIC_API_KEY:
+            raise RuntimeError("ANTHROPIC_API_KEY not configured")
+        _anthropic_client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    return _anthropic_client
+
 
 def load_resume_text(max_chars=2000):
     if not os.path.exists(RESUME_PATH):
@@ -90,7 +102,7 @@ Candidate background (from resume):
 {resume_text if resume_text else 'Not provided.'}"""
 
     try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        client = get_anthropic_client()
         message = client.messages.create(
             model="claude-sonnet-4-20250514",
             max_tokens=512,
