@@ -99,6 +99,44 @@
     });
   }
 
+  // Wait for a real signal that the application was actually submitted
+  // (Phase 3.2 — Verify submission). Without this, every Submit click was
+  // counted as 'applied' even if Indeed showed a captcha, error toast,
+  // or simply did nothing. Returns { verified, signal } for activity log.
+  async function waitForSubmissionConfirmation(timeoutMs = 8000) {
+    const start = Date.now();
+    const startUrl = window.location.href;
+    const SUCCESS_TEXTS = [
+      "application submitted",
+      "thanks for applying",
+      "successfully applied",
+      "application sent",
+      "you've applied",
+      "you have applied",
+      "we've received your application",
+    ];
+    const POSTAPPLY_URL_HINTS = ["/applied", "postapply", "post_apply", "thank-you", "thankyou"];
+
+    while (Date.now() - start < timeoutMs) {
+      const url = window.location.href;
+      if (url !== startUrl) {
+        for (const hint of POSTAPPLY_URL_HINTS) {
+          if (url.toLowerCase().includes(hint)) {
+            return { verified: true, signal: `url:${hint}` };
+          }
+        }
+      }
+      const bodyText = (document.body.textContent || "").toLowerCase();
+      for (const phrase of SUCCESS_TEXTS) {
+        if (bodyText.includes(phrase)) {
+          return { verified: true, signal: `text:${phrase.slice(0, 30)}` };
+        }
+      }
+      await sleep(500);
+    }
+    return { verified: false, signal: "timeout" };
+  }
+
   // =========================================================================
   // React-compatible field filling
   // =========================================================================
@@ -676,24 +714,45 @@
         const submitBtn = findFormButton();
         if (submitBtn) {
           submitBtn.click();
-          log(`Applied: ${jobInfo.title} @ ${jobInfo.company}`, "ok");
 
-          // Report to background
-          await sendMsg({
-            type: "APPLICATION_SAVED",
-            data: {
-              job_title: jobInfo.title || "",
-              company: jobInfo.company || "",
-              platform: "indeed",
-              job_url: jobInfo.url || window.location.href,
-              cover_letter: coverLetter,
-              status: "applied",
-            },
-          });
+          // Wait for a real signal that Indeed accepted the submission.
+          // Without this, every Submit click was counted as 'applied' —
+          // captcha, error toasts, or silent failures all looked the same.
+          const result = await waitForSubmissionConfirmation(8000);
 
-          await addAppliedUrl(jobInfo.url || window.location.href);
+          if (result.verified) {
+            log(`Applied (verified ${result.signal}): ${jobInfo.title} @ ${jobInfo.company}`, "ok");
+            await sendMsg({
+              type: "APPLICATION_SAVED",
+              data: {
+                job_title: jobInfo.title || "",
+                company: jobInfo.company || "",
+                platform: "indeed",
+                job_url: jobInfo.url || window.location.href,
+                cover_letter: coverLetter,
+                status: "applied",
+                verified: true,
+                verify_signal: result.signal,
+              },
+            });
+            await addAppliedUrl(jobInfo.url || window.location.href);
+          } else {
+            // Submit clicked but no confirmation — do NOT increment counter,
+            // do NOT add to applied URLs (so we can retry on next pass).
+            log(`Submit unverified for ${jobInfo.title} @ ${jobInfo.company} (${result.signal})`, "err");
+            await sendMsg({
+              type: "STEP_FAILED",
+              data: {
+                phase: "verify_submission",
+                reason: "submit_unverified",
+                job_title: jobInfo.title || "",
+                company: jobInfo.company || "",
+                job_url: jobInfo.url || window.location.href,
+              },
+            });
+          }
 
-          // Wait then go back to job list
+          // Either way, navigate away from this job
           await sleep(rand(4000, 6000));
           await goBackToJobList();
           return;
