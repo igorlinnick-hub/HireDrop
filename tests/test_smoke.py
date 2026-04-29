@@ -70,3 +70,16 @@ def test_campaign_status_with_mock_user(auth_client, supabase_mock):
     body = res.json()
     assert "running" in body
     assert "today_applications" in body
+
+
+def test_activity_list_returns_list(auth_client):
+    from unittest.mock import patch
+    with patch("app.routers.activity.activity_db.list_recent", return_value=[]):
+        res = auth_client.get("/api/v1/activity")
+    assert res.status_code == 200
+    assert isinstance(res.json(), list)
+
+
+def test_activity_write_requires_message(auth_client):
+    res = auth_client.post("/api/v1/activity", json={})
+    assert res.status_code == 422
