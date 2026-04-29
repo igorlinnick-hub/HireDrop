@@ -219,17 +219,88 @@
   // PHASE 1 — Job List Page
   // =========================================================================
 
-  const JOB_CARD_SELECTORS = [
-    ".job_seen_beacon",
-    ".resultContent",
-    ".jobsearch-ResultsList li",
-    "[data-jk]",
-    'div[class*="cardOutline"]',
-    'td.resultContent',
-  ];
+  // Hardcoded fallback — kept in sync with the seed in
+  // supabase-schema-v3.sql. Used if the selectors fetch fails (first run
+  // before login, API down, etc) so the bot still works.
+  const FALLBACK_SELECTORS = {
+    jobCards: [
+      ".job_seen_beacon",
+      ".resultContent",
+      ".jobsearch-ResultsList li",
+      "[data-jk]",
+      'div[class*="cardOutline"]',
+      'td.resultContent',
+    ],
+    applyButton: [
+      'button[id*="indeedApply"]',
+      ".ia-IndeedApplyButton",
+      'button[class*="IndeedApply"]',
+      'button[aria-label*="Apply now"]',
+      'a[href*="/applystart"]',
+      'button[data-testid*="apply"]',
+    ],
+    fields: {
+      firstName: [
+        'input[name*="firstName" i]',
+        'input[id*="firstName" i]',
+        'input[name*="first_name" i]',
+        'input[autocomplete="given-name"]',
+      ],
+      lastName: [
+        'input[name*="lastName" i]',
+        'input[id*="lastName" i]',
+        'input[name*="last_name" i]',
+        'input[autocomplete="family-name"]',
+      ],
+      email: [
+        'input[type="email"]',
+        'input[name*="email" i]',
+        'input[id*="email" i]',
+        'input[autocomplete="email"]',
+      ],
+      phone: [
+        'input[type="tel"]',
+        'input[name*="phone" i]',
+        'input[id*="phone" i]',
+        'input[autocomplete="tel"]',
+      ],
+      coverLetter: [
+        'textarea[name*="coverletter" i]',
+        'textarea[name*="cover_letter" i]',
+        'textarea[name*="message" i]',
+        'textarea[aria-label*="cover letter" i]',
+        'textarea[id*="coverLetter" i]',
+        'textarea[id*="message" i]',
+      ],
+    },
+  };
+
+  // Loaded from backend at startup; falls back to the constants above.
+  let SELECTORS = FALLBACK_SELECTORS;
+
+  async function loadSelectors() {
+    try {
+      const cached = await chrome.storage.local.get(["selectors_indeed", "selectors_indeed_at"]);
+      const fresh = cached.selectors_indeed_at && Date.now() - cached.selectors_indeed_at < 24 * 3600 * 1000;
+      if (fresh && cached.selectors_indeed) {
+        SELECTORS = cached.selectors_indeed;
+        return;
+      }
+      const resp = await sendMsg({ type: "GET_SELECTORS", platform: "indeed" });
+      if (resp?.selectors) {
+        SELECTORS = resp.selectors;
+        await chrome.storage.local.set({
+          selectors_indeed: resp.selectors,
+          selectors_indeed_at: Date.now(),
+        });
+      }
+    } catch {
+      // keep FALLBACK_SELECTORS
+    }
+  }
 
   function findJobCards() {
-    for (const sel of JOB_CARD_SELECTORS) {
+    for (const sel of SELECTORS.jobCards || FALLBACK_SELECTORS.jobCards) {
       const cards = document.querySelectorAll(sel);
       if (cards.length > 0) return Array.from(cards);
     }
@@ -450,15 +521,7 @@
   }
 
   function findApplyButton() {
-    // Indeed's apply buttons in priority order
-    const selectors = [
-      'button[id*="indeedApply"]',
-      ".ia-IndeedApplyButton",
-      'button[class*="IndeedApply"]',
-      'button[aria-label*="Apply now"]',
-      'a[href*="/applystart"]',
-      'button[data-testid*="apply"]',
-    ];
+    const selectors = SELECTORS.applyButton || FALLBACK_SELECTORS.applyButton;
 
     for (const sel of selectors) {
       const el = document.querySelector(sel);
@@ -480,41 +543,6 @@
   // PHASE 3 — Application Form (multi-step)
   // =========================================================================
 
-  const FIELD_SELECTORS = {
-    firstName: [
-      'input[name*="firstName" i]',
-      'input[id*="firstName" i]',
-      'input[name*="first_name" i]',
-      'input[autocomplete="given-name"]',
-    ],
-    lastName: [
-      'input[name*="lastName" i]',
-      'input[id*="lastName" i]',
-      'input[name*="last_name" i]',
-      'input[autocomplete="family-name"]',
-    ],
-    email: [
-      'input[type="email"]',
-      'input[name*="email" i]',
-      'input[id*="email" i]',
-      'input[autocomplete="email"]',
-    ],
-    phone: [
-      'input[type="tel"]',
-      'input[name*="phone" i]',
-      'input[id*="phone" i]',
-      'input[autocomplete="tel"]',
-    ],
-    coverLetter: [
-      'textarea[name*="coverletter" i]',
-      'textarea[name*="cover_letter" i]',
-      'textarea[name*="message" i]',
-      'textarea[aria-label*="cover letter" i]',
-      'textarea[id*="coverLetter" i]',
-      'textarea[id*="message" i]',
-    ],
-  };
-
   const LABEL_FALLBACKS = {
     firstName: "first name",
     lastName: "last name",
@@ -524,8 +552,9 @@
   };
 
   function findFieldBySelectorsOrLabel(fieldName) {
-    // Try direct selectors first
-    const selectors = FIELD_SELECTORS[fieldName] || [];
+    // Try direct selectors first (loaded from backend, falls back to constants)
+    const fields = SELECTORS.fields || FALLBACK_SELECTORS.fields;
+    const selectors = fields[fieldName] || [];
     for (const sel of selectors) {
       const el = document.querySelector(sel);
       if (el && el.offsetParent !== null) return el;
@@ -996,6 +1025,9 @@
   // =========================================================================
 
   async function init() {
+    // Pull DOM selectors from backend (cached 24h) — Phase 4.1
+    await loadSelectors();
+
     // Start observing DOM changes
     if (document.body) {
       observer.observe(document.body, { childList: true, subtree: true });

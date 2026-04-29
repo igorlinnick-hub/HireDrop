@@ -225,6 +225,16 @@ async function handleMessage(msg, sender) {
       }
     }
 
+    case "GET_SELECTORS": {
+      try {
+        const platform = msg.platform || "indeed";
+        const r = await apiGet(`/extension/selectors/${platform}`);
+        return { selectors: r.selectors, version: r.version };
+      } catch (err) {
+        return { error: err.message };
+      }
+    }
+
     // ----- Campaign start -----
     case "START_CAMPAIGN": {
       const profile = await getCachedProfile();
