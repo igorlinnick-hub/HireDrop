@@ -5,10 +5,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, Response
 
+from fastapi import HTTPException
+
 from app.deps import get_current_user
 from app.schemas import CoverLetterRequest, LetterPreviewRequest, TemplateRequest
 from app.db import jobs as jobs_db
 from app.db import applications as apps_db
+from app.db import usage as usage_db
 from app.db.profile import get_profile
 from modules.ai_cover_letter import generate_cover_letter
 from modules.telegram_bot import send_notification
@@ -16,6 +19,24 @@ from modules.telegram_bot import send_notification
 router = APIRouter(tags=["tools"])
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "templates")
+
+RATE_LIMIT_LETTERS_PER_DAY = int(os.getenv("RATE_LIMIT_LETTERS_PER_DAY", "50"))
+RATE_LIMIT_ENFORCE = os.getenv("RATE_LIMIT_ENFORCE", "false").lower() in ("1", "true", "yes")
+
+
+def _rate_limit_check(user_id: str) -> None:
+    """Raise 429 if the user is past the daily quota.
+
+    During the soft-launch window set RATE_LIMIT_ENFORCE=false in env — the
+    counter still increments, so we get visibility into who hits the limit
+    without breaking anyone. Flip to true once the data is healthy.
+    """
+    used = usage_db.get_today_count(user_id)
+    if RATE_LIMIT_ENFORCE and used >= RATE_LIMIT_LETTERS_PER_DAY:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Daily cover letter limit reached ({used}/{RATE_LIMIT_LETTERS_PER_DAY}). Try again tomorrow.",
+        )
 
 PLATFORM_INBOX_URLS = {
     "remoteok": "https://remoteok.com/messages",
@@ -58,6 +79,7 @@ def checklist(user=Depends(get_current_user)):
 
 @router.post("/tools/cover-letter")
 def cover_letter(req: CoverLetterRequest, user=Depends(get_current_user)):
+    _rate_limit_check(user.id)
     job = jobs_db.get_job_by_id(user.id, req.job_id)
     if not job:
         return JSONResponse(status_code=404, content={"error": "Job not found"})
@@ -66,11 +88,13 @@ def cover_letter(req: CoverLetterRequest, user=Depends(get_current_user)):
         {"title": job["title"], "company": job["company"], "description": job.get("description", "")},
         profile,
     )
+    usage_db.increment_today(user.id)
     return {"letter": letter, "job_title": job["title"], "company": job["company"]}
 
 
 @router.post("/tools/cover-letter-preview")
 def cover_letter_preview(req: LetterPreviewRequest, user=Depends(get_current_user)):
+    _rate_limit_check(user.id)
     profile = get_profile(user.id)
     letter = generate_cover_letter(
         {
@@ -80,6 +104,7 @@ def cover_letter_preview(req: LetterPreviewRequest, user=Depends(get_current_use
         },
         profile,
     )
+    usage_db.increment_today(user.id)
     return {"letter": letter}
 
 
