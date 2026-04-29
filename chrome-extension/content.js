@@ -786,9 +786,15 @@
   }
 
   async function uploadResume(fileInput) {
-    // Fetch resume PDF from API
-    const res = await fetch(`${API_BASE}/api/resume-download`);
-    if (!res.ok) throw new Error("No resume on server");
+    // Resume now lives in Supabase Storage (Phase 3.5). Backend returns a
+    // signed URL valid for 1h that the content script fetches directly —
+    // the Storage URL doesn't need our Bearer token, the signature is the
+    // capability.
+    const signed = await sendMsg({ type: "GET_RESUME_URL" });
+    if (!signed?.url) throw new Error(signed?.error || "No resume on server");
+
+    const res = await fetch(signed.url);
+    if (!res.ok) throw new Error(`Resume download failed: ${res.status}`);
 
     const blob = await res.blob();
     const file = new File([blob], "resume.pdf", { type: "application/pdf" });

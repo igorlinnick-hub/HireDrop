@@ -3,17 +3,16 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from fastapi import APIRouter, Depends, UploadFile, File
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.deps import get_current_user
 from app.schemas import ProfileUpdate, ConnectPlatformRequest
 from app.db import profile as profile_db
+from app.db import resume as resume_storage
 
 router = APIRouter(tags=["profile"])
 
 CONNECTABLE_PLATFORMS = ["indeed", "wellfound"]
-DATA_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "data")
-RESUME_PATH = os.path.join(DATA_DIR, "resume.pdf")
 
 
 @router.get("/profile")
@@ -32,22 +31,30 @@ async def upload_resume(file: UploadFile = File(...), user=Depends(get_current_u
     if not file.filename.lower().endswith(".pdf"):
         return JSONResponse(status_code=400, content={"error": "Only PDF files accepted"})
     contents = await file.read()
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(RESUME_PATH, "wb") as f:
-        f.write(contents)
+    resume_storage.upload(user.id, contents)
     return {"message": "Resume uploaded successfully", "filename": file.filename}
 
 
 @router.get("/profile/resume/status")
 def resume_status(user=Depends(get_current_user)):
-    return {"uploaded": os.path.exists(RESUME_PATH)}
+    return {"uploaded": resume_storage.exists(user.id)}
 
 
 @router.get("/profile/resume/download")
 def resume_download(user=Depends(get_current_user)):
-    if not os.path.exists(RESUME_PATH):
+    url = resume_storage.signed_download_url(user.id)
+    if not url:
         return JSONResponse(status_code=404, content={"error": "No resume uploaded"})
-    return FileResponse(RESUME_PATH, media_type="application/pdf", filename="resume.pdf")
+    return RedirectResponse(url=url, status_code=307)
+
+
+@router.get("/profile/resume/url")
+def resume_signed_url(user=Depends(get_current_user)):
+    """Return a signed URL the extension can fetch directly without auth."""
+    url = resume_storage.signed_download_url(user.id)
+    if not url:
+        return JSONResponse(status_code=404, content={"error": "No resume uploaded"})
+    return {"url": url, "expires_in": resume_storage.SIGNED_URL_TTL_SECONDS}
 
 
 @router.get("/connections")
