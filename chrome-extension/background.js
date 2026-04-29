@@ -145,6 +145,13 @@ async function addToActivityLog(text, cls) {
   });
   if (logs.length > 50) logs.length = 50;
   await chrome.storage.local.set({ activity_log: logs });
+
+  // Best-effort mirror to backend (Phase 4.2). Never blocks; if the user
+  // is logged out or the API is down, the local log still works.
+  try {
+    const level = cls === "err" ? "error" : (cls === "warn" ? "warn" : "info");
+    await apiPost("/activity", { message: text, level, phase: "extension" });
+  } catch {}
 }
 
 // ---------------------------------------------------------------------------
