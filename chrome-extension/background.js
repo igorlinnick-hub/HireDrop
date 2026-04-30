@@ -387,6 +387,32 @@ async function handleMessage(msg, sender) {
     case "STEP_FAILED":
       return { ok: true };
 
+    // ----- Detection tripped (Phase 5.5) -----
+    case "DETECTION_TRIPPED": {
+      const data = msg.data || {};
+      // Mirror to backend activity log with explicit error level.
+      try {
+        await apiPost("/activity", {
+          message: `Detection tripped (${data.signal}) on ${data.url}`,
+          level: "error",
+          phase: "detection",
+          metadata: { signal: data.signal, page_phase: data.phase, url: data.url },
+        });
+      } catch {}
+      // Local log so the popup shows it without waiting for a refresh.
+      await addToActivityLog(`⚠️ Detection on Indeed (${data.signal}) — campaign paused`, "err");
+      // System notification so the user sees this even if the popup is closed.
+      try {
+        await chrome.notifications.create({
+          type: "basic",
+          iconUrl: "icons/icon128.png",
+          title: "JobFlow paused",
+          message: `Indeed flagged the session (${data.signal}). Wait a few hours before resuming.`,
+        });
+      } catch {}
+      return { handled: true };
+    }
+
     // ----- Status (popup polls this) -----
     case "GET_STATUS": {
       const data = await chrome.storage.local.get([

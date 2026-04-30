@@ -1,14 +1,15 @@
 {
   "manifest_version": 3,
   "name": "JobFlow",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "AI-powered job application automation. Auto-fill forms and track applications from your JobFlow dashboard.",
   "permissions": [
     "activeTab",
     "storage",
     "scripting",
     "tabs",
-    "alarms"
+    "alarms",
+    "notifications"
   ],
   "host_permissions": [
     "https://web-production-db45.up.railway.app/*",
