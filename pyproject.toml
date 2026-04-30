@@ -1,0 +1,55 @@
+[project]
+name = "jobflow"
+version = "1.0.0"
+description = "AI-powered job application automation"
+requires-python = ">=3.12"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = [".venv", "__pycache__", ".pytest_cache"]
+
+[tool.ruff.lint]
+# E,F = pyflakes/pycodestyle errors. I = isort. N = naming. UP = pyupgrade.
+# B = bugbear. A = builtins shadowing. C4 = comprehensions. SIM = simplify.
+# S = bandit security (subset).
+select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "SIM", "S"]
+# Tests run with mocks and fake JWTs — security warnings there are noise.
+ignore = [
+    "E501",   # line length — soft limit, ruff format handles it
+    "S101",   # assert in tests is fine
+    "S105",   # hardcoded "test" passwords in fixtures
+    "S106",   # same as S105 for keyword arguments
+    "B008",   # FastAPI's `Depends(...)` is exactly this pattern
+    "SIM117", # nested with — fine for explicit blocks
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "N"]
+
+[tool.pyright]
+include = ["app", "modules", "tests"]
+exclude = [".venv", "__pycache__"]
+typeCheckingMode = "basic"
+pythonVersion = "3.12"
+reportMissingImports = "warning"
+reportMissingTypeStubs = "none"
+
+[tool.pytest.ini_options]
+# Threshold ramp: 60 (current baseline excluding HTTP-IO modules) → 86 (QUALITY.md
+# target). Bumping the floor each PR forces every change to be net-positive on coverage.
+addopts = "-q --cov=app --cov=modules --cov-report=term-missing --cov-fail-under=60"
+testpaths = ["tests"]
+
+[tool.coverage.run]
+omit = [
+    "tests/*",
+    "*/__pycache__/*",
+    ".venv/*",
+    # External-IO modules — require live HTTP/IMAP mocks to test meaningfully.
+    # Excluded for now to keep the threshold honest. Add coverage when we
+    # introduce VCR-style cassettes or testcontainers-backed integration tests.
+    "modules/email_parser.py",
+    "modules/telegram_bot.py",
+    "modules/platforms/*.py",
+]

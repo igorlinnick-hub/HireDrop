@@ -1,7 +1,8 @@
-import imaplib
 import email
+import imaplib
 from email.header import decode_header
-from config import EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_IMAP_SERVER
+
+from config import EMAIL_ADDRESS, EMAIL_IMAP_SERVER, EMAIL_PASSWORD
 
 KEYWORDS = ["interview", "application received", "next step", "thank you for applying"]
 
@@ -50,11 +51,13 @@ def check_email_responses():
 
             subject_lower = subject.lower()
             if any(kw in subject_lower for kw in KEYWORDS):
-                results.append({
-                    "subject": subject,
-                    "sender": sender,
-                    "date": date,
-                })
+                results.append(
+                    {
+                        "subject": subject,
+                        "sender": sender,
+                        "date": date,
+                    }
+                )
 
         mail.logout()
     except imaplib.IMAP4.error as e:

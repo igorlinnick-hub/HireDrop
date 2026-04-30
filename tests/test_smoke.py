@@ -28,8 +28,7 @@ def test_profile_invalid_bearer_format(client):
 
 
 def test_profile_with_mock_user_returns_defaults(auth_client, supabase_mock):
-    supabase_mock.table.return_value.select.return_value \
-        .eq.return_value.execute.return_value.data = []
+    supabase_mock.table.return_value.select.return_value.eq.return_value.execute.return_value.data = []
 
     res = auth_client.get("/api/v1/profile")
     assert res.status_code == 200
@@ -52,8 +51,7 @@ def test_stats_with_mock_user(auth_client, supabase_mock):
 
 
 def test_applications_history_returns_list(auth_client, supabase_mock):
-    supabase_mock.table.return_value.select.return_value.eq.return_value \
-        .order.return_value.limit.return_value.execute.return_value.data = []
+    supabase_mock.table.return_value.select.return_value.eq.return_value.order.return_value.limit.return_value.execute.return_value.data = []
 
     res = auth_client.get("/api/v1/applications/history")
     assert res.status_code == 200
@@ -74,6 +72,7 @@ def test_campaign_status_with_mock_user(auth_client, supabase_mock):
 
 def test_activity_list_returns_list(auth_client):
     from unittest.mock import patch
+
     with patch("app.routers.activity.activity_db.list_recent", return_value=[]):
         res = auth_client.get("/api/v1/activity")
     assert res.status_code == 200

@@ -1,6 +1,8 @@
-import os
 import json
+import os
+
 import anthropic
+
 from config import ANTHROPIC_API_KEY
 
 RESUME_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "resume.pdf")
@@ -25,6 +27,7 @@ def load_resume_text(max_chars=2000):
         return ""
     try:
         import pdfplumber
+
         with pdfplumber.open(RESUME_PATH) as pdf:
             text = "\n".join(page.extract_text() or "" for page in pdf.pages)
             return text[:max_chars]
@@ -34,14 +37,14 @@ def load_resume_text(max_chars=2000):
 
 def load_profile():
     if os.path.exists(PROFILE_PATH):
-        with open(PROFILE_PATH, "r") as f:
+        with open(PROFILE_PATH) as f:
             return json.load(f)
     return {}
 
 
 def fallback_template(job, profile=None):
     try:
-        with open(TEMPLATE_PATH, "r") as f:
+        with open(TEMPLATE_PATH) as f:
             template = f.read()
     except FileNotFoundError:
         return ""
@@ -87,19 +90,19 @@ def generate_cover_letter(job, profile=None):
     writing_style = profile.get("writing_style", "")
     system = build_system_prompt(writing_style)
 
-    description = job.get('description', 'Not available')[:500]
+    description = job.get("description", "Not available")[:500]
 
     prompt = f"""Write a cover letter for this job application.
 
-Job Title: {job.get('title', '')}
-Company: {job.get('company', '')}
+Job Title: {job.get("title", "")}
+Company: {job.get("company", "")}
 Job Description: {description}
 
-Applicant Name: {profile.get('name', '')}
-Applicant Email: {profile.get('email', '')}
+Applicant Name: {profile.get("name", "")}
+Applicant Email: {profile.get("email", "")}
 
 Candidate background (from resume):
-{resume_text if resume_text else 'Not provided.'}"""
+{resume_text if resume_text else "Not provided."}"""
 
     try:
         client = get_anthropic_client()

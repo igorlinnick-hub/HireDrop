@@ -1,4 +1,5 @@
 import requests
+
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"

@@ -4,6 +4,7 @@ Today only tracks `cover_letter_usage` — increment on every successful
 cover-letter generation, read for quota check before the LLM call.
 Single owner of the cover_letter_usage table.
 """
+
 from datetime import date
 
 from app.db.client import get_supabase

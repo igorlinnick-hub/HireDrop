@@ -3,12 +3,20 @@
 After Phase 2 refactor, filter_jobs has no I/O — these tests don't need
 fixtures or mocks.
 """
+
 from modules.filters import filter_jobs
 
 
 def _job(**kwargs):
-    base = {"title": "", "company": "", "link": "", "tags": [], "description": "",
-            "location": "", "job_type": ""}
+    base = {
+        "title": "",
+        "company": "",
+        "link": "",
+        "tags": [],
+        "description": "",
+        "location": "",
+        "job_type": "",
+    }
     base.update(kwargs)
     return base
 

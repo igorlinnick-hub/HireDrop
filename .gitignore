@@ -12,3 +12,4 @@ data/campaign_state.json
 # Dev / test
 .venv/
 .pytest_cache/
+.coverage

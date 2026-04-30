@@ -1,5 +1,7 @@
 """Все операции с таблицей applications в Supabase."""
+
 from datetime import date
+
 from app.db.client import get_supabase
 
 
@@ -36,7 +38,7 @@ def get_history(user_id: str, limit: int = 50) -> list:
         .execute()
     )
     rows = []
-    for row in (res.data or []):
+    for row in res.data or []:
         job = row.get("jobs") or {}
         rows.append(
             {
@@ -87,7 +89,7 @@ def count_today_by_platform(user_id: str) -> dict:
         .execute()
     )
     counts: dict = {}
-    for row in (res.data or []):
+    for row in res.data or []:
         platform = (row.get("jobs") or {}).get("platform", "unknown")
         counts[platform] = counts.get(platform, 0) + 1
     return counts

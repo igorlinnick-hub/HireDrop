@@ -1,5 +1,5 @@
-from modules.platforms.remoteok import RemoteOKPlatform
 from modules.platforms.indeed import IndeedPlatform
+from modules.platforms.remoteok import RemoteOKPlatform
 from modules.platforms.wellfound import WellfoundPlatform
 
 PLATFORMS = {

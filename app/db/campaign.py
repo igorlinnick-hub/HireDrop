@@ -1,16 +1,12 @@
 """Операции с campaign_states в Supabase."""
-from datetime import datetime, timezone
+
+from datetime import UTC, datetime
+
 from app.db.client import get_supabase
 
 
 def get_state(user_id: str) -> dict:
-    res = (
-        get_supabase()
-        .table("campaign_states")
-        .select("*")
-        .eq("user_id", user_id)
-        .execute()
-    )
+    res = get_supabase().table("campaign_states").select("*").eq("user_id", user_id).execute()
     if res.data:
         s = res.data[0]
         return {
@@ -22,7 +18,7 @@ def get_state(user_id: str) -> dict:
 
 
 def start(user_id: str, filters: dict) -> dict:
-    now = datetime.now(timezone.utc).isoformat()
+    now = datetime.now(UTC).isoformat()
     (
         get_supabase()
         .table("campaign_states")

@@ -1,18 +1,17 @@
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, Response
 
-from fastapi import HTTPException
-
-from app.deps import get_current_user
-from app.schemas import CoverLetterRequest, LetterPreviewRequest, TemplateRequest
-from app.db import jobs as jobs_db
 from app.db import applications as apps_db
+from app.db import jobs as jobs_db
 from app.db import usage as usage_db
 from app.db.profile import get_profile
+from app.deps import get_current_user
+from app.schemas import CoverLetterRequest, LetterPreviewRequest, TemplateRequest
 from modules.ai_cover_letter import generate_cover_letter
 from modules.telegram_bot import send_notification
 
@@ -37,6 +36,7 @@ def _rate_limit_check(user_id: str) -> None:
             status_code=429,
             detail=f"Daily cover letter limit reached ({used}/{RATE_LIMIT_LETTERS_PER_DAY}). Try again tomorrow.",
         )
+
 
 PLATFORM_INBOX_URLS = {
     "remoteok": "https://remoteok.com/messages",
@@ -85,7 +85,11 @@ def cover_letter(req: CoverLetterRequest, user=Depends(get_current_user)):
         return JSONResponse(status_code=404, content={"error": "Job not found"})
     profile = get_profile(user.id)
     letter = generate_cover_letter(
-        {"title": job["title"], "company": job["company"], "description": job.get("description", "")},
+        {
+            "title": job["title"],
+            "company": job["company"],
+            "description": job.get("description", ""),
+        },
         profile,
     )
     usage_db.increment_today(user.id)
@@ -138,7 +142,9 @@ def platform_inbox_urls(user=Depends(get_current_user)):
 
 @router.get("/extension/download")
 def download_extension(user=Depends(get_current_user)):
-    import zipfile, io
+    import io
+    import zipfile
+
     ext_dir = os.path.join(os.path.dirname(__file__), "..", "..", "chrome-extension")
     if not os.path.isdir(ext_dir):
         return JSONResponse(status_code=404, content={"error": "Extension folder not found"})

@@ -5,12 +5,11 @@ every redesign blocks on a chrome web store rebuild + propagation. This
 table lets us patch selectors via SQL — extension picks them up on the
 next 24h cache refresh, no release.
 """
-from typing import Optional
 
 from app.db.client import get_supabase
 
 
-def get(platform: str) -> Optional[dict]:
+def get(platform: str) -> dict | None:
     res = (
         get_supabase()
         .table("platform_selectors")
