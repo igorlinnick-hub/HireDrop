@@ -107,7 +107,9 @@ Candidate background (from resume):
     try:
         client = get_anthropic_client()
         message = client.messages.create(
-            model="claude-sonnet-4-20250514",
+            # Sonnet 4 (claude-sonnet-4-20250514) reaches end-of-life 2026-06-15.
+            # 4.6 is the current default for cover-letter quality vs cost.
+            model="claude-sonnet-4-6",
             max_tokens=512,
             system=system,
             messages=[{"role": "user", "content": prompt}],
