@@ -8,6 +8,7 @@ Why a separate Storage owner: the previous design wrote the PDF to the
 container's local filesystem (data/resume.pdf), which Railway wipes on
 every redeploy. C7 in the refactor plan makes resumes persistent.
 """
+
 from app.db.client import get_supabase
 
 BUCKET = "resumes"

@@ -1,4 +1,7 @@
 """Операции с таблицей profiles в Supabase."""
+
+from datetime import UTC
+
 from app.db.client import get_supabase
 
 _DEFAULTS = {
@@ -16,13 +19,7 @@ _DEFAULTS = {
 
 
 def get_profile(user_id: str) -> dict:
-    res = (
-        get_supabase()
-        .table("profiles")
-        .select("*")
-        .eq("user_id", user_id)
-        .execute()
-    )
+    res = get_supabase().table("profiles").select("*").eq("user_id", user_id).execute()
     if not res.data:
         return dict(_DEFAULTS)
 
@@ -52,36 +49,25 @@ def update_profile(user_id: str, data: dict) -> dict:
         "platforms": data.get("platforms", ["remoteok"]),
         "writing_style": data.get("writing_style", ""),
     }
-    (
-        get_supabase()
-        .table("profiles")
-        .update(payload)
-        .eq("user_id", user_id)
-        .execute()
-    )
+    (get_supabase().table("profiles").update(payload).eq("user_id", user_id).execute())
     return get_profile(user_id)
 
 
 def get_connections(user_id: str) -> dict:
     """Возвращает platform connections из поля profiles.connections."""
-    res = (
-        get_supabase()
-        .table("profiles")
-        .select("connections")
-        .eq("user_id", user_id)
-        .execute()
-    )
+    res = get_supabase().table("profiles").select("connections").eq("user_id", user_id).execute()
     if res.data:
         return res.data[0].get("connections") or {}
     return {}
 
 
 def set_connection(user_id: str, platform: str, connected: bool) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
+
     conns = get_connections(user_id)
     conns[platform] = {
         "connected": connected,
-        "connected_at": datetime.now(timezone.utc).isoformat() if connected else None,
+        "connected_at": datetime.now(UTC).isoformat() if connected else None,
     }
     (
         get_supabase()

@@ -4,6 +4,7 @@ Strategy: env vars set BEFORE importing app, Supabase client mocked at the
 module-level singleton so no real network is hit. Auth dependency overridden
 via FastAPI's dependency_overrides for endpoints behind get_current_user.
 """
+
 import os
 from unittest.mock import MagicMock, patch
 
@@ -33,8 +34,10 @@ def supabase_mock():
             .eq.return_value.execute.return_value.data = [...]
     """
     fake = MagicMock()
-    with patch("app.db.client._client", fake), \
-         patch("app.db.client.get_supabase", return_value=fake):
+    with (
+        patch("app.db.client._client", fake),
+        patch("app.db.client.get_supabase", return_value=fake),
+    ):
         yield fake
 
 
@@ -42,7 +45,9 @@ def supabase_mock():
 def client(supabase_mock):
     """Unauthenticated TestClient — Supabase is mocked but auth NOT overridden."""
     from fastapi.testclient import TestClient
+
     from app.main import app
+
     return TestClient(app)
 
 
@@ -50,8 +55,9 @@ def client(supabase_mock):
 def auth_client(supabase_mock, fake_user):
     """TestClient with get_current_user overridden to return FakeUser."""
     from fastapi.testclient import TestClient
-    from app.main import app
+
     from app.deps import get_current_user
+    from app.main import app
 
     app.dependency_overrides[get_current_user] = lambda: fake_user
     yield TestClient(app)

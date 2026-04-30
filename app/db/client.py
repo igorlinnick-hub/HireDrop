@@ -1,9 +1,10 @@
 """Supabase client singleton — единственное место где создаётся клиент."""
-import os
-from typing import Optional
-from supabase import create_client, Client
 
-_client: Optional[Client] = None
+import os
+
+from supabase import Client, create_client
+
+_client: Client | None = None
 
 
 def get_supabase() -> Client:

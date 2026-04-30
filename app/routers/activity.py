@@ -1,14 +1,14 @@
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from typing import Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from app.deps import get_current_user
 from app.db import activity as activity_db
+from app.deps import get_current_user
 
 router = APIRouter(tags=["activity"])
 
@@ -16,9 +16,9 @@ router = APIRouter(tags=["activity"])
 class ActivityWriteRequest(BaseModel):
     message: str = Field(..., max_length=2000)
     level: str = "info"
-    phase: Optional[str] = None
-    trace_id: Optional[str] = None
-    metadata: Optional[dict] = None
+    phase: str | None = None
+    trace_id: str | None = None
+    metadata: dict | None = None
 
 
 @router.post("/activity")

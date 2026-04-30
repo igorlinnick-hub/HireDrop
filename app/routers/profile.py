@@ -1,14 +1,15 @@
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from fastapi import APIRouter, Depends, UploadFile, File
+from fastapi import APIRouter, Depends, File, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse
 
-from app.deps import get_current_user
-from app.schemas import ProfileUpdate, ConnectPlatformRequest
 from app.db import profile as profile_db
 from app.db import resume as resume_storage
+from app.deps import get_current_user
+from app.schemas import ConnectPlatformRequest, ProfileUpdate
 
 router = APIRouter(tags=["profile"])
 
@@ -61,8 +62,10 @@ def resume_signed_url(user=Depends(get_current_user)):
 def get_connections(user=Depends(get_current_user)):
     conns = profile_db.get_connections(user.id)
     return {
-        p: {"connected": conns.get(p, {}).get("connected", False),
-            "connected_at": conns.get(p, {}).get("connected_at")}
+        p: {
+            "connected": conns.get(p, {}).get("connected", False),
+            "connected_at": conns.get(p, {}).get("connected_at"),
+        }
         for p in CONNECTABLE_PLATFORMS
     }
 
@@ -72,7 +75,7 @@ def connect_platform(req: ConnectPlatformRequest, user=Depends(get_current_user)
     if req.platform not in CONNECTABLE_PLATFORMS:
         return JSONResponse(
             status_code=400,
-            content={"error": f"Not connectable. Supported: {CONNECTABLE_PLATFORMS}"}
+            content={"error": f"Not connectable. Supported: {CONNECTABLE_PLATFORMS}"},
         )
     profile_db.set_connection(user.id, req.platform, True)
     return {"connected": True, "platform": req.platform}

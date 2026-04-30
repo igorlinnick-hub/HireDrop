@@ -1,12 +1,13 @@
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
-from app.deps import get_current_user
 from app.db import selectors as selectors_db
+from app.deps import get_current_user
 
 router = APIRouter(tags=["extension"])
 
@@ -15,7 +16,9 @@ router = APIRouter(tags=["extension"])
 def get_selectors(platform: str, user=Depends(get_current_user)):
     row = selectors_db.get(platform)
     if not row:
-        return JSONResponse(status_code=404, content={"error": f"No selectors for platform: {platform}"})
+        return JSONResponse(
+            status_code=404, content={"error": f"No selectors for platform: {platform}"}
+        )
     return {
         "platform": row["platform"],
         "version": row["version"],

@@ -1,13 +1,14 @@
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from fastapi import APIRouter, Depends
 
+from app.db import applications as apps_db
+from app.db import jobs as jobs_db
 from app.deps import get_current_user
 from app.schemas import ApplicationSaveRequest
-from app.db import jobs as jobs_db
-from app.db import applications as apps_db
 
 router = APIRouter(tags=["applications"])
 

@@ -1,6 +1,7 @@
 """Все операции с таблицей jobs в Supabase."""
-from typing import Optional
+
 from datetime import date
+
 from app.db.client import get_supabase
 
 
@@ -16,15 +17,8 @@ def get_jobs(user_id: str) -> list:
     return res.data or []
 
 
-def get_job_by_id(user_id: str, job_id: str) -> Optional[dict]:
-    res = (
-        get_supabase()
-        .table("jobs")
-        .select("*")
-        .eq("id", job_id)
-        .eq("user_id", user_id)
-        .execute()
-    )
+def get_job_by_id(user_id: str, job_id: str) -> dict | None:
+    res = get_supabase().table("jobs").select("*").eq("id", job_id).eq("user_id", user_id).execute()
     return res.data[0] if res.data else None
 
 
@@ -32,12 +26,7 @@ def job_exists(user_id: str, link: str) -> bool:
     if not link:
         return False
     res = (
-        get_supabase()
-        .table("jobs")
-        .select("id")
-        .eq("user_id", user_id)
-        .eq("link", link)
-        .execute()
+        get_supabase().table("jobs").select("id").eq("user_id", user_id).eq("link", link).execute()
     )
     return len(res.data) > 0
 
@@ -57,6 +46,7 @@ def save_job(
     # Если link пустой — генерируем уникальный ключ чтобы не было коллизий
     if not link:
         import uuid
+
         link = f"manual:{uuid.uuid4()}"
 
     res = (
@@ -93,13 +83,7 @@ def update_job_status(user_id: str, job_id: str, status: str) -> None:
 
 
 def count_jobs(user_id: str) -> int:
-    res = (
-        get_supabase()
-        .table("jobs")
-        .select("id", count="exact")
-        .eq("user_id", user_id)
-        .execute()
-    )
+    res = get_supabase().table("jobs").select("id", count="exact").eq("user_id", user_id).execute()
     return res.count or 0
 
 
@@ -116,7 +100,7 @@ def count_jobs_found_today(user_id: str) -> int:
     return res.count or 0
 
 
-def count_new_jobs(user_id: str, platforms: Optional[list] = None) -> int:
+def count_new_jobs(user_id: str, platforms: list | None = None) -> int:
     """Кол-во jobs со статусом new (для campaign status)."""
     query = (
         get_supabase()

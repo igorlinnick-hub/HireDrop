@@ -1,6 +1,7 @@
 """Auth dependency — верификация Supabase JWT."""
-from typing import Optional
+
 from fastapi import Header, HTTPException
+
 from app.db.client import get_supabase
 
 
@@ -16,5 +17,5 @@ async def get_current_user(authorization: str = Header(...)):
         return response.user
     except HTTPException:
         raise
-    except Exception:
-        raise HTTPException(status_code=401, detail="Token verification failed")
+    except Exception as err:
+        raise HTTPException(status_code=401, detail="Token verification failed") from err

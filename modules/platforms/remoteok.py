@@ -1,4 +1,5 @@
 import requests
+
 from modules.platforms.base import JobPlatform
 
 REMOTEOK_API = "https://remoteok.com/api"

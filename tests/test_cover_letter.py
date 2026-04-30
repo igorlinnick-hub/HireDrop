@@ -4,6 +4,7 @@ Fallback is what every user gets when ANTHROPIC_API_KEY is missing or the
 API call fails. If fallback contains AI-tells or hardcoded names, every
 single application sent in fallback mode burns the user's reputation.
 """
+
 from modules.ai_cover_letter import fallback_template
 
 # Tells the system prompt explicitly bans (modules/ai_cover_letter.py:53-54)

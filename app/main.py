@@ -1,11 +1,12 @@
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import jobs, applications, campaign, profile, tools, activity, extension
+from app.routers import activity, applications, campaign, extension, jobs, profile, tools
 
 app = FastAPI(title="JobFlow API", version="1.0.0")
 

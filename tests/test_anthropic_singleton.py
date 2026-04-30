@@ -4,6 +4,7 @@ Creating a new client on every cover-letter request creates new HTTP
 connections, wastes latency, and is the kind of config/client/storage
 smell CONVENTIONS.md calls out.
 """
+
 import importlib
 
 import modules.ai_cover_letter as mod
@@ -21,7 +22,7 @@ def test_get_anthropic_client_returns_same_instance():
 
 
 def test_singleton_survives_module_reimport_within_process():
-    a = mod.get_anthropic_client()
+    mod.get_anthropic_client()
     importlib.reload(mod)
     b = mod.get_anthropic_client()
     assert b is not None

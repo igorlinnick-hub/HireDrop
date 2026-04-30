@@ -1,13 +1,13 @@
-import sys
 import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import JSONResponse
 
+from app.db import jobs as jobs_db
 from app.deps import get_current_user
 from app.schemas import FindJobsRequest, JobStatusUpdate
-from app.db import jobs as jobs_db
 from modules.filters import filter_jobs
 from modules.telegram_bot import send_notification
 
@@ -24,7 +24,7 @@ def get_jobs(user=Depends(get_current_user)):
 
 @router.post("/jobs/find")
 def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
-    from app.db.profile import get_profile, get_connections
+    from app.db.profile import get_connections, get_profile
     from modules.platforms.registry import PLATFORMS
 
     profile = get_profile(user.id)
@@ -32,9 +32,9 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
     requested = req.platforms if (req and req.platforms) else profile.get("platforms", ["remoteok"])
 
     scrapeable = [
-        p for p in requested
-        if p == "remoteok"
-        or (p in CONNECTABLE_PLATFORMS and conns.get(p, {}).get("connected"))
+        p
+        for p in requested
+        if p == "remoteok" or (p in CONNECTABLE_PLATFORMS and conns.get(p, {}).get("connected"))
     ]
 
     platforms = [PLATFORMS[p]() for p in scrapeable if p in PLATFORMS]
@@ -50,7 +50,11 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
         searched.append(platform.display_name)
 
     if not all_jobs:
-        return {"count": 0, "message": f"No jobs found from {', '.join(searched)}", "platforms": searched}
+        return {
+            "count": 0,
+            "message": f"No jobs found from {', '.join(searched)}",
+            "platforms": searched,
+        }
 
     filtered = filter_jobs(all_jobs, profile)
     if not filtered:

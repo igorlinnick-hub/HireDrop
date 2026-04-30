@@ -16,15 +16,21 @@ def filter_jobs(jobs: list[dict], profile: dict) -> list[dict]:
     filtered = []
     for job in jobs:
         searchable = (
-            (job.get("title") or "") + " "
-            + " ".join(job.get("tags", []) or []) + " "
+            (job.get("title") or "")
+            + " "
+            + " ".join(job.get("tags", []) or [])
+            + " "
             + (job.get("description") or "")
         ).lower()
         if keywords and not any(kw in searchable for kw in keywords):
             continue
 
         job_location = (job.get("location") or "").lower()
-        if location_pref == "remote" and job_location and job_location not in ("remote", "anywhere", ""):
+        if (
+            location_pref == "remote"
+            and job_location
+            and job_location not in ("remote", "anywhere", "")
+        ):
             continue
 
         job_type = (job.get("job_type") or "").lower()

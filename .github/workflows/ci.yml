@@ -21,7 +21,17 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install -r requirements.txt -r requirements-dev.txt
 
-      - name: Run smoke tests
-        run: pytest tests/ -v
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Format check (ruff)
+        run: ruff format --check .
+
+      - name: Type check (pyright, informational)
+        run: pyright app modules || true
+        continue-on-error: true
+
+      - name: Tests + coverage
+        run: pytest tests/

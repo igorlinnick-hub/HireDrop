@@ -5,7 +5,6 @@ events here; the dashboard reads them. Today the only writer is the
 chrome extension (background.js best-effort POST). Backend writers can
 be added incrementally without changing this module's contract.
 """
-from typing import Optional
 
 from app.db.client import get_supabase
 
@@ -16,9 +15,9 @@ def write(
     user_id: str,
     message: str,
     level: str = "info",
-    phase: Optional[str] = None,
-    trace_id: Optional[str] = None,
-    metadata: Optional[dict] = None,
+    phase: str | None = None,
+    trace_id: str | None = None,
+    metadata: dict | None = None,
 ) -> str:
     if level not in ALLOWED_LEVELS:
         level = "info"

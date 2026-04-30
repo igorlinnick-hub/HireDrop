@@ -1,5 +1,4 @@
 from pydantic import BaseModel
-from typing import List, Optional
 
 
 class CoverLetterRequest(BaseModel):
@@ -11,17 +10,17 @@ class ProfileUpdate(BaseModel):
     last_name: str = ""
     email: str = ""
     phone: str = ""
-    keywords: List[str] = []
+    keywords: list[str] = []
     location: str = "remote"
     job_type: str = "full-time"
-    platforms: List[str] = ["remoteok"]
+    platforms: list[str] = ["remoteok"]
     writing_style: str = ""
 
 
 class LetterPreviewRequest(BaseModel):
     keywords: str
-    style: Optional[str] = ""
-    job_description: Optional[str] = ""
+    style: str | None = ""
+    job_description: str | None = ""
 
 
 class TemplateRequest(BaseModel):
@@ -38,12 +37,12 @@ class ApplicationSaveRequest(BaseModel):
 
 
 class FindJobsRequest(BaseModel):
-    platforms: List[str] = []
+    platforms: list[str] = []
 
 
 class CampaignStartRequest(BaseModel):
-    keywords: List[str] = []
-    platforms: List[str] = []
+    keywords: list[str] = []
+    platforms: list[str] = []
     location: str = ""
     job_type: str = ""
 
