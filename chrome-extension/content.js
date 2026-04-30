@@ -416,15 +416,39 @@
   // so we can update them without releasing a new extension version.
   const FALLBACK_DETECTION = {
     urlPatterns: ["captcha", "challenge", "blocked", "access-denied", "security-check", "verification"],
+    // Page <title> is often the loudest signal (Cloudflare/Indeed default to
+    // titles like "Security Check - Indeed.com" while body content is empty
+    // until JS executes). Caught a real prod miss without this channel.
+    titlePhrases: [
+      "security check",
+      "additional verification",
+      "captcha",
+      "are you a robot",
+      "checking your browser",
+      "just a moment",
+      "please verify",
+    ],
     domSelectors: [
       ".g-recaptcha",
       'iframe[src*="captcha"]',
       'iframe[src*="recaptcha"]',
       "#challenge-form",
+      "#challenge-running",
       "[data-cf-challenge]",
       'div[class*="captcha-container"]',
       'iframe[title*="hcaptcha" i]',
       '[id*="datadome"]',
+      // Cloudflare challenge platform script (visible as a script element).
+      'script[src*="cdn-cgi/challenge-platform"]',
+    ],
+    // Match against any script src — separate from domSelectors because
+    // <script> nodes are never offsetParent-visible.
+    scriptSrcPatterns: [
+      "cdn-cgi/challenge-platform",
+      "cdn-cgi/bm/cv",
+      "datadome.co",
+      "perimeterx.net",
+      "imperva.com",
     ],
     textPhrases: [
       "verify you are human",
@@ -436,6 +460,11 @@
       "access denied",
       "too many requests",
       "please confirm you are not a robot",
+      "additional verification required",
+      "complete the security check",
+      "please enable javascript",
+      "требуется дополнительная верификация",
+      "подтвердите, что вы не робот",
     ],
   };
 
@@ -447,16 +476,34 @@
   }
 
   // Returns { detected: bool, signal: string } — non-empty signal points to
-  // what we matched (URL/DOM/text) so the activity log row is debuggable.
+  // what we matched so the activity log row is debuggable. Channels checked
+  // in order of cost: URL → title → DOM → script src → body text.
   function isDetected() {
     const url = window.location.href.toLowerCase();
     const det = detection();
     for (const pat of det.urlPatterns || []) {
       if (url.includes(pat)) return { detected: true, signal: `url:${pat}` };
     }
+    const title = (document.title || "").toLowerCase();
+    for (const phrase of det.titlePhrases || []) {
+      if (title.includes(phrase)) return { detected: true, signal: `title:${phrase.slice(0, 40)}` };
+    }
     for (const sel of det.domSelectors || []) {
       const el = document.querySelector(sel);
-      if (el && el.offsetParent !== null) return { detected: true, signal: `dom:${sel.slice(0, 40)}` };
+      // Scripts are never offsetParent-visible — query separately above
+      // doesn't apply here, but a present <script> still matters.
+      const isScript = sel.startsWith("script[");
+      if (el && (isScript || el.offsetParent !== null)) {
+        return { detected: true, signal: `dom:${sel.slice(0, 40)}` };
+      }
+    }
+    for (const pat of det.scriptSrcPatterns || []) {
+      const scripts = document.querySelectorAll("script[src]");
+      for (const s of scripts) {
+        if ((s.src || "").toLowerCase().includes(pat)) {
+          return { detected: true, signal: `script:${pat}` };
+        }
+      }
     }
     const bodyText = (document.body?.textContent || "").toLowerCase();
     for (const phrase of det.textPhrases || []) {
