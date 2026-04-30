@@ -142,6 +142,40 @@
     return !!data.campaignRunning;
   }
 
+  // Phase 5.4 — Session warmup. The pattern "open page → instantly start
+  // automating clicks" never happens for a real user. They land on the
+  // search page, glance over a few cards, scroll, sometimes scroll back,
+  // *then* engage. Detectors that trigger on engage-time-from-pageload
+  // (anything < 3-5s is suspicious) catch this. We run a one-shot
+  // warmup the first time content.js sees a running campaign on this
+  // page, then mark it done so reloads/page transitions don't re-warmup.
+  async function sessionWarmup() {
+    const flag = await chrome.storage.local.get("campaignWarmedUp");
+    if (flag.campaignWarmedUp) return;
+
+    log("Session warmup — looking around for a few seconds...", "");
+    const startedAt = Date.now();
+    const passes = 2 + Math.floor(Math.random() * 3); // 2-4 scroll passes
+    for (let i = 0; i < passes; i++) {
+      const dir = Math.random() < 0.5 ? 1 : -1;
+      const distance = (200 + Math.random() * 600) * dir;
+      try {
+        window.scrollBy({ top: distance, behavior: "smooth" });
+      } catch {
+        window.scrollBy(0, distance);
+      }
+      // Move the virtual cursor too — gives the next humanClick a sane
+      // starting position, also generates extra mousemove events.
+      const tx = 100 + Math.random() * (window.innerWidth - 200);
+      const ty = 100 + Math.random() * (window.innerHeight - 200);
+      await moveCursorTo(tx, ty);
+      await sleep(humanDelay(2000, 5000));
+    }
+    const elapsed = Date.now() - startedAt;
+    log(`Warmup complete (${Math.round(elapsed / 1000)}s)`, "ok");
+    await chrome.storage.local.set({ campaignWarmedUp: true });
+  }
+
   async function getPlatformCount(platform) {
     const data = await chrome.storage.local.get(["platformCounts", "todayDate"]);
     const today = new Date().toISOString().slice(0, 10);
@@ -1218,6 +1252,9 @@
     if (await isCampaignRunning()) {
       log("Campaign active — resuming on this page", "ok");
       await sleep(humanDelay(2000, 3000));
+      // One-shot warmup before the very first action. No-op if already
+      // warmed up this campaign.
+      await sessionWarmup();
       lastPhase = detectPhase();
       runPhase();
     }
