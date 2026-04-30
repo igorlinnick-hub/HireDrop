@@ -275,8 +275,58 @@
     },
   };
 
+  // Anti-detect — Phase 5.5. Patterns live in platform_selectors.detection
+  // so we can update them without releasing a new extension version.
+  const FALLBACK_DETECTION = {
+    urlPatterns: ["captcha", "challenge", "blocked", "access-denied", "security-check", "verification"],
+    domSelectors: [
+      ".g-recaptcha",
+      'iframe[src*="captcha"]',
+      'iframe[src*="recaptcha"]',
+      "#challenge-form",
+      "[data-cf-challenge]",
+      'div[class*="captcha-container"]',
+      'iframe[title*="hcaptcha" i]',
+      '[id*="datadome"]',
+    ],
+    textPhrases: [
+      "verify you are human",
+      "verify that you are not a robot",
+      "are you a robot",
+      "unusual activity",
+      "automated traffic",
+      "suspicious activity",
+      "access denied",
+      "too many requests",
+      "please confirm you are not a robot",
+    ],
+  };
+
   // Loaded from backend at startup; falls back to the constants above.
   let SELECTORS = FALLBACK_SELECTORS;
+
+  function detection() {
+    return SELECTORS.detection || FALLBACK_DETECTION;
+  }
+
+  // Returns { detected: bool, signal: string } — non-empty signal points to
+  // what we matched (URL/DOM/text) so the activity log row is debuggable.
+  function isDetected() {
+    const url = window.location.href.toLowerCase();
+    const det = detection();
+    for (const pat of det.urlPatterns || []) {
+      if (url.includes(pat)) return { detected: true, signal: `url:${pat}` };
+    }
+    for (const sel of det.domSelectors || []) {
+      const el = document.querySelector(sel);
+      if (el && el.offsetParent !== null) return { detected: true, signal: `dom:${sel.slice(0, 40)}` };
+    }
+    const bodyText = (document.body?.textContent || "").toLowerCase();
+    for (const phrase of det.textPhrases || []) {
+      if (bodyText.includes(phrase)) return { detected: true, signal: `text:${phrase.slice(0, 40)}` };
+    }
+    return { detected: false, signal: "" };
+  }
 
   async function loadSelectors() {
     try {
@@ -939,6 +989,25 @@
 
   async function runPhase() {
     if (!(await isCampaignRunning())) return;
+
+    // Anti-detect safety net (Phase 5.5). If Indeed is showing a captcha,
+    // a security challenge, or any "you look like a robot" page — stop the
+    // campaign before we make it worse. Better to pause for a day than to
+    // get the user's account flagged.
+    const det = isDetected();
+    if (det.detected) {
+      log(`Detection triggered (${det.signal}) — stopping campaign`, "err");
+      await sendMsg({
+        type: "DETECTION_TRIPPED",
+        data: {
+          signal: det.signal,
+          url: window.location.href,
+          phase: detectPhase(),
+        },
+      });
+      await sendMsg({ type: "STOP_CAMPAIGN" });
+      return;
+    }
 
     const phase = detectPhase();
 
