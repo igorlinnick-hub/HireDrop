@@ -34,6 +34,43 @@
     return Math.floor(Math.random() * (max - min + 1)) + min;
   }
 
+  // Phase 5.2 — Human-like delays. Real users don't pause uniformly between
+  // 2 and 3 seconds; sometimes they glance and act in 700ms, sometimes they
+  // read for 30. Log-normal with sensible clamps captures that: most actions
+  // land near the median, but the long tail is preserved.
+  // Pass the old (min, max) interval and we use the geometric mean as the
+  // median — keeps existing call sites readable while the distribution
+  // changes underneath.
+  function humanDelay(min, max) {
+    const median = Math.sqrt(min * max);
+    const sigma = 0.55; // ~70% of values within [median/2, median*2]
+    const u1 = Math.max(Math.random(), 1e-9);
+    const u2 = Math.random();
+    const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+    const ms = median * Math.exp(sigma * z);
+    return Math.max(80, Math.min(60000, Math.floor(ms)));
+  }
+
+  function shouldMisclick() {
+    return Math.random() < 0.05;
+  }
+
+  // Click slightly off-target, then back. Mimics the corrective re-click
+  // that real users perform after a missaim — a signal naive bots don't emit.
+  async function performMisclick(target) {
+    if (!target || typeof target.getBoundingClientRect !== "function") return;
+    const r = target.getBoundingClientRect();
+    const dx = (Math.random() < 0.5 ? -1 : 1) * (30 + Math.random() * 70);
+    const dy = (Math.random() < 0.5 ? -1 : 1) * (10 + Math.random() * 30);
+    const x = Math.min(window.innerWidth - 5, Math.max(5, r.left + r.width / 2 + dx));
+    const y = Math.min(window.innerHeight - 5, Math.max(5, r.top + r.height / 2 + dy));
+    const decoy = document.elementFromPoint(x, y);
+    if (decoy && decoy !== target) {
+      try { decoy.click(); } catch {}
+      await sleep(humanDelay(400, 900));
+    }
+  }
+
   async function isCampaignRunning() {
     const data = await chrome.storage.local.get("campaignRunning");
     return !!data.campaignRunning;
@@ -163,17 +200,17 @@
     if (!el || !value) return false;
     el.focus();
     el.dispatchEvent(new Event("focus", { bubbles: true }));
-    await sleep(rand(100, 200));
+    await sleep(humanDelay(100, 200));
 
     // Clear existing value first
     setNativeValue(el, "");
-    await sleep(rand(50, 100));
+    await sleep(humanDelay(50, 100));
 
     // Type each character
     for (let i = 0; i < value.length; i++) {
       const partial = value.slice(0, i + 1);
       setNativeValue(el, partial);
-      await sleep(rand(50, 150));
+      await sleep(humanDelay(50, 150));
     }
 
     el.dispatchEvent(new Event("blur", { bubbles: true }));
@@ -395,7 +432,7 @@
     log("Scanning job list for Easy Apply jobs...", "");
 
     // Wait for cards to load
-    await sleep(rand(2000, 3000));
+    await sleep(humanDelay(2000, 3000));
 
     const cards = findJobCards();
     if (!cards.length) {
@@ -434,10 +471,15 @@
       currentJobIndex: 0,
     });
 
-    // Click the first job card
+    // Click the first job card. Reading-pause before — the cards' titles
+    // and snippets are visible from the list, real users skim before
+    // committing. Misclick chance simulates aim error.
     const firstJob = easyApplyCards[0];
     log(`Opening: ${firstJob.title} @ ${firstJob.company}`, "");
-    await sleep(rand(2000, 3000));
+    await sleep(humanDelay(3000, 7000));
+    if (shouldMisclick()) {
+      await performMisclick(firstJob.clickEl);
+    }
     firstJob.clickEl.click();
   }
 
@@ -464,7 +506,7 @@
 
     if (nextBtn) {
       log("Going to next page...", "");
-      await sleep(rand(2000, 3000));
+      await sleep(humanDelay(2000, 3000));
       nextBtn.click();
     } else {
       log("No more pages. Campaign complete.", "ok");
@@ -487,7 +529,7 @@
     }
 
     log("On job detail page — extracting info...", "");
-    await sleep(rand(1500, 2500));
+    await sleep(humanDelay(1500, 2500));
 
     // Extract job info
     const titleEl =
@@ -555,7 +597,7 @@
     await chrome.storage.local.set({ generatedCoverLetter: coverLetter });
 
     // Find and click the Apply button
-    await sleep(rand(2000, 3000));
+    await sleep(humanDelay(2000, 3000));
 
     const applyBtn = findApplyButton();
     if (!applyBtn) {
@@ -565,6 +607,7 @@
     }
 
     log("Clicking Apply button...", "");
+    if (shouldMisclick()) await performMisclick(applyBtn);
     applyBtn.click();
 
     // Phase 3 will be triggered by MutationObserver detecting the form
@@ -725,7 +768,7 @@
       }
 
       formStepCount++;
-      await sleep(rand(1500, 2500));
+      await sleep(humanDelay(1500, 2500));
 
       // Fill whatever fields are visible on this step
       let filledAny = false;
@@ -734,7 +777,7 @@
       const fnEl = findFieldBySelectorsOrLabel("firstName");
       if (fnEl && !fnEl.value.trim()) {
         await typeValue(fnEl, profile.name || "");
-        await sleep(rand(3000, 5000));
+        await sleep(humanDelay(3000, 5000));
         filledAny = true;
       }
 
@@ -742,7 +785,7 @@
       const lnEl = findFieldBySelectorsOrLabel("lastName");
       if (lnEl && !lnEl.value.trim()) {
         await typeValue(lnEl, profile.last_name || "");
-        await sleep(rand(3000, 5000));
+        await sleep(humanDelay(3000, 5000));
         filledAny = true;
       }
 
@@ -750,7 +793,7 @@
       const emEl = findFieldBySelectorsOrLabel("email");
       if (emEl && !emEl.value.trim()) {
         await typeValue(emEl, profile.email || "");
-        await sleep(rand(3000, 5000));
+        await sleep(humanDelay(3000, 5000));
         filledAny = true;
       }
 
@@ -758,7 +801,7 @@
       const phEl = findFieldBySelectorsOrLabel("phone");
       if (phEl && !phEl.value.trim()) {
         await typeValue(phEl, profile.phone || "");
-        await sleep(rand(3000, 5000));
+        await sleep(humanDelay(3000, 5000));
         filledAny = true;
       }
 
@@ -766,7 +809,7 @@
       const clEl = findFieldBySelectorsOrLabel("coverLetter");
       if (clEl && !clEl.value.trim()) {
         quickSet(clEl, coverLetter);
-        await sleep(rand(3000, 5000));
+        await sleep(humanDelay(3000, 5000));
         filledAny = true;
       }
 
@@ -775,7 +818,7 @@
       if (resumeInput && !resumeInput.files?.length) {
         try {
           await uploadResume(resumeInput);
-          await sleep(rand(3000, 5000));
+          await sleep(humanDelay(3000, 5000));
           filledAny = true;
         } catch (e) {
           log("Resume upload failed: " + e.message, "err");
@@ -789,9 +832,12 @@
       // Check if this is the final submit step
       if (isSubmitStep()) {
         log("Final step — submitting application...", "");
-        await sleep(rand(2000, 4000));
+        // Last-look pause is longer than mid-form steps — real users
+        // re-read the summary before committing.
+        await sleep(humanDelay(3000, 8000));
         const submitBtn = findFormButton();
         if (submitBtn) {
+          if (shouldMisclick()) await performMisclick(submitBtn);
           submitBtn.click();
 
           // Wait for a real signal that Indeed accepted the submission.
@@ -832,7 +878,7 @@
           }
 
           // Either way, navigate away from this job
-          await sleep(rand(4000, 6000));
+          await sleep(humanDelay(4000, 6000));
           await goBackToJobList();
           return;
         } else {
@@ -845,10 +891,10 @@
       const navBtn = findFormButton();
       if (navBtn) {
         log(`Clicking "${navBtn.textContent.trim()}"...`, "");
-        await sleep(rand(2000, 4000));
+        await sleep(humanDelay(2000, 4000));
         navBtn.click();
         // Wait for next step to load
-        await sleep(rand(2000, 3000));
+        await sleep(humanDelay(2000, 3000));
       } else {
         // No button found — form might have closed or errored
         log("No Continue/Submit button found", "err");
@@ -912,7 +958,7 @@
     const nextJob = jobs[idx];
     log(`Next job (${idx + 1}/${jobs.length}): ${nextJob.title}`, "");
 
-    await sleep(rand(3000, 5000));
+    await sleep(humanDelay(3000, 5000));
 
     // Navigate to the job
     if (nextJob.url) {
@@ -959,7 +1005,7 @@
 
     const url = `https://www.indeed.com/jobs?${params.toString()}`;
     log("Returning to job list...", "");
-    await sleep(rand(3000, 5000));
+    await sleep(humanDelay(3000, 5000));
     window.location.href = url;
   }
 
@@ -1033,7 +1079,7 @@
         data: { phase, error: err.message },
       });
       // Try to recover by skipping to next job
-      await sleep(rand(3000, 5000));
+      await sleep(humanDelay(3000, 5000));
       await skipToNextJob();
     }
   }
@@ -1105,7 +1151,7 @@
     // Check if campaign is already running (e.g., page reload)
     if (await isCampaignRunning()) {
       log("Campaign active — resuming on this page", "ok");
-      await sleep(rand(2000, 3000));
+      await sleep(humanDelay(2000, 3000));
       lastPhase = detectPhase();
       runPhase();
     }
