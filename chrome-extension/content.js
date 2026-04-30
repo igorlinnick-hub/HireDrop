@@ -55,6 +55,72 @@
     return Math.random() < 0.05;
   }
 
+  // Phase 5.3 — Mouse emulation. DataDome and similar trackers look at
+  // whether mousemove events fire on the path to a click; pure .click()
+  // calls are anomalous because no human can teleport the cursor. We
+  // dispatch a Bezier sequence of mousemove events before the click and
+  // a mousedown/mouseup pair around it. dispatchEvent makes them
+  // isTrusted=false, but the absence/presence pattern is what gets
+  // looked at, not trust.
+  let _lastMouseX = null;
+  let _lastMouseY = null;
+
+  function _dispatchMouse(type, x, y, target) {
+    if (!target) target = document.elementFromPoint(x, y) || document.body;
+    if (!target) return;
+    const ev = new MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      view: window,
+      clientX: x,
+      clientY: y,
+      screenX: x,
+      screenY: y,
+      button: 0,
+    });
+    try { target.dispatchEvent(ev); } catch {}
+  }
+
+  async function moveCursorTo(targetX, targetY) {
+    const sx = _lastMouseX ?? window.innerWidth / 2;
+    const sy = _lastMouseY ?? window.innerHeight / 2;
+    // Quadratic Bezier with a jittered control point — natural arc, not
+    // a straight line. Steps proportional to distance.
+    const dist = Math.hypot(targetX - sx, targetY - sy);
+    const steps = Math.max(8, Math.min(40, Math.floor(dist / 25)));
+    const cx = (sx + targetX) / 2 + (Math.random() - 0.5) * Math.min(200, dist * 0.4);
+    const cy = (sy + targetY) / 2 + (Math.random() - 0.5) * Math.min(120, dist * 0.4);
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const x = (1 - t) * (1 - t) * sx + 2 * (1 - t) * t * cx + t * t * targetX;
+      const y = (1 - t) * (1 - t) * sy + 2 * (1 - t) * t * cy + t * t * targetY;
+      _dispatchMouse("mousemove", x, y);
+      await sleep(15 + Math.random() * 35);
+    }
+    _lastMouseX = targetX;
+    _lastMouseY = targetY;
+  }
+
+  async function humanClick(target) {
+    if (!target || typeof target.getBoundingClientRect !== "function") {
+      try { target?.click?.(); } catch {}
+      return;
+    }
+    const r = target.getBoundingClientRect();
+    // Aim slightly off-center each time — pixel-perfect aim is robotic.
+    const jx = (Math.random() - 0.5) * Math.max(2, r.width * 0.4);
+    const jy = (Math.random() - 0.5) * Math.max(2, r.height * 0.4);
+    const tx = r.left + r.width / 2 + jx;
+    const ty = r.top + r.height / 2 + jy;
+    await moveCursorTo(tx, ty);
+    _dispatchMouse("mouseover", tx, ty, target);
+    await sleep(30 + Math.random() * 90);
+    _dispatchMouse("mousedown", tx, ty, target);
+    await sleep(40 + Math.random() * 100);
+    _dispatchMouse("mouseup", tx, ty, target);
+    try { target.click(); } catch {}
+  }
+
   // Click slightly off-target, then back. Mimics the corrective re-click
   // that real users perform after a missaim — a signal naive bots don't emit.
   async function performMisclick(target) {
@@ -480,7 +546,7 @@
     if (shouldMisclick()) {
       await performMisclick(firstJob.clickEl);
     }
-    firstJob.clickEl.click();
+    await humanClick(firstJob.clickEl);
   }
 
   async function getAppliedUrls() {
@@ -608,7 +674,7 @@
 
     log("Clicking Apply button...", "");
     if (shouldMisclick()) await performMisclick(applyBtn);
-    applyBtn.click();
+    await humanClick(applyBtn);
 
     // Phase 3 will be triggered by MutationObserver detecting the form
   }
@@ -838,7 +904,7 @@
         const submitBtn = findFormButton();
         if (submitBtn) {
           if (shouldMisclick()) await performMisclick(submitBtn);
-          submitBtn.click();
+          await humanClick(submitBtn);
 
           // Wait for a real signal that Indeed accepted the submission.
           // Without this, every Submit click was counted as 'applied' —
@@ -892,7 +958,7 @@
       if (navBtn) {
         log(`Clicking "${navBtn.textContent.trim()}"...`, "");
         await sleep(humanDelay(2000, 4000));
-        navBtn.click();
+        await humanClick(navBtn);
         // Wait for next step to load
         await sleep(humanDelay(2000, 3000));
       } else {
