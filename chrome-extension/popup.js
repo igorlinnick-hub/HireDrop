@@ -13,6 +13,29 @@ function escapeHtml(text) {
 }
 
 // ---------------------------------------------------------------------------
+// Auth banner helpers
+// ---------------------------------------------------------------------------
+
+function showAuthBanner(title, sub) {
+  $("auth-banner-title").textContent = title || "Connect Your Account";
+  $("auth-banner-sub").textContent =
+    sub ||
+    "Sign in to JobFlow to start automating your job search. Your session is synced from the dashboard.";
+  $("auth-banner").classList.add("visible");
+  $("body-main").style.display = "none";
+}
+
+function hideAuthBanner() {
+  $("auth-banner").classList.remove("visible");
+  $("body-main").style.display = "";
+}
+
+// Connect Account button
+$("btn-connect").addEventListener("click", () => {
+  chrome.tabs.create({ url: CONFIG.DASHBOARD_URL + "/extension" });
+});
+
+// ---------------------------------------------------------------------------
 // Connection check
 // ---------------------------------------------------------------------------
 
@@ -230,13 +253,19 @@ $("btn-dash").addEventListener("click", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Listen for LOG messages from content script
+// Listen for LOG and AUTH_EXPIRED messages from background/content scripts
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "LOG") {
     addLog(msg.text, msg.cls || "");
     if (msg.cls === "ok") loadStatus();
+  }
+  if (msg.type === "AUTH_EXPIRED") {
+    showAuthBanner(
+      "Session Expired",
+      "Your JobFlow session has expired. Please reconnect your account from the dashboard."
+    );
   }
 });
 
@@ -245,10 +274,26 @@ chrome.runtime.onMessage.addListener((msg) => {
 // ---------------------------------------------------------------------------
 
 let pollTimer = null;
+let _isAuthenticated = false;
 
 function startPolling() {
-  pollTimer = setInterval(() => {
-    loadStatus();
+  pollTimer = setInterval(async () => {
+    if (!_isAuthenticated) {
+      // Not yet authenticated — check if user has logged in since last poll
+      const authStatus = await send({ type: "GET_AUTH_STATUS" });
+      if (authStatus && authStatus.authenticated) {
+        // User just authenticated — load the full UI
+        _isAuthenticated = true;
+        hideAuthBanner();
+        renderActivityLog();
+        const connected = await checkConnection();
+        if (connected) {
+          await Promise.all([loadProfile(), loadStatus()]);
+        }
+      }
+    } else {
+      loadStatus();
+    }
   }, 2000);
 }
 
@@ -257,6 +302,17 @@ function startPolling() {
 // ---------------------------------------------------------------------------
 
 (async () => {
+  // First, check if the user is authenticated
+  const authStatus = await send({ type: "GET_AUTH_STATUS" });
+  if (!authStatus || !authStatus.authenticated) {
+    showAuthBanner();
+    startPolling(); // poll so if auth arrives via STORE_TOKEN we auto-load UI
+    return;
+  }
+
+  // Authenticated — load the UI
+  _isAuthenticated = true;
+  hideAuthBanner();
   renderActivityLog();
   const connected = await checkConnection();
   if (connected) {
