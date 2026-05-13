@@ -42,6 +42,7 @@ def get_history(user_id: str, limit: int = 50) -> list:
         job = row.get("jobs") or {}
         rows.append(
             {
+                "id": row["id"],
                 "title": job.get("title", ""),
                 "company": job.get("company", ""),
                 "platform": job.get("platform", ""),

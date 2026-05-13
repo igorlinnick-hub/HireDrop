@@ -10,6 +10,7 @@ from app.db import applications as apps_db
 from app.db import jobs as jobs_db
 from app.db import usage as usage_db
 from app.db.profile import get_profile
+from app.db.subscriptions import get_usage_summary
 from app.deps import get_current_user
 from app.schemas import CoverLetterRequest, LetterPreviewRequest, TemplateRequest
 from modules.ai_cover_letter import generate_cover_letter
@@ -52,10 +53,17 @@ PLATFORM_INBOX_URLS = {
 
 @router.get("/stats")
 def stats(user=Depends(get_current_user)):
+    usage = get_usage_summary(user.id)
     return {
         "total_jobs": jobs_db.count_jobs(user.id),
         "total_applications": apps_db.count_applications(user.id),
+        "applications_today": usage["used_today"],
         "new_today": jobs_db.count_jobs_found_today(user.id),
+        "tier": usage["tier"],
+        "daily_limit": usage["daily_limit"],
+        "remaining_today": usage["remaining_today"],
+        "platform_counts": usage["platform_counts"],
+        "max_per_platform": usage["max_per_platform"],
     }
 
 
