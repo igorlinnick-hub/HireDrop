@@ -10,7 +10,7 @@ from app.db import applications as apps_db
 from app.db import jobs as jobs_db
 from app.db import usage as usage_db
 from app.db.profile import get_profile
-from app.db.subscriptions import get_usage_summary
+from app.db.subscriptions import get_usage_summary, is_admin
 from app.deps import get_current_user
 from app.schemas import CoverLetterRequest, LetterPreviewRequest, TemplateRequest
 from modules.ai_cover_letter import generate_cover_letter
@@ -24,14 +24,17 @@ RATE_LIMIT_LETTERS_PER_DAY = int(os.getenv("RATE_LIMIT_LETTERS_PER_DAY", "50"))
 RATE_LIMIT_ENFORCE = os.getenv("RATE_LIMIT_ENFORCE", "false").lower() in ("1", "true", "yes")
 
 
-def _rate_limit_check(user_id: str) -> None:
+def _rate_limit_check(user) -> None:
     """Raise 429 if the user is past the daily quota.
 
-    During the soft-launch window set RATE_LIMIT_ENFORCE=false in env — the
-    counter still increments, so we get visibility into who hits the limit
-    without breaking anyone. Flip to true once the data is healthy.
+    Admins skip the check entirely. Otherwise, during the soft-launch window set
+    RATE_LIMIT_ENFORCE=false in env — the counter still increments, so we get
+    visibility into who hits the limit without breaking anyone. Flip to true
+    once the data is healthy.
     """
-    used = usage_db.get_today_count(user_id)
+    if is_admin(getattr(user, "email", None)):
+        return
+    used = usage_db.get_today_count(user.id)
     if RATE_LIMIT_ENFORCE and used >= RATE_LIMIT_LETTERS_PER_DAY:
         raise HTTPException(
             status_code=429,
@@ -53,7 +56,7 @@ PLATFORM_INBOX_URLS = {
 
 @router.get("/stats")
 def stats(user=Depends(get_current_user)):
-    usage = get_usage_summary(user.id)
+    usage = get_usage_summary(user.id, getattr(user, "email", None))
     return {
         "total_jobs": jobs_db.count_jobs(user.id),
         "total_applications": apps_db.count_applications(user.id),
@@ -87,7 +90,7 @@ def checklist(user=Depends(get_current_user)):
 
 @router.post("/tools/cover-letter")
 def cover_letter(req: CoverLetterRequest, user=Depends(get_current_user)):
-    _rate_limit_check(user.id)
+    _rate_limit_check(user)
     job = jobs_db.get_job_by_id(user.id, req.job_id)
     if not job:
         return JSONResponse(status_code=404, content={"error": "Job not found"})
@@ -106,7 +109,7 @@ def cover_letter(req: CoverLetterRequest, user=Depends(get_current_user)):
 
 @router.post("/tools/cover-letter-preview")
 def cover_letter_preview(req: LetterPreviewRequest, user=Depends(get_current_user)):
-    _rate_limit_check(user.id)
+    _rate_limit_check(user)
     profile = get_profile(user.id)
     letter = generate_cover_letter(
         {

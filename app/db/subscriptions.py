@@ -4,10 +4,17 @@ Free/Pro/Elite tiers — each has its own daily quota for total applications,
 plus a per-platform cap that applies regardless of tier (so a power user
 can't burn 200 applications into one platform in a day).
 
+Admin tier (env-controlled): emails in `ADMIN_EMAILS` skip all limits.
+Pass the user's email through from the router so we can short-circuit before
+hitting Supabase.
+
 Mirrors the cover-letter rate limit in app/db/usage.py — same pattern,
 different counter table (`applications` instead of `cover_letter_usage`).
 """
 from datetime import datetime, timezone
+from typing import Optional
+
+from config import ADMIN_EMAILS
 
 from app.db import applications as apps_db
 from app.db.client import get_supabase
@@ -20,9 +27,23 @@ TIER_LIMITS = {
 
 MAX_PER_PLATFORM = 50
 
+# Sentinel for admin "unlimited" so the dashboard renders ∞ instead of a number.
+ADMIN_DAILY_LIMIT = 10_000_000
 
-def get_tier(user_id: str) -> str:
-    """Returns the user's active tier. Expired non-free tiers downgrade to free."""
+
+def is_admin(email: Optional[str]) -> bool:
+    return bool(email) and email.lower() in ADMIN_EMAILS
+
+
+def get_tier(user_id: str, email: Optional[str] = None) -> str:
+    """Returns the user's active tier.
+
+    Admin emails win first (env-only, no DB lookup needed).
+    Expired non-free DB tiers downgrade to free.
+    """
+    if is_admin(email):
+        return "admin"
+
     res = (
         get_supabase()
         .table("profiles")
@@ -49,11 +70,25 @@ def get_tier(user_id: str) -> str:
 
 
 def daily_limit(tier: str) -> int:
+    if tier == "admin":
+        return ADMIN_DAILY_LIMIT
     return TIER_LIMITS.get(tier, TIER_LIMITS["free"])
 
 
-def check_can_apply(user_id: str, platform: str) -> dict:
-    tier = get_tier(user_id)
+def check_can_apply(user_id: str, platform: str, email: Optional[str] = None) -> dict:
+    tier = get_tier(user_id, email)
+
+    if tier == "admin":
+        # Admins bypass everything — no count, no platform cap.
+        return {
+            "allowed": True,
+            "reason": "",
+            "tier": "admin",
+            "used_today": apps_db.count_today(user_id),
+            "daily_limit": ADMIN_DAILY_LIMIT,
+            "platform_used": 0,
+        }
+
     limit = daily_limit(tier)
     used_today = apps_db.count_today(user_id)
 
@@ -90,12 +125,22 @@ def check_can_apply(user_id: str, platform: str) -> dict:
     }
 
 
-def get_usage_summary(user_id: str) -> dict:
-    tier = get_tier(user_id)
-    limit = daily_limit(tier)
+def get_usage_summary(user_id: str, email: Optional[str] = None) -> dict:
+    tier = get_tier(user_id, email)
     used_today = apps_db.count_today(user_id)
     platform_counts = apps_db.count_today_by_platform(user_id)
 
+    if tier == "admin":
+        return {
+            "tier": "admin",
+            "daily_limit": ADMIN_DAILY_LIMIT,
+            "used_today": used_today,
+            "remaining_today": ADMIN_DAILY_LIMIT,
+            "platform_counts": platform_counts,
+            "max_per_platform": ADMIN_DAILY_LIMIT,
+        }
+
+    limit = daily_limit(tier)
     return {
         "tier": tier,
         "daily_limit": limit,

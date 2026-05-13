@@ -18,7 +18,7 @@ router = APIRouter(tags=["applications"])
 @router.post("/applications/save")
 def save_application(req: ApplicationSaveRequest, user=Depends(get_current_user)):
     """Сохраняет заявку из Chrome Extension, проверяет лимиты тира."""
-    check = check_can_apply(user.id, req.platform)
+    check = check_can_apply(user.id, req.platform, getattr(user, "email", None))
     if not check["allowed"]:
         return JSONResponse(
             status_code=429,
