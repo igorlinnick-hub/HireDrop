@@ -1,8 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "JobFlow",
+  "name": "JobFlow — Auto-Apply on Indeed",
+  "short_name": "JobFlow",
   "version": "1.3.0",
-  "description": "AI-powered job application automation. Auto-fill forms and track applications from your JobFlow dashboard.",
+  "description": "Auto-fill Indeed applications with your resume + an AI-written cover letter. Stop, start, and limit campaigns from one dashboard.",
+  "author": "JobFlow",
+  "homepage_url": "https://jobflow-website-beaa.vercel.app",
   "permissions": [
     "activeTab",
     "storage",
