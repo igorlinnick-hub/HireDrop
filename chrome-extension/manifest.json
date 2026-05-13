@@ -15,7 +15,8 @@
   "host_permissions": [
     "https://web-production-db45.up.railway.app/*",
     "https://*.indeed.com/*",
-    "https://jobflow-website.vercel.app/*"
+    "https://jobflow-website.vercel.app/*",
+    "https://jobflow-website-beaa.vercel.app/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -38,7 +39,8 @@
       "matches": [
         "http://localhost:*/*",
         "https://web-production-db45.up.railway.app/*",
-        "https://jobflow-website.vercel.app/*"
+        "https://jobflow-website.vercel.app/*",
+        "https://jobflow-website-beaa.vercel.app/*"
       ],
       "js": ["ping.js"],
       "run_at": "document_idle"

@@ -30,9 +30,10 @@ function hideAuthBanner() {
   $("body-main").style.display = "";
 }
 
-// Connect Account button
+// Connect Account button → opens the dashboard handoff page that pushes
+// the Supabase JWT into the extension via the ping.js bridge.
 $("btn-connect").addEventListener("click", () => {
-  chrome.tabs.create({ url: CONFIG.DASHBOARD_URL + "/extension" });
+  chrome.tabs.create({ url: CONFIG.DASHBOARD_URL + CONFIG.CONNECT_PATH });
 });
 
 // ---------------------------------------------------------------------------
