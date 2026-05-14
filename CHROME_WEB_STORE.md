@@ -114,16 +114,17 @@ support@jobflow.app
 
 ---
 
-## Asset checklist (still to produce)
+## Asset checklist
 
-- [x] Icon 128×128 — `chrome-extension/icons/icon128.png` (already in the package)
-- [ ] Screenshots 1280×800 — at least 1, up to 5. Suggested:
+- [x] Icon 16/48/128 — branded "JF" monogram, in `chrome-extension/icons/` (bundled in the zip)
+- [x] Small promo tile 440×280 — `store-assets/promo-small-440x280.png`
+- [x] Marquee promo tile 1400×560 (optional) — `store-assets/promo-marquee-1400x560.png`
+- [ ] Screenshots 1280×800 — at least 1, up to 5. **Igor must capture these from the live app** (they need a logged-in session + the extension loaded). Suggested set:
     1. Extension popup (after auth) showing "Start Campaign" button + today's count
     2. Dashboard with UsageBanner + recent applications
     3. /extension/connect "Extension connected ✓" success state
     4. Indeed listing mid-autofill (with the JobFlow badge visible)
-- [ ] Small promo tile 440×280
-- [ ] Marquee promo tile 1400×560 (optional)
+  How: open each view, set the browser window so the content area is 1280×800 (or screenshot then crop/pad to 1280×800), save as PNG.
 
 ---
 
