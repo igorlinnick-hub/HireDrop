@@ -7,13 +7,10 @@
   "author": "JobFlow",
   "homepage_url": "https://jobflow-website-beaa.vercel.app",
   "permissions": [
-    "activeTab",
     "storage",
-    "scripting",
     "tabs",
     "alarms",
-    "notifications",
-    "declarativeNetRequestWithHostAccess"
+    "notifications"
   ],
   "host_permissions": [
     "https://web-production-db45.up.railway.app/*",
@@ -41,7 +38,6 @@
     {
       "matches": [
         "http://localhost:*/*",
-        "https://web-production-db45.up.railway.app/*",
         "https://jobflow-website.vercel.app/*",
         "https://jobflow-website-beaa.vercel.app/*"
       ],
