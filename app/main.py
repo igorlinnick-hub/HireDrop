@@ -6,7 +6,16 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import activity, applications, campaign, extension, jobs, profile, tools
+from app.routers import (
+    activity,
+    applications,
+    auth,
+    campaign,
+    extension,
+    jobs,
+    profile,
+    tools,
+)
 
 app = FastAPI(title="JobFlow API", version="1.0.0")
 
@@ -30,6 +39,7 @@ app.include_router(profile.router, prefix="/api/v1")
 app.include_router(tools.router, prefix="/api/v1")
 app.include_router(activity.router, prefix="/api/v1")
 app.include_router(extension.router, prefix="/api/v1")
+app.include_router(auth.router, prefix="/api/v1")
 
 
 @app.get("/health")

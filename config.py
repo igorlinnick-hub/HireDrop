@@ -21,6 +21,15 @@ ADMIN_EMAILS = {
 EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS", "")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
 EMAIL_IMAP_SERVER = os.getenv("EMAIL_IMAP_SERVER", "imap.gmail.com")
+EMAIL_SMTP_SERVER = os.getenv("EMAIL_SMTP_SERVER", "smtp.gmail.com")
+EMAIL_SMTP_PORT = int(os.getenv("EMAIL_SMTP_PORT", "465"))
+
+# Frontend origin — used to build auth redirect links in transactional emails.
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://jobflow-website-beaa.vercel.app")
+
+# Supabase (read here too so non-db modules don't reach into app.db.client).
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 
 # Default Search Filters
 SEARCH_KEYWORDS = ["marketing", "content", "automation"]

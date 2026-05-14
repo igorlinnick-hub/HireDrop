@@ -53,3 +53,7 @@ class ConnectPlatformRequest(BaseModel):
 
 class JobStatusUpdate(BaseModel):
     status: str
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: str
