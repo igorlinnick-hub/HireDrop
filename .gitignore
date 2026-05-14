@@ -13,3 +13,6 @@ data/campaign_state.json
 .venv/
 .pytest_cache/
 .coverage
+
+# Build artifacts
+jobflow-extension.zip
