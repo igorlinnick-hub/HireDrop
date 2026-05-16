@@ -17,6 +17,10 @@ from app.schemas import ForgotPasswordRequest
 from config import FRONTEND_URL, SUPABASE_SERVICE_KEY, SUPABASE_URL
 from modules.email_sender import password_reset_html, send_email
 
+# All logs from this module use stderr so they are visible in Railway's log
+# stream (Railway aggregates stderr alongside stdout but stderr is preferred
+# for failure paths).
+
 router = APIRouter(tags=["auth"])
 
 # After the user clicks the link, Supabase verifies the token then redirects
@@ -52,18 +56,28 @@ def forgot_password(req: ForgotPasswordRequest):
             timeout=15,
         )
     except requests.RequestException as e:
-        print(f"[auth] generate_link request failed: {e}")
+        print(f"[CRITICAL auth] generate_link request failed: {e}", file=sys.stderr)
         return {"sent": True}
 
     if resp.status_code != 200:
-        # 422/404 here usually just means "no such user" — stay quiet.
-        print(f"[auth] generate_link returned {resp.status_code}: {resp.text[:200]}")
+        # 422/404 here usually just means "no such user" — stay quiet for the
+        # client (anti-enumeration) but log it so we can see real config bugs
+        # in Railway logs distinct from user-not-found.
+        body = resp.text[:200].replace("\n", " ")
+        if resp.status_code in (404, 422):
+            print(f"[auth] generate_link no-user for redacted email: {resp.status_code}", file=sys.stderr)
+        else:
+            print(f"[CRITICAL auth] generate_link returned {resp.status_code}: {body}", file=sys.stderr)
         return {"sent": True}
 
     action_link = resp.json().get("action_link")
     if not action_link:
-        print("[auth] generate_link succeeded but no action_link in response")
+        print("[CRITICAL auth] generate_link succeeded but no action_link in response", file=sys.stderr)
         return {"sent": True}
 
-    send_email(email, "Reset your JobFlow password", password_reset_html(action_link))
+    sent = send_email(email, "Reset your password", password_reset_html(action_link))
+    if not sent:
+        # send_email already printed [CRITICAL email] with the underlying cause.
+        # Add a second line so it's clear which flow triggered it.
+        print(f"[CRITICAL auth] password reset email send FAILED (see [CRITICAL email] above)", file=sys.stderr)
     return {"sent": True}
