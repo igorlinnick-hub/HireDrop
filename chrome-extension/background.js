@@ -265,13 +265,6 @@ async function handleMessage(msg, sender) {
         campaignWarmedUp: false,
       });
 
-      // Phase 5.1 — pick one UA for the entire session and install it
-      // before the campaign tab loads its first request. Mid-session
-      // rotation would itself be a flag.
-      const ua = pickUserAgent();
-      await chrome.storage.local.set({ campaignUserAgent: ua });
-      await setIndeedUserAgent(ua);
-
       updateBadge();
       return { started: true, tabId: tab.id, url };
     }
@@ -283,10 +276,6 @@ async function handleMessage(msg, sender) {
         campaignTabId: null,
         currentJob: null,
       });
-
-      // Phase 5.1 — drop the UA override so non-campaign tabs revert to
-      // the real Chrome UA.
-      await clearIndeedUserAgent();
 
       try {
         const data = await chrome.storage.local.get("campaignTabId");

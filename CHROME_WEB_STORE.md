@@ -33,7 +33,7 @@ JobFlow turns a six-step manual job application into a single button click on In
 • Log-normal randomized delays + occasional misclick + Bezier-path mouse emulation so behavior looks human.
 • Per-platform daily cap of 50 applications + tiered global daily limits (Free 10, Pro 50, Elite 200).
 • Stops the campaign automatically if Indeed shows a captcha and notifies you in the popup.
-• User-Agent rotation per session and a warm-up phase before the first action.
+• A brief warm-up phase before the first action, mimicking how a person settles onto a page.
 
 **Privacy-friendly**
 • Auth uses Supabase session tokens stored in chrome.storage.local; nothing leaves your browser except API calls to the JobFlow backend.
@@ -61,17 +61,11 @@ Paste each in the corresponding box during submission.
 
 **`storage`** — Stores the user's Supabase session token, cached user profile (5-minute TTL), today's application count for the badge, and an activity log of the last 50 events. All values are scoped to the local browser via chrome.storage.local and never sent anywhere except the JobFlow backend.
 
-**`activeTab`** — Used while the user is actively on an indeed.com job listing to read the job title and company so we can fetch the right cover letter, and to read form fields so we can autofill them. Access is bound to the user's interaction with the popup.
-
-**`scripting`** — Required to inject the autofill and submission logic into indeed.com pages once the user starts a campaign. Scripts are bundled with the extension; no remote code is executed.
-
 **`tabs`** — Used to (a) open the indeed.com search URL when a campaign starts, (b) listen for that tab's close event so we stop the campaign cleanly, and (c) open the JobFlow dashboard from the popup. We do not enumerate or inspect unrelated tabs.
 
 **`alarms`** — Used to refresh the toolbar badge with the current daily application count once per minute, so the user always sees an up-to-date number without opening the popup.
 
 **`notifications`** — Used to alert the user when a captcha or anti-bot challenge is detected so the user can take over manually, and to confirm a successful application when the dashboard is not open.
-
-**`declarativeNetRequestWithHostAccess`** — Used to add an Authorization: Bearer header to outbound API requests to the JobFlow backend at https://web-production-db45.up.railway.app/*, which is the only host this rule touches.
 
 **Host permissions**:
 - `https://*.indeed.com/*` — Required to read and submit job applications on Indeed (the core function of the extension).
@@ -120,16 +114,17 @@ support@jobflow.app
 
 ---
 
-## Asset checklist (still to produce)
+## Asset checklist
 
-- [x] Icon 128×128 — `chrome-extension/icons/icon128.png` (already in the package)
-- [ ] Screenshots 1280×800 — at least 1, up to 5. Suggested:
+- [x] Icon 16/48/128 — branded "JF" monogram, in `chrome-extension/icons/` (bundled in the zip)
+- [x] Small promo tile 440×280 — `store-assets/promo-small-440x280.png`
+- [x] Marquee promo tile 1400×560 (optional) — `store-assets/promo-marquee-1400x560.png`
+- [ ] Screenshots 1280×800 — at least 1, up to 5. **Igor must capture these from the live app** (they need a logged-in session + the extension loaded). Suggested set:
     1. Extension popup (after auth) showing "Start Campaign" button + today's count
     2. Dashboard with UsageBanner + recent applications
     3. /extension/connect "Extension connected ✓" success state
     4. Indeed listing mid-autofill (with the JobFlow badge visible)
-- [ ] Small promo tile 440×280
-- [ ] Marquee promo tile 1400×560 (optional)
+  How: open each view, set the browser window so the content area is 1280×800 (or screenshot then crop/pad to 1280×800), save as PNG.
 
 ---
 
