@@ -9,7 +9,6 @@ from app.db import jobs as jobs_db
 from app.deps import get_current_user
 from app.schemas import FindJobsRequest, JobStatusUpdate
 from modules.filters import filter_jobs
-from modules.telegram_bot import send_notification
 
 router = APIRouter(tags=["jobs"])
 
@@ -75,7 +74,6 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
             )
             saved += 1
 
-    send_notification(f"JobFlow: {saved} new jobs found on {', '.join(searched)}!")
     return {"count": saved, "message": f"{saved} new jobs saved", "platforms": searched}
 
 

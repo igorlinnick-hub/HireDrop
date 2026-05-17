@@ -13,15 +13,12 @@ from app.db.profile import get_profile
 from app.db.subscriptions import get_usage_summary, is_admin
 from app.deps import get_current_user
 from app.schemas import CoverLetterRequest, LetterPreviewRequest, TemplateRequest
+from config import RATE_LIMIT_ENFORCE, RATE_LIMIT_LETTERS_PER_DAY
 from modules.ai_cover_letter import generate_cover_letter
-from modules.telegram_bot import send_notification
 
 router = APIRouter(tags=["tools"])
 
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "templates")
-
-RATE_LIMIT_LETTERS_PER_DAY = int(os.getenv("RATE_LIMIT_LETTERS_PER_DAY", "50"))
-RATE_LIMIT_ENFORCE = os.getenv("RATE_LIMIT_ENFORCE", "false").lower() in ("1", "true", "yes")
 
 
 def _rate_limit_check(user) -> None:
@@ -139,8 +136,6 @@ def email_check(user=Depends(get_current_user)):
     if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
         return {"configured": False, "count": 0, "emails": []}
     responses = check_email_responses()
-    for r in responses:
-        send_notification(f"JobFlow Email: {r['subject']}\nFrom: {r['sender']}")
     return {"configured": True, "count": len(responses), "emails": responses}
 
 
