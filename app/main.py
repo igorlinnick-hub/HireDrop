@@ -11,9 +11,13 @@ from app.routers import (
     applications,
     auth,
     campaign,
+    campaigns,
+    contacts,
     extension,
     jobs,
+    oauth_gmail,
     profile,
+    templates,
     tools,
 )
 
@@ -40,6 +44,11 @@ app.include_router(tools.router, prefix="/api/v1")
 app.include_router(activity.router, prefix="/api/v1")
 app.include_router(extension.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
+# Cold-email outreach (Phase 1)
+app.include_router(oauth_gmail.router, prefix="/api/v1")
+app.include_router(templates.router, prefix="/api/v1")
+app.include_router(contacts.router, prefix="/api/v1")
+app.include_router(campaigns.router, prefix="/api/v1")
 
 
 @app.get("/health")

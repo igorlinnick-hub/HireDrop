@@ -56,6 +56,24 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "https://jobflow-website-beaa.vercel.ap
 
 
 # =============================================================================
+# GMAIL OAUTH — separate OAuth client for cold-email outreach
+# =============================================================================
+# Distinct from the login Google OAuth (which is configured in Supabase).
+# This one requests `gmail.send` scope so the backend can send mail on the
+# user's behalf via the Gmail API. Set up in Google Cloud Console → APIs &
+# Services → Credentials → OAuth client ID (web app). Redirect URI:
+# {BACKEND_URL}/api/v1/oauth/gmail/callback.
+GOOGLE_GMAIL_CLIENT_ID = os.getenv("GOOGLE_GMAIL_CLIENT_ID", "")
+GOOGLE_GMAIL_CLIENT_SECRET = os.getenv("GOOGLE_GMAIL_CLIENT_SECRET", "")
+# Where Google should send the user back after consent. Defaults to prod;
+# override for local dev.
+GOOGLE_GMAIL_REDIRECT_URI = os.getenv(
+    "GOOGLE_GMAIL_REDIRECT_URI",
+    "https://web-production-db45.up.railway.app/api/v1/oauth/gmail/callback",
+)
+
+
+# =============================================================================
 # TIERS / RATE LIMITS
 # =============================================================================
 # Comma-separated emails in ADMIN_EMAILS bypass tier limits + cover-letter
