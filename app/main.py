@@ -17,16 +17,19 @@ from app.routers import (
     tools,
 )
 
-app = FastAPI(title="JobFlow API", version="1.0.0")
+app = FastAPI(title="HireDrop API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://jobflow-website.vercel.app",
-        "https://jobflow-website-beaa.vercel.app",
+        "https://hiredrop.io",
+        "https://www.hiredrop.io",
         "http://localhost:3000",
     ],
-    allow_origin_regex=r"^chrome-extension://.*$",
+    # Vercel preview deploys + chrome extension origins. The `jobflow-website`
+    # pattern is a transition allowance until the Vercel project is renamed;
+    # remove after rename + custom domain cutover.
+    allow_origin_regex=r"^(chrome-extension://.*|https://(hiredrop-website|jobflow-website)[a-z0-9-]*\.vercel\.app)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

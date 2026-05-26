@@ -52,7 +52,7 @@ EMAIL_IMAP_SERVER = os.getenv("EMAIL_IMAP_SERVER", "imap.gmail.com")
 # =============================================================================
 # FRONTEND — base URL for links in transactional emails
 # =============================================================================
-FRONTEND_URL = os.getenv("FRONTEND_URL", "https://jobflow-website-beaa.vercel.app")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://hiredrop.io")
 
 
 # =============================================================================

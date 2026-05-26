@@ -1,4 +1,4 @@
-# JobFlow — Technical Documentation
+# HireDrop — Technical Documentation
 
 ## Table of Contents
 
@@ -39,7 +39,7 @@
 
 ## Overview
 
-**JobFlow** is an AI-powered job search automation platform. It scrapes job listings from multiple platforms, generates personalized cover letters using Claude AI, and automatically applies to jobs on Indeed.com via a Chrome Extension.
+**HireDrop** is an AI-powered job search automation platform. It scrapes job listings from multiple platforms, generates personalized cover letters using Claude AI, and automatically applies to jobs on Indeed.com via a Chrome Extension.
 
 **Core value proposition:** User sets up profile once → system finds jobs → AI writes cover letters → Chrome extension auto-applies → Telegram notifies about responses.
 
@@ -50,7 +50,7 @@
 | Layer | Technology |
 |-------|-----------|
 | **Backend** | Python 3, FastAPI, Uvicorn |
-| **Database** | SQLite (file-based, `database/jobflow.db`) |
+| **Database** | SQLite (file-based, `database/hiredrop.db`) |
 | **AI** | Anthropic Claude API (claude-sonnet-4-20250514) |
 | **Web Scraping** | BeautifulSoup4, Requests |
 | **PDF Parsing** | pdfplumber |
@@ -67,7 +67,7 @@
 ## Project Structure
 
 ```
-jobflow/                          # ~4,500 lines total
+hiredrop/                          # ~4,500 lines total
 │
 ├── web_app.py                    # 2,030 lines — FastAPI app + embedded HTML templates
 ├── main.py                       #   136 lines — CLI interface (Rich terminal UI)
@@ -110,7 +110,7 @@ jobflow/                          # ~4,500 lines total
 │   └── icons/                    # icon16.png, icon48.png, icon128.png
 │
 ├── data/                         # Runtime data (gitignored)
-│   ├── jobflow.db                # SQLite database (lives in database/ dir actually)
+│   ├── hiredrop.db                # SQLite database (lives in database/ dir actually)
 │   ├── profile.json              # User profile
 │   ├── resume.pdf                # Uploaded resume
 │   ├── campaign_state.json       # Campaign running state
@@ -192,7 +192,7 @@ jobflow/                          # ~4,500 lines total
 
 ## Database Schema
 
-**File:** `database/jobflow.db` (SQLite)
+**File:** `database/hiredrop.db` (SQLite)
 
 ### Table: `jobs`
 
@@ -598,7 +598,7 @@ content.js           ←── Page automation (injected into indeed.com)
 ```
 
 - `content.js` is injected on **all indeed.com pages**
-- `ping.js` is injected on the **dashboard** (localhost or Railway) — enables extension detection from the web app via `window.postMessage("JOBFLOW_PING")`
+- `ping.js` is injected on the **dashboard** (localhost or Railway) — enables extension detection from the web app via `window.postMessage("HIREDROP_PING")`
 
 ### Background Service Worker
 
@@ -732,7 +732,7 @@ function detectPhase() {
 **Layout:** 360px wide, dark theme
 
 **Sections:**
-1. **Header** — "JobFlow v1.0" logo
+1. **Header** — "HireDrop v1.0" logo
 2. **Connection row** — Green/red dot + "Connected"/"Offline" text + profile name
 3. **Stats grid** — 3 boxes: Today | This Week | Total
 4. **Campaign section** — Start/Stop button, elapsed time, current job display
@@ -816,8 +816,8 @@ All communication uses `chrome.runtime.sendMessage()` with `type` field.
 **Configuration:** `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` from `.env`
 
 **Trigger points:**
-1. After `POST /api/find-jobs` — `"JobFlow: {count} new jobs found on {platforms}!"`
-2. After `GET /api/email-check` — `"JobFlow Email: {subject}\nFrom: {sender}"` (for each match)
+1. After `POST /api/find-jobs` — `"HireDrop: {count} new jobs found on {platforms}!"`
+2. After `GET /api/email-check` — `"HireDrop Email: {subject}\nFrom: {sender}"` (for each match)
 
 **Behavior:** Silently fails if not configured (prints warning to console).
 

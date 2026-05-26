@@ -71,12 +71,7 @@ def send_email(to: str, subject: str, html_body: str) -> bool:
 
 
 def password_reset_html(action_link: str) -> str:
-    """Brand-neutral password reset HTML email.
-
-    Kept brand-neutral on purpose: the project is mid-rename and we don't want
-    user-facing strings tied to the old name. Re-add branding during the
-    rebrand commit.
-    """
+    """HireDrop password reset HTML email."""
     return f"""\
 <!DOCTYPE html>
 <html>
@@ -85,9 +80,9 @@ def password_reset_html(action_link: str) -> str:
     <div style="padding:32px;">
       <h1 style="font-size:20px;color:#1a1a2e;margin:0 0 8px;">Reset your password</h1>
       <p style="font-size:14px;color:#6b6b8a;line-height:1.6;margin:0 0 24px;">
-        We received a request to reset your password. Click the button below to
-        choose a new one. This link expires in 1 hour. If you didn't request
-        this, you can safely ignore this email.
+        We received a request to reset your HireDrop password. Click the button
+        below to choose a new one. This link expires in 1 hour. If you didn't
+        request this, you can safely ignore this email.
       </p>
       <a href="{action_link}"
          style="display:inline-block;background:linear-gradient(135deg,#6c5ce7,#a78bfa);color:#ffffff;

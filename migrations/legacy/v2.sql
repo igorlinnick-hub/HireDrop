@@ -1,4 +1,4 @@
--- JobFlow Phase 2 — Supabase Postgres schema
+-- HireDrop Phase 2 — Supabase Postgres schema
 -- Run this in: Supabase Dashboard → SQL Editor
 -- Run AFTER supabase-schema.sql (profiles table already exists)
 

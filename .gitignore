@@ -15,4 +15,4 @@ data/campaign_state.json
 .coverage
 
 # Build artifacts
-jobflow-extension.zip
+hiredrop-extension.zip

@@ -159,11 +159,11 @@ def download_extension(user=Depends(get_current_user)):
         for root, _dirs, files in os.walk(ext_dir):
             for fname in files:
                 full = os.path.join(root, fname)
-                arcname = os.path.join("jobflow-extension", os.path.relpath(full, ext_dir))
+                arcname = os.path.join("hiredrop-extension", os.path.relpath(full, ext_dir))
                 zf.write(full, arcname)
     buf.seek(0)
     return Response(
         content=buf.getvalue(),
         media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=jobflow-extension.zip"},
+        headers={"Content-Disposition": "attachment; filename=hiredrop-extension.zip"},
     )
