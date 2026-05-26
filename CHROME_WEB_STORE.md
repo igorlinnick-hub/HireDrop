@@ -110,7 +110,7 @@ https://hiredrop.io/privacy
 https://hiredrop.io
 
 ## Support email
-support@hiredrop.app
+support@hiredrop.io
 
 ---
 
