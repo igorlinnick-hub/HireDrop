@@ -75,7 +75,7 @@ def forgot_password(req: ForgotPasswordRequest):
         print("[CRITICAL auth] generate_link succeeded but no action_link in response", file=sys.stderr)
         return {"sent": True}
 
-    sent = send_email(email, "Reset your password", password_reset_html(action_link))
+    sent = send_email(email, "Reset your HireDrop password", password_reset_html(action_link))
     if not sent:
         # send_email already printed [CRITICAL email] with the underlying cause.
         # Add a second line so it's clear which flow triggered it.

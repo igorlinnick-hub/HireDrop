@@ -8,7 +8,7 @@ One-time fee: **$5 USD** (paid by Igor at https://chrome.google.com/webstore/dev
 ## Listing fields
 
 ### Name (max 75 chars)
-JobFlow — Auto-Apply on Indeed
+HireDrop — Auto-Apply on Indeed
 
 ### Short description / summary (max 132 chars)
 Auto-fill Indeed applications with your resume + AI-written cover letters. Run, stop, and rate-limit campaigns from one dashboard.
@@ -20,13 +20,13 @@ Productivity
 English
 
 ### Detailed description
-JobFlow turns a six-step manual job application into a single button click on Indeed.
+HireDrop turns a six-step manual job application into a single button click on Indeed.
 
 **How it works**
-1. Sign up at jobflow-website-beaa.vercel.app, upload your PDF resume, set your search keywords and writing style.
+1. Sign up at hiredrop.io, upload your PDF resume, set your search keywords and writing style.
 2. Install this extension and click "Connect Account" — your dashboard session is paired with the extension in one click.
-3. Click "Start Campaign" in the popup. JobFlow opens an Indeed search matching your preferences and begins applying to listings one at a time.
-4. Each application: extension reads the job title and company, asks the JobFlow backend for an AI-generated cover letter (Claude API), uploads your stored resume, fills the form, and submits.
+3. Click "Start Campaign" in the popup. HireDrop opens an Indeed search matching your preferences and begins applying to listings one at a time.
+4. Each application: extension reads the job title and company, asks the HireDrop backend for an AI-generated cover letter (Claude API), uploads your stored resume, fills the form, and submits.
 5. The dashboard tracks every application, with daily and per-platform limits enforced server-side.
 
 **Built-in safeguards**
@@ -36,7 +36,7 @@ JobFlow turns a six-step manual job application into a single button click on In
 • A brief warm-up phase before the first action, mimicking how a person settles onto a page.
 
 **Privacy-friendly**
-• Auth uses Supabase session tokens stored in chrome.storage.local; nothing leaves your browser except API calls to the JobFlow backend.
+• Auth uses Supabase session tokens stored in chrome.storage.local; nothing leaves your browser except API calls to the HireDrop backend.
 • No data is sold to or shared with advertisers.
 • Single purpose: automating job applications on Indeed.
 
@@ -45,13 +45,13 @@ JobFlow turns a six-step manual job application into a single button click on In
 • Edit your resume, keywords, or writing style at any time on the dashboard.
 • Disconnect Indeed in one click from your dashboard settings.
 
-JobFlow is not affiliated with Indeed. You are responsible for ensuring your use of automation complies with Indeed's terms of service.
+HireDrop is not affiliated with Indeed. You are responsible for ensuring your use of automation complies with Indeed's terms of service.
 
 ---
 
 ## Single-purpose justification
 
-> JobFlow has a single purpose: automating the user's own job application submissions on indeed.com. The extension reads the job title, company name, and form fields on indeed.com listings, autofills them from the user's stored profile, attaches the user's stored resume, and submits — but only after the user has explicitly clicked "Start Campaign" in the popup or on the JobFlow dashboard. The extension does not read any data unrelated to job applications, does not modify the appearance of the page, and does not perform any non-application action.
+> HireDrop has a single purpose: automating the user's own job application submissions on indeed.com. The extension reads the job title, company name, and form fields on indeed.com listings, autofills them from the user's stored profile, attaches the user's stored resume, and submits — but only after the user has explicitly clicked "Start Campaign" in the popup or on the HireDrop dashboard. The extension does not read any data unrelated to job applications, does not modify the appearance of the page, and does not perform any non-application action.
 
 ---
 
@@ -59,9 +59,9 @@ JobFlow is not affiliated with Indeed. You are responsible for ensuring your use
 
 Paste each in the corresponding box during submission.
 
-**`storage`** — Stores the user's Supabase session token, cached user profile (5-minute TTL), today's application count for the badge, and an activity log of the last 50 events. All values are scoped to the local browser via chrome.storage.local and never sent anywhere except the JobFlow backend.
+**`storage`** — Stores the user's Supabase session token, cached user profile (5-minute TTL), today's application count for the badge, and an activity log of the last 50 events. All values are scoped to the local browser via chrome.storage.local and never sent anywhere except the HireDrop backend.
 
-**`tabs`** — Used to (a) open the indeed.com search URL when a campaign starts, (b) listen for that tab's close event so we stop the campaign cleanly, and (c) open the JobFlow dashboard from the popup. We do not enumerate or inspect unrelated tabs.
+**`tabs`** — Used to (a) open the indeed.com search URL when a campaign starts, (b) listen for that tab's close event so we stop the campaign cleanly, and (c) open the HireDrop dashboard from the popup. We do not enumerate or inspect unrelated tabs.
 
 **`alarms`** — Used to refresh the toolbar badge with the current daily application count once per minute, so the user always sees an up-to-date number without opening the popup.
 
@@ -69,8 +69,8 @@ Paste each in the corresponding box during submission.
 
 **Host permissions**:
 - `https://*.indeed.com/*` — Required to read and submit job applications on Indeed (the core function of the extension).
-- `https://web-production-db45.up.railway.app/*` — JobFlow's own backend API.
-- `https://jobflow-website.vercel.app/*` and `https://jobflow-website-beaa.vercel.app/*` — JobFlow's own dashboard, used by the ping.js content script to forward the user's session token from the dashboard into the extension when they click "Connect Account".
+- `https://web-production-db45.up.railway.app/*` — HireDrop's own backend API.
+- `https://hiredrop.io/*` — HireDrop's own dashboard, used by the ping.js content script to forward the user's session token from the dashboard into the extension when they click "Connect Account".
 
 ---
 
@@ -104,13 +104,13 @@ Certifications:
 ---
 
 ## Privacy policy URL
-https://jobflow-website-beaa.vercel.app/privacy
+https://hiredrop.io/privacy
 
 ## Homepage URL
-https://jobflow-website-beaa.vercel.app
+https://hiredrop.io
 
 ## Support email
-support@jobflow.app
+support@hiredrop.app
 
 ---
 
@@ -123,21 +123,21 @@ support@jobflow.app
     1. Extension popup (after auth) showing "Start Campaign" button + today's count
     2. Dashboard with UsageBanner + recent applications
     3. /extension/connect "Extension connected ✓" success state
-    4. Indeed listing mid-autofill (with the JobFlow badge visible)
+    4. Indeed listing mid-autofill (with the HireDrop badge visible)
   How: open each view, set the browser window so the content area is 1280×800 (or screenshot then crop/pad to 1280×800), save as PNG.
 
 ---
 
 ## ZIP build
 
-The extension folder for upload to the dev console is `jobflow/chrome-extension/`. Zip just that directory's *contents* (not the wrapping folder):
+The extension folder for upload to the dev console is `hiredrop/chrome-extension/`. Zip just that directory's *contents* (not the wrapping folder):
 
 ```
-cd "jobflow/chrome-extension"
-zip -r ../jobflow-extension.zip . -x ".DS_Store"
+cd "hiredrop/chrome-extension"
+zip -r ../hiredrop-extension.zip . -x ".DS_Store"
 ```
 
-The resulting `jobflow-extension.zip` is what you upload on the "Package" tab.
+The resulting `hiredrop-extension.zip` is what you upload on the "Package" tab.
 
 ---
 
@@ -146,7 +146,7 @@ The resulting `jobflow-extension.zip` is what you upload on the "Package" tab.
 1. Go to https://chrome.google.com/webstore/devconsole using **igor.linnick@gmail.com**.
 2. Accept the Developer Agreement.
 3. Pay the $5 one-time registration fee.
-4. Click "New Item" → upload `jobflow-extension.zip`.
+4. Click "New Item" → upload `hiredrop-extension.zip`.
 5. Fill listing fields by copy-paste from the sections above.
 6. Fill data-use disclosures by checking the boxes above.
 7. Paste each permission justification.

@@ -1,4 +1,4 @@
-"""Pytest fixtures for JobFlow smoke tests.
+"""Pytest fixtures for HireDrop smoke tests.
 
 Strategy: env vars set BEFORE importing app, Supabase client mocked at the
 module-level singleton so no real network is hit. Auth dependency overridden

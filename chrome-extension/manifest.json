@@ -1,11 +1,11 @@
 {
   "manifest_version": 3,
-  "name": "JobFlow — Auto-Apply on Indeed",
-  "short_name": "JobFlow",
+  "name": "HireDrop — Auto-Apply on Indeed",
+  "short_name": "HireDrop",
   "version": "1.3.0",
   "description": "Auto-fill Indeed applications with your resume + an AI-written cover letter. Stop, start, and limit campaigns from one dashboard.",
-  "author": "JobFlow",
-  "homepage_url": "https://jobflow-website-beaa.vercel.app",
+  "author": "HireDrop",
+  "homepage_url": "https://hiredrop.io",
   "permissions": [
     "storage",
     "tabs",
@@ -15,8 +15,7 @@
   "host_permissions": [
     "https://web-production-db45.up.railway.app/*",
     "https://*.indeed.com/*",
-    "https://jobflow-website.vercel.app/*",
-    "https://jobflow-website-beaa.vercel.app/*"
+    "https://hiredrop.io/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -38,8 +37,7 @@
     {
       "matches": [
         "http://localhost:*/*",
-        "https://jobflow-website.vercel.app/*",
-        "https://jobflow-website-beaa.vercel.app/*"
+        "https://hiredrop.io/*"
       ],
       "js": ["ping.js"],
       "run_at": "document_idle"

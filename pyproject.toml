@@ -1,5 +1,5 @@
 [project]
-name = "jobflow"
+name = "hiredrop"
 version = "1.0.0"
 description = "AI-powered job application automation"
 requires-python = ">=3.12"

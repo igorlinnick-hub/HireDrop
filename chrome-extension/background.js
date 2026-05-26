@@ -1,4 +1,4 @@
-// JobFlow service worker
+// HireDrop service worker
 // All API communication, campaign state, and tab management
 
 importScripts("config.js");
@@ -409,7 +409,7 @@ async function handleMessage(msg, sender) {
         await chrome.notifications.create({
           type: "basic",
           iconUrl: "icons/icon128.png",
-          title: "JobFlow paused",
+          title: "HireDrop paused",
           message: `Indeed flagged the session (${data.signal}). Wait a few hours before resuming.`,
         });
       } catch {}

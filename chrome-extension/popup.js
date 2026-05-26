@@ -20,7 +20,7 @@ function showAuthBanner(title, sub) {
   $("auth-banner-title").textContent = title || "Connect Your Account";
   $("auth-banner-sub").textContent =
     sub ||
-    "Sign in to JobFlow to start automating your job search. Your session is synced from the dashboard.";
+    "Sign in to HireDrop to start automating your job search. Your session is synced from the dashboard.";
   $("auth-banner").classList.add("visible");
   $("body-main").style.display = "none";
 }
@@ -265,7 +265,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "AUTH_EXPIRED") {
     showAuthBanner(
       "Session Expired",
-      "Your JobFlow session has expired. Please reconnect your account from the dashboard."
+      "Your HireDrop session has expired. Please reconnect your account from the dashboard."
     );
   }
 });

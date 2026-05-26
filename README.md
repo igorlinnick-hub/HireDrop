@@ -1,4 +1,4 @@
-# JobFlow
+# HireDrop
 
 AI-powered job-application automation. Backend on Railway, dashboard on Vercel, the actual auto-apply logic in a Chrome extension that drives Indeed forms.
 
@@ -6,7 +6,7 @@ AI-powered job-application automation. Backend on Railway, dashboard on Vercel, 
 
 ```
 ┌─────────────────────┐     ┌──────────────────────┐
-│  jobflow-website    │     │  Chrome extension    │
+│  hiredrop-website    │     │  Chrome extension    │
 │  (Vercel, Next.js)  │     │  (Manifest V3)       │
 │  — login, dashboard │     │  — Indeed auto-apply │
 └──────────┬──────────┘     └───────────┬──────────┘
@@ -105,8 +105,8 @@ Optional:
 ## Local development
 
 ```bash
-git clone https://github.com/igorlinnick-hub/JobFlow
-cd JobFlow
+git clone https://github.com/igorlinnick-hub/HireDrop
+cd HireDrop
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt -r requirements-dev.txt
 cp .env.example .env  # fill in the keys
@@ -125,7 +125,7 @@ pyright app modules  # type check (informational)
 ## Deployment
 
 - **Backend**: Railway auto-deploys on every push to `main`. `Procfile` runs `uvicorn app.main:app`. Env vars in Railway dashboard.
-- **Frontend**: Vercel auto-deploys `igorlinnick-hub/jobflow-website` (separate repo).
+- **Frontend**: Vercel auto-deploys `igorlinnick-hub/hiredrop-website` (separate repo).
 - **Extension**: load unpacked from `chrome-extension/` for development. Distribution via Chrome Web Store on release.
 - **Schema migrations**: SQL in `supabase-schema-vN.sql`. Apply via Management API (PAT in `.env` as `SUPABASE_PAT`) — see `SUPABASE_MIGRATION_v3.md`.
 

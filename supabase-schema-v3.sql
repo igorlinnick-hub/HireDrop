@@ -1,4 +1,4 @@
--- JobFlow Phase 3+4 — Supabase schema v3
+-- HireDrop Phase 3+4 — Supabase schema v3
 -- Run this in: Supabase Dashboard → SQL Editor → New query → paste → Run.
 -- Idempotent: safe to re-run, all CREATEs use IF NOT EXISTS.
 --

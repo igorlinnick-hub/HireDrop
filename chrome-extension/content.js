@@ -1,4 +1,4 @@
-// JobFlow content script — Indeed.com auto-apply automation
+// HireDrop content script — Indeed.com auto-apply automation
 // Injected on indeed.com pages via manifest content_scripts
 //
 // Three phases:
@@ -7,8 +7,8 @@
 //   PHASE 3 — Application form: fill fields, click through steps, submit
 
 (function () {
-  if (window.__jobflow_loaded) return;
-  window.__jobflow_loaded = true;
+  if (window.__hiredrop_loaded) return;
+  window.__hiredrop_loaded = true;
 
   const MAX_APPLICATIONS_PER_PLATFORM = 50;
 
