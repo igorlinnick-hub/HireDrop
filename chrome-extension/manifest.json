@@ -36,7 +36,6 @@
     },
     {
       "matches": [
-        "http://localhost:*/*",
         "https://hiredrop.io/*"
       ],
       "js": ["ping.js"],
