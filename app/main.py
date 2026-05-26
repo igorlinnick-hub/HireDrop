@@ -26,8 +26,10 @@ app.add_middleware(
         "https://www.hiredrop.io",
         "http://localhost:3000",
     ],
-    # Vercel preview deploys + chrome extension origins.
-    allow_origin_regex=r"^(chrome-extension://.*|https://hiredrop-website[a-z0-9-]*\.vercel\.app)$",
+    # Vercel preview deploys + chrome extension origins. The `jobflow-website`
+    # pattern is a transition allowance until the Vercel project is renamed;
+    # remove after rename + custom domain cutover.
+    allow_origin_regex=r"^(chrome-extension://.*|https://(hiredrop-website|jobflow-website)[a-z0-9-]*\.vercel\.app)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
