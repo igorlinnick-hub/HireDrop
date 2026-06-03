@@ -79,5 +79,5 @@ def forgot_password(req: ForgotPasswordRequest):
     if not sent:
         # send_email already printed [CRITICAL email] with the underlying cause.
         # Add a second line so it's clear which flow triggered it.
-        print(f"[CRITICAL auth] password reset email send FAILED (see [CRITICAL email] above)", file=sys.stderr)
+        print("[CRITICAL auth] password reset email send FAILED (see [CRITICAL email] above)", file=sys.stderr)
     return {"sent": True}
