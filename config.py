@@ -60,11 +60,7 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "https://hiredrop.io")
 # =============================================================================
 # Comma-separated emails in ADMIN_EMAILS bypass tier limits + cover-letter
 # rate limit. Lowercased on read so checks are case-insensitive.
-ADMIN_EMAILS = {
-    e.strip().lower()
-    for e in os.getenv("ADMIN_EMAILS", "").split(",")
-    if e.strip()
-}
+ADMIN_EMAILS = {e.strip().lower() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()}
 
 # Cover letter generation rate limit. Soft mode (default) just counts;
 # hard mode (RATE_LIMIT_ENFORCE=true) returns 429 once the daily count is hit.

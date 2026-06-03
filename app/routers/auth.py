@@ -65,19 +65,31 @@ def forgot_password(req: ForgotPasswordRequest):
         # in Railway logs distinct from user-not-found.
         body = resp.text[:200].replace("\n", " ")
         if resp.status_code in (404, 422):
-            print(f"[auth] generate_link no-user for redacted email: {resp.status_code}", file=sys.stderr)
+            print(
+                f"[auth] generate_link no-user for redacted email: {resp.status_code}",
+                file=sys.stderr,
+            )
         else:
-            print(f"[CRITICAL auth] generate_link returned {resp.status_code}: {body}", file=sys.stderr)
+            print(
+                f"[CRITICAL auth] generate_link returned {resp.status_code}: {body}",
+                file=sys.stderr,
+            )
         return {"sent": True}
 
     action_link = resp.json().get("action_link")
     if not action_link:
-        print("[CRITICAL auth] generate_link succeeded but no action_link in response", file=sys.stderr)
+        print(
+            "[CRITICAL auth] generate_link succeeded but no action_link in response",
+            file=sys.stderr,
+        )
         return {"sent": True}
 
     sent = send_email(email, "Reset your HireDrop password", password_reset_html(action_link))
     if not sent:
         # send_email already printed [CRITICAL email] with the underlying cause.
         # Add a second line so it's clear which flow triggered it.
-        print("[CRITICAL auth] password reset email send FAILED (see [CRITICAL email] above)", file=sys.stderr)
+        print(
+            "[CRITICAL auth] password reset email send FAILED (see [CRITICAL email] above)",
+            file=sys.stderr,
+        )
     return {"sent": True}

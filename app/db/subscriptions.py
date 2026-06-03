@@ -11,6 +11,7 @@ hitting Supabase.
 Mirrors the cover-letter rate limit in app/db/usage.py — same pattern,
 different counter table (`applications` instead of `cover_letter_usage`).
 """
+
 from datetime import UTC, datetime
 
 from app.db import applications as apps_db
