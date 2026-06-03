@@ -11,7 +11,9 @@ class RemoteOKPlatform(JobPlatform):
 
     def scrape(self, keywords=None, location="remote", max_results=25):
         try:
-            response = requests.get(REMOTEOK_API, headers={"User-Agent": "HireDrop/1.0"}, timeout=15)
+            response = requests.get(
+                REMOTEOK_API, headers={"User-Agent": "HireDrop/1.0"}, timeout=15
+            )
             response.raise_for_status()
             response.encoding = "utf-8"
             data = response.json()

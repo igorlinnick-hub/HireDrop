@@ -11,13 +11,12 @@ hitting Supabase.
 Mirrors the cover-letter rate limit in app/db/usage.py — same pattern,
 different counter table (`applications` instead of `cover_letter_usage`).
 """
-from datetime import datetime, timezone
-from typing import Optional
 
-from config import ADMIN_EMAILS
+from datetime import UTC, datetime
 
 from app.db import applications as apps_db
 from app.db.client import get_supabase
+from config import ADMIN_EMAILS
 
 TIER_LIMITS = {
     "free": 10,
@@ -31,11 +30,11 @@ MAX_PER_PLATFORM = 50
 ADMIN_DAILY_LIMIT = 10_000_000
 
 
-def is_admin(email: Optional[str]) -> bool:
+def is_admin(email: str | None) -> bool:
     return bool(email) and email.lower() in ADMIN_EMAILS
 
 
-def get_tier(user_id: str, email: Optional[str] = None) -> str:
+def get_tier(user_id: str, email: str | None = None) -> str:
     """Returns the user's active tier.
 
     Admin emails win first (env-only, no DB lookup needed).
@@ -61,9 +60,9 @@ def get_tier(user_id: str, email: Optional[str] = None) -> str:
     if tier != "free" and expires:
         try:
             exp_dt = datetime.fromisoformat(expires.replace("Z", "+00:00"))
-            if exp_dt < datetime.now(timezone.utc):
+            if exp_dt < datetime.now(UTC):
                 return "free"
-        except Exception:
+        except Exception:  # noqa: S110 - invalid timestamps default to current tier; no recovery needed
             pass
 
     return tier if tier in TIER_LIMITS else "free"
@@ -75,7 +74,7 @@ def daily_limit(tier: str) -> int:
     return TIER_LIMITS.get(tier, TIER_LIMITS["free"])
 
 
-def check_can_apply(user_id: str, platform: str, email: Optional[str] = None) -> dict:
+def check_can_apply(user_id: str, platform: str, email: str | None = None) -> dict:
     tier = get_tier(user_id, email)
 
     if tier == "admin":
@@ -125,7 +124,7 @@ def check_can_apply(user_id: str, platform: str, email: Optional[str] = None) ->
     }
 
 
-def get_usage_summary(user_id: str, email: Optional[str] = None) -> dict:
+def get_usage_summary(user_id: str, email: str | None = None) -> dict:
     tier = get_tier(user_id, email)
     used_today = apps_db.count_today(user_id)
     platform_counts = apps_db.count_today_by_platform(user_id)
