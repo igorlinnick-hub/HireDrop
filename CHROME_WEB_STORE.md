@@ -61,8 +61,6 @@ Paste each in the corresponding box during submission.
 
 **`storage`** — Stores the user's Supabase session token, cached user profile (5-minute TTL), today's application count for the badge, and an activity log of the last 50 events. All values are scoped to the local browser via chrome.storage.local and never sent anywhere except the HireDrop backend.
 
-**`tabs`** — Used to (a) open the indeed.com search URL when a campaign starts, (b) listen for that tab's close event so we stop the campaign cleanly, and (c) open the HireDrop dashboard from the popup. We do not enumerate or inspect unrelated tabs.
-
 **`alarms`** — Used to refresh the toolbar badge with the current daily application count once per minute, so the user always sees an up-to-date number without opening the popup.
 
 **`notifications`** — Used to alert the user when a captcha or anti-bot challenge is detected so the user can take over manually, and to confirm a successful application when the dashboard is not open.
