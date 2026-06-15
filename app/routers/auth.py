@@ -26,7 +26,7 @@ router = APIRouter(tags=["auth"])
 # After the user clicks the link, Supabase verifies the token then redirects
 # here; /auth/callback exchanges the code for a session and forwards to
 # /auth/update-password.
-_REDIRECT_TO = f"{FRONTEND_URL}/auth/callback?next=/auth/update-password"
+_REDIRECT_TO = f"{FRONTEND_URL}/auth/update-password"
 
 
 @router.post("/auth/forgot-password")
