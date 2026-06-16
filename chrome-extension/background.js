@@ -132,6 +132,24 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 // ---------------------------------------------------------------------------
+// Screenshot streaming — captures the Indeed automation window every 2.5 s
+// and POSTs JPEG data URLs to /campaign/screenshot for the live dashboard.
+// Triggered by CAPTURE_SCREENSHOT messages from content.js.
+// ---------------------------------------------------------------------------
+
+async function sendScreenshot(windowId) {
+  try {
+    const dataUrl = await chrome.tabs.captureVisibleTab(windowId, {
+      format: "jpeg",
+      quality: 55,
+    });
+    await apiPost("/campaign/screenshot", { screenshot: dataUrl });
+  } catch {
+    // Window minimized, tab navigating, or permission issue — silent skip
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Activity log
 // ---------------------------------------------------------------------------
 
@@ -252,13 +270,24 @@ async function handleMessage(msg, sender) {
       }
 
       const url = buildIndeedUrl(filters.keywords, filters.location, filters.job_type);
-      const tab = await chrome.tabs.create({ url, active: true });
+
+      // Open a dedicated automation window (not focused) so the Indeed tab
+      // stays active in its window while the user watches the live view in
+      // the HireDrop dashboard window. captureVisibleTab targets this windowId.
+      const win = await chrome.windows.create({
+        url,
+        focused: false,
+        width: 1280,
+        height: 900,
+      });
+      const tab = win.tabs[0];
 
       await chrome.storage.local.set({
         campaignRunning: true,
         campaignFilters: filters,
         campaignStartedAt: new Date().toISOString(),
         campaignTabId: tab.id,
+        campaignWindowId: win.id,
         currentJob: null,
         // Phase 5.4 — clear the warmup flag so the next content.js init
         // runs a one-shot scroll/dwell sequence before the first action.
@@ -266,21 +295,35 @@ async function handleMessage(msg, sender) {
       });
 
       updateBadge();
-      return { started: true, tabId: tab.id, url };
+      return { started: true, tabId: tab.id, windowId: win.id, url };
+    }
+
+    // ----- Screenshot capture (triggered by content.js every 2.5 s) -----
+    case "CAPTURE_SCREENSHOT": {
+      const { campaignRunning, campaignWindowId } = await chrome.storage.local.get([
+        "campaignRunning",
+        "campaignWindowId",
+      ]);
+      if (campaignRunning && campaignWindowId) {
+        await sendScreenshot(campaignWindowId);
+      }
+      return { ok: true };
     }
 
     // ----- Campaign stop -----
     case "STOP_CAMPAIGN": {
+      const stopData = await chrome.storage.local.get(["campaignTabId", "campaignWindowId"]);
+
       await chrome.storage.local.set({
         campaignRunning: false,
         campaignTabId: null,
+        campaignWindowId: null,
         currentJob: null,
       });
 
       try {
-        const data = await chrome.storage.local.get("campaignTabId");
-        if (data.campaignTabId) {
-          chrome.tabs.sendMessage(data.campaignTabId, { type: "CAMPAIGN_STOPPED" }).catch(() => {});
+        if (stopData.campaignTabId) {
+          chrome.tabs.sendMessage(stopData.campaignTabId, { type: "CAMPAIGN_STOPPED" }).catch(() => {});
         }
       } catch {}
 

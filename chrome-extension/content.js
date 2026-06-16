@@ -1313,4 +1313,12 @@
   } else {
     setTimeout(init, 1000);
   }
+
+  // Screenshot ping — keeps the service worker alive and triggers a capture
+  // every 2.5 s while this page is open. background.js only sends to backend
+  // when campaignRunning is true, so this is a no-op outside campaigns.
+  const _screenshotPing = setInterval(() => {
+    chrome.runtime.sendMessage({ type: "CAPTURE_SCREENSHOT" }).catch(() => {});
+  }, 2500);
+  window.addEventListener("unload", () => clearInterval(_screenshotPing));
 })();

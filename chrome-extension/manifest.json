@@ -10,7 +10,8 @@
     "storage",
     "tabs",
     "alarms",
-    "notifications"
+    "notifications",
+    "activeTab"
   ],
   "host_permissions": [
     "https://web-production-db45.up.railway.app/*",
