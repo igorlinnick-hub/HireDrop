@@ -16,7 +16,8 @@
   "host_permissions": [
     "https://web-production-db45.up.railway.app/*",
     "https://*.indeed.com/*",
-    "https://hiredrop.io/*"
+    "https://hiredrop.io/*",
+    "https://*.supabase.co/*"
   ],
   "background": {
     "service_worker": "background.js"

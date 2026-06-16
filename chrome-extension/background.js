@@ -13,23 +13,59 @@ async function getAuthToken() {
 }
 
 // ---------------------------------------------------------------------------
+// Token refresh — calls Supabase directly, no backend needed
+// ---------------------------------------------------------------------------
+
+async function refreshAccessToken() {
+  const data = await chrome.storage.local.get(["supabase_refresh_token", "supabase_url"]);
+  const refreshToken = data.supabase_refresh_token;
+  if (!refreshToken) return null;
+
+  // CONFIG.SUPABASE_URL must be set in config.js
+  const supabaseUrl = CONFIG.SUPABASE_URL;
+  if (!supabaseUrl) return null;
+
+  try {
+    const res = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=refresh_token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "apikey": CONFIG.SUPABASE_ANON_KEY },
+      body: JSON.stringify({ refresh_token: refreshToken }),
+    });
+    if (!res.ok) return null;
+    const json = await res.json();
+    if (!json.access_token) return null;
+    await chrome.storage.local.set({
+      supabase_token: json.access_token,
+      supabase_refresh_token: json.refresh_token || refreshToken,
+    });
+    return json.access_token;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // API helpers
 // ---------------------------------------------------------------------------
 
-async function apiGet(path) {
+async function apiGet(path, { retry = true } = {}) {
   const token = await getAuthToken();
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
   const res = await fetch(`${CONFIG.API_BASE}${CONFIG.API_V1}${path}`, { headers });
   if (res.status === 401) {
-    await chrome.storage.local.remove("supabase_token");
+    if (retry) {
+      const newToken = await refreshAccessToken();
+      if (newToken) return apiGet(path, { retry: false });
+    }
+    await chrome.storage.local.remove(["supabase_token", "supabase_refresh_token"]);
     chrome.runtime.sendMessage({ type: "AUTH_EXPIRED" }).catch(() => {});
-    throw new Error("Authentication required — please reconnect your account");
+    throw new Error("Session expired — please reconnect at hiredrop.io/extension/connect");
   }
   if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
   return res.json();
 }
 
-async function apiPost(path, body) {
+async function apiPost(path, body, { retry = true } = {}) {
   const token = await getAuthToken();
   const headers = {
     "Content-Type": "application/json",
@@ -41,9 +77,13 @@ async function apiPost(path, body) {
     body: JSON.stringify(body),
   });
   if (res.status === 401) {
-    await chrome.storage.local.remove("supabase_token");
+    if (retry) {
+      const newToken = await refreshAccessToken();
+      if (newToken) return apiPost(path, body, { retry: false });
+    }
+    await chrome.storage.local.remove(["supabase_token", "supabase_refresh_token"]);
     chrome.runtime.sendMessage({ type: "AUTH_EXPIRED" }).catch(() => {});
-    throw new Error("Authentication required — please reconnect your account");
+    throw new Error("Session expired — please reconnect at hiredrop.io/extension/connect");
   }
   if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
   return res.json();
@@ -204,7 +244,9 @@ async function handleMessage(msg, sender) {
 
     // ----- Auth -----
     case "STORE_TOKEN": {
-      await chrome.storage.local.set({ supabase_token: msg.token });
+      const storePayload = { supabase_token: msg.token };
+      if (msg.refresh_token) storePayload.supabase_refresh_token = msg.refresh_token;
+      await chrome.storage.local.set(storePayload);
       // Refresh profile cache with new token
       await fetchAndCacheProfile().catch(() => {});
       return { stored: true };
@@ -214,7 +256,7 @@ async function handleMessage(msg, sender) {
       return { authenticated: !!data.supabase_token };
     }
     case "LOGOUT": {
-      await chrome.storage.local.remove(["supabase_token", "profile", "profileCachedAt"]);
+      await chrome.storage.local.remove(["supabase_token", "supabase_refresh_token", "profile", "profileCachedAt"]);
       return { loggedOut: true };
     }
 

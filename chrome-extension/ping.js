@@ -13,7 +13,7 @@ window.addEventListener("message", function (e) {
 
   if (typeof e.data === "object" && e.data.type === "HIREDROP_STORE_TOKEN" && typeof e.data.token === "string") {
     chrome.runtime.sendMessage(
-      { type: "STORE_TOKEN", token: e.data.token },
+      { type: "STORE_TOKEN", token: e.data.token, refresh_token: e.data.refresh_token || "" },
       function (resp) {
         const ok = !!(resp && resp.stored);
         window.postMessage(
