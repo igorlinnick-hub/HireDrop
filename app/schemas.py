@@ -40,6 +40,13 @@ class FindJobsRequest(BaseModel):
     platforms: list[str] = []
 
 
+class SearchPrefsUpdate(BaseModel):
+    keywords: list[str] = []
+    location: str = "remote"
+    job_type: str = "full-time"
+    platforms: list[str] = ["remoteok"]
+
+
 class CampaignStartRequest(BaseModel):
     keywords: list[str] = []
     platforms: list[str] = []

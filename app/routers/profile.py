@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from app.db import profile as profile_db
 from app.db import resume as resume_storage
 from app.deps import get_current_user
-from app.schemas import ConnectPlatformRequest, ProfileUpdate
+from app.schemas import ConnectPlatformRequest, ProfileUpdate, SearchPrefsUpdate
 
 router = APIRouter(tags=["profile"])
 
@@ -25,6 +25,21 @@ def get_profile(user=Depends(get_current_user)):
 def update_profile(profile: ProfileUpdate, user=Depends(get_current_user)):
     updated = profile_db.update_profile(user.id, profile.dict())
     return {"message": "Profile saved", "profile": updated}
+
+
+@router.post("/profile/prefs")
+def update_search_prefs(prefs: SearchPrefsUpdate, user=Depends(get_current_user)):
+    """Partial update — only search preferences, does not touch name/phone/etc."""
+    current = profile_db.get_profile(user.id)
+    payload = {
+        **{k: current.get(k, "") for k in ("name", "last_name", "phone", "writing_style", "resume_url")},
+        "keywords": prefs.keywords,
+        "location": prefs.location,
+        "job_type": prefs.job_type,
+        "platforms": prefs.platforms,
+    }
+    updated = profile_db.update_profile(user.id, payload)
+    return {"saved": True, "profile": updated}
 
 
 @router.post("/profile/resume")
