@@ -4,6 +4,7 @@ from abc import ABC, abstractmethod
 class JobPlatform(ABC):
     name = ""
     display_name = ""
+    requires_credentials = False  # True = needs stored platform credentials
 
     @abstractmethod
     def scrape(self, keywords=None, location="remote", max_results=25):

@@ -8,13 +8,7 @@ from fastapi import APIRouter, Depends
 from app.db import jobs as jobs_db
 from app.deps import get_current_user
 from app.schemas import FindJobsRequest, JobStatusUpdate
-from modules.filters import filter_jobs
-
 router = APIRouter(tags=["jobs"])
-
-CONNECTABLE_PLATFORMS = ["indeed", "wellfound"]
-STUB_PLATFORMS = ["glassdoor", "ziprecruiter"]
-
 
 @router.get("/jobs")
 def get_jobs(user=Depends(get_current_user)):
@@ -23,20 +17,17 @@ def get_jobs(user=Depends(get_current_user)):
 
 @router.post("/jobs/find")
 def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
-    from app.db.profile import get_connections, get_profile
+    from app.db.profile import get_profile
     from modules.platforms.registry import PLATFORMS
 
     profile = get_profile(user.id)
-    conns = get_connections(user.id)
     requested = req.platforms if (req and req.platforms) else profile.get("platforms", ["remoteok"])
 
-    scrapeable = [
-        p
-        for p in requested
-        if p == "remoteok" or (p in CONNECTABLE_PLATFORMS and conns.get(p, {}).get("connected"))
-    ]
+    # All platforms in registry are scrapeable without stored credentials.
+    # Indeed listings are scraped server-side; Extension handles form submission separately.
+    scrapeable = [p for p in requested if p in PLATFORMS and not PLATFORMS[p].requires_credentials]
 
-    platforms = [PLATFORMS[p]() for p in scrapeable if p in PLATFORMS]
+    platforms = [PLATFORMS[p]() for p in scrapeable]
     all_jobs, searched = [], []
 
     for platform in platforms:
@@ -55,24 +46,45 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
             "platforms": searched,
         }
 
-    filtered = filter_jobs(all_jobs, profile)
-    if not filtered:
-        return {"count": 0, "message": "No new jobs matching keywords", "platforms": searched}
+    # Deduplicate against already-saved jobs, then let Claude score everything.
+    # Keyword pre-filter removed: JobSpy platforms already filter via search_term,
+    # and Claude Haiku (Haiku cost ~$0.025/200 jobs) is a better semantic judge.
+    new_jobs = [j for j in all_jobs if not jobs_db.job_exists(user.id, j["link"])]
+    if new_jobs:
+        from modules.ai_cover_letter import load_resume_text
+        from modules.ai_job_scorer import score_jobs_batch
+
+        resume_text = load_resume_text(profile.get("resume_url"))
+        new_jobs = score_jobs_batch(new_jobs, profile, resume_text)
 
     saved = 0
-    for job in filtered:
-        if not jobs_db.job_exists(user.id, job["link"]):
-            jobs_db.save_job(
-                user_id=user.id,
-                title=job["title"],
-                company=job["company"],
-                link=job["link"],
-                platform=job.get("platform", "unknown"),
-                description=job.get("description", ""),
-                location=job.get("location", ""),
-                job_type=job.get("job_type", ""),
+    for job in new_jobs:
+        job_id = jobs_db.save_job(
+            user_id=user.id,
+            title=job["title"],
+            company=job["company"],
+            link=job["link"],
+            platform=job.get("platform", "unknown"),
+            description=job.get("description", ""),
+            location=job.get("location", ""),
+            job_type=job.get("job_type", ""),
+        )
+        if job_id and job.get("score") is not None:
+            jobs_db.update_job_score(
+                job_id,
+                job["score"],
+                job.get("ai_verdict", ""),
+                job.get("ai_flags", []),
+                job.get("ats_keywords", []),
+                job.get("ats_match_pct", 0),
             )
-            saved += 1
+        # Tailor resume for strong matches (score 7+)
+        if job_id and job.get("score", 0) >= 7 and resume_text:
+            from modules.ai_resume_tailor import tailor_resume
+            tailored = tailor_resume(job, profile, resume_text)
+            if tailored:
+                jobs_db.update_tailored_resume(job_id, tailored)
+        saved += 1
 
     return {"count": saved, "message": f"{saved} new jobs saved", "platforms": searched}
 

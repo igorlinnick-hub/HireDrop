@@ -1,3 +1,4 @@
+import io
 import json
 import os
 
@@ -5,8 +6,6 @@ import anthropic
 
 from config import ANTHROPIC_API_KEY
 
-RESUME_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "resume.pdf")
-PROFILE_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "profile.json")
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "..", "templates", "cover_letter.txt")
 
 _anthropic_client: anthropic.Anthropic | None = None
@@ -22,24 +21,31 @@ def get_anthropic_client() -> anthropic.Anthropic:
     return _anthropic_client
 
 
-def load_resume_text(max_chars=2000):
-    if not os.path.exists(RESUME_PATH):
-        return ""
-    try:
-        import pdfplumber
+def load_resume_text(resume_url: str | None = None, max_chars: int = 3000) -> str:
+    """Load resume text from Supabase storage (preferred) or local fallback."""
+    if resume_url:
+        try:
+            from app.db.client import get_supabase
+            import pdfplumber
 
-        with pdfplumber.open(RESUME_PATH) as pdf:
-            text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-            return text[:max_chars]
-    except Exception:
-        return ""
+            data = get_supabase().storage.from_("resumes").download(resume_url)
+            with pdfplumber.open(io.BytesIO(data)) as pdf:
+                text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+                return text[:max_chars]
+        except Exception as e:
+            print(f"[resume] Storage download failed: {e}")
 
-
-def load_profile():
-    if os.path.exists(PROFILE_PATH):
-        with open(PROFILE_PATH) as f:
-            return json.load(f)
-    return {}
+    # Local fallback (legacy / dev)
+    local_path = os.path.join(os.path.dirname(__file__), "..", "data", "resume.pdf")
+    if os.path.exists(local_path):
+        try:
+            import pdfplumber
+            with pdfplumber.open(local_path) as pdf:
+                text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+                return text[:max_chars]
+        except Exception:
+            pass
+    return ""
 
 
 def fallback_template(job, profile=None):
@@ -81,12 +87,13 @@ STRICT RULES:
 
 def generate_cover_letter(job, profile=None):
     if profile is None:
-        profile = load_profile()
+        profile = {}
 
     if not ANTHROPIC_API_KEY:
         return fallback_template(job, profile)
 
-    resume_text = load_resume_text()
+    resume_url = profile.get("resume_url")
+    resume_text = load_resume_text(resume_url)
     writing_style = profile.get("writing_style", "")
     system = build_system_prompt(writing_style)
 
