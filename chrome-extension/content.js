@@ -596,12 +596,15 @@
     // Filter for "Easily apply" jobs
     const easyApplyCards = [];
     const alreadyApplied = await getAppliedUrls();
+    const seenKeys = await chrome.storage.local.get("processedJobKeys");
+    const processedKeys = new Set(seenKeys.processedJobKeys || []);
 
     for (const card of cards) {
       if (!isEasilyApplyCard(card)) continue;
       const info = extractCardInfo(card);
       if (!info.title || !info.clickEl) continue;
       if (alreadyApplied.has(info.url)) continue;
+      if (info.jk && processedKeys.has(info.jk)) continue;
       easyApplyCards.push(info);
     }
 
