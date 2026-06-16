@@ -862,16 +862,54 @@
     return null;
   }
 
+  // Fill unanswered radio-button screener questions.
+  // Returns count of groups filled. Picks "Yes" for Yes/No groups (covers the
+  // most common positive-eligibility questions); picks the first option otherwise.
+  async function fillRadioQuestions() {
+    const radios = document.querySelectorAll('input[type="radio"]');
+    const seen = new Set();
+    let filled = 0;
+
+    for (const r of radios) {
+      if (seen.has(r.name)) continue;
+      seen.add(r.name);
+
+      const group = Array.from(document.querySelectorAll(`input[name="${r.name}"]`));
+      if (group.some((o) => o.checked)) continue; // already answered
+
+      // Determine which option to pick
+      const labels = group.map((o) => {
+        const lbl = document.querySelector(`label[for="${o.id}"]`)?.textContent?.trim().toLowerCase() ||
+                    o.parentElement?.textContent?.trim().toLowerCase() || "";
+        return { el: o, lbl };
+      });
+
+      const yesOpt = labels.find((l) => l.lbl === "yes");
+      const target = yesOpt ? yesOpt.el : group[0];
+      if (!target) continue;
+
+      // Click via label if possible (React picks up the event better)
+      const labelEl = document.querySelector(`label[for="${target.id}"]`);
+      await humanClick(labelEl || target);
+      filled++;
+      await sleep(humanDelay(200, 500));
+    }
+
+    return filled;
+  }
+
   function findFormButton() {
-    // Look for form navigation/submit buttons
+    // Look for form navigation/submit buttons.
+    // Specific data-testid selectors come first — broad type="submit" is last
+    // because skip-navigation links are also type="submit" and would be matched.
     const selectors = [
-      'button[type="submit"]',
-      "button.ia-continueButton",
       'button[data-testid="continue-button"]',
       'button[data-testid="submit-button"]',
+      "button.ia-continueButton",
       'button[aria-label*="Continue"]',
       'button[aria-label*="Submit"]',
       'button[aria-label*="Review"]',
+      'form button[type="submit"]',
     ];
 
     for (const sel of selectors) {
@@ -1024,6 +1062,15 @@
         } catch (e) {
           log("Resume upload failed: " + e.message, "err");
         }
+      }
+
+      // Screener radio questions (Yes/No and multi-choice).
+      // Strategy: pick "Yes" for unanswered Yes/No groups (covers 18+, eligibility,
+      // background-check acknowledgements). For non-Yes/No groups pick first option.
+      const radiosFilled = await fillRadioQuestions();
+      if (radiosFilled > 0) {
+        await sleep(humanDelay(500, 1000));
+        filledAny = true;
       }
 
       if (filledAny) {
