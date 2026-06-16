@@ -567,7 +567,11 @@
     const company = companyEl?.textContent?.trim() || "";
     const href = titleEl?.getAttribute("href") || "";
     const url = href.startsWith("http") ? href : "https://www.indeed.com" + href;
-    const jk = card.getAttribute("data-jk") || titleEl?.getAttribute("data-jk") || "";
+    let jk = card.getAttribute("data-jk") || titleEl?.getAttribute("data-jk") || "";
+    if (!jk && href) {
+      const m = href.match(/[?&]jk=([a-f0-9]+)/i);
+      if (m) jk = m[1];
+    }
 
     return { title, company, url, jk, clickEl: titleEl };
   }
@@ -627,16 +631,17 @@
       currentJobIndex: 0,
     });
 
-    // Click the first job card. Reading-pause before — the cards' titles
-    // and snippets are visible from the list, real users skim before
-    // committing. Misclick chance simulates aim error.
+    // Navigate directly to /viewjob?jk=xxx rather than SPA-clicking the card.
+    // Clicking a card keeps the URL on /jobs?...&vjk=xxx which detectPhase()
+    // now correctly treats as "list", causing phase1 to re-run in a loop.
+    // A full-page navigation to /viewjob produces a clean "detail" URL.
     const firstJob = easyApplyCards[0];
     log(`Opening: ${firstJob.title} @ ${firstJob.company}`, "");
     await sleep(humanDelay(3000, 7000));
-    if (shouldMisclick()) {
-      await performMisclick(firstJob.clickEl);
-    }
-    await humanClick(firstJob.clickEl);
+    const viewjobUrl = firstJob.jk
+      ? `https://www.indeed.com/viewjob?jk=${firstJob.jk}`
+      : firstJob.url;
+    window.location.href = viewjobUrl;
   }
 
   async function getAppliedUrls() {
@@ -1157,10 +1162,12 @@
 
     await sleep(humanDelay(3000, 5000));
 
-    // Navigate to the job
-    if (nextJob.url) {
-      window.location.href = nextJob.url;
-    }
+    // Use /viewjob?jk= directly — card hrefs (/rc/clk?...) may redirect back to
+    // /jobs?...&vjk= which detectPhase() now treats as "list", re-running phase1.
+    const targetUrl = nextJob.jk
+      ? `https://www.indeed.com/viewjob?jk=${nextJob.jk}`
+      : nextJob.url;
+    window.location.href = targetUrl;
   }
 
   async function goBackToJobList() {
@@ -1217,16 +1224,16 @@
     // Phase 3: Indeed apply form is visible (modal or full page)
     if (isFormVisible()) return "form";
 
-    // Phase 2: Viewing a specific job
-    if (url.includes("/viewjob") || url.includes("vjk=")) return "detail";
+    // Phase 2: Standalone job detail page
+    if (url.includes("/viewjob")) return "detail";
 
-    // Phase 1: Job search results list
+    // Phase 1: Job search results list — checked BEFORE vjk= because Indeed always
+    // appends vjk= for whichever job is auto-highlighted in the right panel.
+    // Treating /jobs? as "detail" would mean phase1 never runs.
     if (url.includes("/jobs?") || url.includes("/jobs#")) return "list";
 
-    // Also handle the job detail panel on the search results page
-    // (Indeed sometimes shows job details in a right panel)
-    const detailPanel = document.querySelector("#jobsearch-ViewjobPaneWrapper");
-    if (detailPanel && detailPanel.offsetParent !== null) return "detail";
+    // Phase 2: vjk= outside of /jobs? context (rare direct link)
+    if (url.includes("vjk=")) return "detail";
 
     return "unknown";
   }
