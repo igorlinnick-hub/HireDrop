@@ -428,6 +428,7 @@
       "captcha",
       "are you a robot",
       "checking your browser",
+      "just a moment",
       "please verify",
     ],
     domSelectors: [
@@ -1198,7 +1199,8 @@
 
     const url = `https://www.indeed.com/jobs?${params.toString()}`;
     log("Returning to job list...", "");
-    await sleep(humanDelay(3000, 5000));
+    // 15-30 s between pages — rapid page-flipping triggers Cloudflare rate limiting
+    await sleep(humanDelay(15000, 30000));
     window.location.href = url;
   }
 
