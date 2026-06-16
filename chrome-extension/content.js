@@ -710,12 +710,38 @@
       return;
     }
 
-    // Check if it's an Easy Apply job
-    const pageText = document.body.textContent || "";
-    if (!/easily\s*apply/i.test(pageText)) {
-      log(`${jobTitle} — not Easy Apply, skipping`, "");
+    // Deduplicate by job key (vjk= in URL) to avoid reprocessing the same job
+    const jkMatch = jobUrl.match(/[?&](?:vjk|jk)=([a-f0-9]+)/i);
+    const jobKey = jkMatch ? jkMatch[1] : null;
+    if (jobKey) {
+      const seen = await chrome.storage.local.get("processedJobKeys");
+      const keys = seen.processedJobKeys || [];
+      if (keys.includes(jobKey)) {
+        log(`${jobTitle} — already processed, skipping`, "");
+        await skipToNextJob();
+        return;
+      }
+      await chrome.storage.local.set({ processedJobKeys: [...keys, jobKey].slice(-500) });
+    }
+
+    // Quick check: if only "Apply on company site" is visible, skip before cover letter
+    const hasIndeedApply = !!findApplyButton();
+    const hasExternalOnly = !hasIndeedApply && !!document.querySelector('button[aria-label*="company site" i], a[aria-label*="company site" i]');
+    if (hasExternalOnly) {
+      log(`${jobTitle} — external apply only, skipping`, "");
       await skipToNextJob();
       return;
+    }
+
+    // Check if it's an Easy Apply job (use the apply button presence, not page text which matches filter chip)
+    if (!hasIndeedApply) {
+      // Give it 3 seconds for async load before giving up
+      await sleep(3000);
+      if (!findApplyButton()) {
+        log(`${jobTitle} — no Easy Apply button found, skipping`, "");
+        await skipToNextJob();
+        return;
+      }
     }
 
     log(`Job: ${jobTitle} @ ${jobCompany}`, "");

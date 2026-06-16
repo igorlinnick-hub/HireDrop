@@ -331,9 +331,9 @@ async function handleMessage(msg, sender) {
         campaignTabId: tab.id,
         campaignWindowId: win.id,
         currentJob: null,
-        // Phase 5.4 — clear the warmup flag so the next content.js init
-        // runs a one-shot scroll/dwell sequence before the first action.
         campaignWarmedUp: false,
+        processedJobKeys: [],
+        processedPageStarts: [0],
       });
 
       updateBadge();
