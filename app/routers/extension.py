@@ -29,15 +29,15 @@ def get_selectors(platform: str, user=Depends(get_current_user)):
     }
 
 
-@router.patch("/extension/selectors/{platform}/detection")
-def patch_detection_selectors(platform: str, payload: dict, user=Depends(get_current_user)):
-    """Admin-only: patch just the detection section of platform selectors."""
+@router.patch("/extension/selectors/{platform}/{section}")
+def patch_selectors_section(platform: str, section: str, payload: dict, user=Depends(get_current_user)):
+    """Admin-only: patch any top-level section of platform selectors_json."""
     if user.email not in ADMIN_EMAILS:
         return JSONResponse(status_code=403, content={"error": "Admin only"})
     row = selectors_db.get(platform)
     if not row:
         return JSONResponse(status_code=404, content={"error": f"No selectors for platform: {platform}"})
     selectors_json = row["selectors_json"]
-    selectors_json["detection"] = payload
-    updated = selectors_db.upsert(platform, row["version"], selectors_json)
-    return {"ok": True, "platform": platform}
+    selectors_json[section] = payload
+    selectors_db.upsert(platform, row["version"], selectors_json)
+    return {"ok": True, "platform": platform, "section": section}
