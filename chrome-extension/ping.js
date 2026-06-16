@@ -15,8 +15,6 @@ window.addEventListener("message", function (e) {
     chrome.runtime.sendMessage(
       { type: "STORE_TOKEN", token: e.data.token },
       function (resp) {
-        // resp may be undefined if the service worker is asleep; reply
-        // either way so the page can stop spinning.
         const ok = !!(resp && resp.stored);
         window.postMessage(
           { type: "HIREDROP_TOKEN_STORED", ok, error: chrome.runtime.lastError ? chrome.runtime.lastError.message : null },
@@ -24,5 +22,21 @@ window.addEventListener("message", function (e) {
         );
       }
     );
+  }
+
+  if (typeof e.data === "object" && e.data.type === "HIREDROP_START_CAMPAIGN") {
+    chrome.runtime.sendMessage(
+      { type: "START_CAMPAIGN", filters: e.data.filters || {} },
+      function (resp) {
+        window.postMessage(
+          { type: "HIREDROP_CAMPAIGN_STARTED", ok: !!(resp && resp.started), error: resp && resp.error },
+          "*"
+        );
+      }
+    );
+  }
+
+  if (typeof e.data === "object" && e.data.type === "HIREDROP_STOP_CAMPAIGN") {
+    chrome.runtime.sendMessage({ type: "STOP_CAMPAIGN" }, function () {});
   }
 });
