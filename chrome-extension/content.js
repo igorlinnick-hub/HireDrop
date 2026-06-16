@@ -429,17 +429,20 @@
       "please verify",
     ],
     domSelectors: [
-      ".g-recaptcha",
-      'iframe[src*="captcha"]',
-      'iframe[src*="recaptcha"]',
+      // reCAPTCHA V2 checkbox widget — visible challenge, not background V3
+      ".g-recaptcha[data-sitekey]",
+      // hCaptcha challenge iframe
+      'iframe[title*="hcaptcha" i]',
+      // Cloudflare / DataDome / etc.
       "#challenge-form",
       "#challenge-running",
       "[data-cf-challenge]",
       'div[class*="captcha-container"]',
-      'iframe[title*="hcaptcha" i]',
       '[id*="datadome"]',
-      // Cloudflare challenge platform script (visible as a script element).
       'script[src*="cdn-cgi/challenge-platform"]',
+      // Indeed-specific: visible "verify you are human" overlay
+      '[data-testid="captcha-modal"]',
+      '[class*="indeed-captcha"]',
     ],
     // Match against any script src — separate from domSelectors because
     // <script> nodes are never offsetParent-visible.
@@ -1183,23 +1186,30 @@
   async function runPhase() {
     if (!(await isCampaignRunning())) return;
 
-    // Anti-detect safety net (Phase 5.5). If Indeed is showing a captcha,
-    // a security challenge, or any "you look like a robot" page — stop the
-    // campaign before we make it worse. Better to pause for a day than to
-    // get the user's account flagged.
+    // Anti-detect safety net (Phase 5.5). If Indeed shows a real CAPTCHA or
+    // security challenge, pause and ask the user to solve it manually.
     const det = isDetected();
     if (det.detected) {
-      log(`Detection triggered (${det.signal}) — stopping campaign`, "err");
+      log(`⚠️ CAPTCHA detected (${det.signal}) — pausing. Solve it in this window, then the campaign will resume.`, "err");
       await sendMsg({
         type: "DETECTION_TRIPPED",
-        data: {
-          signal: det.signal,
-          url: window.location.href,
-          phase: detectPhase(),
-        },
+        data: { signal: det.signal, url: window.location.href, phase: detectPhase() },
       });
-      await sendMsg({ type: "STOP_CAMPAIGN" });
-      return;
+      // Wait up to 3 minutes for the user to solve the CAPTCHA, then retry
+      for (let i = 0; i < 36; i++) {
+        await sleep(5000);
+        if (!(await isCampaignRunning())) return;
+        const recheck = isDetected();
+        if (!recheck.detected) {
+          log("CAPTCHA resolved — resuming campaign", "ok");
+          break;
+        }
+        if (i === 35) {
+          log("CAPTCHA not solved in 3 min — stopping campaign", "err");
+          await sendMsg({ type: "STOP_CAMPAIGN" });
+          return;
+        }
+      }
     }
 
     const phase = detectPhase();
