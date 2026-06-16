@@ -898,6 +898,47 @@
     return filled;
   }
 
+  // Fill required text/textarea screener fields that are empty.
+  // Employer-defined screener questions can be any type — comments, name, date.
+  // We infer the right value from the label text.
+  async function fillTextQuestions() {
+    const storageData = await chrome.storage.local.get(["profile"]);
+    const profile = storageData.profile || {};
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+
+    const inputs = Array.from(document.querySelectorAll('input[type="text"], textarea'))
+      .filter(el => el.offsetParent !== null && el.required && !el.value.trim());
+
+    let filled = 0;
+    for (const el of inputs) {
+      const label = (
+        document.querySelector(`label[for="${el.id}"]`)?.textContent?.trim() ||
+        el.getAttribute("aria-label") ||
+        el.getAttribute("placeholder") ||
+        ""
+      ).toLowerCase();
+
+      let value;
+      if (label.includes("name")) {
+        value = `${profile.name || "Applicant"} ${profile.last_name || ""}`.trim();
+      } else if (label.includes("date")) {
+        value = today;
+      } else if (label.includes("email")) {
+        value = profile.email || "";
+      } else if (label.includes("phone")) {
+        value = profile.phone || "";
+      } else {
+        value = "Yes, I confirm.";
+      }
+
+      if (!value) continue;
+      setNativeValue(el, value);
+      await sleep(humanDelay(150, 400));
+      filled++;
+    }
+    return filled;
+  }
+
   function findFormButton() {
     // Look for form navigation/submit buttons.
     // Specific data-testid selectors come first — broad type="submit" is last
@@ -926,6 +967,7 @@
           text === "next" ||
           text.includes("submit application") ||
           text.includes("submit your application") ||
+          text.includes("review your application") ||
           text.includes("apply") ||
           text === "review") &&
         btn.offsetParent !== null
@@ -1070,6 +1112,12 @@
       const radiosFilled = await fillRadioQuestions();
       if (radiosFilled > 0) {
         await sleep(humanDelay(500, 1000));
+        filledAny = true;
+      }
+
+      const textsFilled = await fillTextQuestions();
+      if (textsFilled > 0) {
+        await sleep(humanDelay(300, 700));
         filledAny = true;
       }
 
