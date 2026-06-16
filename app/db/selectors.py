@@ -18,3 +18,13 @@ def get(platform: str) -> dict | None:
         .execute()
     )
     return res.data[0] if res.data else None
+
+
+def upsert(platform: str, version: str, selectors_json: dict) -> dict:
+    res = (
+        get_supabase()
+        .table("platform_selectors")
+        .upsert({"platform": platform, "version": version, "selectors_json": selectors_json})
+        .execute()
+    )
+    return res.data[0] if res.data else {}
