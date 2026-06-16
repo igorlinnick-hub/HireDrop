@@ -369,10 +369,13 @@
       'td.resultContent',
     ],
     applyButton: [
+      'button[id="indeedApplyButton"]',
+      'button[data-testid="indeedApplyButton-test"]',
       'button[id*="indeedApply"]',
       ".ia-IndeedApplyButton",
       'button[class*="IndeedApply"]',
-      'button[aria-label*="Apply now"]',
+      'button[aria-label*="Apply now" i]',
+      'button[aria-label*="Apply with Indeed" i]',
       'a[href*="/applystart"]',
       'button[data-testid*="apply"]',
     ],
@@ -425,7 +428,6 @@
       "captcha",
       "are you a robot",
       "checking your browser",
-      "just a moment",
       "please verify",
     ],
     domSelectors: [
@@ -746,10 +748,10 @@
 
     await chrome.storage.local.set({ generatedCoverLetter: coverLetter });
 
-    // Find and click the Apply button
-    await sleep(humanDelay(2000, 3000));
+    // Find and click the Apply button — poll up to 8 s for async panel load
+    await sleep(humanDelay(1000, 2000));
 
-    const applyBtn = findApplyButton();
+    const applyBtn = await waitForApplyButton(8000);
     if (!applyBtn) {
       log("No Apply button found — skipping", "err");
       await skipToNextJob();
@@ -771,13 +773,28 @@
       if (el && el.offsetParent !== null) return el;
     }
 
-    // Fallback: find button containing "Apply" text
+    // Text fallback — match "Apply now", "Apply with Indeed", "Easily apply"
+    // but never "Apply on company site" (external links, can't automate)
     const buttons = document.querySelectorAll("button, a");
     for (const btn of buttons) {
       const text = btn.textContent?.trim() || "";
-      if (/^(apply now|easily apply|apply)$/i.test(text) && btn.offsetParent !== null) {
+      const label = btn.getAttribute("aria-label") || "";
+      const combined = `${text} ${label}`.toLowerCase();
+      if (/company\s*site/i.test(combined)) continue;
+      if (/^(apply now|apply with indeed|easily apply|apply)$/i.test(text) && btn.offsetParent !== null) {
         return btn;
       }
+    }
+    return null;
+  }
+
+  async function waitForApplyButton(timeoutMs = 8000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (!(await isCampaignRunning())) return null;
+      const btn = findApplyButton();
+      if (btn) return btn;
+      await sleep(500);
     }
     return null;
   }
