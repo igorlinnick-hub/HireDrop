@@ -11,6 +11,7 @@ from app.routers import (
     applications,
     auth,
     campaign,
+    captcha,
     extension,
     jobs,
     profile,
@@ -41,6 +42,7 @@ app.include_router(campaign.router, prefix="/api/v1")
 app.include_router(profile.router, prefix="/api/v1")
 app.include_router(tools.router, prefix="/api/v1")
 app.include_router(activity.router, prefix="/api/v1")
+app.include_router(captcha.router, prefix="/api/v1")
 app.include_router(extension.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
 

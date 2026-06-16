@@ -1,6 +1,7 @@
 fastapi
 uvicorn
 requests
+httpx
 beautifulsoup4
 rich
 python-dotenv

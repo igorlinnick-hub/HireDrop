@@ -540,6 +540,26 @@ async function handleMessage(msg, sender) {
       };
     }
 
+    // ----- CAPTCHA auto-solve via Railway backend proxy -----
+    // API key (CAPSOLVER_API_KEY) lives only in Railway env — never in the extension.
+    case "SOLVE_CAPTCHA": {
+      try {
+        const result = await Promise.race([
+          apiPost("/captcha/solve", {
+            type: msg.captchaType || "recaptchav2",
+            url: msg.url || "",
+            sitekey: msg.sitekey || "",
+          }),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("CAPTCHA solve timeout")), 130000)
+          ),
+        ]);
+        return { token: result.token };
+      } catch (err) {
+        return { error: err.message };
+      }
+    }
+
     default:
       return { error: `Unknown message type: ${msg.type}` };
   }

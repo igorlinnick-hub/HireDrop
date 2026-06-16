@@ -1241,9 +1241,44 @@
     if (!(await isCampaignRunning())) return;
 
     // Anti-detect safety net (Phase 5.5). If Indeed shows a real CAPTCHA or
-    // security challenge, pause and ask the user to solve it manually.
+    // security challenge, try auto-solve for reCAPTCHA v2; fall back to
+    // manual pause for all other challenge types.
     const det = isDetected();
     if (det.detected) {
+      const recaptchaEl = document.querySelector(".g-recaptcha[data-sitekey]");
+      if (recaptchaEl) {
+        // reCAPTCHA v2 — auto-solve via CapSolver backend proxy
+        const sitekey = recaptchaEl.dataset.sitekey;
+        log(`reCAPTCHA v2 detected (sitekey: ${sitekey.slice(0, 12)}…) — auto-solving...`, "");
+        const result = await sendMsg({
+          type: "SOLVE_CAPTCHA",
+          captchaType: "recaptchav2",
+          url: window.location.href,
+          sitekey,
+        });
+        if (result?.token) {
+          // Inject token into the hidden textarea reCAPTCHA uses for form submission
+          const textarea = document.querySelector("#g-recaptcha-response");
+          if (textarea) {
+            textarea.style.display = "";
+            textarea.value = result.token;
+            textarea.dispatchEvent(new Event("input", { bubbles: true }));
+            textarea.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+          // Fire the data-callback if set (e.g. Indeed's own submit handler)
+          const cb = recaptchaEl.dataset.callback;
+          if (cb && typeof window[cb] === "function") {
+            window[cb](result.token);
+          }
+          log("reCAPTCHA solved automatically — resuming", "ok");
+          await sleep(humanDelay(1500, 3000));
+          return;
+        }
+        log(`Auto-solve failed (${result?.error || "no token"}) — falling back to manual`, "err");
+      }
+
+      // All other challenge types (Cloudflare hard block, DataDome, etc.):
+      // pause and let the user solve manually.
       log(`⚠️ CAPTCHA detected (${det.signal}) — pausing. Solve it in this window, then the campaign will resume.`, "err");
       await sendMsg({
         type: "DETECTION_TRIPPED",
