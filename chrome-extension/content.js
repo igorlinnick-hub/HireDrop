@@ -580,14 +580,25 @@
     if (!(await isCampaignRunning())) return;
 
     // Guard: if Indeed redirected us to a generic q= page (e.g. from an expired
-    // viewjob URL), correct the URL before scanning. This prevents picking up
-    // irrelevant jobs from an empty/wrong search.
+    // viewjob that auto-redirects), mark the job that caused the redirect as
+    // processed and skip to the next pending job. Using skipToNextJob() (not
+    // goBackToJobList) preserves the remaining jobs from the current page scan.
     const urlQ = new URL(window.location.href).searchParams.get("q") || "";
-    const filtersData = await chrome.storage.local.get("campaignFilters");
+    const filtersData = await chrome.storage.local.get(["campaignFilters", "pendingJobs", "currentJobIndex"]);
     const kw = filtersData.campaignFilters?.keywords || [];
     if (kw.length && !urlQ.trim()) {
-      log("Wrong search page (q= empty) — redirecting to keyword search...", "");
-      await goBackToJobList();
+      log("Redirected to empty search — marking failed job and skipping...", "");
+      const jobs = filtersData.pendingJobs || [];
+      const idx = filtersData.currentJobIndex || 0;
+      const failedJob = jobs[idx];
+      if (failedJob?.jk) {
+        const seen = await chrome.storage.local.get("processedJobKeys");
+        const keys = seen.processedJobKeys || [];
+        if (!keys.includes(failedJob.jk)) {
+          await chrome.storage.local.set({ processedJobKeys: [...keys, failedJob.jk].slice(-500) });
+        }
+      }
+      await skipToNextJob();
       return;
     }
 
