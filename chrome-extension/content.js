@@ -579,6 +579,18 @@
   async function phase1_jobList() {
     if (!(await isCampaignRunning())) return;
 
+    // Guard: if Indeed redirected us to a generic q= page (e.g. from an expired
+    // viewjob URL), correct the URL before scanning. This prevents picking up
+    // irrelevant jobs from an empty/wrong search.
+    const urlQ = new URL(window.location.href).searchParams.get("q") || "";
+    const filtersData = await chrome.storage.local.get("campaignFilters");
+    const kw = filtersData.campaignFilters?.keywords || [];
+    if (kw.length && !urlQ.trim()) {
+      log("Wrong search page (q= empty) — redirecting to keyword search...", "");
+      await goBackToJobList();
+      return;
+    }
+
     const count = await getPlatformCount("indeed");
     if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
       log(`Indeed daily limit reached (${count}/${MAX_APPLICATIONS_PER_PLATFORM}). Stopping.`, "");
