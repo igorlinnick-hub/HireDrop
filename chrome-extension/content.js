@@ -659,20 +659,10 @@
   }
 
   async function goToNextPage() {
-    const nextBtn =
-      document.querySelector('a[data-testid="pagination-page-next"]') ||
-      document.querySelector('a[aria-label="Next Page"]') ||
-      document.querySelector('nav a[aria-label*="Next"]') ||
-      document.querySelector('.pagination a:last-child');
-
-    if (nextBtn) {
-      log("Going to next page...", "");
-      await sleep(humanDelay(2000, 3000));
-      nextBtn.click();
-    } else {
-      log("No more pages. Campaign complete.", "ok");
-      await sendMsg({ type: "STOP_CAMPAIGN" });
-    }
+    // Build the next-page URL the same way goBackToJobList() does — never click
+    // Indeed's "Next" button because it generates a URL without our search params
+    // (results in q=&l=remote generic search that picks up irrelevant jobs).
+    await goBackToJobList();
   }
 
   // =========================================================================
@@ -733,26 +723,6 @@
       await chrome.storage.local.set({ processedJobKeys: [...keys, jobKey].slice(-500) });
     }
 
-    // Quick check: if only "Apply on company site" is visible, skip before cover letter
-    const hasIndeedApply = !!findApplyButton();
-    const hasExternalOnly = !hasIndeedApply && !!document.querySelector('button[aria-label*="company site" i], a[aria-label*="company site" i]');
-    if (hasExternalOnly) {
-      log(`${jobTitle} — external apply only, skipping`, "");
-      await skipToNextJob();
-      return;
-    }
-
-    // Check if it's an Easy Apply job (use the apply button presence, not page text which matches filter chip)
-    if (!hasIndeedApply) {
-      // Give it 3 seconds for async load before giving up
-      await sleep(3000);
-      if (!findApplyButton()) {
-        log(`${jobTitle} — no Easy Apply button found, skipping`, "");
-        await skipToNextJob();
-        return;
-      }
-    }
-
     log(`Job: ${jobTitle} @ ${jobCompany}`, "");
 
     // Save current job context
@@ -788,7 +758,13 @@
 
     const applyBtn = await waitForApplyButton(8000);
     if (!applyBtn) {
-      log("No Apply button found — skipping", "err");
+      // After 8s of polling, decide why: external-only or genuinely no button
+      const isExternal = !!document.querySelector('button[aria-label*="company site" i], a[aria-label*="company site" i]');
+      if (isExternal) {
+        log(`${jobTitle} — external apply only, skipping`, "");
+      } else {
+        log("No Apply button found — skipping", "err");
+      }
       await skipToNextJob();
       return;
     }
