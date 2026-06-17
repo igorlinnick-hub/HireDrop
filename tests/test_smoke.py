@@ -37,12 +37,18 @@ def test_profile_with_mock_user_returns_defaults(auth_client, supabase_mock):
     assert "platforms" in body
 
 
-def test_stats_with_mock_user(auth_client, supabase_mock):
-    count_chain = supabase_mock.table.return_value.select.return_value.eq.return_value
-    count_chain.execute.return_value.count = 0
-    count_chain.gte.return_value.execute.return_value.count = 0
+def test_stats_with_mock_user(auth_client):
+    from unittest.mock import patch
 
-    res = auth_client.get("/api/v1/stats")
+    with (
+        patch("app.db.jobs.count_jobs", return_value=0),
+        patch("app.db.jobs.count_jobs_found_today", return_value=0),
+        patch("app.db.applications.count_applications", return_value=0),
+        patch("app.db.applications.count_today", return_value=0),
+        patch("app.db.applications.count_today_by_platform", return_value={}),
+        patch("app.db.subscriptions.get_tier", return_value="free"),
+    ):
+        res = auth_client.get("/api/v1/stats")
     assert res.status_code == 200
     body = res.json()
     assert "total_jobs" in body

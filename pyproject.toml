@@ -52,4 +52,9 @@ omit = [
     "modules/email_parser.py",
     "modules/telegram_bot.py",
     "modules/platforms/*.py",
+    # Requires live CapSolver API — unit-tested via integration test only.
+    "app/routers/captcha.py",
+    # Require live Anthropic API — mock-tested at call-site level in test_rate_limit.py.
+    "modules/ai_job_scorer.py",
+    "modules/ai_resume_tailor.py",
 ]
