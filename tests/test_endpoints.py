@@ -180,3 +180,65 @@ def test_resume_status(auth_client):
         res = auth_client.get("/api/v1/profile/resume/status")
     assert res.status_code == 200
     assert res.json()["uploaded"] is False
+
+
+def test_process_emails_no_emails(auth_client):
+    with patch("modules.email_parser.check_email_responses", return_value=[]):
+        res = auth_client.post("/api/v1/admin/process-emails")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["processed"] == 0
+    assert body["updated"] == 0
+
+
+def test_process_emails_interview_match(auth_client):
+    fake_email = {
+        "subject": "Interview invite at Acme Corp",
+        "sender": "hr@acme.com",
+        "date": "Mon, 16 Jun 2026 10:00:00 +0000",
+        "email_status": "interview_invite",
+        "company": "Acme Corp",
+    }
+    fake_app = {"id": "app-1", "user_id": "u-1", "status": "applied", "company": "Acme Corp"}
+    with (
+        patch("modules.email_parser.check_email_responses", return_value=[fake_email]),
+        patch("app.routers.email_processor.apps_db.find_by_company_all_users", return_value=[fake_app]),
+        patch("app.routers.email_processor.apps_db.update_status", return_value=True),
+    ):
+        res = auth_client.post("/api/v1/admin/process-emails")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["processed"] == 1
+    assert body["updated"] == 1
+    assert body["details"][0]["new_status"] == "interview"
+
+
+def test_process_emails_no_company_skipped(auth_client):
+    fake_email = {
+        "subject": "Thank you for applying",
+        "sender": "noreply@gmail.com",
+        "date": "Mon, 16 Jun 2026 10:00:00 +0000",
+        "email_status": "received",
+        "company": "",
+    }
+    with patch("modules.email_parser.check_email_responses", return_value=[fake_email]):
+        res = auth_client.post("/api/v1/admin/process-emails")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["processed"] == 1
+    assert body["updated"] == 0
+    assert body["skipped"] == 1
+
+
+def test_email_status_updates(auth_client):
+    interview_app = {
+        "id": "a1", "title": "Dev", "company": "Acme", "platform": "indeed",
+        "link": "https://indeed.com/1", "date_applied": "2026-06-16",
+        "status": "interview", "cover_letter": "",
+    }
+    with patch("app.routers.email_processor.apps_db.get_history", return_value=[interview_app]):
+        res = auth_client.get("/api/v1/email/status-updates")
+    assert res.status_code == 200
+    data = res.json()
+    assert len(data) == 1
+    assert data[0]["status"] == "interview"

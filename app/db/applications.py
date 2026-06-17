@@ -79,6 +79,40 @@ def count_today(user_id: str) -> int:
     return res.count or 0
 
 
+def update_status(application_id: str, status: str) -> bool:
+    res = (
+        get_supabase()
+        .table("applications")
+        .update({"status": status})
+        .eq("id", application_id)
+        .execute()
+    )
+    return bool(res.data)
+
+
+def find_by_company_all_users(company_fragment: str) -> list:
+    """Find applied/pending applications matching a company name fragment (case-insensitive)."""
+    res = (
+        get_supabase()
+        .table("applications")
+        .select("id, user_id, status, jobs(company)")
+        .ilike("jobs.company", f"%{company_fragment}%")
+        .in_("status", ["applied", "pending"])
+        .limit(10)
+        .execute()
+    )
+    return [
+        {
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "status": row["status"],
+            "company": (row.get("jobs") or {}).get("company", ""),
+        }
+        for row in (res.data or [])
+        if row.get("jobs")
+    ]
+
+
 def count_today_by_platform(user_id: str) -> dict:
     today = date.today().isoformat()
     res = (
