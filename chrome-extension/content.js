@@ -928,7 +928,9 @@
       } else if (label.includes("phone")) {
         value = profile.phone || "";
       } else {
-        value = "Yes, I confirm.";
+        // Skip unknown fields rather than filling garbage (salary, years exp, etc.)
+        log(`Skipping unknown required field: "${label || el.id || el.name}" — fill manually if needed`, "err");
+        continue;
       }
 
       if (!value) continue;
@@ -944,6 +946,7 @@
     // Specific data-testid selectors come first — broad type="submit" is last
     // because skip-navigation links are also type="submit" and would be matched.
     const selectors = [
+      'button[data-testid="submit-application-button"]',
       'button[data-testid="continue-button"]',
       'button[data-testid="submit-button"]',
       "button.ia-continueButton",
@@ -979,8 +982,10 @@
   }
 
   function isSubmitStep() {
+    // Check buttons for submit-intent text
     const buttons = document.querySelectorAll("button");
     for (const btn of buttons) {
+      if (btn.offsetParent === null) continue;
       const text = btn.textContent?.trim().toLowerCase() || "";
       if (
         text.includes("submit application") ||
@@ -990,6 +995,11 @@
         return true;
       }
     }
+    // Detect "Review your application" page by progress bar at 100%
+    const progressEl = document.querySelector('[aria-valuenow="100"], [value="100"][max="100"]');
+    if (progressEl) return true;
+    const progressText = document.querySelector(".ia-ProgressBar-complete, [class*='progressBar'] [class*='complete']");
+    if (progressText) return true;
     return false;
   }
 
@@ -1040,7 +1050,7 @@
     const jobInfo = storageData.currentJobInfo || {};
 
     let formStepCount = 0;
-    const maxSteps = 8; // Safety: don't loop forever
+    const maxSteps = 20; // Safety: don't loop forever (some jobs have 10+ steps)
 
     while (formStepCount < maxSteps) {
       if (!(await isCampaignRunning())) {
@@ -1298,6 +1308,7 @@
     const lastStart = starts[starts.length - 1];
     const nextStart = lastStart + 10;
     starts.push(nextStart);
+    if (starts.length > 200) starts.splice(0, starts.length - 200);
     await chrome.storage.local.set({ processedPageStarts: starts });
     params.set("start", String(nextStart));
 
