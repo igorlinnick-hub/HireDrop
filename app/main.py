@@ -1,7 +1,10 @@
+import asyncio
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,7 +22,38 @@ from app.routers import (
     tools,
 )
 
-app = FastAPI(title="HireDrop API", version="1.0.0")
+_EMAIL_POLL_INTERVAL = int(os.getenv("EMAIL_POLL_INTERVAL_SECONDS", "1800"))  # 30 min default
+
+
+async def _email_poll_loop() -> None:
+    from app.db import applications as apps_db
+    from modules.email_parser import check_email_responses
+
+    STATUS_MAP = {"interview_invite": "interview", "rejected": "rejected", "received": "received"}
+
+    while True:
+        await asyncio.sleep(_EMAIL_POLL_INTERVAL)
+        try:
+            for item in check_email_responses():
+                company = item.get("company", "")
+                new_status = STATUS_MAP.get(item["email_status"])
+                if not company or not new_status:
+                    continue
+                for app in apps_db.find_by_company_all_users(company):
+                    if app["status"] != new_status:
+                        apps_db.update_status(app["id"], new_status)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[email_poll] error: {exc}")
+
+
+@asynccontextmanager
+async def lifespan(app_: FastAPI):
+    task = asyncio.create_task(_email_poll_loop())
+    yield
+    task.cancel()
+
+
+app = FastAPI(title="HireDrop API", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
