@@ -176,9 +176,22 @@
       await sleep(humanDelay(2000, 5000));
     }
     const elapsed = Date.now() - startedAt;
+    await chrome.storage.local.set({ campaignWarmedUp: true });
+
+    // If we warmed up on the indeed.com home page (not yet on a /jobs search),
+    // navigate to the target search URL now. This makes the initial request look
+    // like organic browsing (home → search) rather than direct automation.
+    if (!window.location.href.includes("/jobs")) {
+      const { campaignTargetUrl } = await chrome.storage.local.get("campaignTargetUrl");
+      if (campaignTargetUrl) {
+        log(`Warmup done (${Math.round(elapsed / 1000)}s) — navigating to job search`, "ok");
+        logBackend(`Warmup complete — navigating to job search`, "ok");
+        window.location.href = campaignTargetUrl;
+        return;
+      }
+    }
     log(`Warmup complete (${Math.round(elapsed / 1000)}s)`, "ok");
     logBackend(`Session warmup complete (${Math.round(elapsed / 1000)}s) — starting job scan`, "ok");
-    await chrome.storage.local.set({ campaignWarmedUp: true });
   }
 
   async function getPlatformCount(platform) {
@@ -1358,7 +1371,7 @@
   let _runPhaseActive = false;
 
   async function runPhase() {
-    if (_runPhaseActive) return; // prevent re-entrancy from MutationObserver
+    if (_runPhaseActive) return;
     if (!(await isCampaignRunning())) return;
     _runPhaseActive = true;
     try {

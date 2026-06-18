@@ -311,25 +311,23 @@ async function handleMessage(msg, sender) {
         // Continue even if server is down
       }
 
-      const url = buildIndeedUrl(filters.keywords, filters.location, filters.job_type);
+      const targetUrl = buildIndeedUrl(filters.keywords, filters.location, filters.job_type);
 
-      // Open a dedicated automation window (not focused) so the Indeed tab
-      // stays active in its window while the user watches the live view in
-      // the HireDrop dashboard window. captureVisibleTab targets this windowId.
-      const win = await chrome.windows.create({
-        url,
-        focused: false,
-        width: 1280,
-        height: 900,
-      });
-      const tab = win.tabs[0];
+      // Open in the user's existing window (same session/cookies as the user's
+      // real browser) rather than a separate window. chrome.windows.create with
+      // focused:false opens a sterile-looking new window that Cloudflare flags
+      // as automation. A tab in the user's window inherits the full session.
+      // We land on indeed.com home first; content.js warmup then navigates to
+      // the actual search URL so the initial request looks like normal browsing.
+      const tab = await chrome.tabs.create({ url: "https://www.indeed.com/" });
 
       await chrome.storage.local.set({
         campaignRunning: true,
         campaignFilters: filters,
+        campaignTargetUrl: targetUrl,
         campaignStartedAt: new Date().toISOString(),
         campaignTabId: tab.id,
-        campaignWindowId: win.id,
+        campaignWindowId: tab.windowId,
         currentJob: null,
         campaignWarmedUp: false,
         processedJobKeys: [],
