@@ -75,6 +75,18 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .auth-banner-btn{padding:10px 24px;border:none;border-radius:8px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;font-size:13px;font-weight:700;cursor:pointer;transition:opacity .15s;width:100%}
 .auth-banner-btn:hover{opacity:.85}
 .auth-banner-note{font-size:10px;color:var(--text2)}
+
+/* CAPTCHA alert */
+.captcha-alert{display:none;margin-bottom:14px;padding:12px 14px;border-radius:10px;border:1px solid rgba(245,158,11,.35);background:rgba(245,158,11,.08)}
+.captcha-alert.visible{display:block}
+.captcha-alert-title{font-size:13px;font-weight:700;color:var(--yellow);margin-bottom:4px}
+.captcha-alert-sub{font-size:11px;color:var(--text2);line-height:1.5;margin-bottom:10px}
+.captcha-alert-btn{width:100%;padding:8px;border:none;border-radius:7px;background:var(--yellow);color:#000;font-size:12px;font-weight:700;cursor:pointer;transition:opacity .15s}
+.captcha-alert-btn:hover{opacity:.85}
+
+/* Inline warning */
+.inline-warn{font-size:11px;color:var(--yellow);margin-top:6px;text-align:center;display:none}
+.inline-warn.visible{display:block}
 </style>
 </head>
 <body>
@@ -102,6 +114,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 </div>
 
 <div class="body" id="body-main">
+
+  <!-- CAPTCHA alert — shown when detection is tripped -->
+  <div class="captcha-alert" id="captcha-alert">
+    <div class="captcha-alert-title">⚠️ CAPTCHA Detected</div>
+    <div class="captcha-alert-sub">Indeed showed a security challenge. Switch to the Indeed tab and solve it — the campaign will resume automatically.</div>
+    <button class="captcha-alert-btn" id="btn-go-indeed">Go to Indeed tab →</button>
+  </div>
+
   <div class="stats">
     <div class="stat">
       <div class="val" id="stat-today">-</div>
@@ -121,6 +141,7 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
   <div class="campaign-section campaign-stopped" id="campaign-stopped">
     <button class="start-btn" id="btn-start">Start Campaign</button>
     <div class="limit-text" id="limit-text">0 / 50 today</div>
+    <div class="inline-warn" id="start-warn"></div>
   </div>
 
   <!-- Running state (hidden by default) -->

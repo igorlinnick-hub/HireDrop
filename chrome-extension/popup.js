@@ -30,11 +30,48 @@ function hideAuthBanner() {
   $("body-main").style.display = "";
 }
 
-// Connect Account button → opens the dashboard handoff page that pushes
-// the Supabase JWT into the extension via the ping.js bridge.
 $("btn-connect").addEventListener("click", () => {
   chrome.tabs.create({ url: CONFIG.DASHBOARD_URL + CONFIG.CONNECT_PATH });
 });
+
+// ---------------------------------------------------------------------------
+// CAPTCHA alert helpers
+// ---------------------------------------------------------------------------
+
+let _captchaTabId = null;
+
+function showCaptchaAlert(signal) {
+  $("captcha-alert").classList.add("visible");
+}
+
+function hideCaptchaAlert() {
+  $("captcha-alert").classList.remove("visible");
+  _captchaTabId = null;
+}
+
+$("btn-go-indeed").addEventListener("click", () => {
+  if (_captchaTabId) {
+    chrome.tabs.update(_captchaTabId, { active: true });
+  } else {
+    chrome.tabs.query({ url: "*://*.indeed.com/*" }, (tabs) => {
+      if (tabs.length) chrome.tabs.update(tabs[0].id, { active: true });
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Inline warning helper
+// ---------------------------------------------------------------------------
+
+function showWarn(text) {
+  const el = $("start-warn");
+  el.textContent = text;
+  el.classList.add("visible");
+}
+
+function hideWarn() {
+  $("start-warn").classList.remove("visible");
+}
 
 // ---------------------------------------------------------------------------
 // Connection check
@@ -69,10 +106,11 @@ async function loadProfile() {
     const fullName = [profile.name, profile.last_name].filter(Boolean).join(" ");
     $("profile-name").textContent = fullName;
   }
+  return profile;
 }
 
 // ---------------------------------------------------------------------------
-// Activity log — last 10 from chrome.storage.local
+// Activity log
 // ---------------------------------------------------------------------------
 
 async function renderActivityLog() {
@@ -81,7 +119,7 @@ async function renderActivityLog() {
   const el = $("log-list");
 
   if (!logs.length) {
-    el.innerHTML = '<div class="log-empty">No activity yet</div>';
+    el.innerHTML = '<div class="log-empty">No activity yet — start a campaign to begin</div>';
     return;
   }
 
@@ -146,19 +184,16 @@ async function loadStatus() {
   $("stat-week").textContent = status.totalApplications || 0;
   $("stat-total").textContent = status.totalJobs || 0;
 
-  // Campaign sections
   if (running) {
     $("campaign-stopped").style.display = "none";
     $("campaign-running").style.display = "";
 
-    // Elapsed time
     if (status.startedAt) {
       campaignStartedAt = new Date(status.startedAt).getTime();
       $("run-time").textContent = formatElapsed(Date.now() - campaignStartedAt);
       startElapsedTimer();
     }
 
-    // Current job
     if (status.currentJob) {
       $("current-job").style.display = "";
       $("cj-title").textContent = status.currentJob.title || "";
@@ -166,39 +201,62 @@ async function loadStatus() {
     } else {
       $("current-job").style.display = "none";
     }
+
+    // Hide CAPTCHA alert once campaign is running normally
+    if (!status.captchaDetected) hideCaptchaAlert();
   } else {
     $("campaign-stopped").style.display = "";
     $("campaign-running").style.display = "none";
     campaignStartedAt = null;
     stopElapsedTimer();
 
-    // Limit text
     const limit = status.limitPerPlatform || 50;
     const today = status.todayCount || 0;
     $("limit-text").textContent = `${today} / ${limit} today`;
-
-    // Enable start only if connected
     $("btn-start").disabled = !isConnected;
   }
 
-  // Update activity log
   renderActivityLog();
 }
 
 // ---------------------------------------------------------------------------
-// Start campaign
+// Start campaign — with profile completeness check
 // ---------------------------------------------------------------------------
 
 $("btn-start").addEventListener("click", async () => {
+  hideWarn();
   $("btn-start").disabled = true;
-  $("btn-start").textContent = "Starting...";
+  $("btn-start").textContent = "Checking...";
 
   const profile = await send({ type: "GET_PROFILE" });
+
+  // Profile completeness gate
+  if (!profile || !profile.name) {
+    showWarn("Go to the Dashboard → complete your profile first.");
+    $("btn-start").textContent = "Start Campaign";
+    $("btn-start").disabled = false;
+    return;
+  }
+  if (!profile.keywords || profile.keywords.length === 0) {
+    showWarn("No job keywords set. Open Dashboard → Profile and add keywords like \"marketing manager\".");
+    $("btn-start").textContent = "Start Campaign";
+    $("btn-start").disabled = false;
+    return;
+  }
+  if (!profile.resume_url) {
+    showWarn("No resume uploaded. Open Dashboard → Profile → upload your PDF resume.");
+    $("btn-start").textContent = "Start Campaign";
+    $("btn-start").disabled = false;
+    return;
+  }
+
+  $("btn-start").textContent = "Starting...";
+
   const filters = {
-    keywords: profile?.keywords || [],
-    platforms: profile?.platforms || ["indeed"],
-    location: profile?.location || "",
-    job_type: profile?.job_type || "",
+    keywords: profile.keywords,
+    platforms: profile.platforms || ["indeed"],
+    location: profile.location || "",
+    job_type: profile.job_type || "",
   };
 
   const res = await send({ type: "START_CAMPAIGN", filters });
@@ -219,11 +277,9 @@ $("btn-start").addEventListener("click", async () => {
 
 $("btn-stop").addEventListener("click", async () => {
   $("btn-stop").disabled = true;
+  hideCaptchaAlert();
   const res = await send({ type: "STOP_CAMPAIGN" });
-
-  if (res && res.stopped) {
-    addLog("Campaign stopped", "");
-  }
+  if (res && res.stopped) addLog("Campaign stopped", "");
   $("btn-stop").disabled = false;
   await loadStatus();
 });
@@ -254,19 +310,26 @@ $("btn-dash").addEventListener("click", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Listen for LOG and AUTH_EXPIRED messages from background/content scripts
+// Message listener — LOG, AUTH_EXPIRED, DETECTION_TRIPPED
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "LOG") {
     addLog(msg.text, msg.cls || "");
+    // If CAPTCHA resolved, hide alert
+    if (msg.text && msg.text.includes("CAPTCHA resolved")) hideCaptchaAlert();
     if (msg.cls === "ok") loadStatus();
   }
   if (msg.type === "AUTH_EXPIRED") {
     showAuthBanner(
       "Session Expired",
-      "Your HireDrop session has expired. Please reconnect your account from the dashboard."
+      "Your HireDrop session has expired. Open the dashboard and log in again — the extension will reconnect automatically."
     );
+  }
+  if (msg.type === "DETECTION_TRIPPED") {
+    _captchaTabId = msg.data?.tabId || null;
+    showCaptchaAlert(msg.data?.signal);
+    addLog(`⚠️ CAPTCHA / security check — solve it in the Indeed tab`, "err");
   }
 });
 
@@ -274,23 +337,18 @@ chrome.runtime.onMessage.addListener((msg) => {
 // Polling — refresh status every 2 seconds
 // ---------------------------------------------------------------------------
 
-let pollTimer = null;
 let _isAuthenticated = false;
 
 function startPolling() {
-  pollTimer = setInterval(async () => {
+  setInterval(async () => {
     if (!_isAuthenticated) {
-      // Not yet authenticated — check if user has logged in since last poll
       const authStatus = await send({ type: "GET_AUTH_STATUS" });
       if (authStatus && authStatus.authenticated) {
-        // User just authenticated — load the full UI
         _isAuthenticated = true;
         hideAuthBanner();
         renderActivityLog();
         const connected = await checkConnection();
-        if (connected) {
-          await Promise.all([loadProfile(), loadStatus()]);
-        }
+        if (connected) await Promise.all([loadProfile(), loadStatus()]);
       }
     } else {
       loadStatus();
@@ -303,21 +361,17 @@ function startPolling() {
 // ---------------------------------------------------------------------------
 
 (async () => {
-  // First, check if the user is authenticated
   const authStatus = await send({ type: "GET_AUTH_STATUS" });
   if (!authStatus || !authStatus.authenticated) {
     showAuthBanner();
-    startPolling(); // poll so if auth arrives via STORE_TOKEN we auto-load UI
+    startPolling();
     return;
   }
 
-  // Authenticated — load the UI
   _isAuthenticated = true;
   hideAuthBanner();
   renderActivityLog();
   const connected = await checkConnection();
-  if (connected) {
-    await Promise.all([loadProfile(), loadStatus()]);
-  }
+  if (connected) await Promise.all([loadProfile(), loadStatus()]);
   startPolling();
 })();
