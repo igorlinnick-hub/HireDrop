@@ -26,6 +26,10 @@
     chrome.runtime.sendMessage({ type: "LOG", text, cls: cls || "" });
   }
 
+  function logBackend(text, level) {
+    chrome.runtime.sendMessage({ type: "LOG_BACKEND", text, level: level || "info" }).catch(() => {});
+  }
+
   function sleep(ms) {
     return new Promise((r) => setTimeout(r, ms));
   }
@@ -173,6 +177,7 @@
     }
     const elapsed = Date.now() - startedAt;
     log(`Warmup complete (${Math.round(elapsed / 1000)}s)`, "ok");
+    logBackend(`Session warmup complete (${Math.round(elapsed / 1000)}s) — starting job scan`, "ok");
     await chrome.storage.local.set({ campaignWarmedUp: true });
   }
 
@@ -610,6 +615,7 @@
     }
 
     log("Scanning job list for Easy Apply jobs...", "");
+    logBackend("Scanning job list for Easy Apply postings…", "info");
 
     // Wait for cards to load
     await sleep(humanDelay(2000, 3000));
@@ -637,11 +643,13 @@
 
     if (!easyApplyCards.length) {
       log("No new Easy Apply jobs found. Checking next page...", "");
+      logBackend("No Easy Apply jobs on this page — going to next", "info");
       await goToNextPage();
       return;
     }
 
     log(`Found ${easyApplyCards.length} Easy Apply jobs`, "ok");
+    logBackend(`Found ${easyApplyCards.length} Easy Apply jobs on page`, "ok");
 
     // Save pending jobs
     await chrome.storage.local.set({
@@ -660,6 +668,7 @@
     // A full-page navigation to /viewjob produces a clean "detail" URL.
     const firstJob = easyApplyCards[0];
     log(`Opening: ${firstJob.title} @ ${firstJob.company}`, "");
+    logBackend(`Opening job: ${firstJob.title} @ ${firstJob.company}`, "info");
     await sleep(humanDelay(3000, 7000));
     const viewjobUrl = firstJob.jk
       ? `https://www.indeed.com/viewjob?jk=${firstJob.jk}`
@@ -1038,6 +1047,7 @@
     if (!(await isCampaignRunning())) return;
 
     log("Application form detected — filling fields...", "");
+    logBackend("Application form detected — filling fields", "info");
 
     // Get profile and cover letter
     const storageData = await chrome.storage.local.get([
@@ -1153,6 +1163,7 @@
 
           if (result.verified) {
             log(`Applied (verified ${result.signal}): ${jobInfo.title} @ ${jobInfo.company}`, "ok");
+            logBackend(`✅ Applied: ${jobInfo.title} @ ${jobInfo.company}`, "ok");
             await sendMsg({
               type: "APPLICATION_SAVED",
               data: {
@@ -1171,6 +1182,7 @@
             // Submit clicked but no confirmation — do NOT increment counter,
             // do NOT add to applied URLs (so we can retry on next pass).
             log(`Submit unverified for ${jobInfo.title} @ ${jobInfo.company} (${result.signal})`, "err");
+            logBackend(`⚠️ Submit unverified: ${jobInfo.title} @ ${jobInfo.company}`, "error");
             await sendMsg({
               type: "STEP_FAILED",
               data: {
@@ -1534,6 +1546,7 @@
     // Check if campaign is already running (e.g., page reload)
     if (await isCampaignRunning()) {
       log("Campaign active — resuming on this page", "ok");
+      logBackend("Extension active on Indeed — starting automation", "info");
       await sleep(humanDelay(2000, 3000));
       // One-shot warmup before the very first action. No-op if already
       // warmed up this campaign.
