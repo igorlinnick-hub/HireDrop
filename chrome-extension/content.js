@@ -178,12 +178,15 @@
     const elapsed = Date.now() - startedAt;
     await chrome.storage.local.set({ campaignWarmedUp: true });
 
-    // If we warmed up on the indeed.com home page (not yet on a /jobs search),
-    // navigate to the target search URL now. This makes the initial request look
-    // like organic browsing (home → search) rather than direct automation.
-    if (!window.location.href.includes("/jobs")) {
-      const { campaignTargetUrl } = await chrome.storage.local.get("campaignTargetUrl");
-      if (campaignTargetUrl) {
+    // Navigate to the target search URL if we're not already on it.
+    // indeed.com home often redirects to a generic local /jobs page (no keywords)
+    // so we can't just check for "/jobs" in the URL — we must check that our
+    // keywords are actually in the query string.
+    const { campaignTargetUrl } = await chrome.storage.local.get("campaignTargetUrl");
+    if (campaignTargetUrl) {
+      const targetQ = new URL(campaignTargetUrl).searchParams.get("q") || "";
+      const currentQ = new URL(window.location.href).searchParams.get("q") || "";
+      if (targetQ && currentQ !== targetQ) {
         log(`Warmup done (${Math.round(elapsed / 1000)}s) — navigating to job search`, "ok");
         logBackend(`Warmup complete — navigating to job search`, "ok");
         window.location.href = campaignTargetUrl;
