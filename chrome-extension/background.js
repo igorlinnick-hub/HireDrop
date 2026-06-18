@@ -172,22 +172,51 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 // ---------------------------------------------------------------------------
-// Screenshot streaming — captures the Indeed automation window every 2.5 s
-// and POSTs JPEG data URLs to /campaign/screenshot for the live dashboard.
-// Triggered by CAPTURE_SCREENSHOT messages from content.js.
+// Screenshot streaming — captures the automation tab via Chrome DevTools Protocol.
+// Works in background without the window needing to be focused.
+// Triggered by CAPTURE_SCREENSHOT messages from content.js every 2.5 s.
 // ---------------------------------------------------------------------------
 
-async function sendScreenshot(windowId) {
+async function sendScreenshot(tabId) {
+  // Attach debugger (no-op if already attached — Chrome throws "Already attached")
   try {
-    const dataUrl = await chrome.tabs.captureVisibleTab(windowId, {
-      format: "jpeg",
-      quality: 55,
-    });
-    await apiPost("/campaign/screenshot", { screenshot: dataUrl });
+    await chrome.debugger.attach({ tabId }, "1.3");
   } catch {
-    // Window minimized, tab navigating, or permission issue — silent skip
+    // "Debugger is already attached" — fine, continue to capture
+  }
+
+  try {
+    const result = await chrome.debugger.sendCommand(
+      { tabId },
+      "Page.captureScreenshot",
+      { format: "jpeg", quality: 40 }
+    );
+    if (result?.data) {
+      await apiPost("/campaign/screenshot", {
+        screenshot: `data:image/jpeg;base64,${result.data}`,
+      });
+    }
+  } catch {
+    // Tab navigating or debugger not ready — skip this frame
   }
 }
+
+// Auto-reattach debugger if it gets detached while campaign is still running.
+// Reason "canceled_by_user" means the user opened Chrome DevTools — don't fight it.
+chrome.debugger.onDetach.addListener(async (source, reason) => {
+  if (reason === "canceled_by_user") return;
+
+  const { campaignRunning, campaignTabId } = await chrome.storage.local.get([
+    "campaignRunning",
+    "campaignTabId",
+  ]);
+
+  if (campaignRunning && source.tabId === campaignTabId) {
+    setTimeout(async () => {
+      try { await chrome.debugger.attach({ tabId: campaignTabId }, "1.3"); } catch {}
+    }, 2000);
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Activity log
@@ -366,12 +395,12 @@ async function handleMessage(msg, sender) {
 
     // ----- Screenshot capture (triggered by content.js every 2.5 s) -----
     case "CAPTURE_SCREENSHOT": {
-      const { campaignRunning, campaignWindowId } = await chrome.storage.local.get([
+      const { campaignRunning, campaignTabId } = await chrome.storage.local.get([
         "campaignRunning",
-        "campaignWindowId",
+        "campaignTabId",
       ]);
-      if (campaignRunning && campaignWindowId) {
-        await sendScreenshot(campaignWindowId);
+      if (campaignRunning && campaignTabId) {
+        await sendScreenshot(campaignTabId);
       }
       return { ok: true };
     }
@@ -380,12 +409,18 @@ async function handleMessage(msg, sender) {
     case "STOP_CAMPAIGN": {
       const stopData = await chrome.storage.local.get(["campaignTabId", "campaignWindowId"]);
 
+      // Clear running state first so the onDetach listener won't auto-reattach
       await chrome.storage.local.set({
         campaignRunning: false,
         campaignTabId: null,
         campaignWindowId: null,
         currentJob: null,
       });
+
+      // Detach debugger now that we've marked campaign as stopped
+      if (stopData.campaignTabId) {
+        try { await chrome.debugger.detach({ tabId: stopData.campaignTabId }); } catch {}
+      }
 
       try {
         if (stopData.campaignTabId) {
