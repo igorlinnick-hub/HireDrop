@@ -179,13 +179,21 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 async function sendScreenshot(windowId) {
   try {
+    // captureVisibleTab only works when the campaign tab is the active tab.
+    // Since the tab is now in the user's window (not a dedicated window),
+    // we only capture when it IS already active — no forced tab switching.
+    const { campaignTabId } = await chrome.storage.local.get("campaignTabId");
+    if (!campaignTabId) return;
+    const [activeTab] = await chrome.tabs.query({ active: true, windowId });
+    if (!activeTab || activeTab.id !== campaignTabId) return;
+
     const dataUrl = await chrome.tabs.captureVisibleTab(windowId, {
       format: "jpeg",
       quality: 55,
     });
     await apiPost("/campaign/screenshot", { screenshot: dataUrl });
   } catch {
-    // Window minimized, tab navigating, or permission issue — silent skip
+    // Tab navigating, window minimized, or permission issue — silent skip
   }
 }
 
