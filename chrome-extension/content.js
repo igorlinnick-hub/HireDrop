@@ -454,22 +454,20 @@
       ".g-recaptcha[data-sitekey]",
       // hCaptcha challenge iframe
       'iframe[title*="hcaptcha" i]',
-      // Cloudflare / DataDome / etc.
+      // Cloudflare interactive challenge (visible to user — not passive scripts)
       "#challenge-form",
       "#challenge-running",
       "[data-cf-challenge]",
       'div[class*="captcha-container"]',
       '[id*="datadome"]',
-      'script[src*="cdn-cgi/challenge-platform"]',
       // Indeed-specific: visible "verify you are human" overlay
       '[data-testid="captcha-modal"]',
       '[class*="indeed-captcha"]',
     ],
-    // Match against any script src — separate from domSelectors because
-    // <script> nodes are never offsetParent-visible.
+    // NOTE: cdn-cgi/challenge-platform and cdn-cgi/bm scripts are loaded on
+    // ALL Indeed pages (Cloudflare passive bot management) — not a challenge
+    // signal. Only flag actual third-party challenge scripts.
     scriptSrcPatterns: [
-      "cdn-cgi/challenge-platform",
-      "cdn-cgi/bm/cv",
       "datadome.co",
       "perimeterx.net",
       "imperva.com",
