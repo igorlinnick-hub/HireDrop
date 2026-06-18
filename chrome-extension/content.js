@@ -1343,7 +1343,20 @@
     return "unknown";
   }
 
+  let _runPhaseActive = false;
+
   async function runPhase() {
+    if (_runPhaseActive) return; // prevent re-entrancy from MutationObserver
+    if (!(await isCampaignRunning())) return;
+    _runPhaseActive = true;
+    try {
+      await _runPhaseInner();
+    } finally {
+      _runPhaseActive = false;
+    }
+  }
+
+  async function _runPhaseInner() {
     if (!(await isCampaignRunning())) return;
 
     // Anti-detect safety net (Phase 5.5). If Indeed shows a real CAPTCHA or
@@ -1381,6 +1394,24 @@
           return;
         }
         log(`Auto-solve failed (${result?.error || "no token"}) — falling back to manual`, "err");
+      }
+
+      // Cloudflare JS challenge ("Just a moment") — auto-resolves in 3-5s,
+      // no user action needed. Wait silently up to 15s before escalating.
+      const isCfJsChallenge =
+        det.signal === "title:just a moment" ||
+        det.signal.includes("cdn-cgi/challenge-platform") ||
+        det.signal.includes("cdn-cgi/bm");
+      if (isCfJsChallenge) {
+        log("Cloudflare check — waiting for auto-resolve...", "");
+        for (let i = 0; i < 3; i++) {
+          await sleep(5000);
+          if (!isDetected().detected) {
+            log("Cloudflare resolved — continuing", "ok");
+            return;
+          }
+        }
+        // Didn't resolve in 15s — fall through to manual pause
       }
 
       // All other challenge types (Cloudflare hard block, DataDome, etc.):
