@@ -167,8 +167,15 @@ async function updateBadge() {
 
 // Refresh badge every minute
 chrome.alarms.create("badge-refresh", { periodInMinutes: 1 });
+
+// SW keepalive: MV3 service workers die after ~30 s of inactivity. During page
+// navigation the content script is silent for several seconds. This 20-second alarm
+// ensures the SW (and any active chrome.debugger session) survives across page loads.
+chrome.alarms.create("sw-keepalive", { periodInMinutes: 0.33 }); // ~20 s
+
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "badge-refresh") updateBadge();
+  // sw-keepalive: no-op — waking the SW is enough
 });
 
 // ---------------------------------------------------------------------------
