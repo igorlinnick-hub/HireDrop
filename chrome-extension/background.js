@@ -177,12 +177,27 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // Triggered by CAPTURE_SCREENSHOT messages from content.js every 2.5 s.
 // ---------------------------------------------------------------------------
 
+// Tracks the tabId for which THIS extension holds an active debugger session.
+// Resets to null when the SW restarts (Chrome auto-detaches on SW death) or on detach.
+let ownedDebuggerTabId = null;
+
 async function sendScreenshot(tabId) {
-  // Attach debugger (no-op if already attached — Chrome throws "Already attached")
-  try {
-    await chrome.debugger.attach({ tabId }, "1.3");
-  } catch {
-    // "Debugger is already attached" — fine, continue to capture
+  // Attach if we don't already own a session on this tab.
+  if (ownedDebuggerTabId !== tabId) {
+    try {
+      await chrome.debugger.attach({ tabId }, "1.3");
+      ownedDebuggerTabId = tabId;
+    } catch (e) {
+      const msg = (e?.message || "").toLowerCase();
+      // Chrome reports "debugger is already attached" when OUR extension already holds
+      // the session (e.g. previous SW cycle kept it alive). Any OTHER wording means
+      // another debugger (DevTools / Playwright) owns the tab — bail out silently.
+      if (msg.includes("already attached") && !msg.includes("another")) {
+        ownedDebuggerTabId = tabId; // our session is still alive
+      } else {
+        return; // another debugger owns this tab — skip this frame
+      }
+    }
   }
 
   try {
@@ -197,13 +212,18 @@ async function sendScreenshot(tabId) {
       });
     }
   } catch {
-    // Tab navigating or debugger not ready — skip this frame
+    // Tab navigating or session lost — force re-check on next frame.
+    ownedDebuggerTabId = null;
   }
 }
 
 // Auto-reattach debugger if it gets detached while campaign is still running.
 // Reason "canceled_by_user" means the user opened Chrome DevTools — don't fight it.
 chrome.debugger.onDetach.addListener(async (source, reason) => {
+  if (source.tabId === ownedDebuggerTabId) {
+    ownedDebuggerTabId = null;
+  }
+
   if (reason === "canceled_by_user") return;
 
   const { campaignRunning, campaignTabId } = await chrome.storage.local.get([
@@ -213,7 +233,10 @@ chrome.debugger.onDetach.addListener(async (source, reason) => {
 
   if (campaignRunning && source.tabId === campaignTabId) {
     setTimeout(async () => {
-      try { await chrome.debugger.attach({ tabId: campaignTabId }, "1.3"); } catch {}
+      try {
+        await chrome.debugger.attach({ tabId: campaignTabId }, "1.3");
+        ownedDebuggerTabId = campaignTabId;
+      } catch {}
     }, 2000);
   }
 });
@@ -420,6 +443,7 @@ async function handleMessage(msg, sender) {
       // Detach debugger now that we've marked campaign as stopped
       if (stopData.campaignTabId) {
         try { await chrome.debugger.detach({ tabId: stopData.campaignTabId }); } catch {}
+        ownedDebuggerTabId = null;
       }
 
       try {
