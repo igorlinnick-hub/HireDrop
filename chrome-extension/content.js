@@ -187,6 +187,31 @@
       const targetQ = new URL(campaignTargetUrl).searchParams.get("q") || "";
       const currentQ = new URL(window.location.href).searchParams.get("q") || "";
       if (targetQ && currentQ !== targetQ) {
+        // Use Indeed's search form instead of direct URL navigation.
+        // window.location.href = searchUrl triggers Cloudflare Turnstile because it
+        // looks like a bot jump; a typed form submission does not.
+        const searchInput = document.querySelector(
+          '#text-input-what, input[name="q"], input[aria-label*="job title" i], input[placeholder*="job" i]'
+        );
+        if (searchInput) {
+          log(`Warmup done (${Math.round(elapsed / 1000)}s) — typing search query...`, "ok");
+          logBackend(`Warmup complete — searching "${targetQ}" via form`, "ok");
+          await humanClick(searchInput);
+          await sleep(humanDelay(300, 600));
+          await typeValue(searchInput, targetQ);
+          await sleep(humanDelay(500, 900));
+          const submitBtn = document.querySelector(
+            'button[type="submit"], .yosemite_serp_tbl button, [data-testid*="search-button" i]'
+          );
+          if (submitBtn) {
+            await humanClick(submitBtn);
+          } else {
+            searchInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", keyCode: 13, bubbles: true }));
+            searchInput.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", keyCode: 13, bubbles: true }));
+          }
+          return;
+        }
+        // Fallback if search form not found on current page
         log(`Warmup done (${Math.round(elapsed / 1000)}s) — navigating to job search`, "ok");
         logBackend(`Warmup complete — navigating to job search`, "ok");
         window.location.href = campaignTargetUrl;

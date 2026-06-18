@@ -313,18 +313,39 @@ async function handleMessage(msg, sender) {
 
       const targetUrl = buildIndeedUrl(filters.keywords, filters.location, filters.job_type);
 
-      // Open a focused dedicated window so captureVisibleTab works for the
-      // live preview. Start on indeed.com home (not the search URL directly)
-      // so the initial navigation looks organic — warmup then navigates to
-      // the target search URL. focused:true avoids the Cloudflare signal that
-      // a non-focused programmatic window is suspicious automation.
-      const win = await chrome.windows.create({
-        url: "https://www.indeed.com/",
-        focused: true,
-        width: 1280,
-        height: 900,
-      });
-      const tab = win.tabs[0];
+      // Reuse the existing automation window if it's still open — avoids spawning
+      // a new window on every campaign start. Chrome shares session cookies across
+      // all windows in the same profile, so the dedicated window is already logged
+      // into Indeed. A dedicated window keeps captureVisibleTab reliable (always
+      // the active/focused window) for the live dashboard preview.
+      let tab;
+      const prevData = await chrome.storage.local.get(["campaignWindowId", "campaignTabId"]);
+      let reusingWindow = false;
+      if (prevData.campaignWindowId) {
+        try {
+          const win = await chrome.windows.get(prevData.campaignWindowId, { populate: true });
+          if (win && win.tabs && win.tabs.length > 0) {
+            tab = win.tabs[0];
+            await chrome.tabs.update(tab.id, { url: "https://www.indeed.com/", active: true });
+            await chrome.windows.update(prevData.campaignWindowId, { focused: true });
+            reusingWindow = true;
+          }
+        } catch {
+          // Window was closed — create a new one below
+        }
+      }
+
+      if (!reusingWindow) {
+        const win = await chrome.windows.create({
+          url: "https://www.indeed.com/",
+          focused: true,
+          width: 1280,
+          height: 900,
+        });
+        tab = win.tabs[0];
+      }
+
+      const tabInfo = await chrome.tabs.get(tab.id);
 
       await chrome.storage.local.set({
         campaignRunning: true,
@@ -332,7 +353,7 @@ async function handleMessage(msg, sender) {
         campaignTargetUrl: targetUrl,
         campaignStartedAt: new Date().toISOString(),
         campaignTabId: tab.id,
-        campaignWindowId: win.id,
+        campaignWindowId: tabInfo.windowId,
         currentJob: null,
         campaignWarmedUp: false,
         processedJobKeys: [],
@@ -340,7 +361,7 @@ async function handleMessage(msg, sender) {
       });
 
       updateBadge();
-      return { started: true, tabId: tab.id, windowId: win.id, url };
+      return { started: true, tabId: tab.id, windowId: tabInfo.windowId };
     }
 
     // ----- Screenshot capture (triggered by content.js every 2.5 s) -----
