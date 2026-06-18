@@ -179,21 +179,13 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 async function sendScreenshot(windowId) {
   try {
-    // captureVisibleTab only works when the campaign tab is the active tab.
-    // Since the tab is now in the user's window (not a dedicated window),
-    // we only capture when it IS already active — no forced tab switching.
-    const { campaignTabId } = await chrome.storage.local.get("campaignTabId");
-    if (!campaignTabId) return;
-    const [activeTab] = await chrome.tabs.query({ active: true, windowId });
-    if (!activeTab || activeTab.id !== campaignTabId) return;
-
     const dataUrl = await chrome.tabs.captureVisibleTab(windowId, {
       format: "jpeg",
       quality: 55,
     });
     await apiPost("/campaign/screenshot", { screenshot: dataUrl });
   } catch {
-    // Tab navigating, window minimized, or permission issue — silent skip
+    // Window minimized, tab navigating, or permission issue — silent skip
   }
 }
 
@@ -321,13 +313,18 @@ async function handleMessage(msg, sender) {
 
       const targetUrl = buildIndeedUrl(filters.keywords, filters.location, filters.job_type);
 
-      // Open in the user's existing window (same session/cookies as the user's
-      // real browser) rather than a separate window. chrome.windows.create with
-      // focused:false opens a sterile-looking new window that Cloudflare flags
-      // as automation. A tab in the user's window inherits the full session.
-      // We land on indeed.com home first; content.js warmup then navigates to
-      // the actual search URL so the initial request looks like normal browsing.
-      const tab = await chrome.tabs.create({ url: "https://www.indeed.com/" });
+      // Open a focused dedicated window so captureVisibleTab works for the
+      // live preview. Start on indeed.com home (not the search URL directly)
+      // so the initial navigation looks organic — warmup then navigates to
+      // the target search URL. focused:true avoids the Cloudflare signal that
+      // a non-focused programmatic window is suspicious automation.
+      const win = await chrome.windows.create({
+        url: "https://www.indeed.com/",
+        focused: true,
+        width: 1280,
+        height: 900,
+      });
+      const tab = win.tabs[0];
 
       await chrome.storage.local.set({
         campaignRunning: true,
@@ -335,7 +332,7 @@ async function handleMessage(msg, sender) {
         campaignTargetUrl: targetUrl,
         campaignStartedAt: new Date().toISOString(),
         campaignTabId: tab.id,
-        campaignWindowId: tab.windowId,
+        campaignWindowId: win.id,
         currentJob: null,
         campaignWarmedUp: false,
         processedJobKeys: [],
