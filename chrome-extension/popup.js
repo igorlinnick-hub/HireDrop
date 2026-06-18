@@ -244,10 +244,7 @@ $("btn-start").addEventListener("click", async () => {
     return;
   }
   if (!profile.resume_url) {
-    showWarn("No resume uploaded. Open Dashboard → Profile → upload your PDF resume.");
-    $("btn-start").textContent = "Start Campaign";
-    $("btn-start").disabled = false;
-    return;
+    addLog("No resume on server — will use Indeed profile resume if available", "");
   }
 
   $("btn-start").textContent = "Starting...";
