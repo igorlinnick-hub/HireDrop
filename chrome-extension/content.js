@@ -1455,14 +1455,22 @@
         det.signal.includes("cdn-cgi/bm");
       if (isCfJsChallenge) {
         log("Cloudflare check — waiting for auto-resolve...", "");
-        for (let i = 0; i < 3; i++) {
+        for (let i = 0; i < 12; i++) {
           await sleep(5000);
           if (!isDetected().detected) {
             log("Cloudflare resolved — continuing", "ok");
             return;
           }
         }
-        // Didn't resolve in 15s — fall through to manual pause
+        // Didn't resolve in 60s — reload tab and try once more before manual pause
+        log("Cloudflare didn't resolve in 60s — reloading tab...", "");
+        window.location.reload();
+        await sleep(15000);
+        if (!isDetected().detected) {
+          log("Cloudflare resolved after reload — continuing", "ok");
+          return;
+        }
+        // Fall through to manual pause only if reload also failed
       }
 
       // All other challenge types (Cloudflare hard block, DataDome, etc.):
