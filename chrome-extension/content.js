@@ -613,7 +613,7 @@
     const url = href.startsWith("http") ? href : "https://www.indeed.com" + href;
     let jk = card.getAttribute("data-jk") || titleEl?.getAttribute("data-jk") || "";
     if (!jk && href) {
-      const m = href.match(/[?&]jk=([a-f0-9]+)/i);
+      const m = href.match(/[?&]jk=([a-z0-9]+)/i);
       if (m) jk = m[1];
     }
 
@@ -780,18 +780,24 @@
       return;
     }
 
-    // Deduplicate by job key (vjk= in URL) to avoid reprocessing the same job
-    const jkMatch = jobUrl.match(/[?&](?:vjk|jk)=([a-f0-9]+)/i);
+    // Deduplicate by job key (jk= / vjk= in URL).
+    // Indeed jk values are alphanumeric, NOT just hex — the original [a-f0-9]+
+    // regex silently failed on keys containing g-z, leaving jobKey=null and
+    // causing the same job to be re-processed on every content.js reload.
+    const jkMatch = jobUrl.match(/[?&](?:vjk|jk)=([a-z0-9]+)/i);
     const jobKey = jkMatch ? jkMatch[1] : null;
-    if (jobKey) {
+    // Fallback: deduplicate by URL if no jk present
+    const dedupeKey = jobKey || jobUrl.split("?")[0];
+    {
       const seen = await chrome.storage.local.get("processedJobKeys");
       const keys = seen.processedJobKeys || [];
-      if (keys.includes(jobKey)) {
+      if (keys.includes(dedupeKey)) {
         log(`${jobTitle} — already processed, skipping`, "");
+        logBackend(`Skipping duplicate: ${jobTitle}`, "info");
         await skipToNextJob();
         return;
       }
-      await chrome.storage.local.set({ processedJobKeys: [...keys, jobKey].slice(-500) });
+      await chrome.storage.local.set({ processedJobKeys: [...keys, dedupeKey].slice(-500) });
     }
 
     log(`Job: ${jobTitle} @ ${jobCompany}`, "");
@@ -833,14 +839,17 @@
       const isExternal = !!document.querySelector('button[aria-label*="company site" i], a[aria-label*="company site" i]');
       if (isExternal) {
         log(`${jobTitle} — external apply only, skipping`, "");
+        logBackend(`Skip (external apply): ${jobTitle} @ ${jobCompany}`, "info");
       } else {
         log("No Apply button found — skipping", "err");
+        logBackend(`Skip (no Apply button): ${jobTitle} @ ${jobCompany}`, "error");
       }
       await skipToNextJob();
       return;
     }
 
     log("Clicking Apply button...", "");
+    logBackend(`Clicking Apply: ${jobTitle} @ ${jobCompany}`, "info");
     if (shouldMisclick()) await performMisclick(applyBtn);
     await humanClick(applyBtn);
 
