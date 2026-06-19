@@ -10,15 +10,12 @@ from pydantic import BaseModel
 from app.db import applications as apps_db
 from app.db import campaign as campaign_db
 from app.db import jobs as jobs_db
+from app.db.client import get_supabase
 from app.db.profile import get_profile
 from app.deps import get_current_user
 from app.schemas import CampaignStartRequest
 
 router = APIRouter(tags=["campaign"])
-
-# In-memory screenshot store: user_id -> {data: str (JPEG data URL), ts: float}
-# Stale threshold: 10 s — if no screenshot arrives, campaign is idle/stopped.
-_screenshots: dict[str, dict] = {}
 
 LIMIT_PER_PLATFORM = 50
 
@@ -59,7 +56,10 @@ def campaign_start(req: CampaignStartRequest, user=Depends(get_current_user)):
 @router.post("/campaign/stop")
 def campaign_stop(user=Depends(get_current_user)):
     campaign_db.stop(user.id)
-    _screenshots.pop(user.id, None)
+    try:
+        get_supabase().table("campaign_screenshots").delete().eq("user_id", user.id).execute()
+    except Exception:
+        pass
     return {"stopped": True}
 
 
@@ -69,13 +69,19 @@ class ScreenshotBody(BaseModel):
 
 @router.post("/campaign/screenshot")
 def upload_screenshot(body: ScreenshotBody, user=Depends(get_current_user)):
-    _screenshots[user.id] = {"data": body.screenshot, "ts": time.time()}
+    get_supabase().table("campaign_screenshots").upsert(
+        {"user_id": user.id, "data": body.screenshot, "ts": time.time()},
+        on_conflict="user_id",
+    ).execute()
     return {"ok": True}
 
 
 @router.get("/campaign/screenshot")
 def get_screenshot(user=Depends(get_current_user)):
-    shot = _screenshots.get(user.id)
-    if not shot or time.time() - shot["ts"] > 10:
+    res = get_supabase().table("campaign_screenshots").select("data,ts").eq("user_id", user.id).execute()
+    if not res.data:
         return {"data": None}
-    return {"data": shot["data"]}
+    row = res.data[0]
+    if time.time() - row["ts"] > 10:
+        return {"data": None}
+    return {"data": row["data"]}

@@ -189,6 +189,15 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 let ownedDebuggerTabId = null;
 
 async function sendScreenshot(tabId) {
+  // GDPR scope guard: only capture Indeed tabs — never screenshot banking,
+  // email, or any other page the user may have open.
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab.url || !tab.url.startsWith("https://www.indeed.com/")) return;
+  } catch {
+    return;
+  }
+
   // Attach if we don't already own a session on this tab.
   if (ownedDebuggerTabId !== tabId) {
     try {
