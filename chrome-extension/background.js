@@ -315,8 +315,8 @@ async function handleMessage(msg, sender) {
       const storePayload = { supabase_token: msg.token };
       if (msg.refresh_token) storePayload.supabase_refresh_token = msg.refresh_token;
       await chrome.storage.local.set(storePayload);
-      // Refresh profile cache with new token
-      await fetchAndCacheProfile().catch(() => {});
+      // Fire-and-forget profile cache refresh — don't block the response on a network call
+      fetchAndCacheProfile().catch(() => {});
       return { stored: true };
     }
     case "GET_AUTH_STATUS": {
