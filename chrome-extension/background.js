@@ -405,11 +405,14 @@ async function handleMessage(msg, sender) {
       if (!reusingWindow) {
         const win = await chrome.windows.create({
           url: "https://www.indeed.com/",
-          state: "minimized",
+          focused: false,
           width: 1280,
           height: 900,
         });
         tab = win.tabs[0];
+        // Minimize after creation — state:"minimized" on create fails in some
+        // environments (Playwright, remote desktop) and leaves win.tabs empty.
+        chrome.windows.update(win.id, { state: "minimized" }).catch(() => {});
       }
 
       const tabInfo = await chrome.tabs.get(tab.id);
