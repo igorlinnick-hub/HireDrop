@@ -1061,15 +1061,16 @@
   }
 
   function isFormVisible() {
-    // Check if an Indeed apply form/modal is visible
+    // Check if an Indeed Easy Apply modal/form is open.
+    // IMPORTANT: keep selectors specific — [class*="ia-"] matches ia-IndeedApplyButton
+    // (the "Apply with Indeed" button on search results), causing a false positive that
+    // sends phase3 into a loop before the modal is actually open.
     const indicators = [
-      ".ia-BasePage",
-      ".ia-InterviewPage",
-      '[class*="ia-"]',
+      ".ia-BasePage",        // Easy Apply modal root
+      ".ia-InterviewPage",   // Multi-step apply interview page
+      ".ia-Wizard",          // Apply wizard container
       'form[action*="apply"]',
       '[data-testid="apply-form"]',
-      ".icl-Modal",
-      '[role="dialog"]',
     ];
     for (const sel of indicators) {
       const el = document.querySelector(sel);
