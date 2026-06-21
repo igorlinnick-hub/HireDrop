@@ -381,11 +381,10 @@ async function handleMessage(msg, sender) {
 
       const targetUrl = buildIndeedUrl(filters.keywords, filters.location, filters.job_type);
 
-      // Reuse the existing automation window if it's still open — avoids spawning
-      // a new window on every campaign start. Chrome shares session cookies across
-      // all windows in the same profile, so the dedicated window is already logged
-      // into Indeed. A dedicated window keeps captureVisibleTab reliable (always
-      // the active/focused window) for the live dashboard preview.
+      // Automation runs in a dedicated background window — minimized so it doesn't
+      // steal focus from the user's browser. Screenshots are captured via CDP
+      // (Page.captureScreenshot), which works on background/minimized tabs without
+      // requiring the window to be focused or visible.
       let tab;
       const prevData = await chrome.storage.local.get(["campaignWindowId", "campaignTabId"]);
       let reusingWindow = false;
@@ -395,7 +394,7 @@ async function handleMessage(msg, sender) {
           if (win && win.tabs && win.tabs.length > 0) {
             tab = win.tabs[0];
             await chrome.tabs.update(tab.id, { url: "https://www.indeed.com/", active: true });
-            await chrome.windows.update(prevData.campaignWindowId, { focused: true });
+            // Keep minimized — don't steal focus on restart
             reusingWindow = true;
           }
         } catch {
@@ -406,7 +405,7 @@ async function handleMessage(msg, sender) {
       if (!reusingWindow) {
         const win = await chrome.windows.create({
           url: "https://www.indeed.com/",
-          focused: true,
+          state: "minimized",
           width: 1280,
           height: 900,
         });
