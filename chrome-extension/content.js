@@ -963,13 +963,20 @@
     const profile = storageData.profile || {};
     const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
-    const inputs = Array.from(document.querySelectorAll('input[type="text"], textarea'))
-      .filter(el => el.offsetParent !== null && el.required && !el.value.trim());
+    const inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="number"], textarea'))
+      .filter(el => {
+        if (!el.offsetParent || el.value.trim()) return false;
+        return el.required || el.getAttribute("aria-required") === "true" ||
+          el.getAttribute("aria-invalid") === "true" || el.classList.contains("required");
+      });
 
     let filled = 0;
     for (const el of inputs) {
+      const labelEl = el.id
+        ? document.querySelector(`label[for="${el.id}"]`)
+        : el.closest("fieldset, [role='group']")?.querySelector("label, legend, [class*='label' i]");
       const label = (
-        document.querySelector(`label[for="${el.id}"]`)?.textContent?.trim() ||
+        labelEl?.textContent?.trim() ||
         el.getAttribute("aria-label") ||
         el.getAttribute("placeholder") ||
         ""
@@ -984,9 +991,17 @@
         value = profile.email || "";
       } else if (label.includes("phone")) {
         value = profile.phone || "";
+      } else if (label.includes("year") || label.includes("experience") || label.includes("how many") || label.includes("how long")) {
+        value = "2";
+      } else if (label.includes("salary") || label.includes("compensation") || label.includes("pay") || label.includes("wage")) {
+        value = profile.desired_salary || "65000";
+      } else if (label.includes("linkedin") || label.includes("portfolio") || label.includes("website") || label.includes("url")) {
+        value = profile.linkedin || profile.portfolio || "";
+        if (!value) continue;
+      } else if (label.includes("city") || label.includes("location")) {
+        value = profile.location || "Remote";
       } else {
-        // Skip unknown fields rather than filling garbage (salary, years exp, etc.)
-        log(`Skipping unknown required field: "${label || el.id || el.name}" — fill manually if needed`, "err");
+        log(`Skipping unknown screener field: "${label || el.id || el.name}"`, "");
         continue;
       }
 
