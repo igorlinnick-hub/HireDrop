@@ -189,7 +189,10 @@
     if (campaignTargetUrl) {
       const targetQ = new URL(campaignTargetUrl).searchParams.get("q") || "";
       const currentQ = new URL(window.location.href).searchParams.get("q") || "";
-      if (targetQ && currentQ !== targetQ) {
+      // Navigate if keywords don't match OR if we're not on a jobs page at all
+      // (e.g. indeed.com homepage when filters have no keywords).
+      const notOnJobsPage = !window.location.href.includes("/jobs");
+      if ((targetQ && currentQ !== targetQ) || notOnJobsPage) {
         // Use Indeed's search form instead of direct URL navigation.
         // window.location.href = searchUrl triggers Cloudflare Turnstile because it
         // looks like a bot jump; a typed form submission does not.

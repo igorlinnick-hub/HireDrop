@@ -370,11 +370,13 @@ async function handleMessage(msg, sender) {
     // ----- Campaign start -----
     case "START_CAMPAIGN": {
       const profile = await getCachedProfile();
-      const filters = msg.filters || {
-        keywords: profile.keywords || [],
-        platforms: profile.platforms || ["indeed"],
-        location: profile.location || "",
-        job_type: profile.job_type || "",
+      const raw = msg.filters || {};
+      // Always merge with profile so partial/empty filters still work
+      const filters = {
+        keywords: (raw.keywords && raw.keywords.length) ? raw.keywords : (profile.keywords || []),
+        platforms: (raw.platforms && raw.platforms.length) ? raw.platforms : (profile.platforms || ["indeed"]),
+        location: raw.location || profile.location || "",
+        job_type: raw.job_type || profile.job_type || "",
       };
 
       try {
