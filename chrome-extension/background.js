@@ -579,9 +579,6 @@ async function handleMessage(msg, sender) {
     // ----- Backend log (key events from content.js → Campaign Live feed) -----
     case "LOG_BACKEND": {
       const level = msg.level || "info";
-      try {
-        await apiPost("/activity", { message: msg.text, level, phase: msg.phase || "extension" });
-      } catch {}
       await addToActivityLog(msg.text, level === "error" ? "err" : level === "ok" ? "ok" : "");
       return { ok: true };
     }
