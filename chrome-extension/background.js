@@ -209,17 +209,23 @@ async function sendScreenshot(tabId) {
       ownedDebuggerTabId = tabId;
     } catch (e) {
       const msg = (e?.message || "").toLowerCase();
-      // Chrome reports "debugger is already attached" when OUR extension already holds
-      // the session (e.g. previous SW cycle kept it alive). Any OTHER wording means
-      // another debugger (DevTools / Playwright) owns the tab — bail out silently.
-      if (msg.includes("already attached") && !msg.includes("another")) {
-        ownedDebuggerTabId = tabId; // our session is still alive
+      if (msg.includes("already attached")) {
+        // Chrome says "Another debugger is already attached" even when it's our own
+        // previous SW-cycle session that survived the restart. Probe with a lightweight
+        // command: if it works, we own the session; if it throws, someone else does.
+        try {
+          await chrome.debugger.sendCommand({ tabId }, "Target.getTargetInfo");
+          ownedDebuggerTabId = tabId;
+        } catch {
+          return; // DevTools or another extension owns this tab — skip frame
+        }
       } else {
-        return; // another debugger owns this tab — skip this frame
+        return; // unrecoverable attach error
       }
     }
   }
 
+  // Primary path: capture via chrome.debugger (works even if window is not focused)
   try {
     const result = await chrome.debugger.sendCommand(
       { tabId },
@@ -232,8 +238,20 @@ async function sendScreenshot(tabId) {
       });
     }
   } catch {
-    // Tab navigating or session lost — force re-check on next frame.
+    // Session lost mid-capture (tab navigating) — reset and try captureVisibleTab fallback
     ownedDebuggerTabId = null;
+    try {
+      const { campaignWindowId } = await chrome.storage.local.get("campaignWindowId");
+      if (campaignWindowId) {
+        const dataUrl = await chrome.tabs.captureVisibleTab(campaignWindowId, {
+          format: "jpeg",
+          quality: 40,
+        });
+        if (dataUrl) {
+          await apiPost("/campaign/screenshot", { screenshot: dataUrl });
+        }
+      }
+    } catch { /* both paths failed, skip frame */ }
   }
 }
 

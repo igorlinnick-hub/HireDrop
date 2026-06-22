@@ -69,16 +69,22 @@ class ScreenshotBody(BaseModel):
 
 @router.post("/campaign/screenshot")
 def upload_screenshot(body: ScreenshotBody, user=Depends(get_current_user)):
-    get_supabase().table("campaign_screenshots").upsert(
-        {"user_id": user.id, "data": body.screenshot, "ts": time.time()},
-        on_conflict="user_id",
-    ).execute()
+    try:
+        get_supabase().table("campaign_screenshots").upsert(
+            {"user_id": user.id, "data": body.screenshot, "ts": time.time()},
+            on_conflict="user_id",
+        ).execute()
+    except Exception:
+        pass  # non-blocking — missed frame is fine
     return {"ok": True}
 
 
 @router.get("/campaign/screenshot")
 def get_screenshot(user=Depends(get_current_user)):
-    res = get_supabase().table("campaign_screenshots").select("data,ts").eq("user_id", user.id).execute()
+    try:
+        res = get_supabase().table("campaign_screenshots").select("data,ts").eq("user_id", user.id).execute()
+    except Exception:
+        return {"data": None}
     if not res.data:
         return {"data": None}
     row = res.data[0]
