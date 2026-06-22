@@ -7,6 +7,9 @@
 //   PHASE 3 — Application form: fill fields, click through steps, submit
 
 (function () {
+  // Don't run in iframes (Indeed job list has indeed.com sub-frames that would
+  // double-inject and produce duplicate activity log entries).
+  if (window !== window.top) return;
   if (window.__hiredrop_loaded) return;
   window.__hiredrop_loaded = true;
 
