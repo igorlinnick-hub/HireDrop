@@ -1645,6 +1645,6 @@
   // when campaignRunning is true, so this is a no-op outside campaigns.
   const _screenshotPing = setInterval(() => {
     chrome.runtime.sendMessage({ type: "CAPTURE_SCREENSHOT" }).catch(() => {});
-  }, 2500);
+  }, 300);
   window.addEventListener("unload", () => clearInterval(_screenshotPing));
 })();
