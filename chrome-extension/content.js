@@ -1405,6 +1405,11 @@
     // Phase 3: Indeed apply form is visible (modal or full page)
     if (isFormVisible()) return "form";
 
+    // Phase 3: Indeed's standalone Easy Apply domain (smartapply.indeed.com/beta/indeedapply/...)
+    // These pages don't have the ia-* class names isFormVisible() checks for, but they ARE
+    // the application form — screener questions, resume selection, review & submit pages.
+    if (url.includes("smartapply.indeed.com") || url.includes("/indeedapply/")) return "form";
+
     // Phase 2: Standalone job detail page
     if (url.includes("/viewjob")) return "detail";
 
