@@ -193,7 +193,11 @@ async function sendScreenshot(tabId) {
   // email, or any other page the user may have open.
   try {
     const tab = await chrome.tabs.get(tabId);
-    if (!tab.url || !tab.url.startsWith("https://www.indeed.com/")) return;
+    const allowed = tab.url && (
+      tab.url.startsWith("https://www.indeed.com/") ||
+      tab.url.startsWith("https://smartapply.indeed.com/")
+    );
+    if (!allowed) return;
   } catch {
     return;
   }
