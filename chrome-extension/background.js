@@ -368,8 +368,9 @@ async function handleMessage(msg, sender) {
 
     case "GET_RESUME_URL": {
       try {
-        const r = await apiGet("/profile/resume/url");
-        return { url: r.url, expires_in: r.expires_in };
+        const qs = msg.jobUrl ? `?job_url=${encodeURIComponent(msg.jobUrl)}` : "";
+        const r = await apiGet(`/profile/resume/url/best${qs}`);
+        return { url: r.url, expires_in: r.expires_in, type: r.type };
       } catch (err) {
         return { error: err.message };
       }

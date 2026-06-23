@@ -10,3 +10,4 @@ python-multipart
 pdfplumber
 supabase
 jobspy
+reportlab

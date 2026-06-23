@@ -15,6 +15,11 @@ _DEFAULTS = {
     "writing_style": "",
     "resume_url": "",
     "onboarding_completed": False,
+    "ats_score": None,
+    "ats_issues": [],
+    "ats_resume_url": None,
+    "ats_approved": False,
+    "ats_checked_at": None,
 }
 
 
@@ -35,6 +40,11 @@ def get_profile(user_id: str) -> dict:
         "writing_style": p.get("writing_style") or "",
         "resume_url": p.get("resume_url") or "",
         "onboarding_completed": p.get("onboarding_completed") or False,
+        "ats_score": p.get("ats_score"),
+        "ats_issues": p.get("ats_issues") or [],
+        "ats_resume_url": p.get("ats_resume_url"),
+        "ats_approved": p.get("ats_approved") or False,
+        "ats_checked_at": p.get("ats_checked_at"),
     }
 
 
@@ -51,6 +61,15 @@ def update_profile(user_id: str, data: dict) -> dict:
     }
     (get_supabase().table("profiles").update(payload).eq("user_id", user_id).execute())
     return get_profile(user_id)
+
+
+def update_ats(user_id: str, data: dict) -> None:
+    """Partial update — only ATS fields. Does not touch other profile columns."""
+    payload = {k: v for k, v in data.items() if k in (
+        "ats_score", "ats_issues", "ats_resume_url", "ats_approved", "ats_checked_at"
+    )}
+    if payload:
+        get_supabase().table("profiles").update(payload).eq("user_id", user_id).execute()
 
 
 def get_connections(user_id: str) -> dict:

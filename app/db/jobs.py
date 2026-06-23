@@ -112,6 +112,47 @@ def update_tailored_resume(job_id: str, tailored_resume: str) -> None:
         print(f"[jobs] update_tailored_resume skipped: {e}")
 
 
+def update_tailored_resume_pdf(job_id: str, pdf_path: str) -> None:
+    try:
+        get_supabase().table("jobs").update({
+            "tailored_resume_pdf_url": pdf_path,
+        }).eq("id", job_id).execute()
+    except Exception as e:
+        print(f"[jobs] update_tailored_resume_pdf skipped: {e}")
+
+
+def get_by_link(user_id: str, link: str) -> dict | None:
+    """Find a job by URL. Tries exact match first, then matches on Indeed jk key."""
+    import re
+    res = (
+        get_supabase()
+        .table("jobs")
+        .select("id, tailored_resume_pdf_url")
+        .eq("user_id", user_id)
+        .eq("link", link)
+        .limit(1)
+        .execute()
+    )
+    if res.data:
+        return res.data[0]
+    # Fallback: match on Indeed jk/vjk parameter (URL formats differ between jobspy and browser)
+    m = re.search(r"[?&](?:vjk|jk)=([a-z0-9]+)", link, re.IGNORECASE)
+    if m:
+        jk = m.group(1)
+        res = (
+            get_supabase()
+            .table("jobs")
+            .select("id, tailored_resume_pdf_url")
+            .eq("user_id", user_id)
+            .ilike("link", f"%jk={jk}%")
+            .limit(1)
+            .execute()
+        )
+        if res.data:
+            return res.data[0]
+    return None
+
+
 def count_jobs(user_id: str) -> int:
     res = get_supabase().table("jobs").select("id", count="exact").eq("user_id", user_id).execute()
     return res.count or 0

@@ -1303,7 +1303,8 @@
     // signed URL valid for 1h that the content script fetches directly —
     // the Storage URL doesn't need our Bearer token, the signature is the
     // capability.
-    const signed = await sendMsg({ type: "GET_RESUME_URL" });
+    const { currentJobInfo } = await chrome.storage.local.get("currentJobInfo");
+    const signed = await sendMsg({ type: "GET_RESUME_URL", jobUrl: currentJobInfo?.url });
     if (!signed?.url) throw new Error(signed?.error || "No resume on server");
 
     const res = await fetch(signed.url);

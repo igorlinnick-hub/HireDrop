@@ -1,5 +1,7 @@
+import io
 import os
 import sys
+from datetime import UTC, datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -10,6 +12,8 @@ from app.db import profile as profile_db
 from app.db import resume as resume_storage
 from app.deps import get_current_user
 from app.schemas import ConnectPlatformRequest, ProfileUpdate, SearchPrefsUpdate
+from modules.ats_checker import check_ats_compliance
+from modules.ats_pdf_generator import generate_ats_pdf
 
 router = APIRouter(tags=["profile"])
 
@@ -71,6 +75,176 @@ def resume_signed_url(user=Depends(get_current_user)):
     if not url:
         return JSONResponse(status_code=404, content={"error": "No resume uploaded"})
     return {"url": url, "expires_in": resume_storage.SIGNED_URL_TTL_SECONDS}
+
+
+@router.post("/profile/ats/check")
+async def ats_check(user=Depends(get_current_user)):
+    """Download the user's current resume and run ATS compliance analysis.
+
+    Saves results to profiles.ats_score / ats_issues / ats_checked_at.
+    Returns the analysis results.
+    """
+    signed_url = resume_storage.signed_download_url(user.id)
+    if not signed_url:
+        return JSONResponse(status_code=404, content={"error": "No resume uploaded"})
+
+    import httpx
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            resp = await client.get(signed_url, timeout=30)
+            resp.raise_for_status()
+            pdf_bytes = resp.content
+    except Exception as e:
+        return JSONResponse(status_code=502, content={"error": f"Could not fetch resume: {e}"})
+
+    result = check_ats_compliance(pdf_bytes)
+
+    profile_db.update_ats(user.id, {
+        "ats_score": result["score"],
+        "ats_issues": result["issues"],
+        "ats_checked_at": datetime.now(UTC).isoformat(),
+    })
+
+    return result
+
+
+@router.post("/profile/ats/generate")
+async def ats_generate(user=Depends(get_current_user)):
+    """Generate an ATS-compliant PDF from the user's current resume.
+
+    Stores result as resume_ats.pdf in Supabase Storage.
+    Returns a signed URL for preview + plain-text preview.
+    """
+    signed_url = resume_storage.signed_download_url(user.id)
+    if not signed_url:
+        return JSONResponse(status_code=404, content={"error": "No resume uploaded"})
+
+    import httpx
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            resp = await client.get(signed_url, timeout=30)
+            resp.raise_for_status()
+            pdf_bytes = resp.content
+    except Exception as e:
+        return JSONResponse(status_code=502, content={"error": f"Could not fetch resume: {e}"})
+
+    try:
+        ats_pdf_bytes = generate_ats_pdf(pdf_bytes=pdf_bytes)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"PDF generation failed: {e}"})
+
+    ats_path = resume_storage.upload_ats(user.id, ats_pdf_bytes)
+
+    profile_db.update_ats(user.id, {"ats_resume_url": ats_path})
+
+    preview_url = resume_storage.signed_download_url_ats(user.id)
+    return {
+        "success": True,
+        "ats_resume_url": ats_path,
+        "preview_url": preview_url,
+    }
+
+
+@router.post("/profile/ats/approve")
+def ats_approve(user=Depends(get_current_user)):
+    """Mark the ATS-generated resume as approved for use in applications."""
+    profile = profile_db.get_profile(user.id)
+    if not profile.get("ats_resume_url"):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "No ATS resume generated yet. Call /profile/ats/generate first."},
+        )
+    profile_db.update_ats(user.id, {"ats_approved": True})
+    return {"approved": True}
+
+
+@router.get("/profile/ats/resume/url")
+def ats_resume_url(user=Depends(get_current_user)):
+    """Signed URL for the ATS-generated resume (for preview/download)."""
+    url = resume_storage.signed_download_url_ats(user.id)
+    if not url:
+        return JSONResponse(status_code=404, content={"error": "No ATS resume generated yet"})
+    return {"url": url, "expires_in": resume_storage.SIGNED_URL_TTL_SECONDS}
+
+
+@router.post("/profile/ats/generate-from-text")
+async def ats_generate_from_text(body: dict, user=Depends(get_current_user)):
+    """Regenerate ATS PDF from user-edited plain text (used after in-app edit)."""
+    resume_text = (body.get("resume_text") or "").strip()
+    if not resume_text:
+        return JSONResponse(status_code=400, content={"error": "resume_text is required"})
+
+    try:
+        ats_pdf_bytes = generate_ats_pdf(resume_text=resume_text)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": f"PDF generation failed: {e}"})
+
+    ats_path = resume_storage.upload_ats(user.id, ats_pdf_bytes)
+    profile_db.update_ats(user.id, {"ats_resume_url": ats_path})
+
+    preview_url = resume_storage.signed_download_url_ats(user.id)
+    return {"success": True, "preview_url": preview_url}
+
+
+@router.get("/profile/resume/text")
+async def resume_text_extract(user=Depends(get_current_user)):
+    """Extract plain text from the user's uploaded PDF resume."""
+    signed_url = resume_storage.signed_download_url(user.id)
+    if not signed_url:
+        return JSONResponse(status_code=404, content={"error": "No resume uploaded"})
+
+    import httpx
+    import pdfplumber
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            resp = await client.get(signed_url, timeout=30)
+            resp.raise_for_status()
+            pdf_bytes = resp.content
+    except Exception as e:
+        return JSONResponse(status_code=502, content={"error": f"Could not fetch resume: {e}"})
+
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+
+    return {"text": text.strip()}
+
+
+@router.post("/profile/ats/decline")
+def ats_decline(user=Depends(get_current_user)):
+    """User chose to keep original resume. Mark ats_approved = False."""
+    profile_db.update_ats(user.id, {"ats_approved": False})
+    return {"approved": False}
+
+
+@router.get("/profile/resume/url/best")
+def resume_best_url(job_url: str = None, user=Depends(get_current_user)):
+    """Return signed URL for the best available resume.
+
+    Priority: per-job tailored PDF (if job_url matches a scored job) →
+    user-approved ATS PDF → original resume.
+    """
+    from app.db import jobs as jobs_db
+    if job_url:
+        job = jobs_db.get_by_link(user.id, job_url)
+        if job and job.get("tailored_resume_pdf_url"):
+            url = resume_storage.signed_url_from_path(job["tailored_resume_pdf_url"])
+            if url:
+                return {
+                    "url": url,
+                    "expires_in": resume_storage.SIGNED_URL_TTL_SECONDS,
+                    "type": "tailored",
+                }
+    profile = profile_db.get_profile(user.id)
+    ats_approved = profile.get("ats_approved") or False
+    url = resume_storage.best_signed_url(user.id, ats_approved)
+    if not url:
+        return JSONResponse(status_code=404, content={"error": "No resume found"})
+    return {
+        "url": url,
+        "expires_in": resume_storage.SIGNED_URL_TTL_SECONDS,
+        "type": "ats" if ats_approved else "original",
+    }
 
 
 @router.get("/connections")
