@@ -31,7 +31,7 @@ def get_history(user_id: str, limit: int = 50) -> list:
     res = (
         get_supabase()
         .table("applications")
-        .select("*, jobs(title, company, platform, link)")
+        .select("*, jobs(title, company, platform, link, tailored_resume)")
         .eq("user_id", user_id)
         .order("date_applied", desc=True)
         .limit(limit)
@@ -50,6 +50,7 @@ def get_history(user_id: str, limit: int = 50) -> list:
                 "date_applied": row["date_applied"],
                 "status": row["status"],
                 "cover_letter": row.get("cover_letter", ""),
+                "tailored_resume": job.get("tailored_resume") or "",
             }
         )
     return rows
