@@ -210,11 +210,13 @@ async function sendScreenshot(tabId) {
     } catch (e) {
       const msg = (e?.message || "").toLowerCase();
       if (msg.includes("already attached")) {
-        // Chrome says "Another debugger is already attached" even when it's our own
-        // previous SW-cycle session that survived the restart. Probe with a lightweight
-        // command: if it works, we own the session; if it throws, someone else does.
+        // Chrome keeps the debugger session alive across MV3 service-worker restarts.
+        // The new SW instance has no record of the session, so attach() fails.
+        // Fix: detach (Chrome allows same extension to detach across SW cycles),
+        // then reattach fresh. If DevTools owns the tab, detach() throws — skip frame.
         try {
-          await chrome.debugger.sendCommand({ tabId }, "Target.getTargetInfo");
+          await chrome.debugger.detach({ tabId });
+          await chrome.debugger.attach({ tabId }, "1.3");
           ownedDebuggerTabId = tabId;
         } catch {
           return; // DevTools or another extension owns this tab — skip frame
