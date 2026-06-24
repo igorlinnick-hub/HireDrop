@@ -299,6 +299,8 @@ async function handleMessage(msg, sender) {
       await chrome.storage.local.set(storePayload);
       // Fire-and-forget profile cache refresh — don't block the response on a network call
       fetchAndCacheProfile().catch(() => {});
+      // Immediately report extension status so the backend knows we're connected
+      sendExtensionPing().catch(() => {});
       return { stored: true };
     }
     case "GET_AUTH_STATUS": {
