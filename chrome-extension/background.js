@@ -307,25 +307,22 @@ async function handleMessage(msg, sender) {
 
     // ----- Auth -----
     case "STORE_TOKEN": {
-      await chrome.storage.local.set({ _dbg: "step1_msg_received", _dbg_ts: Date.now() });
       const storePayload = { supabase_token: msg.token };
       if (msg.refresh_token) storePayload.supabase_refresh_token = msg.refresh_token;
       await chrome.storage.local.set(storePayload);
-      await chrome.storage.local.set({ _dbg: "step2_token_stored", _dbg_ts: Date.now() });
+      // Use token directly from message (not re-read from storage) to avoid storage-read race
       let pingStatus = "not_attempted";
       try {
-        const token = await getAuthToken();
-        if (!token) {
-          pingStatus = "no_token";
+        const directToken = msg.token;
+        if (!directToken) {
+          pingStatus = "no_token_in_msg";
         } else {
-          const data = await chrome.storage.local.get(["campaignRunning", "todayCount", "todayDate"]);
-          const today = new Date().toISOString().slice(0, 10);
           const res = await fetch(`${CONFIG.API_BASE}${CONFIG.API_V1}/extension/ping`, {
             method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${directToken}` },
             body: JSON.stringify({
-              campaign_running: !!data.campaignRunning,
-              today_count: data.todayDate === today ? (data.todayCount || 0) : 0,
+              campaign_running: false,
+              today_count: 0,
               window_visible: false,
               version: chrome.runtime.getManifest().version,
             }),
@@ -335,7 +332,6 @@ async function handleMessage(msg, sender) {
       } catch (e) {
         pingStatus = "error:" + e.message;
       }
-      await chrome.storage.local.set({ _dbg: "step3_ping_done", _dbg_ping: pingStatus, _dbg_ts: Date.now() });
       fetchAndCacheProfile().catch(() => {});
       return { stored: true, ping_status: pingStatus };
     }
