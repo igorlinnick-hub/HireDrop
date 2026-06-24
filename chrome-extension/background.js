@@ -307,12 +307,35 @@ async function handleMessage(msg, sender) {
 
     // ----- Auth -----
     case "STORE_TOKEN": {
+      await chrome.storage.local.set({ _dbg: "step1_msg_received", _dbg_ts: Date.now() });
       const storePayload = { supabase_token: msg.token };
       if (msg.refresh_token) storePayload.supabase_refresh_token = msg.refresh_token;
       await chrome.storage.local.set(storePayload);
-      // Await the ping so the SW stays alive long enough for the fetch to complete.
-      // Fire-and-forget would let Chrome kill the SW before the request lands.
-      await sendExtensionPing().catch(() => {});
+      await chrome.storage.local.set({ _dbg: "step2_token_stored", _dbg_ts: Date.now() });
+      let pingStatus = "not_attempted";
+      try {
+        const token = await getAuthToken();
+        if (!token) {
+          pingStatus = "no_token";
+        } else {
+          const data = await chrome.storage.local.get(["campaignRunning", "todayCount", "todayDate"]);
+          const today = new Date().toISOString().slice(0, 10);
+          const res = await fetch(`${CONFIG.API_BASE}${CONFIG.API_V1}/extension/ping`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({
+              campaign_running: !!data.campaignRunning,
+              today_count: data.todayDate === today ? (data.todayCount || 0) : 0,
+              window_visible: false,
+              version: chrome.runtime.getManifest().version,
+            }),
+          });
+          pingStatus = String(res.status);
+        }
+      } catch (e) {
+        pingStatus = "error:" + e.message;
+      }
+      await chrome.storage.local.set({ _dbg: "step3_ping_done", _dbg_ping: pingStatus, _dbg_ts: Date.now() });
       fetchAndCacheProfile().catch(() => {});
       return { stored: true };
     }
