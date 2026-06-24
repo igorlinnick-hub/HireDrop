@@ -75,6 +75,13 @@ class ExtensionPingBody(BaseModel):
 _ext_status: dict = {}  # user_id -> {ts, campaign_running, ...}
 
 
+@router.get("/debug/ext-ping-count")
+def debug_ext_ping_count():
+    now = time.time()
+    active = {uid: round(now - v["ts"]) for uid, v in _ext_status.items() if now - v["ts"] < 120}
+    return {"active_extensions": len(active), "ages_secs": list(active.values()), "server_ts": round(now)}
+
+
 @router.post("/extension/ping")
 def extension_ping(body: ExtensionPingBody, user=Depends(get_current_user)):
     _ext_status[user.id] = {
