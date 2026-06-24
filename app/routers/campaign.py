@@ -63,6 +63,45 @@ def campaign_stop(user=Depends(get_current_user)):
     return {"stopped": True}
 
 
+class ExtensionPingBody(BaseModel):
+    campaign_running: bool = False
+    today_count: int = 0
+    window_visible: bool = False
+    last_screenshot_age: float | None = None
+    error: str | None = None
+    version: str | None = None
+
+
+_ext_status: dict = {}  # user_id -> {ts, campaign_running, ...}
+
+
+@router.post("/extension/ping")
+def extension_ping(body: ExtensionPingBody, user=Depends(get_current_user)):
+    _ext_status[user.id] = {
+        "ts": time.time(),
+        "campaign_running": body.campaign_running,
+        "today_count": body.today_count,
+        "window_visible": body.window_visible,
+        "last_screenshot_age": body.last_screenshot_age,
+        "error": body.error,
+        "version": body.version,
+    }
+    return {"ok": True}
+
+
+@router.get("/extension/ping")
+def extension_status(user=Depends(get_current_user)):
+    row = _ext_status.get(user.id)
+    if not row:
+        return {"online": False}
+    age = time.time() - row["ts"]
+    return {
+        "online": age < 60,
+        "last_seen_secs_ago": round(age),
+        **{k: v for k, v in row.items() if k != "ts"},
+    }
+
+
 class ScreenshotBody(BaseModel):
     screenshot: str
 

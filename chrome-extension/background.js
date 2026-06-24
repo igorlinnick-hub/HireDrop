@@ -167,14 +167,41 @@ async function updateBadge() {
 
 // Refresh badge every minute
 chrome.alarms.create("badge-refresh", { periodInMinutes: 1 });
+chrome.alarms.create("ext-ping", { periodInMinutes: 0.5 }); // ~30 s
 
 // SW keepalive: MV3 service workers die after ~30 s of inactivity. During page
 // navigation the content script is silent for several seconds. This 20-second alarm
 // ensures the SW survives across page loads.
 chrome.alarms.create("sw-keepalive", { periodInMinutes: 0.33 }); // ~20 s
 
+async function sendExtensionPing() {
+  try {
+    const data = await chrome.storage.local.get([
+      "campaignRunning", "todayCount", "campaignWindowId", "todayDate",
+    ]);
+    const today = new Date().toISOString().slice(0, 10);
+    const todayCount = data.todayDate === today ? (data.todayCount || 0) : 0;
+
+    let windowVisible = false;
+    if (data.campaignWindowId) {
+      try {
+        const win = await chrome.windows.get(data.campaignWindowId);
+        windowVisible = win.state === "normal" || win.state === "maximized";
+      } catch {}
+    }
+
+    await apiPost("/extension/ping", {
+      campaign_running: !!data.campaignRunning,
+      today_count: todayCount,
+      window_visible: windowVisible,
+      version: chrome.runtime.getManifest().version,
+    });
+  } catch {}
+}
+
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "badge-refresh") updateBadge();
+  if (alarm.name === "ext-ping") sendExtensionPing();
   // sw-keepalive: no-op — waking the SW is enough
 });
 
