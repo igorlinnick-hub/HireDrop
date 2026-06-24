@@ -170,7 +170,7 @@ chrome.alarms.create("badge-refresh", { periodInMinutes: 1 });
 
 // SW keepalive: MV3 service workers die after ~30 s of inactivity. During page
 // navigation the content script is silent for several seconds. This 20-second alarm
-// ensures the SW (and any active chrome.debugger session) survives across page loads.
+// ensures the SW survives across page loads.
 chrome.alarms.create("sw-keepalive", { periodInMinutes: 0.33 }); // ~20 s
 
 chrome.alarms.onAlarm.addListener((alarm) => {
@@ -184,13 +184,8 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // Triggered by CAPTURE_SCREENSHOT messages from content.js every 2.5 s.
 // ---------------------------------------------------------------------------
 
-// Tracks the tabId for which THIS extension holds an active debugger session.
-// Resets to null when the SW restarts (Chrome auto-detaches on SW death) or on detach.
-let ownedDebuggerTabId = null;
-
 async function sendScreenshot(tabId) {
-  // GDPR scope guard: only capture Indeed tabs — never screenshot banking,
-  // email, or any other page the user may have open.
+  // GDPR: only capture Indeed tabs.
   try {
     const tab = await chrome.tabs.get(tabId);
     const allowed = tab.url && (
@@ -202,84 +197,20 @@ async function sendScreenshot(tabId) {
     return;
   }
 
-  // Attach if we don't already own a session on this tab.
-  if (ownedDebuggerTabId !== tabId) {
-    try {
-      await chrome.debugger.attach({ tabId }, "1.3");
-      ownedDebuggerTabId = tabId;
-    } catch (e) {
-      const msg = (e?.message || "").toLowerCase();
-      if (msg.includes("already attached")) {
-        // Chrome keeps the debugger session alive across MV3 service-worker restarts.
-        // The new SW instance has no record of the session, so attach() fails.
-        // Fix: detach (Chrome allows same extension to detach across SW cycles),
-        // then reattach fresh. If DevTools owns the tab, detach() throws — skip frame.
-        try {
-          await chrome.debugger.detach({ tabId });
-          await chrome.debugger.attach({ tabId }, "1.3");
-          ownedDebuggerTabId = tabId;
-        } catch {
-          return; // DevTools or another extension owns this tab — skip frame
-        }
-      } else {
-        return; // unrecoverable attach error
-      }
-    }
-  }
-
-  // Primary path: capture via chrome.debugger (works even if window is not focused)
+  // captureVisibleTab — no CDP, no debugger, no conflicts.
+  // Requires the automation window to be in normal (non-minimized) state.
+  const { campaignWindowId } = await chrome.storage.local.get("campaignWindowId");
+  if (!campaignWindowId) return;
   try {
-    const result = await chrome.debugger.sendCommand(
-      { tabId },
-      "Page.captureScreenshot",
-      { format: "jpeg", quality: 40 }
-    );
-    if (result?.data) {
-      await apiPost("/campaign/screenshot", {
-        screenshot: `data:image/jpeg;base64,${result.data}`,
-      });
+    const dataUrl = await chrome.tabs.captureVisibleTab(campaignWindowId, {
+      format: "jpeg",
+      quality: 40,
+    });
+    if (dataUrl) {
+      apiPost("/campaign/screenshot", { screenshot: dataUrl }).catch(() => {});
     }
-  } catch {
-    // Session lost mid-capture (tab navigating) — reset and try captureVisibleTab fallback
-    ownedDebuggerTabId = null;
-    try {
-      const { campaignWindowId } = await chrome.storage.local.get("campaignWindowId");
-      if (campaignWindowId) {
-        const dataUrl = await chrome.tabs.captureVisibleTab(campaignWindowId, {
-          format: "jpeg",
-          quality: 40,
-        });
-        if (dataUrl) {
-          await apiPost("/campaign/screenshot", { screenshot: dataUrl });
-        }
-      }
-    } catch { /* both paths failed, skip frame */ }
-  }
+  } catch { /* window minimized or not available — skip frame */ }
 }
-
-// Auto-reattach debugger if it gets detached while campaign is still running.
-// Reason "canceled_by_user" means the user opened Chrome DevTools — don't fight it.
-chrome.debugger.onDetach.addListener(async (source, reason) => {
-  if (source.tabId === ownedDebuggerTabId) {
-    ownedDebuggerTabId = null;
-  }
-
-  if (reason === "canceled_by_user") return;
-
-  const { campaignRunning, campaignTabId } = await chrome.storage.local.get([
-    "campaignRunning",
-    "campaignTabId",
-  ]);
-
-  if (campaignRunning && source.tabId === campaignTabId) {
-    setTimeout(async () => {
-      try {
-        await chrome.debugger.attach({ tabId: campaignTabId }, "1.3");
-        ownedDebuggerTabId = campaignTabId;
-      } catch {}
-    }, 2000);
-  }
-});
 
 // ---------------------------------------------------------------------------
 // Activity log
@@ -410,8 +341,10 @@ async function handleMessage(msg, sender) {
 
       // Automation runs in a dedicated background window — minimized so it doesn't
       // steal focus from the user's browser. Screenshots are captured via CDP
-      // (Page.captureScreenshot), which works on background/minimized tabs without
-      // requiring the window to be focused or visible.
+      // Automation runs in a dedicated window that opens behind the current one
+      // (focused: false). We keep it visible — captureVisibleTab requires the
+      // window to be in normal state and rendering. Minimizing or moving it
+      // off-screen breaks screenshot capture.
       let tab;
       const prevData = await chrome.storage.local.get(["campaignWindowId", "campaignTabId"]);
       let reusingWindow = false;
@@ -421,7 +354,8 @@ async function handleMessage(msg, sender) {
           if (win && win.tabs && win.tabs.length > 0) {
             tab = win.tabs[0];
             await chrome.tabs.update(tab.id, { url: "https://www.indeed.com/", active: true });
-            // Keep minimized — don't steal focus on restart
+            // Restore to normal state in case user minimized it
+            chrome.windows.update(prevData.campaignWindowId, { state: "normal" }).catch(() => {});
             reusingWindow = true;
           }
         } catch {
@@ -437,9 +371,7 @@ async function handleMessage(msg, sender) {
           height: 900,
         });
         tab = win.tabs[0];
-        // Minimize after creation — state:"minimized" on create fails in some
-        // environments (Playwright, remote desktop) and leaves win.tabs empty.
-        chrome.windows.update(win.id, { state: "minimized" }).catch(() => {});
+        // Don't minimize — captureVisibleTab only works on visible (normal-state) windows
       }
 
       const tabInfo = await chrome.tabs.get(tab.id);
@@ -485,11 +417,7 @@ async function handleMessage(msg, sender) {
         currentJob: null,
       });
 
-      // Detach debugger now that we've marked campaign as stopped
       if (stopData.campaignTabId) {
-        try { await chrome.debugger.detach({ tabId: stopData.campaignTabId }); } catch {}
-        ownedDebuggerTabId = null;
-      }
 
       try {
         if (stopData.campaignTabId) {
