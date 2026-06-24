@@ -165,14 +165,19 @@ async function updateBadge() {
   chrome.action.setBadgeBackgroundColor({ color: running ? "#10b981" : "#6c5ce7" });
 }
 
-// Refresh badge every minute
-chrome.alarms.create("badge-refresh", { periodInMinutes: 1 });
-chrome.alarms.create("ext-ping", { periodInMinutes: 0.5 }); // ~30 s
-
-// SW keepalive: MV3 service workers die after ~30 s of inactivity. During page
-// navigation the content script is silent for several seconds. This 20-second alarm
-// ensures the SW survives across page loads.
-chrome.alarms.create("sw-keepalive", { periodInMinutes: 0.33 }); // ~20 s
+// Create alarms only if they don't exist — SW restarts must not reset timers.
+// Calling chrome.alarms.create with the same name resets the alarm to start NOW,
+// so sw-keepalive (every 20s) would perpetually reset ext-ping before it fires.
+(async () => {
+  const [badge, ping, keepalive] = await Promise.all([
+    chrome.alarms.get("badge-refresh"),
+    chrome.alarms.get("ext-ping"),
+    chrome.alarms.get("sw-keepalive"),
+  ]);
+  if (!badge)     chrome.alarms.create("badge-refresh", { periodInMinutes: 1 });
+  if (!ping)      chrome.alarms.create("ext-ping",      { periodInMinutes: 1 });
+  if (!keepalive) chrome.alarms.create("sw-keepalive",  { periodInMinutes: 0.33 });
+})();
 
 async function sendExtensionPing() {
   try {
