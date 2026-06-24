@@ -302,10 +302,10 @@ async function handleMessage(msg, sender) {
       const storePayload = { supabase_token: msg.token };
       if (msg.refresh_token) storePayload.supabase_refresh_token = msg.refresh_token;
       await chrome.storage.local.set(storePayload);
-      // Fire-and-forget profile cache refresh — don't block the response on a network call
+      // Await the ping so the SW stays alive long enough for the fetch to complete.
+      // Fire-and-forget would let Chrome kill the SW before the request lands.
+      await sendExtensionPing().catch(() => {});
       fetchAndCacheProfile().catch(() => {});
-      // Immediately report extension status so the backend knows we're connected
-      sendExtensionPing().catch(() => {});
       return { stored: true };
     }
     case "GET_AUTH_STATUS": {
