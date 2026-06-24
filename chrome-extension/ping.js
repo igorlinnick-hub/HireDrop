@@ -13,12 +13,15 @@ window.addEventListener("message", function (e) {
   }
 
   if (typeof e.data === "object" && e.data.type === "HIREDROP_STORE_TOKEN" && typeof e.data.token === "string") {
+    window.__hd_store_attempt = Date.now();
     chrome.runtime.sendMessage(
       { type: "STORE_TOKEN", token: e.data.token, refresh_token: e.data.refresh_token || "" },
       function (resp) {
+        const err = chrome.runtime.lastError ? chrome.runtime.lastError.message : null;
         const ok = !!(resp && resp.stored);
+        window.__hd_store_result = { ok, error: err, resp: resp ? JSON.stringify(resp) : null, ts: Date.now() };
         window.postMessage(
-          { type: "HIREDROP_TOKEN_STORED", ok, error: chrome.runtime.lastError ? chrome.runtime.lastError.message : null },
+          { type: "HIREDROP_TOKEN_STORED", ok, error: err },
           "*"
         );
       }
