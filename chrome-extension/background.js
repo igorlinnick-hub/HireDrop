@@ -337,7 +337,7 @@ async function handleMessage(msg, sender) {
       }
       await chrome.storage.local.set({ _dbg: "step3_ping_done", _dbg_ping: pingStatus, _dbg_ts: Date.now() });
       fetchAndCacheProfile().catch(() => {});
-      return { stored: true };
+      return { stored: true, ping_status: pingStatus };
     }
     case "GET_AUTH_STATUS": {
       const data = await chrome.storage.local.get("supabase_token");

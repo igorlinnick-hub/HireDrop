@@ -19,9 +19,9 @@ window.addEventListener("message", function (e) {
       function (resp) {
         const err = chrome.runtime.lastError ? chrome.runtime.lastError.message : null;
         const ok = !!(resp && resp.stored);
-        window.__hd_store_result = { ok, error: err, resp: resp ? JSON.stringify(resp) : null, ts: Date.now() };
+        window.__hd_store_result = { ok, error: err, ping_status: resp && resp.ping_status, ts: Date.now() };
         window.postMessage(
-          { type: "HIREDROP_TOKEN_STORED", ok, error: err },
+          { type: "HIREDROP_TOKEN_STORED", ok, error: err, ping_status: resp && resp.ping_status },
           "*"
         );
       }
