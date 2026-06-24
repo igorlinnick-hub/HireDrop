@@ -11,8 +11,7 @@
     "tabs",
     "alarms",
     "notifications",
-    "activeTab",
-    "debugger"
+    "activeTab"
   ],
   "host_permissions": [
     "https://web-production-db45.up.railway.app/*",
