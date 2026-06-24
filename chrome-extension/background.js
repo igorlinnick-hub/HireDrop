@@ -180,7 +180,11 @@ async function updateBadge() {
 })();
 
 async function sendExtensionPing() {
+  // Use a raw fetch instead of apiPost so a 401 here does NOT clear the stored token.
+  // The ping is telemetry-only; auth errors should be silent.
   try {
+    const token = await getAuthToken();
+    if (!token) return; // nothing to ping with yet
     const data = await chrome.storage.local.get([
       "campaignRunning", "todayCount", "campaignWindowId", "todayDate",
     ]);
@@ -195,11 +199,15 @@ async function sendExtensionPing() {
       } catch {}
     }
 
-    await apiPost("/extension/ping", {
-      campaign_running: !!data.campaignRunning,
-      today_count: todayCount,
-      window_visible: windowVisible,
-      version: chrome.runtime.getManifest().version,
+    await fetch(`${CONFIG.API_BASE}${CONFIG.API_V1}/extension/ping`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        campaign_running: !!data.campaignRunning,
+        today_count: todayCount,
+        window_visible: windowVisible,
+        version: chrome.runtime.getManifest().version,
+      }),
     });
   } catch {}
 }
