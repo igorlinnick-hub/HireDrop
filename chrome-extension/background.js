@@ -487,8 +487,6 @@ async function handleMessage(msg, sender) {
         currentJob: null,
       });
 
-      if (stopData.campaignTabId) {
-
       try {
         if (stopData.campaignTabId) {
           chrome.tabs.sendMessage(stopData.campaignTabId, { type: "CAMPAIGN_STOPPED" }).catch(() => {});
