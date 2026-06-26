@@ -303,7 +303,7 @@ async function addLog(text, cls) {
 // ---------------------------------------------------------------------------
 
 $("btn-dash").addEventListener("click", () => {
-  chrome.tabs.create({ url: CONFIG.DASHBOARD_URL });
+  chrome.tabs.create({ url: CONFIG.DASHBOARD_URL + "/dashboard" });
 });
 
 // ---------------------------------------------------------------------------
