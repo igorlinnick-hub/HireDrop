@@ -220,9 +220,31 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 // ---------------------------------------------------------------------------
 // Screenshot streaming — captures the automation tab via Chrome DevTools Protocol.
-// Works in background without the window needing to be focused.
-// Triggered by CAPTURE_SCREENSHOT messages from content.js every 2.5 s.
+// CDP Page.captureScreenshot renders from the tab's compositor, so it works even
+// when the automation window is hidden/minimized/behind others — unlike
+// captureVisibleTab, which needs the window visible and on top. This lets us keep
+// the automation window out of the user's way while still streaming the live view.
+// Triggered by CAPTURE_SCREENSHOT messages from content.js.
 // ---------------------------------------------------------------------------
+
+// Ensure the debugger is attached to the automation tab. Attaching twice throws
+// "Already attached", which we treat as success. Returns false if attach failed
+// for any other reason (e.g. the user has DevTools open on that tab).
+async function ensureDebuggerAttached(tabId) {
+  try {
+    await chrome.debugger.attach({ tabId }, "1.3");
+    return true;
+  } catch (e) {
+    const msg = String((e && e.message) || e || "");
+    return msg.toLowerCase().includes("already attached");
+  }
+}
+
+async function detachDebugger(tabId) {
+  try {
+    await chrome.debugger.detach({ tabId });
+  } catch { /* not attached — fine */ }
+}
 
 async function sendScreenshot(tabId) {
   // GDPR: only capture Indeed tabs.
@@ -237,16 +259,15 @@ async function sendScreenshot(tabId) {
     return;
   }
 
-  // captureVisibleTab — no CDP, no debugger, no conflicts.
-  // Requires the automation window to be in normal (non-minimized) state.
-  const { campaignWindowId } = await chrome.storage.local.get("campaignWindowId");
-  if (!campaignWindowId) return;
+  if (!(await ensureDebuggerAttached(tabId))) return;
+
   try {
-    const dataUrl = await chrome.tabs.captureVisibleTab(campaignWindowId, {
+    const result = await chrome.debugger.sendCommand({ tabId }, "Page.captureScreenshot", {
       format: "jpeg",
       quality: 40,
     });
-    if (dataUrl) {
+    if (result && result.data) {
+      const dataUrl = "data:image/jpeg;base64," + result.data;
       // Safe upload: raw fetch so a 401 never clears the stored token.
       // A missed frame is fine; losing auth is not.
       const tok = await getAuthToken();
@@ -258,7 +279,7 @@ async function sendScreenshot(tabId) {
         }).catch(() => {});
       }
     }
-  } catch { /* window minimized or not available — skip frame */ }
+  } catch { /* capture failed — skip frame */ }
 }
 
 // ---------------------------------------------------------------------------
@@ -492,6 +513,9 @@ async function handleMessage(msg, sender) {
           chrome.tabs.sendMessage(stopData.campaignTabId, { type: "CAMPAIGN_STOPPED" }).catch(() => {});
         }
       } catch {}
+
+      // Release the CDP debugger so the "DevTools" banner clears.
+      if (stopData.campaignTabId) await detachDebugger(stopData.campaignTabId);
 
       try {
         await apiPost("/campaign/stop", {});
