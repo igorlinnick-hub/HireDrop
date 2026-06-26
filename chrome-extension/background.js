@@ -247,7 +247,16 @@ async function sendScreenshot(tabId) {
       quality: 40,
     });
     if (dataUrl) {
-      apiPost("/campaign/screenshot", { screenshot: dataUrl }).catch(() => {});
+      // Safe upload: raw fetch so a 401 never clears the stored token.
+      // A missed frame is fine; losing auth is not.
+      const tok = await getAuthToken();
+      if (tok) {
+        fetch(`${CONFIG.API_BASE}${CONFIG.API_V1}/campaign/screenshot`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${tok}` },
+          body: JSON.stringify({ screenshot: dataUrl }),
+        }).catch(() => {});
+      }
     }
   } catch { /* window minimized or not available — skip frame */ }
 }
