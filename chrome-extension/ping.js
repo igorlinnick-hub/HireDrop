@@ -14,18 +14,28 @@ window.addEventListener("message", function (e) {
 
   if (typeof e.data === "object" && e.data.type === "HIREDROP_STORE_TOKEN" && typeof e.data.token === "string") {
     window.__hd_store_attempt = Date.now();
-    chrome.runtime.sendMessage(
-      { type: "STORE_TOKEN", token: e.data.token, refresh_token: e.data.refresh_token || "" },
-      function (resp) {
-        const err = chrome.runtime.lastError ? chrome.runtime.lastError.message : null;
-        const ok = !!(resp && resp.stored);
-        window.__hd_store_result = { ok, error: err, ping_status: resp && resp.ping_status, ts: Date.now() };
-        window.postMessage(
-          { type: "HIREDROP_TOKEN_STORED", ok, error: err, ping_status: resp && resp.ping_status },
-          "*"
-        );
-      }
-    );
+    try {
+      chrome.runtime.sendMessage(
+        { type: "STORE_TOKEN", token: e.data.token, refresh_token: e.data.refresh_token || "" },
+        function (resp) {
+          const err = chrome.runtime.lastError ? chrome.runtime.lastError.message : null;
+          const ok = !!(resp && resp.stored);
+          window.__hd_store_result = { ok, error: err, ping_status: resp && resp.ping_status, ts: Date.now() };
+          window.postMessage(
+            { type: "HIREDROP_TOKEN_STORED", ok, error: err, ping_status: resp && resp.ping_status },
+            "*"
+          );
+        }
+      );
+    } catch (ex) {
+      // Extension context invalidated — content script is orphaned (extension was reloaded
+      // after this page was opened). Signal the page so it can auto-reload and get a fresh
+      // content script injection.
+      window.postMessage(
+        { type: "HIREDROP_TOKEN_STORED", ok: false, error: "context_invalidated" },
+        "*"
+      );
+    }
   }
 
   if (typeof e.data === "object" && e.data.type === "HIREDROP_READ_STORAGE") {
