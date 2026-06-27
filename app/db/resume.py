@@ -66,10 +66,37 @@ def upload_ats_docx(user_id: str, content: bytes) -> str:
     return _ats_docx_path(user_id)
 
 
+def _object_exists(path: str) -> bool:
+    """True if a specific object path exists in the bucket."""
+    if not path:
+        return False
+    folder, _, name = path.rpartition("/")
+    items = get_supabase().storage.from_(BUCKET).list(path=folder) or []
+    return any(item.get("name") == name for item in items)
+
+
+def resolved_resume_path(user_id: str) -> str | None:
+    """The user's actual original-resume path.
+
+    The source of truth is profiles.resume_url — onboarding preserves the
+    uploaded file's original name (e.g. `<uid>/Ihor_Linnyk_Resume.pdf`), so we
+    must NOT assume the canonical `<uid>/resume.pdf`. Falls back to the legacy
+    canonical path for older accounts. Returns None if no object is found.
+    """
+    from app.db import profile as profile_db
+
+    prof = profile_db.get_profile(user_id) or {}
+    path = prof.get("resume_url")
+    if path and _object_exists(path):
+        return path
+    legacy = _path(user_id)
+    if _object_exists(legacy):
+        return legacy
+    return None
+
+
 def exists(user_id: str) -> bool:
-    storage = get_supabase().storage.from_(BUCKET)
-    items = storage.list(path=user_id) or []
-    return any(item.get("name") == "resume.pdf" for item in items)
+    return resolved_resume_path(user_id) is not None
 
 
 def exists_ats(user_id: str) -> bool:
@@ -85,10 +112,10 @@ def exists_ats_docx(user_id: str) -> bool:
 
 
 def signed_download_url(user_id: str) -> str | None:
-    storage = get_supabase().storage.from_(BUCKET)
-    if not exists(user_id):
+    path = resolved_resume_path(user_id)
+    if not path:
         return None
-    res = storage.create_signed_url(_path(user_id), SIGNED_URL_TTL_SECONDS)
+    res = get_supabase().storage.from_(BUCKET).create_signed_url(path, SIGNED_URL_TTL_SECONDS)
     return res.get("signedURL") or res.get("signed_url")
 
 
