@@ -23,6 +23,13 @@ def _ats_path(user_id: str) -> str:
     return f"{user_id}/resume_ats.pdf"
 
 
+def _ats_docx_path(user_id: str) -> str:
+    return f"{user_id}/resume_ats.docx"
+
+
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
 def upload(user_id: str, content: bytes) -> None:
     """Upsert the user's resume PDF into the bucket."""
     storage = get_supabase().storage.from_(BUCKET)
@@ -44,6 +51,21 @@ def upload_ats(user_id: str, content: bytes) -> str:
     return _ats_path(user_id)
 
 
+def upload_ats_docx(user_id: str, content: bytes) -> str:
+    """Upsert the ATS-optimized resume DOCX. Returns the storage path.
+
+    DOCX is offered alongside the PDF for job boards / employers that only
+    accept Word documents.
+    """
+    storage = get_supabase().storage.from_(BUCKET)
+    storage.upload(
+        path=_ats_docx_path(user_id),
+        file=content,
+        file_options={"content-type": _DOCX_MIME, "upsert": "true"},
+    )
+    return _ats_docx_path(user_id)
+
+
 def exists(user_id: str) -> bool:
     storage = get_supabase().storage.from_(BUCKET)
     items = storage.list(path=user_id) or []
@@ -54,6 +76,12 @@ def exists_ats(user_id: str) -> bool:
     storage = get_supabase().storage.from_(BUCKET)
     items = storage.list(path=user_id) or []
     return any(item.get("name") == "resume_ats.pdf" for item in items)
+
+
+def exists_ats_docx(user_id: str) -> bool:
+    storage = get_supabase().storage.from_(BUCKET)
+    items = storage.list(path=user_id) or []
+    return any(item.get("name") == "resume_ats.docx" for item in items)
 
 
 def signed_download_url(user_id: str) -> str | None:
@@ -69,6 +97,14 @@ def signed_download_url_ats(user_id: str) -> str | None:
     if not exists_ats(user_id):
         return None
     res = storage.create_signed_url(_ats_path(user_id), SIGNED_URL_TTL_SECONDS)
+    return res.get("signedURL") or res.get("signed_url")
+
+
+def signed_download_url_ats_docx(user_id: str) -> str | None:
+    storage = get_supabase().storage.from_(BUCKET)
+    if not exists_ats_docx(user_id):
+        return None
+    res = storage.create_signed_url(_ats_docx_path(user_id), SIGNED_URL_TTL_SECONDS)
     return res.get("signedURL") or res.get("signed_url")
 
 

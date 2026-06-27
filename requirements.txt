@@ -11,3 +11,4 @@ pdfplumber
 supabase
 jobspy
 reportlab
+python-docx

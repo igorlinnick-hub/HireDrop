@@ -3,6 +3,8 @@ import os
 import sys
 from datetime import UTC, datetime
 
+import pdfplumber
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from fastapi import APIRouter, Depends, File, UploadFile
@@ -13,7 +15,13 @@ from app.db import resume as resume_storage
 from app.deps import get_current_user
 from app.schemas import ConnectPlatformRequest, ProfileUpdate, SearchPrefsUpdate
 from modules.ats_checker import check_ats_compliance
-from modules.ats_pdf_generator import generate_ats_pdf
+from modules.ats_pdf_generator import (
+    ATS_PASS_THRESHOLD,
+    generate_ats_docx,
+    generate_ats_pdf,
+    get_ats_questions,
+    structure_resume_data,
+)
 
 router = APIRouter(tags=["profile"])
 
@@ -99,6 +107,12 @@ async def ats_check(user=Depends(get_current_user)):
 
     result = check_ats_compliance(pdf_bytes)
 
+    # Authoritative pass/fail: a resume passes only if it has NO structural
+    # design blockers AND clears the score threshold. Any design block (columns,
+    # tables, images, floating blocks) forces regeneration regardless of score.
+    result["passes"] = (not result["has_structural"]) and result["score"] >= ATS_PASS_THRESHOLD
+    result["threshold"] = ATS_PASS_THRESHOLD
+
     profile_db.update_ats(user.id, {
         "ats_score": result["score"],
         "ats_issues": result["issues"],
@@ -108,13 +122,42 @@ async def ats_check(user=Depends(get_current_user)):
     return result
 
 
-@router.post("/profile/ats/generate")
-async def ats_generate(user=Depends(get_current_user)):
-    """Generate an ATS-compliant PDF from the user's current resume.
+@router.post("/profile/ats/questions")
+async def ats_questions(user=Depends(get_current_user)):
+    """Return 2-4 targeted questions about missing resume info for ATS enrichment."""
+    signed_url = resume_storage.signed_download_url(user.id)
+    if not signed_url:
+        return JSONResponse(status_code=404, content={"error": "No resume uploaded"})
 
-    Stores result as resume_ats.pdf in Supabase Storage.
-    Returns a signed URL for preview + plain-text preview.
+    import httpx
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            resp = await client.get(signed_url, timeout=30)
+            resp.raise_for_status()
+            pdf_bytes = resp.content
+    except Exception as e:
+        return JSONResponse(status_code=502, content={"error": f"Could not fetch resume: {e}"})
+
+    with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+        resume_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+
+    questions = get_ats_questions(resume_text)
+    return {"questions": questions}
+
+
+@router.post("/profile/ats/generate")
+async def ats_generate(body: dict = None, user=Depends(get_current_user)):
+    """Generate an ATS-compliant PDF + DOCX from the user's current resume.
+
+    Accepts optional body: {"answers": [{"question": "...", "answer": "..."}]}
+    Answers are incorporated into the generated content to fill resume gaps.
+
+    Stores results as resume_ats.pdf and resume_ats.docx in Supabase Storage
+    (DOCX for employers/boards that don't accept PDF). The resume is structured
+    once via Claude, then rendered into both formats. Returns signed preview URLs.
     """
+    answers = (body or {}).get("answers") or []
+
     signed_url = resume_storage.signed_download_url(user.id)
     if not signed_url:
         return JSONResponse(status_code=404, content={"error": "No resume uploaded"})
@@ -129,19 +172,31 @@ async def ats_generate(user=Depends(get_current_user)):
         return JSONResponse(status_code=502, content={"error": f"Could not fetch resume: {e}"})
 
     try:
-        ats_pdf_bytes = generate_ats_pdf(pdf_bytes=pdf_bytes)
+        # Structure once → render both formats (single Claude call)
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            resume_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        data = structure_resume_data(resume_text, answers=answers)
+        ats_pdf_bytes = generate_ats_pdf(data=data)
+        ats_docx_bytes = generate_ats_docx(data=data)
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": f"PDF generation failed: {e}"})
+        return JSONResponse(status_code=500, content={"error": f"Resume generation failed: {e}"})
 
     ats_path = resume_storage.upload_ats(user.id, ats_pdf_bytes)
-
+    docx_path = None
+    try:
+        docx_path = resume_storage.upload_ats_docx(user.id, ats_docx_bytes)
+    except Exception as e:
+        # DOCX is a bonus format — don't fail the whole request if it can't store
+        print(f"[ats] DOCX upload failed (non-fatal): {e}")
     profile_db.update_ats(user.id, {"ats_resume_url": ats_path})
 
     preview_url = resume_storage.signed_download_url_ats(user.id)
+    docx_url = resume_storage.signed_download_url_ats_docx(user.id) if docx_path else None
     return {
         "success": True,
         "ats_resume_url": ats_path,
         "preview_url": preview_url,
+        "docx_url": docx_url,
     }
 
 
@@ -164,6 +219,15 @@ def ats_resume_url(user=Depends(get_current_user)):
     url = resume_storage.signed_download_url_ats(user.id)
     if not url:
         return JSONResponse(status_code=404, content={"error": "No ATS resume generated yet"})
+    return {"url": url, "expires_in": resume_storage.SIGNED_URL_TTL_SECONDS}
+
+
+@router.get("/profile/ats/resume/docx-url")
+def ats_resume_docx_url(user=Depends(get_current_user)):
+    """Signed URL for the ATS-generated DOCX (for download)."""
+    url = resume_storage.signed_download_url_ats_docx(user.id)
+    if not url:
+        return JSONResponse(status_code=404, content={"error": "No ATS DOCX generated yet"})
     return {"url": url, "expires_in": resume_storage.SIGNED_URL_TTL_SECONDS}
 
 

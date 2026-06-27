@@ -34,6 +34,13 @@ _DEDUCTIONS = {
     "special_chars": 10,
 }
 
+# Structural / design issues are HARD ATS blockers: a company's ATS literally
+# cannot read the resume in the right order when these are present (columns mix
+# reading order, tables hide cells, images are ignored, floating blocks/dividers
+# overlap text). If any of these is detected the resume must be regenerated,
+# regardless of the numeric score. `special_chars` is a soft, score-only issue.
+STRUCTURAL_ISSUES = {"columns", "tables", "images", "text_boxes"}
+
 _SAFE_UNICODE_CATEGORIES = {"L", "N", "P", "Z", "M"}
 _ALLOWED_SYMBOLS = set("•–—…""''")
 
@@ -57,10 +64,19 @@ def _detect_columns(page) -> bool:
 
 
 def _detect_special_chars(text: str) -> bool:
-    """Detect symbols outside standard text use (icons, decorative chars)."""
+    """Detect decorative glyphs that ATS renders as garbage (icons, arrows,
+    checkboxes, emoji, dingbats).
+
+    Standard ASCII keyboard symbols (| + $ % & / * # @ = etc.) are ATS-safe and
+    must NOT be flagged — pipe-separated layouts and phone "+" are common in
+    clean resumes (including our own generated format). Only NON-ASCII symbols
+    outside the safe Unicode categories count.
+    """
     count = 0
     for ch in text:
         if ch in _ALLOWED_SYMBOLS or ch.isspace():
+            continue
+        if ord(ch) < 128:  # standard ASCII keyboard chars are ATS-safe
             continue
         cat = unicodedata.category(ch)
         if cat[0] not in _SAFE_UNICODE_CATEGORIES:
@@ -112,9 +128,13 @@ def check_ats_compliance(pdf_bytes: bytes) -> dict:
     score = 100 - sum(_DEDUCTIONS[i] for i in issues)
     score = max(0, score)
 
+    structural = sorted(issues & STRUCTURAL_ISSUES)
+
     return {
         "score": score,
         "issues": sorted(issues),
         "issue_labels": [_ISSUE_LABELS[i] for i in sorted(issues)],
+        "structural_issues": structural,
+        "has_structural": bool(structural),
         "page_count": page_count,
     }
