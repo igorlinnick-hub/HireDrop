@@ -152,8 +152,19 @@ Return ONLY a JSON array of question strings, no explanation:
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
-        questions = json.loads(raw)
-        return [q for q in questions if isinstance(q, str)][:4]
+        questions = [q for q in json.loads(raw) if isinstance(q, str)][:4]
+
+        # LinkedIn URL is ATS-critical for recruiter verification. Always ask for it
+        # if it's not already in the resume text (common when the original was a
+        # design PDF with LinkedIn in a graphical column pdfplumber can't read).
+        has_linkedin_url = bool(re.search(r"linkedin\.com/in/", resume_text, re.IGNORECASE))
+        if not has_linkedin_url:
+            linkedin_q = "What is your LinkedIn URL? (e.g., linkedin.com/in/your-name)"
+            if not any("linkedin" in q.lower() for q in questions):
+                # Prepend it; cap total at 4 by dropping the last AI question if needed
+                questions = [linkedin_q] + questions[:3]
+
+        return questions
     except Exception as e:
         print(f"[ats_questions] Failed: {e}")
         return []
