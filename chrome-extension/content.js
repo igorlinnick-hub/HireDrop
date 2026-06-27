@@ -808,6 +808,27 @@
 
     log(`Job: ${jobTitle} @ ${jobCompany}`, "");
 
+    // Keyword relevance check — skip jobs where the title doesn't match any campaign keyword phrase.
+    // Each keyword phrase (e.g. "social media manager") requires ALL its words to appear in the title.
+    // This prevents wasted cover-letter calls on clearly off-target roles.
+    {
+      const kwData = await chrome.storage.local.get("campaignFilters");
+      const kwList = (kwData.campaignFilters?.keywords || []).filter(Boolean);
+      if (kwList.length > 0) {
+        const titleWords = new Set(jobTitle.toLowerCase().split(/\W+/).filter(w => w.length > 2));
+        const relevant = kwList.some(phrase => {
+          const phraseWords = phrase.toLowerCase().split(/\W+/).filter(w => w.length > 2);
+          return phraseWords.length > 0 && phraseWords.every(w => titleWords.has(w));
+        });
+        if (!relevant) {
+          log(`${jobTitle} — title doesn't match keywords, skipping`, "");
+          logBackend(`Skip (title mismatch): ${jobTitle} @ ${jobCompany}`, "info");
+          await skipToNextJob();
+          return;
+        }
+      }
+    }
+
     // Save current job context
     await chrome.storage.local.set({
       currentJobInfo: { title: jobTitle, company: jobCompany, description: jobDesc, url: jobUrl },
