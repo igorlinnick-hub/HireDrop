@@ -7,15 +7,35 @@ key and deliver it over Gmail SMTP.
 
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 import requests
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 
 from app.schemas import ForgotPasswordRequest
 from config import FRONTEND_URL, SUPABASE_SERVICE_KEY, SUPABASE_URL
 from modules.email_sender import password_reset_html, send_email
+
+# In-memory sliding-window throttle. Single Railway instance today, so per-process
+# state is sufficient; revisit if we ever run multiple workers. Without this, the
+# endpoint is a free email-bomb relay (and a way to burn our sender reputation).
+_RESET_WINDOW_SEC = 3600
+_RESET_MAX_PER_EMAIL = 3
+_RESET_MAX_PER_IP = 10
+_reset_attempts: dict[str, list[float]] = {}
+
+
+def _rate_limited(key: str, limit: int) -> bool:
+    now = time.time()
+    recent = [t for t in _reset_attempts.get(key, []) if now - t < _RESET_WINDOW_SEC]
+    if len(recent) >= limit:
+        _reset_attempts[key] = recent
+        return True
+    recent.append(now)
+    _reset_attempts[key] = recent
+    return False
 
 # All logs from this module use stderr so they are visible in Railway's log
 # stream (Railway aggregates stderr alongside stdout but stderr is preferred
@@ -30,14 +50,24 @@ _REDIRECT_TO = f"{FRONTEND_URL}/auth/update-password"
 
 
 @router.post("/auth/forgot-password")
-def forgot_password(req: ForgotPasswordRequest):
+def forgot_password(req: ForgotPasswordRequest, request: Request):
     """Generate a Supabase recovery link and email it via Gmail SMTP.
 
-    Always returns {"sent": true} regardless of whether the email exists —
-    we don't want this endpoint to be an account-enumeration oracle.
+    Always returns {"sent": true} regardless of whether the email exists OR
+    whether we actually sent — we don't want this endpoint to be an
+    account-enumeration oracle or to reveal its own rate limiting.
     """
     email = req.email.strip().lower()
     if not email or "@" not in email:
+        return {"sent": True}
+
+    # Throttle per-email and per-IP. Silently drop over-limit requests (still
+    # return sent:true) so the limit itself isn't an oracle.
+    client_ip = request.client.host if request.client else "unknown"
+    if _rate_limited(f"email:{email}", _RESET_MAX_PER_EMAIL) or _rate_limited(
+        f"ip:{client_ip}", _RESET_MAX_PER_IP
+    ):
+        print(f"[auth] forgot-password throttled for redacted email / ip {client_ip}", file=sys.stderr)
         return {"sent": True}
 
     try:

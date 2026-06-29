@@ -113,7 +113,8 @@ async def ats_check(user=Depends(get_current_user)):
             resp.raise_for_status()
             pdf_bytes = resp.content
     except Exception as e:
-        return JSONResponse(status_code=502, content={"error": f"Could not fetch resume: {e}"})
+        print(f"[profile] resume fetch failed: {e}", file=sys.stderr)
+        return JSONResponse(status_code=502, content={"error": "Could not fetch resume"})
 
     result = check_ats_compliance(pdf_bytes)
 
@@ -146,7 +147,8 @@ async def ats_questions(user=Depends(get_current_user)):
             resp.raise_for_status()
             pdf_bytes = resp.content
     except Exception as e:
-        return JSONResponse(status_code=502, content={"error": f"Could not fetch resume: {e}"})
+        print(f"[profile] resume fetch failed: {e}", file=sys.stderr)
+        return JSONResponse(status_code=502, content={"error": "Could not fetch resume"})
 
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         resume_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
@@ -179,7 +181,8 @@ async def ats_generate(body: dict = None, user=Depends(get_current_user)):
             resp.raise_for_status()
             pdf_bytes = resp.content
     except Exception as e:
-        return JSONResponse(status_code=502, content={"error": f"Could not fetch resume: {e}"})
+        print(f"[profile] resume fetch failed: {e}", file=sys.stderr)
+        return JSONResponse(status_code=502, content={"error": "Could not fetch resume"})
 
     try:
         # Structure once → render both formats (single Claude call)
@@ -189,7 +192,8 @@ async def ats_generate(body: dict = None, user=Depends(get_current_user)):
         ats_pdf_bytes = generate_ats_pdf(data=data)
         ats_docx_bytes = generate_ats_docx(data=data)
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": f"Resume generation failed: {e}"})
+        print(f"[profile] resume generation failed: {e}", file=sys.stderr)
+        return JSONResponse(status_code=500, content={"error": "Resume generation failed"})
 
     ats_path = resume_storage.upload_ats(user.id, ats_pdf_bytes)
     docx_path = None
@@ -251,7 +255,8 @@ async def ats_generate_from_text(body: dict, user=Depends(get_current_user)):
     try:
         ats_pdf_bytes = generate_ats_pdf(resume_text=resume_text)
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": f"PDF generation failed: {e}"})
+        print(f"[profile] PDF generation failed: {e}", file=sys.stderr)
+        return JSONResponse(status_code=500, content={"error": "PDF generation failed"})
 
     ats_path = resume_storage.upload_ats(user.id, ats_pdf_bytes)
     profile_db.update_ats(user.id, {"ats_resume_url": ats_path})
@@ -276,7 +281,8 @@ async def resume_text_extract(user=Depends(get_current_user)):
             resp.raise_for_status()
             pdf_bytes = resp.content
     except Exception as e:
-        return JSONResponse(status_code=502, content={"error": f"Could not fetch resume: {e}"})
+        print(f"[profile] resume fetch failed: {e}", file=sys.stderr)
+        return JSONResponse(status_code=502, content={"error": "Could not fetch resume"})
 
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         text = "\n".join(page.extract_text() or "" for page in pdf.pages)

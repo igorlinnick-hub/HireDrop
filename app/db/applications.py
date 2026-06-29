@@ -98,13 +98,22 @@ def update_status(application_id: str, status: str, user_id: str) -> bool:
     return bool(res.data)
 
 
+def _escape_like(s: str) -> str:
+    """Escape LIKE/ILIKE wildcards so user/email-derived text can't widen the match.
+
+    Without this, a company fragment like "A%B" (from a crafted email subject)
+    becomes a broad wildcard and matches far more applications than intended.
+    """
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 def find_by_company_all_users(company_fragment: str) -> list:
     """Find applied/pending applications matching a company name fragment (case-insensitive)."""
     res = (
         get_supabase()
         .table("applications")
         .select("id, user_id, status, jobs(company)")
-        .ilike("jobs.company", f"%{company_fragment}%")
+        .ilike("jobs.company", f"%{_escape_like(company_fragment)}%")
         .in_("status", ["applied", "pending"])
         .limit(10)
         .execute()
