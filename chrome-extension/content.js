@@ -808,18 +808,22 @@
 
     log(`Job: ${jobTitle} @ ${jobCompany}`, "");
 
-    // Keyword relevance check — skip jobs where the title doesn't match any campaign keyword phrase.
-    // Each keyword phrase (e.g. "social media manager") requires ALL its words to appear in the title.
-    // This prevents wasted cover-letter calls on clearly off-target roles.
+    // Keyword relevance check — skip jobs whose title shares NO words with any
+    // campaign keyword. Loosened from strict AND-matching (every word of a phrase
+    // had to appear) to OR-matching (at least one keyword word in the title):
+    // strict matching skipped clearly-relevant roles, e.g. "Senior Marketing
+    // Manager" failed both "healthcare marketing" and "social media manager"
+    // because no single phrase matched in full. Still blocks fully off-target
+    // titles (e.g. "Provider Relations Specialist") from wasting cover-letter calls.
     {
       const kwData = await chrome.storage.local.get("campaignFilters");
       const kwList = (kwData.campaignFilters?.keywords || []).filter(Boolean);
       if (kwList.length > 0) {
         const titleWords = new Set(jobTitle.toLowerCase().split(/\W+/).filter(w => w.length > 2));
-        const relevant = kwList.some(phrase => {
-          const phraseWords = phrase.toLowerCase().split(/\W+/).filter(w => w.length > 2);
-          return phraseWords.length > 0 && phraseWords.every(w => titleWords.has(w));
-        });
+        const keywordWords = new Set(
+          kwList.flatMap(phrase => phrase.toLowerCase().split(/\W+/).filter(w => w.length > 2))
+        );
+        const relevant = [...keywordWords].some(w => titleWords.has(w));
         if (!relevant) {
           log(`${jobTitle} — title doesn't match keywords, skipping`, "");
           logBackend(`Skip (title mismatch): ${jobTitle} @ ${jobCompany}`, "info");

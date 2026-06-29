@@ -484,15 +484,36 @@ async function handleMessage(msg, sender) {
       return { started: true, tabId: tab.id, windowId: tabInfo.windowId };
     }
 
-    // ----- Screenshot capture (triggered by content.js every 2.5 s) -----
+    // ----- Screenshot capture (triggered by content.js every 300 ms) -----
     case "CAPTURE_SCREENSHOT": {
-      const { campaignRunning, campaignTabId } = await chrome.storage.local.get([
+      const { campaignRunning, campaignTabId, campaignWindowId } = await chrome.storage.local.get([
         "campaignRunning",
         "campaignTabId",
+        "campaignWindowId",
       ]);
-      if (campaignRunning && campaignTabId) {
-        await sendScreenshot(campaignTabId);
+      if (!campaignRunning) return { ok: true };
+
+      // Follow the ACTIVE Indeed tab of the automation window, not a fixed tabId.
+      // The apply flow can navigate to / open smartapply.indeed.com, so the tab
+      // that started the campaign may no longer be the one showing the action
+      // (or may be closed) — capturing it would freeze the live preview. Fall
+      // back to the stored campaignTabId if the window query fails.
+      let tabId = campaignTabId;
+      if (campaignWindowId != null) {
+        try {
+          const [active] = await chrome.tabs.query({ windowId: campaignWindowId, active: true });
+          if (active && active.id != null && active.url &&
+              (active.url.startsWith("https://www.indeed.com/") ||
+               active.url.startsWith("https://smartapply.indeed.com/"))) {
+            tabId = active.id;
+            if (tabId !== campaignTabId) {
+              chrome.storage.local.set({ campaignTabId: tabId }).catch(() => {});
+            }
+          }
+        } catch { /* window gone — fall through to campaignTabId */ }
       }
+
+      if (tabId != null) await sendScreenshot(tabId);
       return { ok: true };
     }
 
