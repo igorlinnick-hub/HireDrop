@@ -7,11 +7,10 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
 from app.db import selectors as selectors_db
+from app.db.subscriptions import is_admin
 from app.deps import get_current_user
 
 router = APIRouter(tags=["extension"])
-
-ADMIN_EMAILS = {"hacker987602@gmail.com", "igor.linnick@gmail.com"}
 
 
 @router.get("/extension/selectors/{platform}")
@@ -32,7 +31,7 @@ def get_selectors(platform: str, user=Depends(get_current_user)):
 @router.patch("/extension/selectors/{platform}/{section}")
 def patch_selectors_section(platform: str, section: str, payload: dict, user=Depends(get_current_user)):
     """Admin-only: patch any top-level section of platform selectors_json."""
-    if user.email not in ADMIN_EMAILS:
+    if not is_admin(getattr(user, "email", None)):
         return JSONResponse(status_code=403, content={"error": "Admin only"})
     row = selectors_db.get(platform)
     if not row:

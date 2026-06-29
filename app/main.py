@@ -41,7 +41,7 @@ async def _email_poll_loop() -> None:
                     continue
                 for app in apps_db.find_by_company_all_users(company):
                     if app["status"] != new_status:
-                        apps_db.update_status(app["id"], new_status)
+                        apps_db.update_status(app["id"], new_status, app["user_id"])
         except Exception as exc:  # noqa: BLE001
             print(f"[email_poll] error: {exc}")
 
@@ -62,10 +62,14 @@ app.add_middleware(
         "https://www.hiredrop.io",
         "http://localhost:3000",
     ],
-    # Vercel preview deploys + chrome extension origins. The `jobflow-website`
-    # pattern is a transition allowance until the Vercel project is renamed;
-    # remove after rename + custom domain cutover.
-    allow_origin_regex=r"^(chrome-extension://.*|https://(hiredrop-website|jobflow-website)[a-z0-9-]*\.vercel\.app)$",
+    # Vercel preview deploys + the published chrome extension origin. The
+    # extension regex is pinned to the Web Store extension ID (stable across
+    # updates) instead of `chrome-extension://.*`, which would expose API
+    # responses to ANY installed extension. NOTE: a locally-loaded *unpacked*
+    # extension gets a random dev ID — add it here temporarily for local dev.
+    # The `jobflow-website` pattern is a transition allowance until the Vercel
+    # project is renamed; remove after rename + custom domain cutover.
+    allow_origin_regex=r"^(chrome-extension://bjideoimenmpcpnhppneehmjplkgkede|https://(hiredrop-website|jobflow-website)[a-z0-9-]*\.vercel\.app)$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

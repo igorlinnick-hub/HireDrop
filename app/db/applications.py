@@ -80,12 +80,19 @@ def count_today(user_id: str) -> int:
     return res.count or 0
 
 
-def update_status(application_id: str, status: str) -> bool:
+def update_status(application_id: str, status: str, user_id: str) -> bool:
+    """Update an application's status, scoped to its owner.
+
+    user_id is required (not optional) so this can never cross tenants: even
+    the cross-user email-matching flow must pass the owning user_id from the
+    row returned by find_by_company_all_users().
+    """
     res = (
         get_supabase()
         .table("applications")
         .update({"status": status})
         .eq("id", application_id)
+        .eq("user_id", user_id)
         .execute()
     )
     return bool(res.data)

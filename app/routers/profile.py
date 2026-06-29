@@ -54,11 +54,21 @@ def update_search_prefs(prefs: SearchPrefsUpdate, user=Depends(get_current_user)
     return {"saved": True, "profile": updated}
 
 
+MAX_RESUME_BYTES = 10 * 1024 * 1024  # 10MB
+
+
 @router.post("/profile/resume")
 async def upload_resume(file: UploadFile = File(...), user=Depends(get_current_user)):
     if not file.filename.lower().endswith(".pdf"):
         return JSONResponse(status_code=400, content={"error": "Only PDF files accepted"})
-    contents = await file.read()
+    # Read one byte past the limit so we can detect oversize without loading
+    # an unbounded body into memory (DoS guard).
+    contents = await file.read(MAX_RESUME_BYTES + 1)
+    if len(contents) > MAX_RESUME_BYTES:
+        return JSONResponse(status_code=413, content={"error": "File too large, max 10MB"})
+    # Validate it's actually a PDF — a .pdf extension is trivially spoofable.
+    if not contents.startswith(b"%PDF-"):
+        return JSONResponse(status_code=400, content={"error": "File is not a valid PDF"})
     resume_storage.upload(user.id, contents)
     return {"message": "Resume uploaded successfully", "filename": file.filename}
 

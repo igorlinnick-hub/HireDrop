@@ -10,57 +10,13 @@ from app.deps import get_current_user
 
 router = APIRouter(tags=["email"])
 
-# Map email classification → application status stored in DB
-_EMAIL_STATUS_MAP = {
-    "interview_invite": "interview",
-    "rejected": "rejected",
-    "received": "received",
-}
-
-
-@router.post("/admin/process-emails")
-def process_emails(user=Depends(get_current_user)):
-    """Scan the configured inbox, classify emails, and update matching application statuses."""
-    from modules.email_parser import check_email_responses
-
-    emails = check_email_responses()
-    updated: list[dict] = []
-    skipped: list[dict] = []
-
-    for item in emails:
-        company = item.get("company", "")
-        new_status = _EMAIL_STATUS_MAP.get(item["email_status"])
-
-        if not company or not new_status:
-            skipped.append({"subject": item["subject"], "reason": "no_company_or_unclassified"})
-            continue
-
-        matches = apps_db.find_by_company_all_users(company)
-        if not matches:
-            skipped.append({"subject": item["subject"], "reason": f"no_application_match_for_{company}"})
-            continue
-
-        for app in matches:
-            if app["status"] == new_status:
-                continue
-            success = apps_db.update_status(app["id"], new_status)
-            if success:
-                updated.append(
-                    {
-                        "application_id": app["id"],
-                        "company": app["company"],
-                        "old_status": app["status"],
-                        "new_status": new_status,
-                        "subject": item["subject"],
-                    }
-                )
-
-    return {
-        "processed": len(emails),
-        "updated": len(updated),
-        "skipped": len(skipped),
-        "details": updated,
-    }
+# NOTE: the manual `/admin/process-emails` trigger was removed 2026-06-29.
+# It was gated only by get_current_user (no admin check), so any authenticated
+# user could scan the shared inbox, match applications across ALL users via
+# find_by_company_all_users(), mutate their statuses, and read other users'
+# company/subject data back in the response — a cross-tenant leak. The same
+# matching runs automatically and safely server-side in main.py's
+# _email_poll_loop every 30 min, so the endpoint was pure redundant surface.
 
 
 @router.get("/email/status-updates")
