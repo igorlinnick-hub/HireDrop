@@ -1535,6 +1535,57 @@
         // Fall through to manual pause only if reload also failed
       }
 
+      // Cloudflare Turnstile ("Verify you are human" checkbox) — auto-solve via
+      // CapSolver (same balance as reCAPTCHA) instead of pausing for a manual
+      // click. Works when the sitekey is extractable from the widget; the
+      // full-page managed interstitial doesn't always expose one, in which case
+      // we fall through to the manual pause below.
+      {
+        const turnstileEl =
+          document.querySelector(".cf-turnstile[data-sitekey]") ||
+          document.querySelector('[data-sitekey]:not(.g-recaptcha)');
+        const tsSitekey = turnstileEl?.dataset?.sitekey;
+        const looksLikeTurnstile =
+          det.signal.includes("turnstile") ||
+          det.signal.includes("verify you are human") ||
+          det.signal.includes("additional verification") ||
+          !!turnstileEl;
+        if (looksLikeTurnstile && tsSitekey) {
+          log(`Cloudflare Turnstile detected (sitekey: ${tsSitekey.slice(0, 12)}…) — auto-solving...`, "");
+          const tsResult = await sendMsg({
+            type: "SOLVE_CAPTCHA",
+            captchaType: "turnstile",
+            url: window.location.href,
+            sitekey: tsSitekey,
+            action: turnstileEl?.dataset?.action || "",
+            cdata: turnstileEl?.dataset?.cdata || "",
+          });
+          if (tsResult?.token) {
+            // Inject the token into Turnstile's response field(s) and fire the callback.
+            for (const name of ["cf-turnstile-response", "g-recaptcha-response"]) {
+              document.querySelectorAll(`input[name="${name}"], textarea[name="${name}"]`).forEach((field) => {
+                field.value = tsResult.token;
+                field.dispatchEvent(new Event("input", { bubbles: true }));
+                field.dispatchEvent(new Event("change", { bubbles: true }));
+              });
+            }
+            const tcb = turnstileEl?.dataset?.callback;
+            if (tcb && typeof window[tcb] === "function") {
+              try { window[tcb](tsResult.token); } catch { /* callback threw — ignore */ }
+            }
+            log("Turnstile token injected — waiting for verification...", "ok");
+            await sleep(humanDelay(2500, 4000));
+            if (!isDetected().detected) {
+              log("Turnstile cleared automatically — resuming", "ok");
+              return;
+            }
+            log("Turnstile token didn't clear the page — falling back to manual", "err");
+          } else {
+            log(`Turnstile auto-solve failed (${tsResult?.error || "no token"}) — falling back to manual`, "err");
+          }
+        }
+      }
+
       // All other challenge types (Cloudflare hard block, DataDome, etc.):
       // pause and let the user solve manually.
       log(`⚠️ CAPTCHA detected (${det.signal}) — pausing. Solve it in this window, then the campaign will resume.`, "err");
