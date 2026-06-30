@@ -19,10 +19,24 @@
   // Utilities
   // =========================================================================
 
-  function sendMsg(msg) {
-    return new Promise((resolve) =>
-      chrome.runtime.sendMessage(msg, (res) => resolve(res))
-    );
+  function sendMsg(msg, timeoutMs = 30000) {
+    // Resolve null if the service worker never answers (it can be suspended or
+    // restarted mid-message in MV3, in which case the callback never fires). Without
+    // this, an awaited sendMsg hangs the whole form-fill loop forever — that's what
+    // stalled the apply flow on a screener field whose AI answer never came back.
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (v) => { if (!done) { done = true; resolve(v); } };
+      try {
+        chrome.runtime.sendMessage(msg, (res) => {
+          void chrome.runtime.lastError; // swallow "message port closed"
+          finish(res);
+        });
+      } catch {
+        finish(null);
+      }
+      setTimeout(() => finish(null), timeoutMs);
+    });
   }
 
   function log(text, cls) {
