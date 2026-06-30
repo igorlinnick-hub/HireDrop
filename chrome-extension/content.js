@@ -992,13 +992,24 @@
 
       // Determine which option to pick
       const labels = group.map((o) => {
-        const lbl = document.querySelector(`label[for="${o.id}"]`)?.textContent?.trim().toLowerCase() ||
-                    o.parentElement?.textContent?.trim().toLowerCase() || "";
+        const lbl = document.querySelector(`label[for="${o.id}"]`)?.textContent?.trim() ||
+                    o.parentElement?.textContent?.trim() || "";
         return { el: o, lbl };
       });
 
-      const yesOpt = labels.find((l) => l.lbl === "yes");
-      const target = yesOpt ? yesOpt.el : group[0];
+      // Demographic / EEO radio groups (race, gender, veteran, disability incl.
+      // Form CC-305) → pick the decline option, never a real identity value.
+      const groupLabel = getFieldLabel(group[0].closest("fieldset, [role='radiogroup'], [role='group']") || group[0]);
+      const optionTexts = labels.map((l) => l.lbl);
+      let target = null;
+      if (isDemographicQuestion(groupLabel, optionTexts)) {
+        target = (labels.find((l) =>
+          /(decline|prefer not|don'?t wish|do not wish|not to (answer|say|disclose|identify)|rather not)/i.test(l.lbl)) || {}).el;
+      }
+      if (!target) {
+        const yesOpt = labels.find((l) => l.lbl.toLowerCase() === "yes");
+        target = yesOpt ? yesOpt.el : group[0];
+      }
       if (!target) continue;
 
       // Click via label if possible (React picks up the event better)
@@ -1143,34 +1154,110 @@
         .filter(o => o.val && !/^(select|choose|please|--)/i.test(o.text));
       if (!options.length) continue;
 
-      let chosen = pickOptionDeterministic(label, options, profile);
-
-      if (!chosen) {
-        // Ambiguous custom dropdown → let the AI pick from the options.
-        log(`AI picking dropdown: "${label.slice(0, 50)}"`, "");
-        const res = await sendMsg({
-          type: "ANSWER_QUESTION",
-          data: {
-            question: label,
-            options: options.map(o => o.text),
-            job_title: jobInfo.title || "",
-            company: jobInfo.company || "",
-          },
-        });
-        if (res && res.answer) {
-          chosen = options.find(o => o.text.toLowerCase() === res.answer.toLowerCase());
-        }
-      }
-
-      // Last resort: pick the first real option so a required select never blocks
-      // the form. Better a valid-but-generic answer than a permanently stuck campaign.
-      if (!chosen) chosen = options[0];
-
+      const chosen = await chooseOption(label, options, profile, jobInfo);
+      if (!chosen) continue;
       setSelectValue(sel, chosen.val);
       filled++;
       await sleep(humanDelay(300, 700));
     }
     return filled;
+  }
+
+  // Shared option chooser: deterministic (demographic/Yes-No/salary) → AI → first
+  // real option as a last resort so a required dropdown never permanently stalls.
+  async function chooseOption(label, options, profile, jobInfo) {
+    let chosen = pickOptionDeterministic(label, options, profile);
+    if (!chosen) {
+      log(`AI picking dropdown: "${label.slice(0, 50)}"`, "");
+      const res = await sendMsg({
+        type: "ANSWER_QUESTION",
+        data: {
+          question: label,
+          options: options.map(o => o.text),
+          job_title: jobInfo.title || "",
+          company: jobInfo.company || "",
+        },
+      });
+      if (res && res.answer) {
+        chosen = options.find(o => o.text.toLowerCase() === res.answer.toLowerCase());
+      }
+    }
+    if (!chosen) chosen = options[0];
+    return chosen;
+  }
+
+  // Fill custom (non-native) dropdowns — Indeed renders demographic/screener
+  // dropdowns as DIVs with role="combobox", not <select>. We click to open, read
+  // the role="option" list (often portaled), pick, and click. This is what was
+  // stalling the demographic page ("Choose an option to continue").
+  async function fillComboboxes() {
+    const storageData = await chrome.storage.local.get(["profile", "currentJobInfo"]);
+    const profile = storageData.profile || {};
+    const jobInfo = storageData.currentJobInfo || {};
+
+    const combos = Array.from(document.querySelectorAll('[role="combobox"], button[aria-haspopup="listbox"]'))
+      .filter(c => {
+        if (!c.offsetParent) return false;
+        const txt = (c.textContent || "").trim();
+        // Only unfilled ones (still showing a placeholder).
+        return /^(select|choose|please|--)?\s*(an?\s+)?option?$|^\s*$|select an option|please select|^select$|^choose$/i.test(txt);
+      });
+
+    let filled = 0;
+    for (const combo of combos) {
+      const label = getComboLabel(combo);
+
+      // Open the dropdown.
+      await humanClick(combo);
+      await sleep(humanDelay(400, 800));
+
+      // Options are often portaled to the end of <body>, so query globally.
+      let optEls = Array.from(document.querySelectorAll('[role="option"]'))
+        .filter(o => o.offsetParent !== null);
+      if (!optEls.length) {
+        // Some widgets use <li> inside an open listbox.
+        const lb = document.querySelector('[role="listbox"]');
+        if (lb) optEls = Array.from(lb.querySelectorAll("li")).filter(o => o.offsetParent !== null);
+      }
+      if (!optEls.length) {
+        // Couldn't open it — press Escape and skip to avoid a stuck-open menu.
+        combo.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        continue;
+      }
+
+      const options = optEls
+        .map(o => ({ el: o, text: (o.textContent || "").trim(), val: (o.textContent || "").trim() }))
+        .filter(o => o.text && !/^(select|choose|please|--)/i.test(o.text));
+      if (!options.length) {
+        combo.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        continue;
+      }
+
+      const chosen = await chooseOption(label, options, profile, jobInfo);
+      if (!chosen) {
+        combo.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        continue;
+      }
+
+      await humanClick(chosen.el);
+      filled++;
+      await sleep(humanDelay(400, 800));
+    }
+    return filled;
+  }
+
+  // Label for a custom combobox: text of the enclosing question block minus the
+  // combobox's own placeholder text.
+  function getComboLabel(combo) {
+    const direct = getFieldLabel(combo);
+    if (direct && !/select an option|choose|please select/i.test(direct)) return direct;
+    const container = combo.closest("[class*='question' i], fieldset, [role='group'], li, div");
+    if (container) {
+      const comboText = (combo.textContent || "").trim();
+      const full = (container.textContent || "").replace(comboText, "").replace(/\s+/g, " ").trim();
+      if (full) return full.slice(0, 200);
+    }
+    return direct || "";
   }
 
   function findFormButton() {
@@ -1364,6 +1451,13 @@
       // "Choose an option to continue." Deterministic where possible, AI for the rest.
       const selectsFilled = await fillSelectQuestions();
       if (selectsFilled > 0) {
+        await sleep(humanDelay(400, 800));
+        filledAny = true;
+      }
+
+      // Custom (DIV-based) dropdowns — Indeed's demographic/screener comboboxes.
+      const combosFilled = await fillComboboxes();
+      if (combosFilled > 0) {
         await sleep(humanDelay(400, 800));
         filledAny = true;
       }
