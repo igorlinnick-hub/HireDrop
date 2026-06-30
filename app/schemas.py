@@ -23,6 +23,13 @@ class LetterPreviewRequest(BaseModel):
     job_description: str | None = ""
 
 
+class AnswerQuestionRequest(BaseModel):
+    question: str
+    options: list[str] = []
+    job_title: str = ""
+    company: str = ""
+
+
 class TemplateRequest(BaseModel):
     template: str
 

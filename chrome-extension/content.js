@@ -378,6 +378,31 @@
     return true;
   }
 
+  // Set a native <select> value React-aware (prototype setter + change event).
+  function setSelectValue(el, value) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+    if (setter) setter.call(el, value);
+    else el.value = value;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+    el.dispatchEvent(new Event("blur", { bubbles: true }));
+  }
+
+  // Best-effort human-readable label for any form field.
+  function getFieldLabel(el) {
+    const byFor = el.id ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`) : null;
+    const byGroup = el.closest("fieldset, [role='group'], [class*='question' i]")
+      ?.querySelector("label, legend, [class*='label' i]");
+    return (
+      byFor?.textContent ||
+      el.getAttribute("aria-label") ||
+      byGroup?.textContent ||
+      el.getAttribute("placeholder") ||
+      el.name ||
+      ""
+    ).replace(/\s+/g, " ").trim();
+  }
+
   // Find a visible element matching any selector in a comma-separated list
   function findVisible(selectorString) {
     for (const sel of selectorString.split(", ")) {
@@ -990,8 +1015,9 @@
   // Employer-defined screener questions can be any type — comments, name, date.
   // We infer the right value from the label text.
   async function fillTextQuestions() {
-    const storageData = await chrome.storage.local.get(["profile"]);
+    const storageData = await chrome.storage.local.get(["profile", "currentJobInfo"]);
     const profile = storageData.profile || {};
+    const jobInfo = storageData.currentJobInfo || {};
     const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
     const inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="number"], textarea'))
@@ -1003,15 +1029,9 @@
 
     let filled = 0;
     for (const el of inputs) {
-      const labelEl = el.id
-        ? document.querySelector(`label[for="${el.id}"]`)
-        : el.closest("fieldset, [role='group']")?.querySelector("label, legend, [class*='label' i]");
-      const label = (
-        labelEl?.textContent?.trim() ||
-        el.getAttribute("aria-label") ||
-        el.getAttribute("placeholder") ||
-        ""
-      ).toLowerCase();
+      const rawLabel = getFieldLabel(el);
+      const label = rawLabel.toLowerCase();
+      const isTextarea = el.tagName === "TEXTAREA";
 
       let value;
       if (label.includes("name")) {
@@ -1022,24 +1042,133 @@
         value = profile.email || "";
       } else if (label.includes("phone")) {
         value = profile.phone || "";
-      } else if (label.includes("year") || label.includes("experience") || label.includes("how many") || label.includes("how long")) {
-        value = "2";
       } else if (label.includes("salary") || label.includes("compensation") || label.includes("pay") || label.includes("wage")) {
         value = profile.desired_salary || "65000";
+      } else if (label.includes("year") || label.includes("experience") || label.includes("how many") || label.includes("how long")) {
+        // Only treat as a numeric "years" field for short inputs — an open textarea
+        // asking about experience wants prose, which the AI branch handles below.
+        if (!isTextarea) value = "2";
       } else if (label.includes("linkedin") || label.includes("portfolio") || label.includes("website") || label.includes("url")) {
         value = profile.linkedin || profile.portfolio || "";
         if (!value) continue;
       } else if (label.includes("city") || label.includes("location")) {
         value = profile.location || "Remote";
-      } else {
-        log(`Skipping unknown screener field: "${label || el.id || el.name}"`, "");
-        continue;
+      }
+
+      // Open-ended screener question the keyword rules can't map → ask the AI.
+      // Gate to real questions (a textarea, or a label that reads like a question)
+      // so we don't burn API calls on stray short inputs.
+      if (value === undefined) {
+        const looksLikeQuestion = isTextarea || rawLabel.includes("?") || rawLabel.length > 20;
+        if (looksLikeQuestion && rawLabel) {
+          log(`AI answering screener: "${rawLabel.slice(0, 60)}"`, "");
+          const res = await sendMsg({
+            type: "ANSWER_QUESTION",
+            data: { question: rawLabel, job_title: jobInfo.title || "", company: jobInfo.company || "" },
+          });
+          value = res && res.answer ? res.answer : undefined;
+        }
+        if (value === undefined) {
+          log(`Skipping unknown screener field: "${rawLabel || el.id || el.name}"`, "");
+          continue;
+        }
       }
 
       if (!value) continue;
-      setNativeValue(el, value);
+      if (isTextarea) quickSet(el, value);
+      else setNativeValue(el, value);
       await sleep(humanDelay(150, 400));
       filled++;
+    }
+    return filled;
+  }
+
+  // Demographic / EEO self-identification — we auto-decline (most privacy-preserving,
+  // and these are legally voluntary). Matches the question label OR the option set.
+  function isDemographicQuestion(label, optionTexts) {
+    const demo = /(gender|sex\b|race|ethnic|hispanic|latino|veteran|disab|sexual orientation|transgender|pronoun|national origin|self.?identif)/i;
+    const hasDecline = optionTexts.some(t => /(decline|prefer not|don'?t wish|do not wish|not to (answer|say|disclose|identify)|rather not)/i.test(t));
+    return demo.test(label) || (hasDecline && demo.test(optionTexts.join(" ")));
+  }
+
+  // Pick a dropdown option deterministically (no AI) for the common cases.
+  // Returns the chosen option object, or null if it needs AI / a fallback.
+  function pickOptionDeterministic(label, options, profile) {
+    const texts = options.map(o => o.text);
+    // Demographic → decline.
+    if (isDemographicQuestion(label, texts)) {
+      const decline = options.find(o =>
+        /(decline|prefer not|don'?t wish|do not wish|not to (answer|say|disclose|identify)|rather not)/i.test(o.text));
+      if (decline) return decline;
+    }
+    // Yes/No eligibility (authorized to work, 18+, background check) → Yes.
+    const yes = options.find(o => /^yes$/i.test(o.text));
+    if (yes && /(authoriz|eligible|18|over 18|legally|background|consent|agree|able to)/i.test(label)) return yes;
+    // Salary range → option closest to desired salary, else the first real option.
+    if (/(salary|compensation|pay range|wage|target)/i.test(label)) {
+      const want = parseInt(String(profile.desired_salary || "").replace(/\D/g, ""), 10);
+      if (want) {
+        const withNums = options
+          .map(o => ({ o, n: parseInt(o.text.replace(/[^\d]/g, ""), 10) }))
+          .filter(x => x.n);
+        if (withNums.length) {
+          withNums.sort((a, b) => Math.abs(a.n - want) - Math.abs(b.n - want));
+          return withNums[0].o;
+        }
+      }
+    }
+    return null;
+  }
+
+  // Fill required/empty <select> dropdowns. Deterministic for demographic, Yes/No,
+  // and salary; AI for ambiguous; first real option as a last resort so a required
+  // dropdown can never stall the whole application.
+  async function fillSelectQuestions() {
+    const storageData = await chrome.storage.local.get(["profile", "currentJobInfo"]);
+    const profile = storageData.profile || {};
+    const jobInfo = storageData.currentJobInfo || {};
+
+    const selects = Array.from(document.querySelectorAll("select")).filter(s => {
+      if (!s.offsetParent) return false;
+      const cur = (s.options[s.selectedIndex]?.textContent || "").trim();
+      // Only fill if still on a placeholder / empty selection.
+      return !s.value || /^(select|choose|please|--|\s*)$/i.test(cur) || /select an option|please select/i.test(cur);
+    });
+
+    let filled = 0;
+    for (const sel of selects) {
+      const label = getFieldLabel(sel);
+      const options = Array.from(sel.options)
+        .map(o => ({ el: o, text: (o.textContent || "").trim(), val: o.value }))
+        .filter(o => o.val && !/^(select|choose|please|--)/i.test(o.text));
+      if (!options.length) continue;
+
+      let chosen = pickOptionDeterministic(label, options, profile);
+
+      if (!chosen) {
+        // Ambiguous custom dropdown → let the AI pick from the options.
+        log(`AI picking dropdown: "${label.slice(0, 50)}"`, "");
+        const res = await sendMsg({
+          type: "ANSWER_QUESTION",
+          data: {
+            question: label,
+            options: options.map(o => o.text),
+            job_title: jobInfo.title || "",
+            company: jobInfo.company || "",
+          },
+        });
+        if (res && res.answer) {
+          chosen = options.find(o => o.text.toLowerCase() === res.answer.toLowerCase());
+        }
+      }
+
+      // Last resort: pick the first real option so a required select never blocks
+      // the form. Better a valid-but-generic answer than a permanently stuck campaign.
+      if (!chosen) chosen = options[0];
+
+      setSelectValue(sel, chosen.val);
+      filled++;
+      await sleep(humanDelay(300, 700));
     }
     return filled;
   }
@@ -1227,6 +1356,15 @@
       const radiosFilled = await fillRadioQuestions();
       if (radiosFilled > 0) {
         await sleep(humanDelay(500, 1000));
+        filledAny = true;
+      }
+
+      // Dropdown screener questions (salary, "how did you hear", demographic/EEO,
+      // and custom required <select>s). Without this the form stalls on
+      // "Choose an option to continue." Deterministic where possible, AI for the rest.
+      const selectsFilled = await fillSelectQuestions();
+      if (selectsFilled > 0) {
+        await sleep(humanDelay(400, 800));
         filledAny = true;
       }
 

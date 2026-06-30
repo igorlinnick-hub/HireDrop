@@ -12,9 +12,10 @@ from app.db import usage as usage_db
 from app.db.profile import get_profile
 from app.db.subscriptions import get_usage_summary, is_admin
 from app.deps import get_current_user
-from app.schemas import CoverLetterRequest, LetterPreviewRequest, TemplateRequest
+from app.schemas import AnswerQuestionRequest, CoverLetterRequest, LetterPreviewRequest, TemplateRequest
 from config import RATE_LIMIT_ENFORCE, RATE_LIMIT_LETTERS_PER_DAY
 from modules.ai_cover_letter import generate_cover_letter
+from modules.ai_question_answer import answer_screener_question
 
 router = APIRouter(tags=["tools"])
 
@@ -118,6 +119,28 @@ def cover_letter_preview(req: LetterPreviewRequest, user=Depends(get_current_use
     )
     usage_db.increment_today(user.id)
     return {"letter": letter}
+
+
+@router.post("/tools/answer-question")
+def answer_question(req: AnswerQuestionRequest, user=Depends(get_current_user)):
+    """Generate an answer for one employer screener question (Loop 4 filler).
+
+    Open-text and ambiguous multiple-choice questions that the extension's rule-based
+    filler can't handle. Deterministic cases (demographic decline, salary, Yes/No) are
+    solved client-side and never reach here. Counts against the same daily AI quota as
+    cover letters so it can't be abused to burn Anthropic spend.
+    """
+    _rate_limit_check(user)
+    profile = get_profile(user.id)
+    answer = answer_screener_question(
+        req.question,
+        job={"title": req.job_title, "company": req.company},
+        profile=profile,
+        options=req.options,
+    )
+    if answer:
+        usage_db.increment_today(user.id)
+    return {"answer": answer}
 
 
 @router.post("/tools/cover-letter-template")

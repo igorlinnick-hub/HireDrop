@@ -640,6 +640,26 @@ async function handleMessage(msg, sender) {
       return { letter, source, job_title: job.job_title, company: job.company };
     }
 
+    // ----- Screener question answering (Loop 4 universal filler) -----
+    case "ANSWER_QUESTION": {
+      const q = msg.data || {};
+      if (!q.question) return { answer: "" };
+      try {
+        const result = await Promise.race([
+          apiPost("/tools/answer-question", {
+            question: String(q.question).slice(0, 600),
+            options: Array.isArray(q.options) ? q.options.slice(0, 30) : [],
+            job_title: q.job_title || "",
+            company: q.company || "",
+          }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 15000)),
+        ]);
+        return { answer: (result && result.answer) || "" };
+      } catch {
+        return { answer: "" };
+      }
+    }
+
     // ----- Step failed -----
     case "STEP_FAILED":
       return { ok: true };
