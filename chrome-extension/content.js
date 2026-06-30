@@ -1246,6 +1246,13 @@
         // Last-look pause is longer than mid-form steps — real users
         // re-read the summary before committing.
         await sleep(humanDelay(3000, 8000));
+        // Re-check AFTER the pause: a Stop during the last-look pause must not
+        // result in a submitted application. This is the one click we can never
+        // take back, so guard it tightest.
+        if (!(await isCampaignRunning())) {
+          log("Campaign stopped — not submitting application", "");
+          return;
+        }
         const submitBtn = findFormButton();
         if (submitBtn) {
           if (shouldMisclick()) await performMisclick(submitBtn);
@@ -1305,6 +1312,11 @@
       if (navBtn) {
         log(`Clicking "${navBtn.textContent.trim()}"...`, "");
         await sleep(humanDelay(2000, 4000));
+        // Re-check after the pause so a Stop mid-step halts before advancing.
+        if (!(await isCampaignRunning())) {
+          log("Campaign stopped — aborting before next step", "");
+          return;
+        }
         await humanClick(navBtn);
         // Wait for next step to load
         await sleep(humanDelay(2000, 3000));
