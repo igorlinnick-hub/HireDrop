@@ -1056,6 +1056,30 @@
     return filled;
   }
 
+  // Tick required attestation / agreement / consent checkboxes. These block
+  // submission (e.g. "I certify that I have read and understand…", Self Attestation)
+  // and are always affirmations the applicant must accept to proceed. We do NOT touch
+  // optional opt-ins (e.g. "email me about similar jobs") — only required boxes or
+  // ones whose label clearly reads as an attestation/agreement.
+  async function fillCheckboxes() {
+    const boxes = Array.from(document.querySelectorAll('input[type="checkbox"]'))
+      .filter((c) => c.offsetParent && !c.checked);
+    let filled = 0;
+    for (const c of boxes) {
+      const label = getFieldLabel(c) ||
+        (c.closest("label, [class*='question' i], fieldset")?.textContent || "");
+      const required = c.required || c.getAttribute("aria-required") === "true" ||
+        c.getAttribute("aria-invalid") === "true";
+      const isAffirmation = /certif|attest|agree|acknowledge|consent|i have read|i understand|\bterms\b|authoriz|confirm/i.test(label);
+      if (!required && !isAffirmation) continue;
+      const labelEl = c.id ? document.querySelector(`label[for="${CSS.escape(c.id)}"]`) : null;
+      await humanClick(labelEl || c);
+      filled++;
+      await sleep(humanDelay(200, 500));
+    }
+    return filled;
+  }
+
   // Fill required text/textarea screener fields that are empty.
   // Employer-defined screener questions can be any type — comments, name, date.
   // We infer the right value from the label text.
@@ -1484,6 +1508,13 @@
       const radiosFilled = await fillRadioQuestions();
       if (radiosFilled > 0) {
         await sleep(humanDelay(500, 1000));
+        filledAny = true;
+      }
+
+      // Required attestation/consent checkboxes (self-attestation, "I certify…").
+      const checkboxesFilled = await fillCheckboxes();
+      if (checkboxesFilled > 0) {
+        await sleep(humanDelay(300, 700));
         filledAny = true;
       }
 
