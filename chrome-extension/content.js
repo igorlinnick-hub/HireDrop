@@ -997,16 +997,36 @@
         return { el: o, lbl };
       });
 
-      // Demographic / EEO radio groups (race, gender, veteran, disability incl.
-      // Form CC-305) → pick the decline option, never a real identity value.
+      // Determine which option to pick
       const groupLabel = getFieldLabel(group[0].closest("fieldset, [role='radiogroup'], [role='group']") || group[0]);
       const optionTexts = labels.map((l) => l.lbl);
       let target = null;
+
+      // Demographic / EEO radio groups (race, gender, veteran, disability incl.
+      // Form CC-305) → pick the decline option, never a real identity value.
       if (isDemographicQuestion(groupLabel, optionTexts)) {
         target = (labels.find((l) =>
           /(decline|prefer not|don'?t wish|do not wish|not to (answer|say|disclose|identify)|rather not)/i.test(l.lbl)) || {}).el;
       }
+
+      // Visa / sponsorship questions: pick the option that does NOT require
+      // sponsorship. Default picking the first option chose "Yes, I require
+      // sponsorship" — a harmful default that also contradicts "I'm authorized to
+      // work". (If a user genuinely needs sponsorship they can edit before submit.)
+      if (!target && /(sponsor|visa|work permit|require .* immigration)/i.test(groupLabel)) {
+        target = (labels.find((l) =>
+          /\b(no|not|do not|don'?t)\b/i.test(l.lbl) && /(sponsor|require|need|visa)/i.test(l.lbl)) || {}).el;
+        if (!target) target = (labels.find((l) => /^no\b/i.test(l.lbl)) || {}).el;
+      }
+
+      // Work-authorization / eligibility ("authorized to work", "18 or older",
+      // background check, "legally permitted") → affirmative.
+      if (!target && /(authoriz|eligible|legally permitted|18 (years|or older)|over 18|able to (work|perform)|consent|agree|background check)/i.test(groupLabel)) {
+        target = (labels.find((l) => /^yes\b/i.test(l.lbl)) || {}).el;
+      }
+
       if (!target) {
+        // Generic fallback: exact "Yes" if present, else first option.
         const yesOpt = labels.find((l) => l.lbl.toLowerCase() === "yes");
         target = yesOpt ? yesOpt.el : group[0];
       }
@@ -1073,14 +1093,21 @@
         const looksLikeQuestion = isTextarea || rawLabel.includes("?") || rawLabel.length > 20;
         if (looksLikeQuestion && rawLabel) {
           log(`AI answering screener: "${rawLabel.slice(0, 60)}"`, "");
-          const res = await sendMsg({
-            type: "ANSWER_QUESTION",
-            data: { question: rawLabel, job_title: jobInfo.title || "", company: jobInfo.company || "" },
-          });
-          value = res && res.answer ? res.answer : undefined;
+          // Required fields BLOCK the whole application if left empty, so retry once
+          // on an empty answer (a transient token refresh / network blip shouldn't
+          // permanently stall the form). Optional fields get a single best-effort try.
+          const maxTries = el.required || el.getAttribute("aria-required") === "true" ? 2 : 1;
+          for (let attempt = 0; attempt < maxTries && (value === undefined || value === ""); attempt++) {
+            if (attempt > 0) await sleep(humanDelay(1500, 2500));
+            const res = await sendMsg({
+              type: "ANSWER_QUESTION",
+              data: { question: rawLabel, job_title: jobInfo.title || "", company: jobInfo.company || "" },
+            });
+            value = res && res.answer ? res.answer : undefined;
+          }
         }
-        if (value === undefined) {
-          log(`Skipping unknown screener field: "${rawLabel || el.id || el.name}"`, "");
+        if (value === undefined || value === "") {
+          log(`Could not answer screener field: "${rawLabel || el.id || el.name}"`, "warn");
           continue;
         }
       }

@@ -286,6 +286,68 @@ async function sendScreenshot(tabId) {
   } catch { /* capture failed — skip frame */ }
 }
 
+// Capture the ACTIVE Indeed tab of the automation window (follows the apply flow
+// as it navigates to smartapply.indeed.com). Shared by the message handler and the
+// service-worker capture loop.
+async function captureActiveAutomationTab() {
+  const { campaignRunning, campaignTabId, campaignWindowId } = await chrome.storage.local.get([
+    "campaignRunning",
+    "campaignTabId",
+    "campaignWindowId",
+  ]);
+  if (!campaignRunning) return false;
+
+  let tabId = campaignTabId;
+  if (campaignWindowId != null) {
+    try {
+      const [active] = await chrome.tabs.query({ windowId: campaignWindowId, active: true });
+      if (active && active.id != null && active.url &&
+          (active.url.startsWith("https://www.indeed.com/") ||
+           active.url.startsWith("https://smartapply.indeed.com/"))) {
+        tabId = active.id;
+        if (tabId !== campaignTabId) {
+          chrome.storage.local.set({ campaignTabId: tabId }).catch(() => {});
+        }
+      }
+    } catch { /* window gone — fall through to campaignTabId */ }
+  }
+  if (tabId != null) await sendScreenshot(tabId);
+  return campaignRunning;
+}
+
+// Service-worker-driven screenshot loop. content.js fires CAPTURE_SCREENSHOT on a
+// setInterval, but Chrome throttles background-tab timers to ~once/minute — and the
+// automation window is backgrounded while the user watches the dashboard, so the live
+// preview crawled at ~30-60s/frame. Driving the capture from the SW (a self-scheduling
+// setTimeout) is NOT subject to that throttle, so the preview updates every ~1.5s
+// regardless of which window is focused. The pending timer also keeps the SW alive
+// while a campaign runs.
+let _captureTimer = null;
+const CAPTURE_INTERVAL_MS = 1500;
+
+async function captureTick() {
+  let stillRunning = false;
+  try {
+    stillRunning = await captureActiveAutomationTab();
+  } catch { /* ignore one bad frame */ }
+  if (stillRunning) {
+    _captureTimer = setTimeout(captureTick, CAPTURE_INTERVAL_MS);
+  } else {
+    _captureTimer = null;
+  }
+}
+
+function ensureCaptureLoop() {
+  if (_captureTimer == null) _captureTimer = setTimeout(captureTick, 100);
+}
+
+function stopCaptureLoop() {
+  if (_captureTimer != null) {
+    clearTimeout(_captureTimer);
+    _captureTimer = null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Activity log
 // ---------------------------------------------------------------------------
@@ -485,45 +547,27 @@ async function handleMessage(msg, sender) {
       });
 
       updateBadge();
+      ensureCaptureLoop();
       return { started: true, tabId: tab.id, windowId: tabInfo.windowId };
     }
 
-    // ----- Screenshot capture (triggered by content.js every 300 ms) -----
+    // ----- Screenshot capture -----
+    // The SW-driven captureTick loop does the frequent capturing (~1.5s, immune to
+    // background-tab timer throttling). content.js still fires CAPTURE_SCREENSHOT on
+    // its (throttled) interval — we use it to (re)start the loop if the SW had been
+    // suspended, plus a one-off capture as a backstop.
     case "CAPTURE_SCREENSHOT": {
-      const { campaignRunning, campaignTabId, campaignWindowId } = await chrome.storage.local.get([
-        "campaignRunning",
-        "campaignTabId",
-        "campaignWindowId",
-      ]);
+      const { campaignRunning } = await chrome.storage.local.get("campaignRunning");
       if (!campaignRunning) return { ok: true };
-
-      // Follow the ACTIVE Indeed tab of the automation window, not a fixed tabId.
-      // The apply flow can navigate to / open smartapply.indeed.com, so the tab
-      // that started the campaign may no longer be the one showing the action
-      // (or may be closed) — capturing it would freeze the live preview. Fall
-      // back to the stored campaignTabId if the window query fails.
-      let tabId = campaignTabId;
-      if (campaignWindowId != null) {
-        try {
-          const [active] = await chrome.tabs.query({ windowId: campaignWindowId, active: true });
-          if (active && active.id != null && active.url &&
-              (active.url.startsWith("https://www.indeed.com/") ||
-               active.url.startsWith("https://smartapply.indeed.com/"))) {
-            tabId = active.id;
-            if (tabId !== campaignTabId) {
-              chrome.storage.local.set({ campaignTabId: tabId }).catch(() => {});
-            }
-          }
-        } catch { /* window gone — fall through to campaignTabId */ }
-      }
-
-      if (tabId != null) await sendScreenshot(tabId);
+      ensureCaptureLoop();
       return { ok: true };
     }
 
     // ----- Campaign stop -----
     case "STOP_CAMPAIGN": {
       const stopData = await chrome.storage.local.get(["campaignTabId", "campaignWindowId"]);
+
+      stopCaptureLoop();
 
       // Clear running state first so the onDetach listener won't auto-reattach
       await chrome.storage.local.set({
