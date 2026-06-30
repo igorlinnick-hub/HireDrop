@@ -48,6 +48,14 @@ async function refreshAccessToken() {
 // API helpers
 // ---------------------------------------------------------------------------
 
+// On 401 we try a one-time refresh, but we NEVER wipe the stored token anymore.
+// The dashboard (ExtensionTokenSync) is the source of truth — it re-pushes a fresh
+// access token every minute while it's open. A transient 401 in the gap between
+// pushes used to call chrome.storage.local.remove() + AUTH_EXPIRED, which flipped the
+// popup to "Connect Your Account" and killed the live preview mid-campaign even though
+// a fresh token was seconds away. Keeping the token means the next request (or the next
+// push) just works. The popup still detects a genuinely-dead session via its live
+// CHECK_CONNECTION probe, so we don't lose the "reconnect" signal when it's real.
 async function apiGet(path, { retry = true } = {}) {
   const token = await getAuthToken();
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
@@ -57,9 +65,7 @@ async function apiGet(path, { retry = true } = {}) {
       const newToken = await refreshAccessToken();
       if (newToken) return apiGet(path, { retry: false });
     }
-    await chrome.storage.local.remove(["supabase_token", "supabase_refresh_token"]);
-    chrome.runtime.sendMessage({ type: "AUTH_EXPIRED" }).catch(() => {});
-    throw new Error("Session expired — please reconnect at hiredrop.io/extension/connect");
+    throw new Error("API 401 (token stale — dashboard will refresh it)");
   }
   if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
   return res.json();
@@ -81,9 +87,7 @@ async function apiPost(path, body, { retry = true } = {}) {
       const newToken = await refreshAccessToken();
       if (newToken) return apiPost(path, body, { retry: false });
     }
-    await chrome.storage.local.remove(["supabase_token", "supabase_refresh_token"]);
-    chrome.runtime.sendMessage({ type: "AUTH_EXPIRED" }).catch(() => {});
-    throw new Error("Session expired — please reconnect at hiredrop.io/extension/connect");
+    throw new Error("API 401 (token stale — dashboard will refresh it)");
   }
   if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
   return res.json();
