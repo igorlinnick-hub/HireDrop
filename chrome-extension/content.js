@@ -934,7 +934,34 @@
     if (shouldMisclick()) await performMisclick(applyBtn);
     await humanClick(applyBtn);
 
-    // Phase 3 will be triggered by MutationObserver detecting the form
+    // Watchdog: the Indeed apply form must show up within ~18s. If it doesn't, this
+    // "Apply" routed to an external ATS ("Apply with Indeed" that redirects to the
+    // employer's system, e.g. Precision AQ), opened a new tab, or did nothing —
+    // phase3 is only driven by the MutationObserver seeing the form, so without this
+    // the campaign HANGS on the job forever. The job is already in processedJobKeys
+    // (marked above before applying), so skipping here won't re-loop onto it.
+    const formShowed = await waitForFormVisible(18000);
+    if (!(await isCampaignRunning())) return;
+    if (!formShowed) {
+      log(`${jobTitle} — no Indeed form after Apply (external/unsupported), skipping`, "");
+      logBackend(`Skip (no form after Apply): ${jobTitle} @ ${jobCompany}`, "info");
+      await skipToNextJob();
+      return;
+    }
+    // Form appeared — the MutationObserver drives phase3 from here.
+  }
+
+  async function waitForFormVisible(timeoutMs = 18000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (!(await isCampaignRunning())) return false;
+      // The apply flow often navigates to smartapply.indeed.com — that counts as
+      // "form is coming" even before ia-* nodes render.
+      if (window.location.href.includes("smartapply.indeed.com")) return true;
+      if (isFormVisible()) return true;
+      await sleep(500);
+    }
+    return false;
   }
 
   function findApplyButton() {
