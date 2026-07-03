@@ -12,9 +12,10 @@ from app.db import usage as usage_db
 from app.db.profile import get_profile
 from app.db.subscriptions import get_usage_summary, is_admin
 from app.deps import get_current_user
-from app.schemas import AnswerQuestionRequest, CoverLetterRequest, LetterPreviewRequest, TemplateRequest
+from app.schemas import AnswerQuestionRequest, AssessFitRequest, CoverLetterRequest, LetterPreviewRequest, TemplateRequest
 from config import RATE_LIMIT_ENFORCE, RATE_LIMIT_LETTERS_PER_DAY
 from modules.ai_cover_letter import generate_cover_letter
+from modules.ai_fit_judge import assess_fit
 from modules.ai_question_answer import answer_screener_question
 
 router = APIRouter(tags=["tools"])
@@ -119,6 +120,23 @@ def cover_letter_preview(req: LetterPreviewRequest, user=Depends(get_current_use
     )
     usage_db.increment_today(user.id)
     return {"letter": letter}
+
+
+@router.post("/tools/assess-fit")
+def assess_fit_endpoint(req: AssessFitRequest, user=Depends(get_current_user)):
+    """Decide whether the candidate should apply to a job (Fit Engine M1).
+
+    Called by the extension BEFORE clicking Apply so it can skip clearly-wrong-fit jobs
+    and record why. Not rate-limited on the letters quota — it runs on every scanned job
+    and, by skipping bad fits, actually REDUCES downstream cover-letter/apply spend.
+    """
+    profile = get_profile(user.id)
+    result = assess_fit(
+        job={"title": req.job_title, "company": req.company, "description": req.description},
+        profile=profile,
+        screener_questions=req.screener_questions,
+    )
+    return result
 
 
 @router.post("/tools/answer-question")

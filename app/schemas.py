@@ -30,6 +30,13 @@ class AnswerQuestionRequest(BaseModel):
     company: str = ""
 
 
+class AssessFitRequest(BaseModel):
+    job_title: str = ""
+    company: str = ""
+    description: str = ""
+    screener_questions: list[str] = []
+
+
 class TemplateRequest(BaseModel):
     template: str
 
