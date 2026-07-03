@@ -306,7 +306,7 @@
   // (Phase 3.2 — Verify submission). Without this, every Submit click was
   // counted as 'applied' even if Indeed showed a captcha, error toast,
   // or simply did nothing. Returns { verified, signal } for activity log.
-  async function waitForSubmissionConfirmation(timeoutMs = 8000) {
+  async function waitForSubmissionConfirmation(timeoutMs = 20000) {
     const start = Date.now();
     const startUrl = window.location.href;
     const SUCCESS_TEXTS = [
@@ -317,8 +317,19 @@
       "you've applied",
       "you have applied",
       "we've received your application",
+      // High-specificity signals from Indeed's real post-apply confirmation page —
+      // added after ground-truth showed the 8s window produced false negatives
+      // (real submissions marked unverified because the confirmation rendered later).
+      "the following items were sent",
+      "your application has been submitted",
+      "application has been sent",
+      "has been submitted to",
+      "we've sent your application",
     ];
-    const POSTAPPLY_URL_HINTS = ["/applied", "postapply", "post_apply", "thank-you", "thankyou"];
+    const POSTAPPLY_URL_HINTS = [
+      "/applied", "postapply", "post_apply", "post-apply", "thank-you", "thankyou",
+      "confirmation", "success", "submitted",
+    ];
 
     while (Date.now() - start < timeoutMs) {
       const url = window.location.href;
@@ -1565,7 +1576,14 @@
           // Wait for a real signal that Indeed accepted the submission.
           // Without this, every Submit click was counted as 'applied' —
           // captcha, error toasts, or silent failures all looked the same.
-          const result = await waitForSubmissionConfirmation(8000);
+          const result = await waitForSubmissionConfirmation(20000);
+
+          // We clicked Submit, so mark this job as attempted REGARDLESS of whether
+          // we detected the confirmation. Ground-truth (Indeed's "Applied" list)
+          // showed most "unverified" jobs actually DID submit — retrying them would
+          // fire a DUPLICATE application at the employer. Never re-apply a job we've
+          // already submitted; verification only affects reporting confidence.
+          await addAppliedUrl(jobInfo.url || window.location.href);
 
           if (result.verified) {
             log(`Applied (verified ${result.signal}): ${jobInfo.title} @ ${jobInfo.company}`, "ok");
@@ -1583,20 +1601,24 @@
                 verify_signal: result.signal,
               },
             });
-            await addAppliedUrl(jobInfo.url || window.location.href);
           } else {
-            // Submit clicked but no confirmation — do NOT increment counter,
-            // do NOT add to applied URLs (so we can retry on next pass).
-            log(`Submit unverified for ${jobInfo.title} @ ${jobInfo.company} (${result.signal})`, "err");
-            logBackend(`⚠️ Submit unverified: ${jobInfo.title} @ ${jobInfo.company}`, "error");
+            // Submit clicked but confirmation not detected within the window. Most of
+            // these are false negatives (slow confirmation) — save as applied but
+            // flagged unconfirmed so the count reflects reality without silently
+            // over- or under-counting. Still do NOT re-apply (added above).
+            log(`Submit unconfirmed for ${jobInfo.title} @ ${jobInfo.company} (${result.signal})`, "warn");
+            logBackend(`⚠️ Applied (unconfirmed): ${jobInfo.title} @ ${jobInfo.company}`, "warn");
             await sendMsg({
-              type: "STEP_FAILED",
+              type: "APPLICATION_SAVED",
               data: {
-                phase: "verify_submission",
-                reason: "submit_unverified",
                 job_title: jobInfo.title || "",
                 company: jobInfo.company || "",
+                platform: "indeed",
                 job_url: jobInfo.url || window.location.href,
+                cover_letter: coverLetter,
+                status: "applied_unconfirmed",
+                verified: false,
+                verify_signal: result.signal,
               },
             });
           }
