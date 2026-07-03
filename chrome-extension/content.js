@@ -883,6 +883,29 @@
       }
     }
 
+    // Fit Engine M1 — decide whether to apply at ALL before spending a cover
+    // letter + application on a wrong-fit job. Runs after the cheap keyword filter
+    // and before the expensive steps. Skips roles the resume clearly can't support
+    // (too senior, missing hard requirements) with an honest, logged reason. Fails
+    // OPEN: a judge error/timeout returns decision "apply" so it never blocks the
+    // campaign. Also improves throughput — no more grinding long forms on bad fits.
+    {
+      const fit = await sendMsg({
+        type: "ASSESS_FIT",
+        data: { job_title: jobTitle, company: jobCompany, description: jobDesc },
+      });
+      if (fit && fit.decision === "skip") {
+        const why = (fit.reason || "not a strong fit").slice(0, 160);
+        log(`Skipping ${jobTitle} — ${why}`, "");
+        logBackend(`⏭️ Skipped (fit ${fit.fit_score ?? "?"}): ${jobTitle} @ ${jobCompany} — ${why}`, "info");
+        await skipToNextJob();
+        return;
+      }
+      if (fit && fit.judged) {
+        logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
+      }
+    }
+
     // Save current job context
     await chrome.storage.local.set({
       currentJobInfo: { title: jobTitle, company: jobCompany, description: jobDesc, url: jobUrl },

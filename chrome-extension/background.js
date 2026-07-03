@@ -646,6 +646,26 @@ async function handleMessage(msg, sender) {
       return { letter, source, job_title: job.job_title, company: job.company };
     }
 
+    // ----- Job-fit judge (Fit Engine M1) -----
+    case "ASSESS_FIT": {
+      const q = msg.data || {};
+      try {
+        const result = await Promise.race([
+          apiPost("/tools/assess-fit", {
+            job_title: q.job_title || "",
+            company: q.company || "",
+            description: String(q.description || "").slice(0, 4000),
+            screener_questions: Array.isArray(q.screener_questions) ? q.screener_questions.slice(0, 20) : [],
+          }),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 25000)),
+        ]);
+        // Fail open: never block applying on a judge hiccup.
+        return result && result.decision ? result : { decision: "apply", judged: false };
+      } catch {
+        return { decision: "apply", judged: false };
+      }
+    }
+
     // ----- Screener question answering (Loop 4 universal filler) -----
     case "ANSWER_QUESTION": {
       const q = msg.data || {};
