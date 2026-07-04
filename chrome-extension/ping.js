@@ -38,6 +38,24 @@ window.addEventListener("message", function (e) {
     }
   }
 
+  // Durable extension API key (Approach A). Dashboard mints it and hands it here.
+  if (typeof e.data === "object" && e.data.type === "HIREDROP_STORE_KEY" && typeof e.data.key === "string") {
+    try {
+      chrome.runtime.sendMessage(
+        { type: "STORE_KEY", key: e.data.key },
+        function (resp) {
+          const err = chrome.runtime.lastError ? chrome.runtime.lastError.message : null;
+          window.postMessage(
+            { type: "HIREDROP_KEY_STORED", ok: !!(resp && resp.stored), error: err, ping_status: resp && resp.ping_status },
+            "*"
+          );
+        }
+      );
+    } catch (ex) {
+      window.postMessage({ type: "HIREDROP_KEY_STORED", ok: false, error: "context_invalidated" }, "*");
+    }
+  }
+
   if (typeof e.data === "object" && e.data.type === "HIREDROP_READ_STORAGE") {
     const keys = e.data.keys || ["supabase_token", "supabase_refresh_token", "profile"];
     chrome.storage.local.get(keys, function (data) {

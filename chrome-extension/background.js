@@ -8,8 +8,11 @@ importScripts("config.js");
 // ---------------------------------------------------------------------------
 
 async function getAuthToken() {
-  const data = await chrome.storage.local.get("supabase_token");
-  return data.supabase_token || null;
+  // Prefer the durable extension API key (Approach A) — it never expires and doesn't
+  // depend on the dashboard tab. Fall back to the dashboard-pushed Supabase token during
+  // the transition / if no key has been issued yet.
+  const data = await chrome.storage.local.get(["extension_api_key", "supabase_token"]);
+  return data.extension_api_key || data.supabase_token || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -398,12 +401,36 @@ async function handleMessage(msg, sender) {
       fetchAndCacheProfile().catch(() => {});
       return { stored: true, ping_status: pingStatus };
     }
+    // Durable extension API key (Approach A). Stored once at connect; used for all
+    // backend calls thereafter — no expiry, no dashboard dependency.
+    case "STORE_KEY": {
+      if (!msg.key) return { stored: false };
+      await chrome.storage.local.set({ extension_api_key: msg.key });
+      let pingStatus = "not_attempted";
+      try {
+        const res = await fetch(`${CONFIG.API_BASE}${CONFIG.API_V1}/extension/ping`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${msg.key}` },
+          body: JSON.stringify({
+            campaign_running: false,
+            today_count: 0,
+            window_visible: false,
+            version: chrome.runtime.getManifest().version,
+          }),
+        });
+        pingStatus = String(res.status);
+      } catch (e) {
+        pingStatus = "error:" + e.message;
+      }
+      fetchAndCacheProfile().catch(() => {});
+      return { stored: true, ping_status: pingStatus };
+    }
     case "GET_AUTH_STATUS": {
       const data = await chrome.storage.local.get("supabase_token");
       return { authenticated: !!data.supabase_token };
     }
     case "LOGOUT": {
-      await chrome.storage.local.remove(["supabase_token", "supabase_refresh_token", "profile", "profileCachedAt"]);
+      await chrome.storage.local.remove(["extension_api_key", "supabase_token", "supabase_refresh_token", "profile", "profileCachedAt"]);
       return { loggedOut: true };
     }
 
