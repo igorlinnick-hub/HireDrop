@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CoverLetterRequest(BaseModel):
@@ -24,17 +24,19 @@ class LetterPreviewRequest(BaseModel):
 
 
 class AnswerQuestionRequest(BaseModel):
-    question: str
-    options: list[str] = []
-    job_title: str = ""
-    company: str = ""
+    # Caps are defense-in-depth: the extension already truncates, and the AI modules
+    # re-truncate before the LLM, but a direct caller shouldn't be able to send megabytes.
+    question: str = Field("", max_length=2000)
+    options: list[str] = Field(default_factory=list, max_length=60)
+    job_title: str = Field("", max_length=300)
+    company: str = Field("", max_length=300)
 
 
 class AssessFitRequest(BaseModel):
-    job_title: str = ""
-    company: str = ""
-    description: str = ""
-    screener_questions: list[str] = []
+    job_title: str = Field("", max_length=300)
+    company: str = Field("", max_length=300)
+    description: str = Field("", max_length=8000)
+    screener_questions: list[str] = Field(default_factory=list, max_length=40)
 
 
 class TemplateRequest(BaseModel):

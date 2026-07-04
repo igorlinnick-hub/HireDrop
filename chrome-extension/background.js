@@ -15,6 +15,28 @@ async function getAuthToken() {
   return data.extension_api_key || data.supabase_token || null;
 }
 
+// Self-bootstrap the durable key: any connected user has a (dashboard-pushed) Supabase
+// token but a legacy install may have no key yet. The first time we see a token and no
+// key, mint one with the token so the extension becomes durable — no re-connect needed.
+// After this, getAuthToken() uses the key and the token push becomes irrelevant.
+async function ensureExtensionKey() {
+  const { extension_api_key, supabase_token } = await chrome.storage.local.get([
+    "extension_api_key",
+    "supabase_token",
+  ]);
+  if (extension_api_key || !supabase_token) return;
+  try {
+    const res = await fetch(`${CONFIG.API_BASE}${CONFIG.API_V1}/extension/issue-key`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${supabase_token}` },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.key) await chrome.storage.local.set({ extension_api_key: data.key });
+    }
+  } catch { /* try again on the next token push */ }
+}
+
 // ---------------------------------------------------------------------------
 // Token refresh — calls Supabase directly, no backend needed
 // ---------------------------------------------------------------------------
@@ -206,7 +228,7 @@ async function sendExtensionPing() {
       } catch {}
     }
 
-    await fetch(`${CONFIG.API_BASE}${CONFIG.API_V1}/extension/ping`, {
+    const res = await fetch(`${CONFIG.API_BASE}${CONFIG.API_V1}/extension/ping`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({
@@ -216,6 +238,18 @@ async function sendExtensionPing() {
         version: chrome.runtime.getManifest().version,
       }),
     });
+    // Backend-authoritative Stop: if the dashboard stopped the campaign but our
+    // postMessage stop was dropped (orphaned content script), the flag would stay set
+    // and the extension keep applying. Honor the backend's flag as source of truth.
+    try {
+      const j = await res.json();
+      if (j && j.should_run === false && data.campaignRunning) {
+        await chrome.storage.local.set({ campaignRunning: false, currentJob: null });
+        const { campaignTabId } = await chrome.storage.local.get("campaignTabId");
+        if (campaignTabId) detachDebugger(campaignTabId).catch(() => {});
+        updateBadge();
+      }
+    } catch {}
   } catch {}
 }
 
@@ -376,6 +410,8 @@ async function handleMessage(msg, sender) {
       const storePayload = { supabase_token: msg.token };
       if (msg.refresh_token) storePayload.supabase_refresh_token = msg.refresh_token;
       await chrome.storage.local.set(storePayload);
+      // Auto-upgrade to a durable key the first time we have a token but none yet.
+      ensureExtensionKey().catch(() => {});
       // Use token directly from message (not re-read from storage) to avoid storage-read race
       let pingStatus = "not_attempted";
       try {

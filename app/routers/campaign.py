@@ -86,7 +86,13 @@ def extension_ping(body: ExtensionPingBody, user=Depends(get_current_user)):
         "error": body.error,
         "version": body.version,
     }
-    return {"ok": True}
+    # Return the backend's authoritative campaign flag so the extension can honor a Stop
+    # even if the dashboard's postMessage stop was dropped (e.g. orphaned content script).
+    try:
+        should_run = bool(campaign_db.get_state(user.id)["running"])
+    except Exception:
+        should_run = True  # fail-open: never stop a campaign on a state-read hiccup
+    return {"ok": True, "should_run": should_run}
 
 
 @router.get("/extension/ping")
