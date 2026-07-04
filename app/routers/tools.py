@@ -1,5 +1,6 @@
 import os
 import sys
+from datetime import date
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -122,14 +123,37 @@ def cover_letter_preview(req: LetterPreviewRequest, user=Depends(get_current_use
     return {"letter": letter}
 
 
+# Per-user daily cap for the fit judge. It runs on every scanned job (much higher
+# volume than cover letters), so it gets its own generous ceiling — well above a real
+# campaign's job-scan count, but low enough to stop a script looping the raw endpoint
+# to burn Anthropic spend. In-memory (resets on deploy / per worker); a determined
+# abuser is still bounded per session. DB-backed counter is a follow-up if needed.
+_assess_fit_counts: dict = {}
+_ASSESS_FIT_DAILY_CAP = int(os.getenv("ASSESS_FIT_DAILY_CAP", "800"))
+
+
+def _assess_fit_gate(user) -> None:
+    if is_admin(getattr(user, "email", None)):
+        return
+    today = date.today().isoformat()
+    rec = _assess_fit_counts.get(user.id)
+    if not rec or rec.get("day") != today:
+        rec = {"day": today, "n": 0}
+        _assess_fit_counts[user.id] = rec
+    rec["n"] += 1
+    if rec["n"] > _ASSESS_FIT_DAILY_CAP:
+        raise HTTPException(status_code=429, detail="Daily fit-assessment limit reached.")
+
+
 @router.post("/tools/assess-fit")
 def assess_fit_endpoint(req: AssessFitRequest, user=Depends(get_current_user)):
     """Decide whether the candidate should apply to a job (Fit Engine M1).
 
     Called by the extension BEFORE clicking Apply so it can skip clearly-wrong-fit jobs
-    and record why. Not rate-limited on the letters quota — it runs on every scanned job
-    and, by skipping bad fits, actually REDUCES downstream cover-letter/apply spend.
+    and record why. Capped per user/day (its own budget, not the letters quota) so it
+    can't be looped to burn Anthropic spend, but generous enough for real campaigns.
     """
+    _assess_fit_gate(user)
     profile = get_profile(user.id)
     result = assess_fit(
         job={"title": req.job_title, "company": req.company, "description": req.description},

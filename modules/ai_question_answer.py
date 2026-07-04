@@ -106,13 +106,19 @@ Candidate background (from resume):
     # For multiple choice, snap the model's answer back to a real option in case it
     # added stray text or differs in case/whitespace.
     if options and answer:
+        al = answer.strip().lower()
+        # 1) exact match (case/whitespace-insensitive).
         for o in options:
-            if answer.lower() == o.lower():
+            if al == o.strip().lower():
                 return o
-        for o in options:
-            if o.lower() in answer.lower() or answer.lower() in o.lower():
-                return o
-        # Model went off-script — don't guess wrong; let the caller fall back.
+        # 2) the model quoted the full option inside a sentence ("I'd pick <option>").
+        #    Require the OPTION to be contained in the answer — never the reverse, which
+        #    mis-maps a short answer like "2" onto "1-2 years"/"2-3 years". Only accept
+        #    if exactly ONE option matches (unambiguous).
+        contained = [o for o in options if o.strip().lower() in al]
+        if len(contained) == 1:
+            return contained[0]
+        # Off-script or ambiguous — don't guess wrong; let the caller fall back.
         return ""
 
     return answer

@@ -326,9 +326,11 @@
       "has been submitted to",
       "we've sent your application",
     ];
+    // Specific path segments only — broad single words like "submitted"/"success"
+    // can appear in intermediate step URLs and cause a false "verified".
     const POSTAPPLY_URL_HINTS = [
       "/applied", "postapply", "post_apply", "post-apply", "thank-you", "thankyou",
-      "confirmation", "success", "submitted",
+      "/success", "/confirmation", "application-submitted", "applysuccess",
     ];
 
     while (Date.now() - start < timeoutMs) {
@@ -971,7 +973,17 @@
       await skipToNextJob();
       return;
     }
-    // Form appeared — the MutationObserver drives phase3 from here.
+    // Form appeared. For an IN-PAGE Easy Apply modal (no navigation) we must drive
+    // phase3 DIRECTLY here: this phase2 is still on the stack inside runPhase(), so
+    // the MutationObserver's runPhase() calls are suppressed by the _runPhaseActive
+    // guard — relying on the observer would drop the phase3 trigger and hang the job
+    // with an empty form. Setting lastPhase avoids a duplicate observer-driven run.
+    // (The navigation-to-smartapply case doesn't reach here — that page unloads this
+    // content script and a fresh one drives phase3 via init().)
+    if (isFormVisible()) {
+      lastPhase = "form";
+      await phase3_fillForm();
+    }
   }
 
   async function waitForFormVisible(timeoutMs = 18000) {
@@ -1079,9 +1091,14 @@
 
       // Demographic / EEO radio groups (race, gender, veteran, disability incl.
       // Form CC-305) → pick the decline option, never a real identity value.
-      if (isDemographicQuestion(groupLabel, optionTexts)) {
+      const isDemo = isDemographicQuestion(groupLabel, optionTexts);
+      if (isDemo) {
         target = (labels.find((l) =>
           /(decline|prefer not|don'?t wish|do not wish|not to (answer|say|disclose|identify)|rather not)/i.test(l.lbl)) || {}).el;
+        // No decline option (e.g. only Yes/No for a disability question) → leave it
+        // BLANK. These are legally voluntary; never fabricate a protected-class value
+        // by falling through to the Yes/first-option default.
+        if (!target) continue;
       }
 
       // Visa / sponsorship questions: pick the option that does NOT require
@@ -1094,9 +1111,9 @@
         if (!target) target = (labels.find((l) => /^no\b/i.test(l.lbl)) || {}).el;
       }
 
-      // Work-authorization / eligibility ("authorized to work", "18 or older",
-      // background check, "legally permitted") → affirmative.
-      if (!target && /(authoriz|eligible|legally permitted|18 (years|or older)|over 18|able to (work|perform)|consent|agree|background check)/i.test(groupLabel)) {
+      // Work-authorization / eligibility ("authorized to work", "right to work",
+      // "18 or older", background check, "legally permitted") → affirmative.
+      if (!target && /(authoriz|eligible|legally (permitted|authorized|able)|right to work|18 (years|or older)|over 18|able to (work|perform)|consent|agree|background check)/i.test(groupLabel)) {
         target = (labels.find((l) => /^yes\b/i.test(l.lbl)) || {}).el;
       }
 
@@ -1132,6 +1149,9 @@
       const required = c.required || c.getAttribute("aria-required") === "true" ||
         c.getAttribute("aria-invalid") === "true";
       const isAffirmation = /certif|attest|agree|acknowledge|consent|i have read|i understand|\bterms\b|authoriz|confirm/i.test(label);
+      // Never tick a NEGATIVE statement or an opt-in ("I do NOT consent…",
+      // "I disagree…", "unsubscribe", "opt out") even if required/affirmation-worded.
+      if (/\b(not|don'?t|do not|disagree|decline|unsubscribe|opt.?out|refuse)\b/i.test(label)) continue;
       if (!required && !isAffirmation) continue;
       const labelEl = c.id ? document.querySelector(`label[for="${CSS.escape(c.id)}"]`) : null;
       await humanClick(labelEl || c);
@@ -1164,7 +1184,10 @@
       const isTextarea = el.tagName === "TEXTAREA";
 
       let value;
-      if (label.includes("name")) {
+      // Only the applicant's OWN name — not "reference name", "company name",
+      // "supervisor/manager/contact name" (those must go to the AI branch).
+      if (/\b(first|last|full|your|legal|preferred)\s+name\b|^name$/i.test(label) &&
+          !/(reference|company|employer|supervisor|manager|contact|emergency|previous|prior)/i.test(label)) {
         value = `${profile.name || "Applicant"} ${profile.last_name || ""}`.trim();
       } else if (label.includes("date")) {
         value = today;
@@ -1289,8 +1312,11 @@
     return filled;
   }
 
-  // Shared option chooser: deterministic (demographic/Yes-No/salary) → AI → first
-  // real option as a last resort so a required dropdown never permanently stalls.
+  // Shared option chooser: deterministic (demographic/Yes-No/salary) → AI → a SAFE
+  // fallback. Never blind-picks options[0] — that could send a wrong/harmful answer
+  // to an employer (e.g. "Male" on a label-less gender dropdown, or "No" on a
+  // reordered right-to-work question). Prefers a neutral option, then affirmative
+  // for eligibility, and only falls to the first option for clearly-benign dropdowns.
   async function chooseOption(label, options, profile, jobInfo) {
     let chosen = pickOptionDeterministic(label, options, profile);
     if (!chosen) {
@@ -1304,12 +1330,29 @@
           company: jobInfo.company || "",
         },
       });
-      if (res && res.answer) {
-        chosen = options.find(o => o.text.toLowerCase() === res.answer.toLowerCase());
-      }
+      const ans = res && res.answer ? String(res.answer).trim().toLowerCase() : "";
+      if (ans) chosen = options.find(o => o.text.trim().toLowerCase() === ans);
     }
-    if (!chosen) chosen = options[0];
-    return chosen;
+    if (chosen) return chosen;
+
+    // Safe fallbacks (no confident answer):
+    // 1) a neutral/decline option is harmless for ANY question type (incl. an
+    //    unlabelled demographic dropdown) → prefer it.
+    const neutral = options.find(o =>
+      /(prefer not|decline|do not wish|don'?t wish|rather not|^n\/?a$|not applicable|^other$|^none$)/i.test(o.text));
+    if (neutral) return neutral;
+    // 2) eligibility / yes-no phrasing → affirmative, never a stray first option.
+    if (/(authoriz|eligible|legally|right to work|able to|18 (years|or older)|over 18|consent|agree|background)/i.test(label)) {
+      const yes = options.find(o => /^yes\b/i.test(o.text));
+      if (yes) return yes;
+    }
+    // 3) a demographic-looking option set with no neutral → leave unfilled rather
+    //    than fabricate an identity value.
+    if (/(male|female|non.?binary|hispanic|latino|black|white|asian|veteran|disab)/i.test(options.map(o => o.text).join(" "))) {
+      return null;
+    }
+    // 4) genuinely benign dropdown → first real option.
+    return options[0];
   }
 
   // Fill custom (non-native) dropdowns — Indeed renders demographic/screener
@@ -1321,46 +1364,46 @@
     const profile = storageData.profile || {};
     const jobInfo = storageData.currentJobInfo || {};
 
-    const combos = Array.from(document.querySelectorAll('[role="combobox"], button[aria-haspopup="listbox"]'))
-      .filter(c => {
-        if (!c.offsetParent) return false;
-        const txt = (c.textContent || "").trim();
-        // Only unfilled ones (still showing a placeholder).
-        return /^(select|choose|please|--)?\s*(an?\s+)?option?$|^\s*$|select an option|please select|^select$|^choose$/i.test(txt);
-      });
+    const isUnfilled = (c) => {
+      if (!c.offsetParent || c.dataset.hdSkip) return false;
+      const txt = (c.textContent || "").trim();
+      return /^(select|choose|please|--)?\s*(an?\s+)?option?$|^\s*$|select an option|please select|^select$|^choose$/i.test(txt);
+    };
 
     let filled = 0;
-    for (const combo of combos) {
-      const label = getComboLabel(combo);
+    // Re-query each pass instead of iterating a captured snapshot: a React re-render
+    // after filling one combobox can detach the others, so cached nodes would no-op.
+    // data-hd-skip marks un-openable ones so we don't loop on them forever.
+    for (let pass = 0; pass < 14; pass++) {
+      const combo = Array.from(
+        document.querySelectorAll('[role="combobox"], button[aria-haspopup="listbox"]')
+      ).find(isUnfilled);
+      if (!combo) break;
 
-      // Open the dropdown.
+      const label = getComboLabel(combo);
       await humanClick(combo);
       await sleep(humanDelay(400, 800));
 
-      // Options are often portaled to the end of <body>, so query globally.
-      let optEls = Array.from(document.querySelectorAll('[role="option"]'))
-        .filter(o => o.offsetParent !== null);
-      if (!optEls.length) {
-        // Some widgets use <li> inside an open listbox.
-        const lb = document.querySelector('[role="listbox"]');
-        if (lb) optEls = Array.from(lb.querySelectorAll("li")).filter(o => o.offsetParent !== null);
-      }
-      if (!optEls.length) {
-        // Couldn't open it — press Escape and skip to avoid a stuck-open menu.
-        combo.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-        continue;
-      }
-
+      // Read options from THIS combobox's OWN menu — a global [role=option] query
+      // could grab a different question's still-open menu and apply its answer here.
+      const menu = findComboMenu(combo);
+      const optEls = menu
+        ? Array.from(menu.querySelectorAll('[role="option"], li')).filter(o => o.offsetParent !== null)
+        : [];
       const options = optEls
         .map(o => ({ el: o, text: (o.textContent || "").trim(), val: (o.textContent || "").trim() }))
         .filter(o => o.text && !/^(select|choose|please|--)/i.test(o.text));
+
       if (!options.length) {
+        // Couldn't open / read it — mark to skip and move on (don't re-loop).
+        combo.dataset.hdSkip = "1";
         combo.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
         continue;
       }
 
       const chosen = await chooseOption(label, options, profile, jobInfo);
       if (!chosen) {
+        combo.dataset.hdSkip = "1";
         combo.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
         continue;
       }
@@ -1368,8 +1411,22 @@
       await humanClick(chosen.el);
       filled++;
       await sleep(humanDelay(400, 800));
+      // If it didn't register as filled (still a placeholder), mark skip to avoid a loop.
+      if (isUnfilled(combo)) combo.dataset.hdSkip = "1";
     }
     return filled;
+  }
+
+  // Find the listbox menu that belongs to a specific combobox (portaled or inline).
+  function findComboMenu(combo) {
+    const id = combo.getAttribute("aria-controls") || combo.getAttribute("aria-owns");
+    if (id) {
+      const el = document.getElementById(id);
+      if (el && el.offsetParent !== null) return el;
+    }
+    // Fallback: the most-recently-opened visible listbox.
+    const lbs = Array.from(document.querySelectorAll('[role="listbox"]')).filter(l => l.offsetParent !== null);
+    return lbs.length ? lbs[lbs.length - 1] : null;
   }
 
   // Label for a custom combobox: text of the enclosing question block minus the
