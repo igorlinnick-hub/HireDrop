@@ -773,14 +773,14 @@ async function handleMessage(msg, sender) {
         });
       } catch {}
       // Local log so the popup shows it without waiting for a refresh.
-      await addToActivityLog(`⚠️ Detection on Indeed (${data.signal}) — campaign paused`, "err");
+      await addToActivityLog(`⚠️ Indeed asked for a human check — campaign paused`, "err");
       // System notification so the user sees this even if the popup is closed.
       try {
         await chrome.notifications.create({
           type: "basic",
           iconUrl: "icons/icon128.png",
-          title: "HireDrop paused",
-          message: `Indeed flagged the session (${data.signal}). Wait a few hours before resuming.`,
+          title: "HireDrop paused — action needed",
+          message: `Indeed is asking you to verify you're human. Open the automation window, solve it, and the campaign resumes automatically.`,
         });
       } catch {}
       return { handled: true };
@@ -825,25 +825,8 @@ async function handleMessage(msg, sender) {
       };
     }
 
-    // ----- CAPTCHA auto-solve via Railway backend proxy -----
-    // API key (CAPSOLVER_API_KEY) lives only in Railway env — never in the extension.
-    case "SOLVE_CAPTCHA": {
-      try {
-        const result = await Promise.race([
-          apiPost("/captcha/solve", {
-            type: msg.captchaType || "recaptchav2",
-            url: msg.url || "",
-            sitekey: msg.sitekey || "",
-          }),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("CAPTCHA solve timeout")), 130000)
-          ),
-        ]);
-        return { token: result.token };
-      } catch (err) {
-        return { error: err.message };
-      }
-    }
+    // CAPTCHA auto-solving (CapSolver) was REMOVED for compliance — captchas are now
+    // handed to the user. No SOLVE_CAPTCHA handler.
 
     default:
       return { error: `Unknown message type: ${msg.type}` };

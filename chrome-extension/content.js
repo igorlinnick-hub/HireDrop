@@ -1917,43 +1917,12 @@
   async function _runPhaseInner() {
     if (!(await isCampaignRunning())) return;
 
-    // Anti-detect safety net (Phase 5.5). If Indeed shows a real CAPTCHA or
-    // security challenge, try auto-solve for reCAPTCHA v2; fall back to
-    // manual pause for all other challenge types.
+    // Anti-detect: a CAPTCHA / security challenge is HANDED TO THE USER — we no longer
+    // auto-solve it (CapSolver dropped for compliance). The only thing we auto-handle is
+    // Cloudflare's passive "Just a moment" JS interstitial, which self-resolves with no
+    // user action. Everything else pauses and waits for the human to clear it.
     const det = isDetected();
     if (det.detected) {
-      const recaptchaEl = document.querySelector(".g-recaptcha[data-sitekey]");
-      if (recaptchaEl) {
-        // reCAPTCHA v2 — auto-solve via CapSolver backend proxy
-        const sitekey = recaptchaEl.dataset.sitekey;
-        log(`reCAPTCHA v2 detected (sitekey: ${sitekey.slice(0, 12)}…) — auto-solving...`, "");
-        const result = await sendMsg({
-          type: "SOLVE_CAPTCHA",
-          captchaType: "recaptchav2",
-          url: window.location.href,
-          sitekey,
-        });
-        if (result?.token) {
-          // Inject token into the hidden textarea reCAPTCHA uses for form submission
-          const textarea = document.querySelector("#g-recaptcha-response");
-          if (textarea) {
-            textarea.style.display = "";
-            textarea.value = result.token;
-            textarea.dispatchEvent(new Event("input", { bubbles: true }));
-            textarea.dispatchEvent(new Event("change", { bubbles: true }));
-          }
-          // Fire the data-callback if set (e.g. Indeed's own submit handler)
-          const cb = recaptchaEl.dataset.callback;
-          if (cb && typeof window[cb] === "function") {
-            window[cb](result.token);
-          }
-          log("reCAPTCHA solved automatically — resuming", "ok");
-          await sleep(humanDelay(1500, 3000));
-          return;
-        }
-        log(`Auto-solve failed (${result?.error || "no token"}) — falling back to manual`, "err");
-      }
-
       // Cloudflare JS challenge ("Just a moment") — auto-resolves in 3-5s,
       // no user action needed. Wait silently up to 15s before escalating.
       const isCfJsChallenge =
@@ -1977,81 +1946,32 @@
           log("Cloudflare resolved after reload — continuing", "ok");
           return;
         }
-        // Fall through to manual pause only if reload also failed
+        // Fall through to the human hand-off if reload also failed.
       }
 
-      // Cloudflare Turnstile ("Verify you are human" checkbox) — auto-solve via
-      // CapSolver (same balance as reCAPTCHA) instead of pausing for a manual
-      // click. Works when the sitekey is extractable from the widget; the
-      // full-page managed interstitial doesn't always expose one, in which case
-      // we fall through to the manual pause below.
-      {
-        const turnstileEl =
-          document.querySelector(".cf-turnstile[data-sitekey]") ||
-          document.querySelector('[data-sitekey]:not(.g-recaptcha)');
-        const tsSitekey = turnstileEl?.dataset?.sitekey;
-        const looksLikeTurnstile =
-          det.signal.includes("turnstile") ||
-          det.signal.includes("verify you are human") ||
-          det.signal.includes("additional verification") ||
-          !!turnstileEl;
-        if (looksLikeTurnstile && tsSitekey) {
-          log(`Cloudflare Turnstile detected (sitekey: ${tsSitekey.slice(0, 12)}…) — auto-solving...`, "");
-          const tsResult = await sendMsg({
-            type: "SOLVE_CAPTCHA",
-            captchaType: "turnstile",
-            url: window.location.href,
-            sitekey: tsSitekey,
-            action: turnstileEl?.dataset?.action || "",
-            cdata: turnstileEl?.dataset?.cdata || "",
-          });
-          if (tsResult?.token) {
-            // Inject the token into Turnstile's response field(s) and fire the callback.
-            for (const name of ["cf-turnstile-response", "g-recaptcha-response"]) {
-              document.querySelectorAll(`input[name="${name}"], textarea[name="${name}"]`).forEach((field) => {
-                field.value = tsResult.token;
-                field.dispatchEvent(new Event("input", { bubbles: true }));
-                field.dispatchEvent(new Event("change", { bubbles: true }));
-              });
-            }
-            const tcb = turnstileEl?.dataset?.callback;
-            if (tcb && typeof window[tcb] === "function") {
-              try { window[tcb](tsResult.token); } catch { /* callback threw — ignore */ }
-            }
-            log("Turnstile token injected — waiting for verification...", "ok");
-            await sleep(humanDelay(2500, 4000));
-            if (!isDetected().detected) {
-              log("Turnstile cleared automatically — resuming", "ok");
-              return;
-            }
-            log("Turnstile token didn't clear the page — falling back to manual", "err");
-          } else {
-            log(`Turnstile auto-solve failed (${tsResult?.error || "no token"}) — falling back to manual`, "err");
-          }
-        }
-      }
-
-      // All other challenge types (Cloudflare hard block, DataDome, etc.):
-      // pause and let the user solve manually.
-      log(`⚠️ CAPTCHA detected (${det.signal}) — pausing. Solve it in this window, then the campaign will resume.`, "err");
+      // Real challenge (CF managed interstitial, reCAPTCHA / Turnstile checkbox,
+      // DataDome…): hand it to the user and STAY PAUSED until they clear it. We no
+      // longer force-stop after a few minutes — the user may step away and solve it
+      // later; the campaign resumes the moment the page is clean. A generous 2h safety
+      // cap avoids an eternal spinner if they never come back.
+      log(`⚠️ CAPTCHA — pausing. Solve it in this window; the campaign resumes automatically once it's cleared.`, "err");
       await sendMsg({
         type: "DETECTION_TRIPPED",
         data: { signal: det.signal, url: window.location.href, phase: detectPhase() },
       });
-      // Wait up to 3 minutes for the user to solve the CAPTCHA, then retry
-      for (let i = 0; i < 36; i++) {
-        await sleep(5000);
-        if (!(await isCampaignRunning())) return;
-        const recheck = isDetected();
-        if (!recheck.detected) {
-          log("CAPTCHA resolved — resuming campaign", "ok");
+      const _pauseStart = Date.now();
+      while (Date.now() - _pauseStart < 2 * 60 * 60 * 1000) {
+        await sleep(8000);
+        if (!(await isCampaignRunning())) return; // user stopped it themselves
+        if (!isDetected().detected) {
+          log("CAPTCHA cleared — resuming campaign", "ok");
           break;
         }
-        if (i === 35) {
-          log("CAPTCHA not solved in 3 min — stopping campaign", "err");
-          await sendMsg({ type: "STOP_CAMPAIGN" });
-          return;
-        }
+      }
+      if (isDetected().detected) {
+        log("CAPTCHA still not cleared after 2h — stopping campaign", "err");
+        await sendMsg({ type: "STOP_CAMPAIGN" });
+        return;
       }
     }
 
