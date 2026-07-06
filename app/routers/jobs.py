@@ -23,9 +23,15 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
     profile = get_profile(user.id)
     requested = req.platforms if (req and req.platforms) else profile.get("platforms", ["remoteok"])
 
-    # All platforms in registry are scrapeable without stored credentials.
-    # Indeed listings are scraped server-side; Extension handles form submission separately.
-    scrapeable = [p for p in requested if p in PLATFORMS and not PLATFORMS[p].requires_credentials]
+    # Indeed is NOT scraped server-side: it's discovered in-browser by the extension
+    # during a campaign (per-user home IP), so the "compliant by design" claim holds —
+    # our server never scrapes Indeed. Other platforms' listings are still fetched here.
+    SERVER_SCRAPE_SKIP = {"indeed"}
+    indeed_requested = "indeed" in requested
+    scrapeable = [
+        p for p in requested
+        if p in PLATFORMS and not PLATFORMS[p].requires_credentials and p not in SERVER_SCRAPE_SKIP
+    ]
 
     platforms = [PLATFORMS[p]() for p in scrapeable]
     all_jobs, searched = [], []
@@ -39,12 +45,14 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
         all_jobs.extend(found)
         searched.append(platform.display_name)
 
+    # Helpful note so "Find Jobs" isn't silently empty when only Indeed was requested.
+    indeed_note = "Indeed jobs appear once you start a campaign." if indeed_requested else ""
+
     if not all_jobs:
-        return {
-            "count": 0,
-            "message": f"No jobs found from {', '.join(searched)}",
-            "platforms": searched,
-        }
+        msg = f"No jobs found from {', '.join(searched)}" if searched else "No jobs found"
+        if indeed_note:
+            msg = indeed_note if not searched else f"{msg}. {indeed_note}"
+        return {"count": 0, "message": msg, "platforms": searched, "indeed_note": indeed_note}
 
     # Deduplicate against already-saved jobs, then let Claude score everything.
     # Keyword pre-filter removed: JobSpy platforms already filter via search_term,
@@ -95,7 +103,10 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
                     print(f"[jobs] per-job PDF skipped: {pdf_err}")
         saved += 1
 
-    return {"count": saved, "message": f"{saved} new jobs saved", "platforms": searched}
+    message = f"{saved} new jobs saved"
+    if indeed_note:
+        message = f"{message}. {indeed_note}"
+    return {"count": saved, "message": message, "platforms": searched, "indeed_note": indeed_note}
 
 
 @router.patch("/jobs/{job_id}/status")
