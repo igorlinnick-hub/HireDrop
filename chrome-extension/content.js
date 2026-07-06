@@ -214,8 +214,8 @@
         // For ZipRecruiter: navigate directly to the search URL (no form-submit trick needed)
         const targetSearch = new URL(campaignTargetUrl).searchParams.get("search") || "";
         const currentSearch = new URL(window.location.href).searchParams.get("search") || "";
-        const notOnSearchPage = !window.location.href.includes("/candidate/search") &&
-                                !window.location.href.includes("/jobs-search");
+        const notOnSearchPage = !window.location.href.includes("/jobs-search") &&
+                                !window.location.href.includes("/candidate/search");
         if ((targetSearch && currentSearch !== targetSearch) || notOnSearchPage) {
           log(`Warmup done (${Math.round(elapsed / 1000)}s) — navigating to ZipRecruiter search`, "ok");
           logBackend(`Warmup complete — navigating to ZipRecruiter search`, "ok");
@@ -1096,55 +1096,47 @@
     const seenKeys = await chrome.storage.local.get("processedJobKeys");
     const processedKeys = new Set(seenKeys.processedJobKeys || []);
 
-    // ZipRecruiter card selectors (multiple layouts across A/B tests)
-    const cardSelectors = [
-      "article[data-job-id]",
-      "[data-testid='job-card']",
-      ".job_result",
-      "li[data-job]",
-      ".jobList-item",
-    ];
-    let cards = [];
-    for (const sel of cardSelectors) {
-      const found = document.querySelectorAll(sel);
-      if (found.length > 0) { cards = Array.from(found); break; }
-    }
-
-    if (!cards.length) {
+    // Confirmed real selector: .job_result_two_pane_v2 wraps each job card
+    const wrappers = Array.from(document.querySelectorAll(".job_result_two_pane_v2"));
+    if (!wrappers.length) {
       log("No job cards found on ZipRecruiter — going to next page", "");
+      logBackend("No ZR cards found on this page", "warn");
       await goBackToJobList();
       return;
     }
 
+    // Build base search URL (without lk=) for constructing per-job URLs
+    const baseUrl = new URL(window.location.href);
+    baseUrl.searchParams.delete("lk");
+    const baseSearch = baseUrl.toString();
+
     const quickApplyJobs = [];
-    for (const card of cards) {
-      const text = card.textContent || "";
-      if (!/1[\s-]*click\s*apply|quick\s*apply/i.test(text)) continue;
+    for (const wrapper of wrappers) {
+      // Quick Apply badge: <p class="text-brand ..."> inside <div class="...bg-badge-brand...">
+      const badge = wrapper.querySelector("div[class*='bg-badge-brand'] p, .text-brand");
+      if (!badge || !/quick\s*apply/i.test(badge.textContent || "")) continue;
 
-      // Job link
-      const linkEl =
-        card.querySelector("a[href*='/c/'], a[href*='/jobs/'], h2 a, [data-testid='job-title'] a, .jobTitle a") ||
-        card.querySelector("a[href]");
-      if (!linkEl) continue;
+      const article = wrapper.querySelector("article");
+      if (!article) continue;
 
-      const title = linkEl.textContent.trim();
+      // UUID is in article id: "job-card-{UUID}"
+      const uuid = article.id?.replace("job-card-", "") || "";
+      if (!uuid) continue;
+
+      // Title is in button[aria-label^="View "] > h2
+      const titleBtn = article.querySelector('button[aria-label^="View "]');
+      const title = titleBtn?.querySelector("h2")?.textContent?.trim() || "";
       if (!title) continue;
 
-      const href = linkEl.getAttribute("href") || "";
-      const url = href.startsWith("http") ? href : "https://www.ziprecruiter.com" + href;
-      const jobId =
-        card.getAttribute("data-job-id") ||
-        card.getAttribute("data-job") ||
-        url.split("/").pop().split("?")[0] || "";
+      const company = article.querySelector('[data-testid="job-card-company"]')?.textContent?.trim() || "";
 
-      if (alreadyApplied.has(url)) continue;
-      if (jobId && processedKeys.has(jobId)) continue;
+      // Job "URL" = list page + lk param — triggers detail phase on full reload
+      const jobUrl = baseSearch + (baseSearch.includes("?") ? "&" : "?") + "lk=" + uuid;
 
-      const companyEl =
-        card.querySelector("[data-testid='job-employer'], .company-name, [class*='employer'], [class*='company']");
-      const company = companyEl?.textContent.trim() || "";
+      if (alreadyApplied.has(jobUrl)) continue;
+      if (processedKeys.has(uuid)) continue;
 
-      quickApplyJobs.push({ title, company, url, jk: jobId });
+      quickApplyJobs.push({ title, company, url: jobUrl, jk: uuid });
     }
 
     if (!quickApplyJobs.length) {
@@ -1179,24 +1171,20 @@
       return;
     }
 
-    log("ZipRecruiter job detail — extracting info...", "");
-    await sleep(humanDelay(1500, 2500));
+    log("ZipRecruiter job detail — waiting for right panel...", "");
+    // Right panel loads asynchronously after URL pushState update
+    const panelReady = await waitForZipRecruiterRightPanel(8000);
+    if (!panelReady) {
+      log("ZipRecruiter right panel never loaded — skipping", "err");
+      await skipToNextJob();
+      return;
+    }
+    await sleep(humanDelay(500, 1000));
 
-    const titleEl =
-      document.querySelector("h1[data-testid='job-title']") ||
-      document.querySelector("[class*='jobTitle'] h1") ||
-      document.querySelector("[class*='job_title'] h1") ||
-      document.querySelector("h1");
-    const companyEl =
-      document.querySelector("[data-testid='job-company']") ||
-      document.querySelector("[data-testid='job-employer']") ||
-      document.querySelector("[class*='company-name']") ||
-      document.querySelector("[class*='companyName']");
-    const descEl =
-      document.querySelector("[data-testid='job-description']") ||
-      document.querySelector("[class*='jobDescription']") ||
-      document.querySelector("[class*='job_description']") ||
-      document.querySelector("[class*='description']");
+    const panel = document.querySelector('[data-testid="right-pane"]');
+    const titleEl = panel?.querySelector("h2");
+    const companyEl = panel?.querySelector('a[href*="/co/"]');
+    const descEl = document.querySelector('[data-testid="job-details-scroll-container"]');
 
     const jobTitle = titleEl?.textContent?.trim() || "";
     const jobCompany = companyEl?.textContent?.trim() || "";
@@ -1286,8 +1274,8 @@
     }
     await chrome.storage.local.set({ generatedCoverLetter: coverLetter });
 
-    // Find Quick Apply / Apply Now button
-    await sleep(humanDelay(1000, 2000));
+    // Find Quick Apply button in the right panel
+    await sleep(humanDelay(800, 1500));
     const applyBtn = await waitForZipRecruiterApplyButton(8000);
     if (!applyBtn) {
       log(`${jobTitle} — no Quick Apply button found, skipping`, "");
@@ -1317,30 +1305,30 @@
   }
 
   function findZipRecruiterApplyButton() {
-    // Prefer Quick Apply / 1-Click Apply buttons (native ZR apply, stays in domain)
-    // Avoid "Apply on company site" or "Apply externally" links
-    const selectors = [
-      "[data-testid='quick-apply-button']",
-      "[data-testid='apply-button']",
-      "button[class*='QuickApply']",
-      "button[class*='quick_apply']",
-      "a[class*='QuickApply']",
-    ];
-    for (const sel of selectors) {
-      try {
-        const el = document.querySelector(sel);
-        if (el && el.offsetParent !== null) return el;
-      } catch {}
+    // Confirmed real selector: button[aria-label="Quick Apply"] inside [data-testid="right-pane"]
+    const panel = document.querySelector('[data-testid="right-pane"]');
+    if (panel) {
+      const btn = panel.querySelector('button[aria-label="Quick Apply"]');
+      if (btn && btn.offsetParent !== null) return btn;
     }
-    // Text-content fallback
-    for (const el of document.querySelectorAll("button, a")) {
-      const text = (el.textContent || "").trim();
-      const label = (el.getAttribute("aria-label") || "").toLowerCase();
-      if (/company\s*site|externally|apply\s*on\s*company/i.test(text + " " + label)) continue;
-      if (/1[\s-]*click\s*apply|quick\s*apply|apply\s*now|apply\s*with/i.test(text) &&
-          el.offsetParent !== null) return el;
+    // Fallback: any visible "Quick Apply" button anywhere on the page
+    for (const el of document.querySelectorAll('button')) {
+      if ((el.getAttribute("aria-label") || "").trim() === "Quick Apply" && el.offsetParent !== null) return el;
+      if ((el.textContent || "").trim() === "Quick Apply" && el.offsetParent !== null) return el;
     }
     return null;
+  }
+
+  async function waitForZipRecruiterRightPanel(timeoutMs) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (!(await isCampaignRunning())) return false;
+      const panel = document.querySelector('[data-testid="right-pane"]');
+      // Panel is ready when it has an h2 (job title loaded)
+      if (panel && panel.querySelector("h2")) return true;
+      await sleep(400);
+    }
+    return false;
   }
 
   async function waitForZipRecruiterApplyButton(timeoutMs) {
@@ -1358,12 +1346,18 @@
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       if (!(await isCampaignRunning())) return false;
-      // Modal overlay
-      const modal = document.querySelector(
-        "[data-testid='apply-modal'], [class*='ApplyModal'], [class*='apply_modal'], dialog[open], [role='dialog']"
-      );
-      if (modal && modal.offsetParent !== null) return true;
-      // Redirected away from ZipRecruiter to an ATS — return false (handled by watchdog)
+      // Quick Apply modal: [role="dialog"] with form inputs (NOT the login/signup dialog)
+      // The login dialog has no input[type!="email"] for the form fields we care about
+      const dialogs = document.querySelectorAll('[role="dialog"]');
+      for (const d of dialogs) {
+        if (!d.offsetParent) continue;
+        // Quick Apply form has input/textarea fields or "Quick Apply" heading
+        if (d.querySelector('input[type="text"], input[type="tel"], textarea, input[name]') ||
+            /quick\s*apply/i.test(d.querySelector("h1, h2")?.textContent || "")) {
+          return true;
+        }
+      }
+      // Redirected away to external ATS
       if (!window.location.hostname.includes("ziprecruiter.com")) return false;
       await sleep(500);
     }
@@ -2250,7 +2244,7 @@
     const page = Math.floor(nextStart / 20) + 1;
     if (page > 1) params.set("page", String(page));
 
-    const url = `https://www.ziprecruiter.com/candidate/search?${params.toString()}`;
+    const url = `https://www.ziprecruiter.com/jobs-search?${params.toString()}`;
     log("Returning to ZipRecruiter job list...", "");
     await sleep(humanDelay(10000, 20000));
     window.location.href = url;
@@ -2294,19 +2288,26 @@
   function detectPhaseZipRecruiter() {
     const url = window.location.href;
 
-    // Phase 3: Quick Apply modal is visible on the page
-    const modal = document.querySelector(
-      "[data-testid='apply-modal'], [class*='ApplyModal'], [class*='apply_modal'], dialog[open][class*='apply']"
-    );
-    if (modal && modal.offsetParent !== null) return "form";
+    // Phase 3: Quick Apply modal visible — [role="dialog"] with form inputs
+    const dialogs = document.querySelectorAll('[role="dialog"]');
+    for (const d of dialogs) {
+      if (!d.offsetParent) continue;
+      if (d.querySelector('input[type="text"], input[type="tel"], textarea, input[name]') ||
+          /quick\s*apply/i.test(d.querySelector("h1, h2")?.textContent || "")) {
+        return "form";
+      }
+    }
 
-    // Phase 2: Individual job detail page
-    // ZipRecruiter detail URLs: /c/CompanyName/JobTitle-ID or /jobs/Company-Title-ID
-    if (/ziprecruiter\.com\/(c|jobs)\/[^/]+\/[^/?#]/.test(url)) return "detail";
-    if (url.includes("/jobs-details/") || url.includes("/job/")) return "detail";
+    // Phase 2: jobs-search page WITH lk= param (job selected, right panel populated)
+    try {
+      const params = new URL(url).searchParams;
+      if (params.get("lk") && (url.includes("/jobs-search") || url.includes("/candidate/search"))) {
+        return "detail";
+      }
+    } catch {}
 
-    // Phase 1: Search results
-    if (url.includes("/candidate/search") || url.includes("/jobs-search") ||
+    // Phase 1: Search results (no lk= param)
+    if (url.includes("/jobs-search") || url.includes("/candidate/search") ||
         /ziprecruiter\.com\/?(#.*)?$/.test(url)) return "list";
 
     return "unknown";

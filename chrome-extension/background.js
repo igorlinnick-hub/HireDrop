@@ -399,7 +399,8 @@ function buildZipRecruiterUrl(keywords, location, jobType) {
   if (loc) params.set("location", loc);
   const jtMap = { "full-time": "full_time", "part-time": "part_time", contract: "contract" };
   if (jobType && jtMap[jobType]) params.set("employment_type[]", jtMap[jobType]);
-  return `https://www.ziprecruiter.com/candidate/search?${params.toString()}`;
+  // /candidate/search requires login; /jobs-search works without auth
+  return `https://www.ziprecruiter.com/jobs-search?${params.toString()}`;
 }
 
 function buildPlatformUrl(platform, keywords, location, jobType) {
