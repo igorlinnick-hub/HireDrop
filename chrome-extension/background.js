@@ -391,6 +391,27 @@ function buildIndeedUrl(keywords, location, jobType) {
   return `https://www.indeed.com/jobs?${params.toString()}`;
 }
 
+function buildZipRecruiterUrl(keywords, location, jobType) {
+  const params = new URLSearchParams();
+  if (keywords && keywords.length) params.set("search", keywords.join(" "));
+  const locMap = { usa: "United States", remote: "Remote", europe: "" };
+  const loc = locMap[location] !== undefined ? locMap[location] : (location || "");
+  if (loc) params.set("location", loc);
+  const jtMap = { "full-time": "full_time", "part-time": "part_time", contract: "contract" };
+  if (jobType && jtMap[jobType]) params.set("employment_type[]", jtMap[jobType]);
+  return `https://www.ziprecruiter.com/candidate/search?${params.toString()}`;
+}
+
+function buildPlatformUrl(platform, keywords, location, jobType) {
+  if (platform === "ziprecruiter") return buildZipRecruiterUrl(keywords, location, jobType);
+  return buildIndeedUrl(keywords, location, jobType);
+}
+
+function platformHomeUrl(platform) {
+  if (platform === "ziprecruiter") return "https://www.ziprecruiter.com/";
+  return "https://www.indeed.com/";
+}
+
 // ---------------------------------------------------------------------------
 // Message handler
 // ---------------------------------------------------------------------------
@@ -524,7 +545,10 @@ async function handleMessage(msg, sender) {
         // Continue even if server is down
       }
 
-      const targetUrl = buildIndeedUrl(filters.keywords, filters.location, filters.job_type);
+      // Pick the primary platform from filters (first one wins for a campaign window)
+      const primaryPlatform = (filters.platforms && filters.platforms[0]) || "indeed";
+      const targetUrl = buildPlatformUrl(primaryPlatform, filters.keywords, filters.location, filters.job_type);
+      const homeUrl = platformHomeUrl(primaryPlatform);
 
       // Automation runs in a dedicated background window — minimized so it doesn't
       // steal focus from the user's browser. Screenshots are captured via CDP
@@ -540,7 +564,7 @@ async function handleMessage(msg, sender) {
           const win = await chrome.windows.get(prevData.campaignWindowId, { populate: true });
           if (win && win.tabs && win.tabs.length > 0) {
             tab = win.tabs[0];
-            await chrome.tabs.update(tab.id, { url: "https://www.indeed.com/", active: true });
+            await chrome.tabs.update(tab.id, { url: homeUrl, active: true });
             // Restore to normal state in case user minimized it
             chrome.windows.update(prevData.campaignWindowId, { state: "normal" }).catch(() => {});
             reusingWindow = true;
@@ -552,7 +576,7 @@ async function handleMessage(msg, sender) {
 
       if (!reusingWindow) {
         const win = await chrome.windows.create({
-          url: "https://www.indeed.com/",
+          url: homeUrl,
           focused: false,
           width: 1280,
           height: 900,

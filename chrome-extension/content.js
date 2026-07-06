@@ -16,6 +16,16 @@
   const MAX_APPLICATIONS_PER_PLATFORM = 50;
 
   // =========================================================================
+  // Platform detection
+  // =========================================================================
+
+  function detectPlatform() {
+    const host = window.location.hostname;
+    if (host.includes("ziprecruiter.com")) return "ziprecruiter";
+    return "indeed";
+  }
+
+  // =========================================================================
   // Utilities
   // =========================================================================
 
@@ -196,11 +206,28 @@
     await chrome.storage.local.set({ campaignWarmedUp: true });
 
     // Navigate to the target search URL if we're not already on it.
-    // indeed.com home often redirects to a generic local /jobs page (no keywords)
-    // so we can't just check for "/jobs" in the URL — we must check that our
-    // keywords are actually in the query string.
     const { campaignTargetUrl } = await chrome.storage.local.get("campaignTargetUrl");
     if (campaignTargetUrl) {
+      const platform = detectPlatform();
+
+      if (platform === "ziprecruiter") {
+        // For ZipRecruiter: navigate directly to the search URL (no form-submit trick needed)
+        const targetSearch = new URL(campaignTargetUrl).searchParams.get("search") || "";
+        const currentSearch = new URL(window.location.href).searchParams.get("search") || "";
+        const notOnSearchPage = !window.location.href.includes("/candidate/search") &&
+                                !window.location.href.includes("/jobs-search");
+        if ((targetSearch && currentSearch !== targetSearch) || notOnSearchPage) {
+          log(`Warmup done (${Math.round(elapsed / 1000)}s) — navigating to ZipRecruiter search`, "ok");
+          logBackend(`Warmup complete — navigating to ZipRecruiter search`, "ok");
+          window.location.href = campaignTargetUrl;
+          return;
+        }
+        log(`Warmup complete (${Math.round(elapsed / 1000)}s)`, "ok");
+        logBackend(`Session warmup complete (${Math.round(elapsed / 1000)}s) — starting job scan`, "ok");
+        return;
+      }
+
+      // Indeed: prefer typing into search form (avoids Cloudflare Turnstile on direct nav)
       const targetQ = new URL(campaignTargetUrl).searchParams.get("q") || "";
       const currentQ = new URL(window.location.href).searchParams.get("q") || "";
       // Navigate if keywords don't match OR if we're not on a jobs page at all
@@ -621,19 +648,21 @@
   }
 
   async function loadSelectors() {
+    const platform = detectPlatform();
+    const cacheKey = `selectors_${platform}`;
     try {
-      const cached = await chrome.storage.local.get(["selectors_indeed", "selectors_indeed_at"]);
-      const fresh = cached.selectors_indeed_at && Date.now() - cached.selectors_indeed_at < 24 * 3600 * 1000;
-      if (fresh && cached.selectors_indeed) {
-        SELECTORS = cached.selectors_indeed;
+      const cached = await chrome.storage.local.get([cacheKey, `${cacheKey}_at`]);
+      const fresh = cached[`${cacheKey}_at`] && Date.now() - cached[`${cacheKey}_at`] < 24 * 3600 * 1000;
+      if (fresh && cached[cacheKey]) {
+        SELECTORS = cached[cacheKey];
         return;
       }
-      const resp = await sendMsg({ type: "GET_SELECTORS", platform: "indeed" });
+      const resp = await sendMsg({ type: "GET_SELECTORS", platform });
       if (resp?.selectors) {
         SELECTORS = resp.selectors;
         await chrome.storage.local.set({
-          selectors_indeed: resp.selectors,
-          selectors_indeed_at: Date.now(),
+          [cacheKey]: resp.selectors,
+          [`${cacheKey}_at`]: Date.now(),
         });
       }
     } catch {
@@ -679,6 +708,12 @@
   }
 
   async function phase1_jobList() {
+    const platform = detectPlatform();
+    if (platform === "ziprecruiter") return await phase1_ziprecruiter();
+    return await phase1_indeed();
+  }
+
+  async function phase1_indeed() {
     if (!(await isCampaignRunning())) return;
 
     // Guard: if Indeed redirected us to a generic q= page (e.g. from an expired
@@ -799,6 +834,12 @@
   // =========================================================================
 
   async function phase2_jobDetail() {
+    const platform = detectPlatform();
+    if (platform === "ziprecruiter") return await phase2_ziprecruiter();
+    return await phase2_indeed();
+  }
+
+  async function phase2_indeed() {
     if (!(await isCampaignRunning())) return;
 
     const count = await getPlatformCount("indeed");
@@ -1031,6 +1072,302 @@
       await sleep(500);
     }
     return null;
+  }
+
+  // =========================================================================
+  // ZIPRECRUITER — Phase 1 (job list) + Phase 2 (job detail)
+  // =========================================================================
+
+  async function phase1_ziprecruiter() {
+    if (!(await isCampaignRunning())) return;
+
+    const count = await getPlatformCount("ziprecruiter");
+    if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
+      log(`ZipRecruiter daily limit reached (${count}/${MAX_APPLICATIONS_PER_PLATFORM}). Stopping.`, "");
+      await sendMsg({ type: "STOP_CAMPAIGN" });
+      return;
+    }
+
+    log("Scanning ZipRecruiter for Quick Apply jobs...", "");
+    logBackend("Scanning ZipRecruiter job list…", "info");
+    await sleep(humanDelay(2000, 3000));
+
+    const alreadyApplied = await getAppliedUrls();
+    const seenKeys = await chrome.storage.local.get("processedJobKeys");
+    const processedKeys = new Set(seenKeys.processedJobKeys || []);
+
+    // ZipRecruiter card selectors (multiple layouts across A/B tests)
+    const cardSelectors = [
+      "article[data-job-id]",
+      "[data-testid='job-card']",
+      ".job_result",
+      "li[data-job]",
+      ".jobList-item",
+    ];
+    let cards = [];
+    for (const sel of cardSelectors) {
+      const found = document.querySelectorAll(sel);
+      if (found.length > 0) { cards = Array.from(found); break; }
+    }
+
+    if (!cards.length) {
+      log("No job cards found on ZipRecruiter — going to next page", "");
+      await goBackToJobList();
+      return;
+    }
+
+    const quickApplyJobs = [];
+    for (const card of cards) {
+      const text = card.textContent || "";
+      if (!/1[\s-]*click\s*apply|quick\s*apply/i.test(text)) continue;
+
+      // Job link
+      const linkEl =
+        card.querySelector("a[href*='/c/'], a[href*='/jobs/'], h2 a, [data-testid='job-title'] a, .jobTitle a") ||
+        card.querySelector("a[href]");
+      if (!linkEl) continue;
+
+      const title = linkEl.textContent.trim();
+      if (!title) continue;
+
+      const href = linkEl.getAttribute("href") || "";
+      const url = href.startsWith("http") ? href : "https://www.ziprecruiter.com" + href;
+      const jobId =
+        card.getAttribute("data-job-id") ||
+        card.getAttribute("data-job") ||
+        url.split("/").pop().split("?")[0] || "";
+
+      if (alreadyApplied.has(url)) continue;
+      if (jobId && processedKeys.has(jobId)) continue;
+
+      const companyEl =
+        card.querySelector("[data-testid='job-employer'], .company-name, [class*='employer'], [class*='company']");
+      const company = companyEl?.textContent.trim() || "";
+
+      quickApplyJobs.push({ title, company, url, jk: jobId });
+    }
+
+    if (!quickApplyJobs.length) {
+      log("No new Quick Apply jobs found — checking next page...", "");
+      logBackend("No Quick Apply jobs on this ZipRecruiter page", "info");
+      await goBackToJobList();
+      return;
+    }
+
+    log(`Found ${quickApplyJobs.length} Quick Apply jobs`, "ok");
+    logBackend(`Found ${quickApplyJobs.length} Quick Apply jobs on ZipRecruiter`, "ok");
+
+    await chrome.storage.local.set({
+      pendingJobs: quickApplyJobs,
+      currentJobIndex: 0,
+    });
+
+    const first = quickApplyJobs[0];
+    log(`Opening: ${first.title} @ ${first.company}`, "");
+    logBackend(`Opening ZipRecruiter job: ${first.title} @ ${first.company}`, "info");
+    await sleep(humanDelay(2000, 4000));
+    window.location.href = first.url;
+  }
+
+  async function phase2_ziprecruiter() {
+    if (!(await isCampaignRunning())) return;
+
+    const count = await getPlatformCount("ziprecruiter");
+    if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
+      log(`ZipRecruiter daily limit reached. Stopping.`, "");
+      await sendMsg({ type: "STOP_CAMPAIGN" });
+      return;
+    }
+
+    log("ZipRecruiter job detail — extracting info...", "");
+    await sleep(humanDelay(1500, 2500));
+
+    const titleEl =
+      document.querySelector("h1[data-testid='job-title']") ||
+      document.querySelector("[class*='jobTitle'] h1") ||
+      document.querySelector("[class*='job_title'] h1") ||
+      document.querySelector("h1");
+    const companyEl =
+      document.querySelector("[data-testid='job-company']") ||
+      document.querySelector("[data-testid='job-employer']") ||
+      document.querySelector("[class*='company-name']") ||
+      document.querySelector("[class*='companyName']");
+    const descEl =
+      document.querySelector("[data-testid='job-description']") ||
+      document.querySelector("[class*='jobDescription']") ||
+      document.querySelector("[class*='job_description']") ||
+      document.querySelector("[class*='description']");
+
+    const jobTitle = titleEl?.textContent?.trim() || "";
+    const jobCompany = companyEl?.textContent?.trim() || "";
+    const jobDesc = descEl?.textContent?.trim().slice(0, 1000) || "";
+    const jobUrl = window.location.href;
+
+    if (!jobTitle) {
+      log("Could not find job title on ZipRecruiter — skipping", "err");
+      await skipToNextJob();
+      return;
+    }
+
+    // Dedup
+    const dedupeKey = jobUrl.split("?")[0];
+    {
+      const seen = await chrome.storage.local.get("processedJobKeys");
+      const keys = seen.processedJobKeys || [];
+      if (keys.includes(dedupeKey)) {
+        log(`${jobTitle} — already processed, skipping`, "");
+        await skipToNextJob();
+        return;
+      }
+      await chrome.storage.local.set({ processedJobKeys: [...keys, dedupeKey].slice(-500) });
+    }
+
+    log(`Job: ${jobTitle} @ ${jobCompany}`, "");
+
+    // Keyword relevance check
+    {
+      const kwData = await chrome.storage.local.get("campaignFilters");
+      const kwList = (kwData.campaignFilters?.keywords || []).filter(Boolean);
+      if (kwList.length > 0) {
+        const titleWords = new Set(jobTitle.toLowerCase().split(/\W+/).filter((w) => w.length > 2));
+        const keywordWords = new Set(
+          kwList.flatMap((p) => p.toLowerCase().split(/\W+/).filter((w) => w.length > 2))
+        );
+        if (![...keywordWords].some((w) => titleWords.has(w))) {
+          log(`${jobTitle} — title doesn't match keywords, skipping`, "");
+          logBackend(`Skip (title mismatch): ${jobTitle} @ ${jobCompany}`, "info");
+          await skipToNextJob();
+          return;
+        }
+      }
+    }
+
+    // Fit Engine M1
+    {
+      const fit = await sendMsg({
+        type: "ASSESS_FIT",
+        data: { job_title: jobTitle, company: jobCompany, description: jobDesc },
+      });
+      if (fit && fit.decision === "skip") {
+        const why = (fit.reason || "not a strong fit").slice(0, 160);
+        log(`Skipping ${jobTitle} — ${why}`, "");
+        logBackend(`⏭️ Skipped (fit ${fit.fit_score ?? "?"}): ${jobTitle} @ ${jobCompany} — ${why}`, "info");
+        await skipToNextJob();
+        return;
+      }
+      if (fit && fit.judged) {
+        logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
+      }
+    }
+
+    await chrome.storage.local.set({
+      currentJobInfo: { title: jobTitle, company: jobCompany, description: jobDesc, url: jobUrl },
+    });
+
+    // Generate cover letter
+    let coverLetter = "";
+    log("Generating cover letter...", "");
+    try {
+      const clRes = await Promise.race([
+        sendMsg({
+          type: "GENERATE_COVER_LETTER",
+          data: { job_title: jobTitle, company: jobCompany, description: jobDesc },
+        }),
+        sleep(15000).then(() => ({ error: "timeout" })),
+      ]);
+      if (clRes && clRes.letter) {
+        coverLetter = clRes.letter;
+        log("Cover letter generated", "ok");
+      } else {
+        log("Cover letter generation failed — will use template", "");
+      }
+    } catch (e) {
+      log("Cover letter error: " + e.message, "err");
+    }
+    await chrome.storage.local.set({ generatedCoverLetter: coverLetter });
+
+    // Find Quick Apply / Apply Now button
+    await sleep(humanDelay(1000, 2000));
+    const applyBtn = await waitForZipRecruiterApplyButton(8000);
+    if (!applyBtn) {
+      log(`${jobTitle} — no Quick Apply button found, skipping`, "");
+      logBackend(`Skip (no Quick Apply button): ${jobTitle} @ ${jobCompany}`, "info");
+      await skipToNextJob();
+      return;
+    }
+
+    log("Clicking Quick Apply...", "");
+    logBackend(`Clicking Quick Apply: ${jobTitle} @ ${jobCompany}`, "info");
+    await humanClick(applyBtn);
+
+    // Wait for the apply modal or form to appear
+    const formReady = await waitForZipRecruiterForm(15000);
+    if (!(await isCampaignRunning())) return;
+    if (!formReady) {
+      log(`${jobTitle} — no Quick Apply form appeared (external ATS), skipping`, "");
+      logBackend(`Skip (no ZR form after 15s): ${jobTitle} @ ${jobCompany}`, "info");
+      await skipToNextJob();
+      return;
+    }
+
+    // Drive phase3 directly — same reason as Indeed: phase2 is on stack,
+    // MutationObserver's runPhase() is suppressed by _runPhaseActive guard.
+    lastPhase = "form";
+    await phase3_fillForm();
+  }
+
+  function findZipRecruiterApplyButton() {
+    // Prefer Quick Apply / 1-Click Apply buttons (native ZR apply, stays in domain)
+    // Avoid "Apply on company site" or "Apply externally" links
+    const selectors = [
+      "[data-testid='quick-apply-button']",
+      "[data-testid='apply-button']",
+      "button[class*='QuickApply']",
+      "button[class*='quick_apply']",
+      "a[class*='QuickApply']",
+    ];
+    for (const sel of selectors) {
+      try {
+        const el = document.querySelector(sel);
+        if (el && el.offsetParent !== null) return el;
+      } catch {}
+    }
+    // Text-content fallback
+    for (const el of document.querySelectorAll("button, a")) {
+      const text = (el.textContent || "").trim();
+      const label = (el.getAttribute("aria-label") || "").toLowerCase();
+      if (/company\s*site|externally|apply\s*on\s*company/i.test(text + " " + label)) continue;
+      if (/1[\s-]*click\s*apply|quick\s*apply|apply\s*now|apply\s*with/i.test(text) &&
+          el.offsetParent !== null) return el;
+    }
+    return null;
+  }
+
+  async function waitForZipRecruiterApplyButton(timeoutMs) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (!(await isCampaignRunning())) return null;
+      const btn = findZipRecruiterApplyButton();
+      if (btn) return btn;
+      await sleep(500);
+    }
+    return null;
+  }
+
+  async function waitForZipRecruiterForm(timeoutMs) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (!(await isCampaignRunning())) return false;
+      // Modal overlay
+      const modal = document.querySelector(
+        "[data-testid='apply-modal'], [class*='ApplyModal'], [class*='apply_modal'], dialog[open], [role='dialog']"
+      );
+      if (modal && modal.offsetParent !== null) return true;
+      // Redirected away from ZipRecruiter to an ATS — return false (handled by watchdog)
+      if (!window.location.hostname.includes("ziprecruiter.com")) return false;
+      await sleep(500);
+    }
+    return false;
   }
 
   // =========================================================================
@@ -1692,6 +2029,7 @@
           // already submitted; verification only affects reporting confidence.
           await addAppliedUrl(jobInfo.url || window.location.href);
 
+          const currentPlatform = detectPlatform();
           if (result.verified) {
             log(`Applied (verified ${result.signal}): ${jobInfo.title} @ ${jobInfo.company}`, "ok");
             logBackend(`✅ Applied: ${jobInfo.title} @ ${jobInfo.company}`, "ok");
@@ -1700,7 +2038,7 @@
               data: {
                 job_title: jobInfo.title || "",
                 company: jobInfo.company || "",
-                platform: "indeed",
+                platform: currentPlatform,
                 job_url: jobInfo.url || window.location.href,
                 cover_letter: coverLetter,
                 status: "applied",
@@ -1720,7 +2058,7 @@
               data: {
                 job_title: jobInfo.title || "",
                 company: jobInfo.company || "",
-                platform: "indeed",
+                platform: currentPlatform,
                 job_url: jobInfo.url || window.location.href,
                 cover_letter: coverLetter,
                 status: "applied_unconfirmed",
@@ -1819,17 +2157,29 @@
 
     await sleep(humanDelay(3000, 5000));
 
-    // Use /viewjob?jk= directly — card hrefs (/rc/clk?...) may redirect back to
-    // /jobs?...&vjk= which detectPhase() now treats as "list", re-running phase1.
-    const targetUrl = nextJob.jk
-      ? `https://www.indeed.com/viewjob?jk=${nextJob.jk}`
-      : nextJob.url;
+    const platform = detectPlatform();
+    let targetUrl;
+    if (platform === "indeed") {
+      // Use /viewjob?jk= directly — card hrefs (/rc/clk?...) may redirect back to
+      // /jobs?...&vjk= which detectPhase() now treats as "list", re-running phase1.
+      targetUrl = nextJob.jk
+        ? `https://www.indeed.com/viewjob?jk=${nextJob.jk}`
+        : nextJob.url;
+    } else {
+      targetUrl = nextJob.url;
+    }
     window.location.href = targetUrl;
   }
 
   async function goBackToJobList() {
     if (!(await isCampaignRunning())) return;
 
+    const platform = detectPlatform();
+    if (platform === "ziprecruiter") return await goBackToZipRecruiterJobList();
+    return await goBackToIndeedJobList();
+  }
+
+  async function goBackToIndeedJobList() {
     const count = await getPlatformCount("indeed");
     if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
       log(`Indeed daily limit reached (${count}/${MAX_APPLICATIONS_PER_PLATFORM}). Campaign complete.`, "ok");
@@ -1837,12 +2187,9 @@
       return;
     }
 
-    // Navigate back to the search results
-    // Try to find the search URL from the referrer or build from filters
     const data = await chrome.storage.local.get("campaignFilters");
     const filters = data.campaignFilters || {};
 
-    // Build search URL
     const params = new URLSearchParams();
     if (filters.keywords?.length) params.set("q", filters.keywords.join(" "));
     const locMap = { usa: "United States", remote: "remote", europe: "" };
@@ -1855,7 +2202,6 @@
     params.set("iafilter", "1");
     params.set("sort", "date");
 
-    // Increment start to skip already-seen jobs
     const processed = await chrome.storage.local.get("processedPageStarts");
     const starts = processed.processedPageStarts || [0];
     const lastStart = starts[starts.length - 1];
@@ -1872,11 +2218,55 @@
     window.location.href = url;
   }
 
+  async function goBackToZipRecruiterJobList() {
+    const count = await getPlatformCount("ziprecruiter");
+    if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
+      log(`ZipRecruiter daily limit reached (${count}/${MAX_APPLICATIONS_PER_PLATFORM}). Campaign complete.`, "ok");
+      await sendMsg({ type: "STOP_CAMPAIGN" });
+      return;
+    }
+
+    const data = await chrome.storage.local.get("campaignFilters");
+    const filters = data.campaignFilters || {};
+
+    const params = new URLSearchParams();
+    if (filters.keywords?.length) params.set("search", filters.keywords.join(" "));
+    const locMap = { usa: "United States", remote: "Remote", europe: "" };
+    const loc = locMap[filters.location] !== undefined ? locMap[filters.location] : (filters.location || "");
+    if (loc) params.set("location", loc);
+    if (filters.job_type) {
+      const jtMap = { "full-time": "full_time", "part-time": "part_time", contract: "contract" };
+      if (jtMap[filters.job_type]) params.set("employment_type[]", jtMap[filters.job_type]);
+    }
+
+    // ZipRecruiter paginates via `page` param (20 jobs per page)
+    const processed = await chrome.storage.local.get("processedPageStarts");
+    const starts = processed.processedPageStarts || [0];
+    const lastStart = starts[starts.length - 1];
+    const nextStart = lastStart + 20;
+    starts.push(nextStart);
+    if (starts.length > 200) starts.splice(0, starts.length - 200);
+    await chrome.storage.local.set({ processedPageStarts: starts });
+    const page = Math.floor(nextStart / 20) + 1;
+    if (page > 1) params.set("page", String(page));
+
+    const url = `https://www.ziprecruiter.com/candidate/search?${params.toString()}`;
+    log("Returning to ZipRecruiter job list...", "");
+    await sleep(humanDelay(10000, 20000));
+    window.location.href = url;
+  }
+
   // =========================================================================
   // Phase detection & routing
   // =========================================================================
 
   function detectPhase() {
+    const platform = detectPlatform();
+    if (platform === "ziprecruiter") return detectPhaseZipRecruiter();
+    return detectPhaseIndeed();
+  }
+
+  function detectPhaseIndeed() {
     const url = window.location.href;
 
     // Phase 3: Indeed apply form is visible (modal or full page)
@@ -1897,6 +2287,27 @@
 
     // Phase 2: vjk= outside of /jobs? context (rare direct link)
     if (url.includes("vjk=")) return "detail";
+
+    return "unknown";
+  }
+
+  function detectPhaseZipRecruiter() {
+    const url = window.location.href;
+
+    // Phase 3: Quick Apply modal is visible on the page
+    const modal = document.querySelector(
+      "[data-testid='apply-modal'], [class*='ApplyModal'], [class*='apply_modal'], dialog[open][class*='apply']"
+    );
+    if (modal && modal.offsetParent !== null) return "form";
+
+    // Phase 2: Individual job detail page
+    // ZipRecruiter detail URLs: /c/CompanyName/JobTitle-ID or /jobs/Company-Title-ID
+    if (/ziprecruiter\.com\/(c|jobs)\/[^/]+\/[^/?#]/.test(url)) return "detail";
+    if (url.includes("/jobs-details/") || url.includes("/job/")) return "detail";
+
+    // Phase 1: Search results
+    if (url.includes("/candidate/search") || url.includes("/jobs-search") ||
+        /ziprecruiter\.com\/?(#.*)?$/.test(url)) return "list";
 
     return "unknown";
   }
