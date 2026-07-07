@@ -87,4 +87,34 @@ window.addEventListener("message", function (e) {
   if (typeof e.data === "object" && e.data.type === "HIREDROP_STOP_CAMPAIGN") {
     chrome.runtime.sendMessage({ type: "STOP_CAMPAIGN" }, function () {});
   }
+
+  // Platform account connection status (Indeed / ZipRecruiter login state).
+  if (typeof e.data === "object" && e.data.type === "HIREDROP_GET_PLATFORM_CONNECTIONS") {
+    try {
+      chrome.runtime.sendMessage({ type: "GET_PLATFORM_CONNECTIONS" }, function (resp) {
+        const err = chrome.runtime.lastError ? chrome.runtime.lastError.message : null;
+        window.postMessage(
+          { type: "HIREDROP_PLATFORM_CONNECTIONS", ok: !!(resp && resp.ok), connections: (resp && resp.connections) || {}, error: err },
+          "*"
+        );
+      });
+    } catch (ex) {
+      window.postMessage({ type: "HIREDROP_PLATFORM_CONNECTIONS", ok: false, connections: {}, error: "context_invalidated" }, "*");
+    }
+  }
+
+  // Open a platform's login / sign-up page so the user can connect (or register).
+  if (typeof e.data === "object" && e.data.type === "HIREDROP_OPEN_PLATFORM_LOGIN" && typeof e.data.platform === "string") {
+    try {
+      chrome.runtime.sendMessage({ type: "OPEN_PLATFORM_LOGIN", platform: e.data.platform }, function (resp) {
+        const err = chrome.runtime.lastError ? chrome.runtime.lastError.message : null;
+        window.postMessage(
+          { type: "HIREDROP_PLATFORM_LOGIN_OPENED", ok: !!(resp && resp.ok), platform: e.data.platform, error: err },
+          "*"
+        );
+      });
+    } catch (ex) {
+      window.postMessage({ type: "HIREDROP_PLATFORM_LOGIN_OPENED", ok: false, platform: e.data.platform, error: "context_invalidated" }, "*");
+    }
+  }
 });

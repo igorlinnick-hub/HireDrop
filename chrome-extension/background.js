@@ -425,6 +425,19 @@ function pickPrimaryPlatform(platforms) {
   return list.find((p) => AUTO_APPLY_PLATFORMS.includes(p)) || "indeed";
 }
 
+// Login / sign-up landing page per platform. We can't create the account for the
+// user, but we send them to the right place — these pages offer both log in and
+// "create account", so a brand-new user can register from here.
+function platformLoginUrl(platform) {
+  if (platform === "ziprecruiter") return "https://www.ziprecruiter.com/authn/login?realm=candidates";
+  return "https://secure.indeed.com/account/login";
+}
+
+function platformLabel(platform) {
+  if (platform === "ziprecruiter") return "ZipRecruiter";
+  return "Indeed";
+}
+
 // ---------------------------------------------------------------------------
 // Message handler
 // ---------------------------------------------------------------------------
@@ -552,14 +565,32 @@ async function handleMessage(msg, sender) {
         job_type: raw.job_type || profile.job_type || "",
       };
 
+      // Pick the auto-apply platform this campaign targets (first in the filter list)
+      const primaryPlatform = pickPrimaryPlatform(filters.platforms);
+
+      // Pre-flight: don't launch a doomed campaign if we already KNOW the user is
+      // logged out of the target platform. Open the login/sign-up page instead and
+      // tell the dashboard why. (Unknown/connected → proceed; the in-page login-wall
+      // guard still catches a stale "connected" once the window loads.)
+      {
+        const conns = (await chrome.storage.local.get("platformConnections")).platformConnections || {};
+        if (conns[primaryPlatform]?.status === "logged_out") {
+          chrome.tabs.create({ url: platformLoginUrl(primaryPlatform) }).catch(() => {});
+          return {
+            started: false,
+            error: "not_connected",
+            platform: primaryPlatform,
+            message: `Sign into ${platformLabel(primaryPlatform)} first — we opened the login page. Create an account or log in, then start the campaign.`,
+          };
+        }
+      }
+
       try {
         await apiPost("/campaign/start", filters);
       } catch {
         // Continue even if server is down
       }
 
-      // Pick the auto-apply platform this campaign targets (first in the filter list)
-      const primaryPlatform = pickPrimaryPlatform(filters.platforms);
       const targetUrl = buildPlatformUrl(primaryPlatform, filters.keywords, filters.location, filters.job_type);
       const homeUrl = platformHomeUrl(primaryPlatform);
 
@@ -620,6 +651,50 @@ async function handleMessage(msg, sender) {
     // ----- Screenshot capture (triggered by content.js) -----
     case "CAPTURE_SCREENSHOT": {
       await captureActiveAutomationTab();
+      return { ok: true };
+    }
+
+    // ----- Platform account connection -----
+    // content.js reports login state whenever the user is on a platform page.
+    case "PLATFORM_AUTH": {
+      if (msg.platform && msg.status && msg.status !== "unknown") {
+        const conns = (await chrome.storage.local.get("platformConnections")).platformConnections || {};
+        conns[msg.platform] = { status: msg.status, checkedAt: new Date().toISOString() };
+        await chrome.storage.local.set({ platformConnections: conns });
+      }
+      return { ok: true };
+    }
+
+    // Dashboard reads connection status (via ping.js bridge) to render "connect" chips.
+    case "GET_PLATFORM_CONNECTIONS": {
+      const conns = (await chrome.storage.local.get("platformConnections")).platformConnections || {};
+      return { ok: true, connections: conns };
+    }
+
+    // Dashboard asks us to open a platform's login/sign-up page in a new tab.
+    case "OPEN_PLATFORM_LOGIN": {
+      const platform = AUTO_APPLY_PLATFORMS.includes(msg.platform) ? msg.platform : "indeed";
+      const tab = await chrome.tabs.create({ url: platformLoginUrl(platform) });
+      return { ok: true, tabId: tab.id };
+    }
+
+    // The running campaign hit a login wall. Mark the platform logged-out and
+    // notify the user; the campaign pauses in-page until they sign in.
+    case "PLATFORM_LOGIN_REQUIRED": {
+      if (msg.platform) {
+        const conns = (await chrome.storage.local.get("platformConnections")).platformConnections || {};
+        conns[msg.platform] = { status: "logged_out", checkedAt: new Date().toISOString() };
+        await chrome.storage.local.set({ platformConnections: conns });
+        try {
+          chrome.notifications.create({
+            type: "basic",
+            iconUrl: "icons/icon128.png",
+            title: `Sign into ${platformLabel(msg.platform)}`,
+            message: `HireDrop paused — log into ${platformLabel(msg.platform)} in the campaign window and it resumes automatically.`,
+            priority: 2,
+          });
+        } catch {}
+      }
       return { ok: true };
     }
 

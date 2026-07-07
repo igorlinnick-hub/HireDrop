@@ -26,6 +26,62 @@
   }
 
   // =========================================================================
+  // Account connection detection
+  //
+  // Auto-apply only works when the user is logged into the platform in this
+  // browser. We can't create accounts for them — but we CAN detect login state
+  // from the page DOM (no extra permissions needed) and surface it so the
+  // dashboard can show "connect" prompts and block doomed campaigns.
+  //
+  // Signals verified against live DOM (2026-07-07):
+  //   Indeed  — logged out: [data-gnav-element-name="SignIn"] / secure.indeed.com/auth link
+  //             logged in:  [data-gnav-element-name="AccountMenu" | "SignOut" | "Resume"]
+  //   ZipR    — logged out: a[href*="/authn/login"] ("Log In")
+  //             logged in:  a[href*="/authn/logout"] / a[href*="/candidate/"]
+  //
+  // Returns "connected" | "logged_out" | "unknown".
+  // =========================================================================
+
+  function detectPlatformAuth(platform) {
+    const p = platform || detectPlatform();
+    if (p === "indeed") {
+      if (document.querySelector(
+        '[data-gnav-element-name="SignIn"], a[href*="secure.indeed.com/auth"], a[href*="/account/login"]'
+      )) return "logged_out";
+      if (document.querySelector(
+        '[data-gnav-element-name="AccountMenu"], [data-gnav-element-name="SignOut"], [data-gnav-element-name="Resume"]'
+      )) return "connected";
+      return "unknown";
+    }
+    if (p === "ziprecruiter") {
+      // The "Log In" link is server-rendered in the header whenever logged out.
+      if (document.querySelector('a[href*="/authn/login"]')) return "logged_out";
+      if (document.querySelector('a[href*="/authn/logout"], a[href*="/candidate/"]')) return "connected";
+      // No login link + a rendered header ⇒ treat as connected (logged-in nav
+      // hides the login link and shows an account menu we can't always name).
+      if (document.querySelector('header, [data-testid="header"], nav')) return "connected";
+      return "unknown";
+    }
+    return "unknown";
+  }
+
+  // Persist + report the current platform's login state. Runs on every content
+  // script load (cheap) so status stays fresh whenever the user visits the site.
+  async function reportPlatformAuth() {
+    const platform = detectPlatform();
+    const status = detectPlatformAuth(platform);
+    if (status === "unknown") return status; // don't overwrite a known state with noise
+    try {
+      const store = await chrome.storage.local.get("platformConnections");
+      const conns = store.platformConnections || {};
+      conns[platform] = { status, checkedAt: new Date().toISOString() };
+      await chrome.storage.local.set({ platformConnections: conns });
+      chrome.runtime.sendMessage({ type: "PLATFORM_AUTH", platform, status }).catch(() => {});
+    } catch { /* storage/runtime unavailable — ignore */ }
+    return status;
+  }
+
+  // =========================================================================
   // Utilities
   // =========================================================================
 
@@ -2387,6 +2443,36 @@
       }
     }
 
+    // Login wall: auto-apply is impossible if the user isn't logged into the
+    // platform. Detect it, report it (so the dashboard flips to "not connected"),
+    // and PAUSE — the user logs in in this same window and we resume. Same pattern
+    // as the CAPTCHA hand-off: we never fake-submit against a logged-out session.
+    {
+      const authPlatform = detectPlatform();
+      const authStatus = detectPlatformAuth(authPlatform);
+      if (authStatus === "logged_out") {
+        await reportPlatformAuth();
+        const name = authPlatform === "ziprecruiter" ? "ZipRecruiter" : "Indeed";
+        log(`⚠️ Not signed into ${name}. Log in (or create an account) in this window — the campaign resumes automatically once you're in.`, "err");
+        await sendMsg({ type: "PLATFORM_LOGIN_REQUIRED", platform: authPlatform, url: window.location.href });
+        const _loginPauseStart = Date.now();
+        while (Date.now() - _loginPauseStart < 2 * 60 * 60 * 1000) {
+          await sleep(8000);
+          if (!(await isCampaignRunning())) return; // user stopped it themselves
+          if (detectPlatformAuth(authPlatform) === "connected") {
+            log(`Signed into ${name} — resuming campaign`, "ok");
+            await reportPlatformAuth();
+            break;
+          }
+        }
+        if (detectPlatformAuth(authPlatform) === "logged_out") {
+          log(`Still not signed into ${name} after 2h — stopping campaign`, "err");
+          await sendMsg({ type: "STOP_CAMPAIGN" });
+          return;
+        }
+      }
+    }
+
     const phase = detectPhase();
 
     try {
@@ -2474,6 +2560,11 @@
   async function init() {
     // Pull DOM selectors from backend (cached 24h) — Phase 4.1
     await loadSelectors();
+
+    // Report whether the user is logged into this platform (for the dashboard's
+    // connection status). Runs on every load, campaign or not — visiting the
+    // platform to log in is exactly how the connection gets confirmed.
+    reportPlatformAuth();
 
     // Start observing DOM changes
     if (document.body) {
