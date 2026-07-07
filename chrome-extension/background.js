@@ -413,6 +413,18 @@ function platformHomeUrl(platform) {
   return "https://www.indeed.com/";
 }
 
+// Platforms the extension actually auto-applies on. Everything else in
+// filters.platforms is a discovery-only source (scraped, applied to externally).
+const AUTO_APPLY_PLATFORMS = ["indeed", "ziprecruiter"];
+
+// The campaign window targets the first auto-apply platform in the filter list.
+// Selecting by membership (not platforms[0]) is robust to discovery platforms
+// appearing first in the array.
+function pickPrimaryPlatform(platforms) {
+  const list = platforms || [];
+  return list.find((p) => AUTO_APPLY_PLATFORMS.includes(p)) || "indeed";
+}
+
 // ---------------------------------------------------------------------------
 // Message handler
 // ---------------------------------------------------------------------------
@@ -546,8 +558,8 @@ async function handleMessage(msg, sender) {
         // Continue even if server is down
       }
 
-      // Pick the primary platform from filters (first one wins for a campaign window)
-      const primaryPlatform = (filters.platforms && filters.platforms[0]) || "indeed";
+      // Pick the auto-apply platform this campaign targets (first in the filter list)
+      const primaryPlatform = pickPrimaryPlatform(filters.platforms);
       const targetUrl = buildPlatformUrl(primaryPlatform, filters.keywords, filters.location, filters.job_type);
       const homeUrl = platformHomeUrl(primaryPlatform);
 
