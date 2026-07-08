@@ -89,12 +89,17 @@ window.addEventListener("message", function (e) {
   }
 
   // Platform account connection status (Indeed / ZipRecruiter login state).
+  // Read chrome.storage.local DIRECTLY here — content.js writes it directly too,
+  // so there's no need to round-trip through the service worker. This is also more
+  // robust: an MV3 service worker can go stale (kept alive on old code by screenshot
+  // pings), which made a background round-trip return empty even though storage was
+  // populated. The content-script context always sees fresh storage.
   if (typeof e.data === "object" && e.data.type === "HIREDROP_GET_PLATFORM_CONNECTIONS") {
     try {
-      chrome.runtime.sendMessage({ type: "GET_PLATFORM_CONNECTIONS" }, function (resp) {
+      chrome.storage.local.get("platformConnections", function (data) {
         const err = chrome.runtime.lastError ? chrome.runtime.lastError.message : null;
         window.postMessage(
-          { type: "HIREDROP_PLATFORM_CONNECTIONS", ok: !!(resp && resp.ok), connections: (resp && resp.connections) || {}, error: err },
+          { type: "HIREDROP_PLATFORM_CONNECTIONS", ok: !err, connections: (data && data.platformConnections) || {}, error: err },
           "*"
         );
       });
