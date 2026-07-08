@@ -67,10 +67,17 @@
 
   // Persist + report the current platform's login state. Runs on every content
   // script load (cheap) so status stays fresh whenever the user visits the site.
+  // The header/nav that carries the login signal can render slightly after
+  // document_idle, so poll a few times for a DEFINITIVE (non-unknown) answer
+  // before giving up — otherwise an early "unknown" would never get corrected.
   async function reportPlatformAuth() {
     const platform = detectPlatform();
-    const status = detectPlatformAuth(platform);
-    if (status === "unknown") return status; // don't overwrite a known state with noise
+    let status = detectPlatformAuth(platform);
+    for (let i = 0; i < 8 && status === "unknown"; i++) {
+      await sleep(1000);
+      status = detectPlatformAuth(platform);
+    }
+    if (status === "unknown") return status; // still indeterminate — don't store noise
     try {
       const store = await chrome.storage.local.get("platformConnections");
       const conns = store.platformConnections || {};
@@ -2558,13 +2565,13 @@
   // =========================================================================
 
   async function init() {
+    // Report whether the user is logged into this platform (for the dashboard's
+    // connection status). Runs FIRST — before the selectors fetch — so a slow or
+    // failing backend round-trip can never block login detection. Fire-and-forget.
+    reportPlatformAuth();
+
     // Pull DOM selectors from backend (cached 24h) — Phase 4.1
     await loadSelectors();
-
-    // Report whether the user is logged into this platform (for the dashboard's
-    // connection status). Runs on every load, campaign or not — visiting the
-    // platform to log in is exactly how the connection gets confirmed.
-    reportPlatformAuth();
 
     // Start observing DOM changes
     if (document.body) {
