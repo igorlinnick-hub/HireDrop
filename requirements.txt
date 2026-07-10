@@ -12,3 +12,4 @@ supabase
 jobspy
 reportlab
 python-docx
+stripe

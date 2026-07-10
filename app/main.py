@@ -13,6 +13,7 @@ from app.routers import (
     activity,
     applications,
     auth,
+    billing,
     campaign,
     email_processor,
     extension,
@@ -100,6 +101,7 @@ app.include_router(extension.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(email_processor.router, prefix="/api/v1")
 app.include_router(promo.router, prefix="/api/v1")
+app.include_router(billing.router, prefix="/api/v1")
 
 
 @app.get("/health")

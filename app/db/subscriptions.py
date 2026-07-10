@@ -22,6 +22,7 @@ from app.db.client import get_supabase
 TIER_LIMITS = {
     "free": 10,
     "pro": 50,
+    "premium": 50,  # same daily volume as pro; premium's differentiator is ATS resume tailoring, not quota
     "elite": 200,
 }
 

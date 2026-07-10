@@ -73,6 +73,19 @@ RATE_LIMIT_ENFORCE = os.getenv("RATE_LIMIT_ENFORCE", "false").lower() in ("1", "
 
 
 # =============================================================================
+# BILLING — Stripe (subscriptions)
+# =============================================================================
+# Secret key + webhook signing secret from the Stripe dashboard. Price IDs are
+# the recurring Price objects for each paid plan (create them in Stripe, one per
+# tier). All optional at import so the app boots before billing is configured;
+# the billing router returns 503 until STRIPE_SECRET_KEY is set.
+STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_PRICE_PRO = os.getenv("STRIPE_PRICE_PRO", "")
+STRIPE_PRICE_PREMIUM = os.getenv("STRIPE_PRICE_PREMIUM", "")
+
+
+# =============================================================================
 # DEFAULTS (fallback values used by legacy code paths)
 # =============================================================================
 SEARCH_KEYWORDS = ["marketing", "content", "automation"]
