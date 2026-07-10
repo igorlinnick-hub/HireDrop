@@ -77,7 +77,13 @@ window.addEventListener("message", function (e) {
       { type: "START_CAMPAIGN", filters: e.data.filters || {} },
       function (resp) {
         window.postMessage(
-          { type: "HIREDROP_CAMPAIGN_STARTED", ok: !!(resp && resp.started), error: resp && resp.error },
+          {
+            type: "HIREDROP_CAMPAIGN_STARTED",
+            ok: !!(resp && resp.started),
+            error: resp && resp.error,
+            message: resp && resp.message,
+            platform: resp && resp.platform,
+          },
           "*"
         );
       }
