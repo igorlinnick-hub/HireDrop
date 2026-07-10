@@ -18,6 +18,11 @@
     "https://web-production-db45.up.railway.app/*",
     "https://*.indeed.com/*",
     "https://*.ziprecruiter.com/*",
+    "https://*.glassdoor.com/*",
+    "https://wellfound.com/*",
+    "https://*.monster.com/*",
+    "https://*.careerbuilder.com/*",
+    "https://*.dice.com/*",
     "https://hiredrop.io/*",
     "https://msxjcjzmfruizbgkssxo.supabase.co/*"
   ],
@@ -39,6 +44,17 @@
         "https://*.ziprecruiter.com/*"
       ],
       "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.glassdoor.com/*",
+        "https://wellfound.com/*",
+        "https://*.monster.com/*",
+        "https://*.careerbuilder.com/*",
+        "https://*.dice.com/*"
+      ],
+      "js": ["connect.js"],
       "run_at": "document_idle"
     },
     {
