@@ -80,33 +80,61 @@
     return "unknown";
   }
 
-  async function report() {
-    const platform = detectPlatform();
-    if (!platform) return;
+  let lastStored = null; // last status THIS page-load wrote (avoid redundant writes)
 
-    // The nav/header can render after document_idle — poll for a definitive answer.
-    let status = detectAuth(platform);
-    for (let i = 0; i < 8 && status === "unknown"; i++) {
-      await new Promise((r) => setTimeout(r, 1000));
-      status = detectAuth(platform);
-    }
-    if (status === "unknown") return;
-
+  async function store(platform, status) {
+    if (status === "unknown" || status === lastStored) return;
     try {
-      const store = await chrome.storage.local.get("platformConnections");
-      const conns = store.platformConnections || {};
-      // Monster and CareerBuilder share one identity account (merged 2024) — but only
-      // propagate the POSITIVE signal. Being logged out of one page doesn't prove the
-      // other is (separate cookies per domain).
+      const s = await chrome.storage.local.get("platformConnections");
+      const conns = s.platformConnections || {};
       conns[platform] = { status, checkedAt: new Date().toISOString() };
       await chrome.storage.local.set({ platformConnections: conns });
+      lastStored = status;
       chrome.runtime.sendMessage({ type: "PLATFORM_AUTH", platform, status }).catch(() => {});
     } catch { /* extension context gone — ignore */ }
   }
 
+  // Login flows are SPAs / OAuth redirects that often change the page WITHOUT a
+  // full reload — a one-shot check at load misses the moment the user signs in
+  // (observed live: Wellfound/Monster only flipped after a manual F5). So:
+  //   1. poll every 3s for the first 3 minutes after load (login takes a while),
+  //   2. after that, re-check on tab focus and on URL changes (cheap, event-driven),
+  //   3. write to storage only when the definitive status CHANGES.
+  function watch(platform) {
+    const ACTIVE_MS = 3 * 60 * 1000;
+    const start = Date.now();
+
+    const tick = () => store(platform, detectAuth(platform));
+
+    const interval = setInterval(() => {
+      if (Date.now() - start > ACTIVE_MS) { clearInterval(interval); return; }
+      tick();
+    }, 3000);
+
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+
+    let lastUrl = window.location.href;
+    setInterval(() => {
+      if (window.location.href !== lastUrl) {
+        lastUrl = window.location.href;
+        // Give the new view a moment to render, then check twice.
+        setTimeout(tick, 1500);
+        setTimeout(tick, 4000);
+      }
+    }, 1000);
+
+    tick();
+  }
+
+  function init() {
+    const platform = detectPlatform();
+    if (!platform) return;
+    watch(platform);
+  }
+
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", report);
+    document.addEventListener("DOMContentLoaded", init);
   } else {
-    setTimeout(report, 500);
+    setTimeout(init, 500);
   }
 })();
