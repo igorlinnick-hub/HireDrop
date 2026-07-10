@@ -18,6 +18,7 @@ from app.routers import (
     extension,
     jobs,
     profile,
+    promo,
     tools,
 )
 
@@ -98,6 +99,7 @@ app.include_router(activity.router, prefix="/api/v1")
 app.include_router(extension.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(email_processor.router, prefix="/api/v1")
+app.include_router(promo.router, prefix="/api/v1")
 
 
 @app.get("/health")
