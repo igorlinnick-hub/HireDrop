@@ -425,12 +425,11 @@ function pickPrimaryPlatform(platforms) {
   return list.find((p) => AUTO_APPLY_PLATFORMS.includes(p)) || "indeed";
 }
 
-// Login / sign-up landing page per platform. We can't create the account for the
-// user, but we send them to the right place — these pages offer both log in and
-// "create account", so a brand-new user can register from here.
+// Unified auth page per platform (enter email → logs in or creates an account),
+// so a brand-new user can register from here. URLs verified live 2026-07-10.
 function platformLoginUrl(platform) {
   if (platform === "ziprecruiter") return "https://www.ziprecruiter.com/authn/login?realm=candidates";
-  return "https://secure.indeed.com/account/login";
+  return "https://secure.indeed.com/auth";
 }
 
 function platformLabel(platform) {
