@@ -26,7 +26,13 @@
     const host = window.location.hostname;
     if (host.includes("glassdoor.")) return "glassdoor";
     if (host.includes("wellfound.com")) return "wellfound";
-    if (host.includes("monster.com")) return "monster"; // includes identity.monster.com
+    // identity.monster.com serves logins for BOTH Monster and CareerBuilder
+    // (shared identity since the 2024 merger) — being there proves someone is
+    // authenticating, NOT that Monster is logged out. Attributing it to Monster
+    // could wrongly downgrade a connected Monster account mid-CB-login. Skip it;
+    // detection happens on the destination sites after the redirect back.
+    if (host === "identity.monster.com") return null;
+    if (host.includes("monster.com")) return "monster";
     if (host.includes("careerbuilder.com")) return "careerbuilder";
     if (host.includes("dice.com")) return "dice";
     return null;
@@ -44,7 +50,6 @@
   }
 
   function detectAuth(platform) {
-    const host = window.location.hostname;
     const path = window.location.pathname;
 
     if (platform === "glassdoor") {
@@ -60,8 +65,6 @@
     }
 
     if (platform === "monster") {
-      // The identity host IS the login/registration flow — being here means logged out.
-      if (host.includes("identity.monster.com")) return "logged_out";
       if (hasButtonWithText(/^(log in|sign in)$/i)) return "logged_out";
       return pageRendered() ? "connected" : "unknown";
     }
