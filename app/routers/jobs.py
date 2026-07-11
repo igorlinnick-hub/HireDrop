@@ -106,3 +106,25 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
 def patch_job_status(job_id: str, req: JobStatusUpdate, user=Depends(get_current_user)):
     jobs_db.update_job_status(user.id, job_id, req.status)
     return {"updated": True, "job_id": job_id, "status": req.status}
+
+
+@router.post("/jobs/{job_id}/tailor")
+def tailor_job(job_id: str, user=Depends(get_current_user)):
+    """On-demand tailoring for one job — the dashboard "Tailor for this job" button,
+    for discovery/manual applies that never hit the extension's apply-time /best call.
+    Same lazy path + gating (Premium + Apply-Mode threshold); idempotent. Returns the
+    tailored PDF URL when ready.
+    """
+    from fastapi.responses import JSONResponse
+
+    from app.db import resume as resume_storage
+    from app.routers.profile import _lazy_tailor_for_job
+
+    job = jobs_db.get_job_by_id(user.id, job_id)
+    if not job:
+        return JSONResponse(status_code=404, content={"error": "Job not found"})
+    _lazy_tailor_for_job(user, job)
+    job = jobs_db.get_job_by_id(user.id, job_id)
+    if job and job.get("tailored_resume_pdf_url"):
+        return {"tailored": True, "url": resume_storage.signed_url_from_path(job["tailored_resume_pdf_url"])}
+    return {"tailored": False, "reason": "Not eligible — Premium + strong match required, or no resume uploaded."}

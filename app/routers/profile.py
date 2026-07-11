@@ -314,15 +314,42 @@ def ats_decline(user=Depends(get_current_user)):
     return {"approved": False}
 
 
+def _store_tailored_pdf(user_id: str, job_id: str, tailored_text: str) -> None:
+    """Render + store the per-job ATS PDF from already-generated tailored text.
+    No paid AI call — used both after a fresh tailor and to rebuild a PDF whose
+    prior generation failed (so we never re-pay the Sonnet tailor for a PDF-only error).
+    """
+    from app.db import jobs as jobs_db
+    from modules.ats_pdf_generator import generate_ats_pdf
+    pdf_bytes = generate_ats_pdf(resume_text=tailored_text)
+    pdf_path = resume_storage.upload_job_tailored(user_id, job_id, pdf_bytes)
+    jobs_db.update_tailored_resume_pdf(job_id, pdf_path, user_id)
+
+
 def _lazy_tailor_for_job(user, job) -> None:
     """Economics #2 — tailor a job's resume ON DEMAND at apply time (when the
     extension fetches the best resume for this specific job), not eagerly for every
-    job discovered. Same gating as the old discovery path: Premium/admin + score ≥
-    the user's Apply-Mode threshold. Idempotent (skips if already tailored).
-    Best-effort — never raises into the resume-fetch path.
+    job discovered. Gating: Premium/admin + score ≥ the user's Apply-Mode threshold.
+    Idempotent; best-effort (never raises into the resume-fetch path).
     """
     try:
-        if job.get("tailored_resume"):
+        from app.db import jobs as jobs_db
+        job_id = job.get("id")
+        if not job_id:
+            return
+        # Re-read authoritative state — the caller's dict may be a partial column
+        # select (get_by_link fetches only id + pdf_url) and a concurrent request may
+        # have already tailored this job.
+        fresh = jobs_db.get_job_by_id(user.id, job_id) or job
+        if fresh.get("tailored_resume_pdf_url"):
+            return  # fully tailored already
+        if fresh.get("tailored_resume"):
+            # Paid text exists but the PDF step previously failed — rebuild the PDF
+            # only (no second ~$0.028 Sonnet call).
+            try:
+                _store_tailored_pdf(user.id, job_id, fresh["tailored_resume"])
+            except Exception as pdf_err:
+                print(f"[profile] tailored PDF rebuild failed: {pdf_err}", file=sys.stderr)
             return
         from app.db.subscriptions import get_tier
         if get_tier(user.id, getattr(user, "email", None)) not in ("premium", "admin"):
@@ -330,22 +357,22 @@ def _lazy_tailor_for_job(user, job) -> None:
         prof = profile_db.get_profile(user.id)
         mode = prof.get("apply_mode") or "standard"
         threshold = {"broad": 6, "standard": 7, "precise": 8}.get(mode, 7)
-        if (job.get("score") or 0) < threshold:
+        if (fresh.get("score") or 0) < threshold:
             return
         from modules.ai_cover_letter import load_resume_text
         resume_text = load_resume_text(prof.get("resume_url"))
         if not resume_text:
             return
         from modules.ai_resume_tailor import tailor_resume
-        tailored = tailor_resume(job, prof, resume_text)
+        tailored = tailor_resume(fresh, prof, resume_text)
         if not tailored:
             return
-        from app.db import jobs as jobs_db
-        jobs_db.update_tailored_resume(job["id"], tailored)
-        from modules.ats_pdf_generator import generate_ats_pdf
-        pdf_bytes = generate_ats_pdf(resume_text=tailored)
-        pdf_path = resume_storage.upload_job_tailored(user.id, job["id"], pdf_bytes)
-        jobs_db.update_tailored_resume_pdf(job["id"], pdf_path, user.id)
+        # Store the text FIRST so a later PDF/upload failure can never cause a re-tailor.
+        jobs_db.update_tailored_resume(job_id, tailored)
+        try:
+            _store_tailored_pdf(user.id, job_id, tailored)
+        except Exception as pdf_err:
+            print(f"[profile] tailored PDF step failed (text saved, won't re-tailor): {pdf_err}", file=sys.stderr)
     except Exception as e:
         print(f"[profile] lazy tailor skipped: {e}", file=sys.stderr)
 
