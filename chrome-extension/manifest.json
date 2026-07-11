@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "HireDrop — Auto-Apply on Indeed & ZipRecruiter",
+  "name": "HireDrop \u2014 Auto-Apply on Indeed & ZipRecruiter",
   "short_name": "HireDrop",
   "version": "1.3.0",
   "description": "Auto-fill Indeed applications with your resume + an AI-written cover letter. Stop, start, and limit campaigns from one dashboard.",
@@ -26,7 +26,8 @@
     "https://*.careerbuilder.com/*",
     "https://*.dice.com/*",
     "https://hiredrop.io/*",
-    "https://msxjcjzmfruizbgkssxo.supabase.co/*"
+    "https://msxjcjzmfruizbgkssxo.supabase.co/*",
+    "https://jobs.lever.co/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -45,9 +46,12 @@
         "https://*.indeed.com/*",
         "https://*.ziprecruiter.com/*",
         "https://boards.greenhouse.io/*",
-        "https://job-boards.greenhouse.io/*"
+        "https://job-boards.greenhouse.io/*",
+        "https://jobs.lever.co/*"
       ],
-      "js": ["content.js"],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     },
     {
@@ -58,14 +62,18 @@
         "https://*.careerbuilder.com/*",
         "https://*.dice.com/*"
       ],
-      "js": ["connect.js"],
+      "js": [
+        "connect.js"
+      ],
       "run_at": "document_idle"
     },
     {
       "matches": [
         "https://hiredrop.io/*"
       ],
-      "js": ["ping.js"],
+      "js": [
+        "ping.js"
+      ],
       "run_at": "document_idle"
     }
   ],

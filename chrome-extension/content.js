@@ -23,6 +23,7 @@
     const host = window.location.hostname;
     if (host.includes("ziprecruiter.com")) return "ziprecruiter";
     if (host.includes("greenhouse.io")) return "greenhouse";
+    if (host.includes("lever.co")) return "lever";
     return "indeed";
   }
 
@@ -590,6 +591,13 @@
         'input[id*="last_name" i]',
         'input[id="last_name"]',
         'input[autocomplete="family-name"]',
+      ],
+      fullName: [
+        'input[name="name"]',
+        'input[id="name"]',
+        'input[name*="full_name" i]',
+        'input[name*="fullName" i]',
+        'input[autocomplete="name"]',
       ],
       email: [
         'input[type="email"]',
@@ -1866,6 +1874,8 @@
       'button[data-testid="continue-button"]',
       'button[data-testid="submit-button"]',
       "button.ia-continueButton",
+      "button#btn-submit",                          // Lever
+      'button[class*="template-btn-submit"]',       // Lever
       'button[aria-label*="Continue"]',
       'button[aria-label*="Submit"]',
       'button[aria-label*="Review"]',
@@ -2435,31 +2445,38 @@
   // Reuses the universal filler helpers (findFieldBySelectorsOrLabel, screener
   // answerers, resume upload, classifyFormButton) — no board-specific navigation.
   // =========================================================================
-  async function phase_greenhouse() {
+  async function phase_ats(platform) {
     if (!(await isCampaignRunning())) return;
+    const label = platform === "lever" ? "Lever" : "Greenhouse";
 
-    const count = await getPlatformCount("greenhouse");
+    const count = await getPlatformCount(platform);
     if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
-      log("Greenhouse daily limit reached. Stopping.", "");
+      log(`${label} daily limit reached. Stopping.`, "");
       await sendMsg({ type: "STOP_CAMPAIGN" });
       return;
     }
 
-    const jobTitle = (document.querySelector("h1")?.textContent || "").replace(/\s+/g, " ").trim();
+    // Job title: Greenhouse h1 = title; Lever h1 = company, title in .posting-headline h2
+    let jobTitle = "";
+    if (platform === "lever") {
+      jobTitle = (document.querySelector('.posting-headline h2, [class*="posting-headline"] h2')?.textContent || document.title.split(" - ")[1] || "").replace(/\s+/g, " ").trim();
+    }
+    if (!jobTitle) jobTitle = (document.querySelector("h1")?.textContent || "").replace(/\s+/g, " ").trim();
+
     let jobCompany = "";
     const cm = window.location.pathname.match(/^\/(?:embed\/[^\/]+|([^\/]+))/);
     if (cm && cm[1]) jobCompany = cm[1].replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-    const descEl = document.querySelector('.job__description, #content, [class*="description" i], main');
+    const descEl = document.querySelector('.job__description, .posting-page, #content, [class*="description" i], main');
     const jobDesc = (descEl?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 1200);
     const jobUrl = window.location.href.split("?")[0];
 
-    if (!jobTitle) { log("Greenhouse: no job title — skipping", "err"); return; }
+    if (!jobTitle) { log(`${label}: no job title — skipping`, "err"); return; }
 
     // Never re-apply
     const applied = await getAppliedUrls();
     if (applied.has(jobUrl)) { log(`${jobTitle} — already applied, skipping`, ""); return; }
 
-    log(`Greenhouse job: ${jobTitle} @ ${jobCompany}`, "");
+    log(`${label} job: ${jobTitle} @ ${jobCompany}`, "");
 
     // Fit gate (M1) — same selective decision layer as the boards
     const fit = await sendMsg({ type: "ASSESS_FIT", data: { job_title: jobTitle, company: jobCompany, description: jobDesc } });
@@ -2485,16 +2502,23 @@
 
     const profile = (await chrome.storage.local.get("profile")).profile || {};
 
-    log("Greenhouse — filling application...", "");
+    log(`${label} — filling application...`, "");
     logBackend("Application form detected — filling fields", "info");
     logFormDiagnostic();
 
     const fillField = async (name, val) => {
       const el = findFieldBySelectorsOrLabel(name);
-      if (el && !(el.value || "").trim() && val) { await typeValue(el, val); await sleep(humanDelay(1500, 3000)); }
+      if (el && !(el.value || "").trim() && val) { await typeValue(el, val); await sleep(humanDelay(1500, 3000)); return true; }
+      return false;
     };
-    await fillField("firstName", profile.name || "");
+    // Greenhouse splits first/last; Lever uses a single "name" field. Try both —
+    // fill the single full-name field only if the split fields aren't present.
+    const filledFirst = await fillField("firstName", profile.name || "");
     await fillField("lastName", profile.last_name || "");
+    if (!filledFirst) {
+      const fullName = [profile.name, profile.last_name].filter(Boolean).join(" ");
+      await fillField("fullName", fullName);
+    }
     await fillField("email", profile.email || "");
     await fillField("phone", profile.phone || "");
 
@@ -2514,9 +2538,9 @@
     if (!(await isCampaignRunning())) return;
 
     const action = classifyFormButton();
-    if (action.label) log(`Greenhouse button: "${action.label}" → ${action.submit ? "SUBMIT" : "continue?"}`, "");
+    if (action.label) log(`${label} button: "${action.label}" → ${action.submit ? "SUBMIT" : "continue?"}`, "");
     const submitBtn = findFormButton();
-    if (!submitBtn) { log("Greenhouse: submit button not found — skipping", "err"); return; }
+    if (!submitBtn) { log(`${label}: submit button not found — skipping`, "err"); return; }
 
     await sleep(humanDelay(2000, 5000));
     if (!(await isCampaignRunning())) { log("Campaign stopped — not submitting", ""); return; }
@@ -2536,7 +2560,7 @@
     await sendMsg({
       type: "APPLICATION_SAVED",
       data: {
-        job_title: jobTitle, company: jobCompany, platform: "greenhouse",
+        job_title: jobTitle, company: jobCompany, platform,
         job_url: jobUrl, cover_letter: coverLetter,
         status: result.verified ? "applied" : "applied_unconfirmed",
         verified: result.verified, verify_signal: result.signal,
@@ -2553,6 +2577,13 @@
     return "unknown";
   }
 
+  function detectPhaseLever() {
+    // Lever apply form lives at /{company}/{uuid}/apply with name/email/resume fields.
+    if (!/\/apply\/?$/.test(window.location.pathname)) return "unknown";
+    const hasCoreField = document.querySelector('input[name="name"], input[name="email"], input[type="file"][name="resume"]');
+    return hasCoreField ? "form" : "unknown";
+  }
+
   // =========================================================================
   // Phase detection & routing
   // =========================================================================
@@ -2560,6 +2591,7 @@
   function detectPhase() {
     const platform = detectPlatform();
     if (platform === "greenhouse") return detectPhaseGreenhouse();
+    if (platform === "lever") return detectPhaseLever();
     if (platform === "ziprecruiter") return detectPhaseZipRecruiter();
     return detectPhaseIndeed();
   }
@@ -2736,13 +2768,15 @@
         case "detail":
           await phase2_jobDetail();
           break;
-        case "form":
-          if (detectPlatform() === "greenhouse") {
-            await phase_greenhouse();
+        case "form": {
+          const _p = detectPlatform();
+          if (_p === "greenhouse" || _p === "lever") {
+            await phase_ats(_p);
           } else {
             await phase3_fillForm();
           }
           break;
+        }
         default:
           // Unknown page. On ZipRecruiter this is usually /jobseeker/home or a
           // session redirect — recover to the search instead of stalling forever.
