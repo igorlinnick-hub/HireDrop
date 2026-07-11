@@ -246,6 +246,13 @@
   // warmup the first time content.js sees a running campaign on this
   // page, then mark it done so reloads/page transitions don't re-warmup.
   async function sessionWarmup() {
+    // Warmup (and its navigate-to-search tail) is a BOARD behavior. On an ATS page
+    // (greenhouse/lever) it must never run — the Indeed branch would navigate the
+    // ATS tab away to the board search URL, killing the apply we came here for.
+    {
+      const p = detectPlatform();
+      if (p === "greenhouse" || p === "lever") return;
+    }
     const flag = await chrome.storage.local.get("campaignWarmedUp");
     if (flag.campaignWarmedUp) return;
 
