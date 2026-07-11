@@ -98,7 +98,7 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
                     from app.db import resume as resume_storage
                     pdf_bytes = generate_ats_pdf(resume_text=tailored)
                     pdf_path = resume_storage.upload_job_tailored(user.id, job_id, pdf_bytes)
-                    jobs_db.update_tailored_resume_pdf(job_id, pdf_path)
+                    jobs_db.update_tailored_resume_pdf(job_id, pdf_path, user.id)
                 except Exception as pdf_err:
                     print(f"[jobs] per-job PDF skipped: {pdf_err}")
         saved += 1

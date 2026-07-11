@@ -20,6 +20,8 @@ _DEFAULTS = {
     "ats_resume_url": None,
     "ats_approved": False,
     "ats_checked_at": None,
+    "apply_mode": "standard",
+    "ideal_job_description": None,
 }
 
 
@@ -45,10 +47,14 @@ def get_profile(user_id: str) -> dict:
         "ats_resume_url": p.get("ats_resume_url"),
         "ats_approved": p.get("ats_approved") or False,
         "ats_checked_at": p.get("ats_checked_at"),
+        "apply_mode": p.get("apply_mode") or "standard",
+        "ideal_job_description": p.get("ideal_job_description") or None,
     }
 
 
 def update_profile(user_id: str, data: dict) -> dict:
+    # apply_mode and ideal_job_description are managed via update_apply_mode() —
+    # intentionally excluded here so profile saves never silently reset the apply mode.
     payload = {
         "name": data.get("name", ""),
         "last_name": data.get("last_name", ""),
@@ -61,6 +67,16 @@ def update_profile(user_id: str, data: dict) -> dict:
     }
     (get_supabase().table("profiles").update(payload).eq("user_id", user_id).execute())
     return get_profile(user_id)
+
+
+def update_apply_mode(user_id: str, mode: str, ideal_job_description: str | None = None) -> None:
+    """Switch apply mode. Clears ideal_job_description when switching away from precise."""
+    payload: dict = {"apply_mode": mode}
+    if mode == "precise" and ideal_job_description:
+        payload["ideal_job_description"] = ideal_job_description.strip() or None
+    elif mode != "precise":
+        payload["ideal_job_description"] = None
+    get_supabase().table("profiles").update(payload).eq("user_id", user_id).execute()
 
 
 def update_ats(user_id: str, data: dict) -> None:

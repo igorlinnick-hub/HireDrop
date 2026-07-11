@@ -112,11 +112,11 @@ def update_tailored_resume(job_id: str, tailored_resume: str) -> None:
         print(f"[jobs] update_tailored_resume skipped: {e}")
 
 
-def update_tailored_resume_pdf(job_id: str, pdf_path: str) -> None:
+def update_tailored_resume_pdf(job_id: str, pdf_path: str, user_id: str) -> None:
     try:
         get_supabase().table("jobs").update({
             "tailored_resume_pdf_url": pdf_path,
-        }).eq("id", job_id).execute()
+        }).eq("id", job_id).eq("user_id", user_id).execute()
     except Exception as e:
         print(f"[jobs] update_tailored_resume_pdf skipped: {e}")
 

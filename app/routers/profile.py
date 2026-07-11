@@ -39,6 +39,17 @@ def update_profile(profile: ProfileUpdate, user=Depends(get_current_user)):
     return {"message": "Profile saved", "profile": updated}
 
 
+@router.post("/profile/apply-mode")
+def update_apply_mode(body: dict, user=Depends(get_current_user)):
+    """Switch apply mode without touching the rest of the profile."""
+    mode = body.get("apply_mode", "standard")
+    if mode not in ("broad", "standard", "precise"):
+        return JSONResponse(status_code=400, content={"error": "Invalid mode. Use: broad | standard | precise"})
+    ideal = (body.get("ideal_job_description") or "").strip() or None
+    profile_db.update_apply_mode(user.id, mode, ideal)
+    return {"saved": True, "apply_mode": mode}
+
+
 @router.post("/profile/prefs")
 def update_search_prefs(prefs: SearchPrefsUpdate, user=Depends(get_current_user)):
     """Partial update — only search preferences, does not touch name/phone/etc."""
@@ -253,12 +264,18 @@ async def ats_generate_from_text(body: dict, user=Depends(get_current_user)):
         return JSONResponse(status_code=400, content={"error": "resume_text is required"})
 
     try:
-        ats_pdf_bytes = generate_ats_pdf(resume_text=resume_text)
+        data = structure_resume_data(resume_text)
+        ats_pdf_bytes = generate_ats_pdf(data=data)
+        ats_docx_bytes = generate_ats_docx(data=data)
     except Exception as e:
         print(f"[profile] PDF generation failed: {e}", file=sys.stderr)
         return JSONResponse(status_code=500, content={"error": "PDF generation failed"})
 
     ats_path = resume_storage.upload_ats(user.id, ats_pdf_bytes)
+    try:
+        resume_storage.upload_ats_docx(user.id, ats_docx_bytes)
+    except Exception as e:
+        print(f"[profile] DOCX upload failed (non-fatal): {e}", file=sys.stderr)
     profile_db.update_ats(user.id, {"ats_resume_url": ats_path})
 
     preview_url = resume_storage.signed_download_url_ats(user.id)

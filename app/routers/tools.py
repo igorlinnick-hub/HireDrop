@@ -145,6 +145,9 @@ def _assess_fit_gate(user) -> None:
         raise HTTPException(status_code=429, detail="Daily fit-assessment limit reached.")
 
 
+_BROAD_DAILY_CAP = int(os.getenv("BROAD_DAILY_CAP", "40"))
+
+
 @router.post("/tools/assess-fit")
 def assess_fit_endpoint(req: AssessFitRequest, user=Depends(get_current_user)):
     """Decide whether the candidate should apply to a job (Fit Engine M1).
@@ -152,9 +155,25 @@ def assess_fit_endpoint(req: AssessFitRequest, user=Depends(get_current_user)):
     Called by the extension BEFORE clicking Apply so it can skip clearly-wrong-fit jobs
     and record why. Capped per user/day (its own budget, not the letters quota) so it
     can't be looped to burn Anthropic spend, but generous enough for real campaigns.
+
+    Broad mode is additionally capped at BROAD_DAILY_CAP applications/day to prevent
+    spam patterns that trigger Indeed's anti-bot detection at the platform level.
     """
     _assess_fit_gate(user)
     profile = get_profile(user.id)
+
+    if (profile.get("apply_mode") or "standard") == "broad":
+        today_count = apps_db.count_today(user.id)
+        if today_count >= _BROAD_DAILY_CAP:
+            return {
+                "fit_score": 0,
+                "decision": "skip",
+                "reason": f"Broad mode daily limit reached ({_BROAD_DAILY_CAP} applications). Resumes tomorrow.",
+                "concerns": ["Daily Broad cap hit — account health protection"],
+                "judged": True,
+                "apply_mode": "broad",
+            }
+
     result = assess_fit(
         job={"title": req.job_title, "company": req.company, "description": req.description},
         profile=profile,
