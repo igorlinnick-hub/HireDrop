@@ -1958,11 +1958,31 @@
     return null;
   }
 
+  // Self-reported snapshot of the apply form's structure — logged to the activity
+  // feed so we can understand a platform's modal WITHOUT probing the site externally
+  // (which trips anti-bot). Compact + truncated on purpose.
+  function logFormDiagnostic() {
+    try {
+      const vis = (el) => el && el.offsetParent !== null;
+      const dialog = document.querySelector('[role="dialog"]');
+      const scope = dialog || document;
+      const textInputs = Array.from(scope.querySelectorAll('input[type="text"],input[type="email"],input[type="tel"],input:not([type])')).filter(vis).length;
+      const textareas = Array.from(scope.querySelectorAll("textarea")).filter(vis).length;
+      const fileInputs = scope.querySelectorAll('input[type="file"]').length;
+      const btns = Array.from(scope.querySelectorAll("button")).filter(vis)
+        .map((b) => (b.textContent || b.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim())
+        .filter(Boolean).slice(0, 8).join(" | ");
+      const path = window.location.pathname + window.location.search.slice(0, 30);
+      log(`FORM DIAG [${detectPlatform()}] dialog=${!!dialog} inputs=${textInputs} textarea=${textareas} file=${fileInputs} btns=[${btns}] path=${path}`, "");
+    } catch (e) { log(`FORM DIAG error: ${e.message}`, ""); }
+  }
+
   async function phase3_fillForm() {
     if (!(await isCampaignRunning())) return;
 
     log("Application form detected — filling fields...", "");
     logBackend("Application form detected — filling fields", "info");
+    logFormDiagnostic();
 
     // Get profile and cover letter
     const storageData = await chrome.storage.local.get([
