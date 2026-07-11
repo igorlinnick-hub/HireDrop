@@ -22,6 +22,7 @@
   function detectPlatform() {
     const host = window.location.hostname;
     if (host.includes("ziprecruiter.com")) return "ziprecruiter";
+    if (host.includes("greenhouse.io")) return "greenhouse";
     return "indeed";
   }
 
@@ -578,12 +579,16 @@
         'input[name*="firstName" i]',
         'input[id*="firstName" i]',
         'input[name*="first_name" i]',
+        'input[id*="first_name" i]',
+        'input[id="first_name"]',
         'input[autocomplete="given-name"]',
       ],
       lastName: [
         'input[name*="lastName" i]',
         'input[id*="lastName" i]',
         'input[name*="last_name" i]',
+        'input[id*="last_name" i]',
+        'input[id="last_name"]',
         'input[autocomplete="family-name"]',
       ],
       email: [
@@ -1961,12 +1966,16 @@
   }
 
   function findResumeInput() {
+    // Direct id/name match first (Greenhouse uses id="resume" with label "Attach",
+    // Lever uses name="resume") — cheaper and more reliable than text sniffing.
+    const byId = document.querySelector('input[type="file"][id*="resume" i], input[type="file"][name*="resume" i], input[type="file"][id*="cv" i]');
+    if (byId) return byId;
     // File inputs for resume upload
     const inputs = document.querySelectorAll('input[type="file"]');
     for (const input of inputs) {
       const parent = input.closest("div, label, fieldset");
       const text = parent?.textContent?.toLowerCase() || "";
-      if (text.includes("resume") || text.includes("cv")) return input;
+      if (text.includes("resume") || text.includes("cv") || text.includes("attach")) return input;
     }
     // Any file input as fallback
     if (inputs.length === 1) return inputs[0];
@@ -2415,11 +2424,142 @@
   }
 
   // =========================================================================
+  // GREENHOUSE — external ATS single-page apply
+  //
+  // The biggest lever in the roadmap: most boards' "external apply" jobs funnel
+  // into a handful of ATS providers. One Greenhouse recipe covers thousands of
+  // companies. Standard hosted form (job-boards.greenhouse.io / boards.greenhouse.io):
+  //   #first_name #last_name #email #phone (tel) #resume (file, label "Attach"),
+  //   #question_* custom fields, submit button "Submit application". One page.
+  //
+  // Reuses the universal filler helpers (findFieldBySelectorsOrLabel, screener
+  // answerers, resume upload, classifyFormButton) — no board-specific navigation.
+  // =========================================================================
+  async function phase_greenhouse() {
+    if (!(await isCampaignRunning())) return;
+
+    const count = await getPlatformCount("greenhouse");
+    if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
+      log("Greenhouse daily limit reached. Stopping.", "");
+      await sendMsg({ type: "STOP_CAMPAIGN" });
+      return;
+    }
+
+    const jobTitle = (document.querySelector("h1")?.textContent || "").replace(/\s+/g, " ").trim();
+    let jobCompany = "";
+    const cm = window.location.pathname.match(/^\/(?:embed\/[^\/]+|([^\/]+))/);
+    if (cm && cm[1]) jobCompany = cm[1].replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+    const descEl = document.querySelector('.job__description, #content, [class*="description" i], main');
+    const jobDesc = (descEl?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 1200);
+    const jobUrl = window.location.href.split("?")[0];
+
+    if (!jobTitle) { log("Greenhouse: no job title — skipping", "err"); return; }
+
+    // Never re-apply
+    const applied = await getAppliedUrls();
+    if (applied.has(jobUrl)) { log(`${jobTitle} — already applied, skipping`, ""); return; }
+
+    log(`Greenhouse job: ${jobTitle} @ ${jobCompany}`, "");
+
+    // Fit gate (M1) — same selective decision layer as the boards
+    const fit = await sendMsg({ type: "ASSESS_FIT", data: { job_title: jobTitle, company: jobCompany, description: jobDesc } });
+    if (fit && fit.decision === "skip") {
+      logBackend(`⏭️ Skipped (fit ${fit.fit_score ?? "?"}): ${jobTitle} @ ${jobCompany} — ${(fit.reason || "").slice(0, 140)}`, "info");
+      return;
+    }
+    if (fit && fit.judged) logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
+
+    // Cover letter
+    let coverLetter = "";
+    try {
+      const cl = await Promise.race([
+        sendMsg({ type: "GENERATE_COVER_LETTER", data: { job_title: jobTitle, company: jobCompany, description: jobDesc } }),
+        sleep(15000).then(() => ({ error: "timeout" })),
+      ]);
+      if (cl && cl.letter) coverLetter = cl.letter;
+    } catch { /* template fallback */ }
+    await chrome.storage.local.set({
+      currentJobInfo: { title: jobTitle, company: jobCompany, description: jobDesc, url: jobUrl },
+      generatedCoverLetter: coverLetter,
+    });
+
+    const profile = (await chrome.storage.local.get("profile")).profile || {};
+
+    log("Greenhouse — filling application...", "");
+    logBackend("Application form detected — filling fields", "info");
+    logFormDiagnostic();
+
+    const fillField = async (name, val) => {
+      const el = findFieldBySelectorsOrLabel(name);
+      if (el && !(el.value || "").trim() && val) { await typeValue(el, val); await sleep(humanDelay(1500, 3000)); }
+    };
+    await fillField("firstName", profile.name || "");
+    await fillField("lastName", profile.last_name || "");
+    await fillField("email", profile.email || "");
+    await fillField("phone", profile.phone || "");
+
+    const resumeInput = findResumeInput();
+    if (resumeInput && !resumeInput.files?.length) {
+      try { await uploadResume(resumeInput); await sleep(humanDelay(2000, 4000)); }
+      catch (e) { log("Resume upload failed: " + e.message, "err"); }
+    }
+
+    // Screener questions — reuse the generic answerers (Loop 4 core)
+    await fillRadioQuestions();
+    await fillTextQuestions();
+    await fillSelectQuestions();
+    await fillComboboxes();
+    await sleep(humanDelay(1500, 2500));
+
+    if (!(await isCampaignRunning())) return;
+
+    const action = classifyFormButton();
+    if (action.label) log(`Greenhouse button: "${action.label}" → ${action.submit ? "SUBMIT" : "continue?"}`, "");
+    const submitBtn = findFormButton();
+    if (!submitBtn) { log("Greenhouse: submit button not found — skipping", "err"); return; }
+
+    await sleep(humanDelay(2000, 5000));
+    if (!(await isCampaignRunning())) { log("Campaign stopped — not submitting", ""); return; }
+
+    // Record BEFORE the click — submit navigates to the thank-you page.
+    await addAppliedUrl(jobUrl);
+    if (shouldMisclick()) await performMisclick(submitBtn);
+    await humanClick(submitBtn);
+
+    const result = await waitForSubmissionConfirmation(20000);
+    if (result.verified) {
+      log(`Applied (verified ${result.signal}): ${jobTitle} @ ${jobCompany}`, "ok");
+      logBackend(`✅ Applied: ${jobTitle} @ ${jobCompany}`, "ok");
+    } else {
+      logBackend(`⚠️ Applied (unconfirmed): ${jobTitle} @ ${jobCompany}`, "warn");
+    }
+    await sendMsg({
+      type: "APPLICATION_SAVED",
+      data: {
+        job_title: jobTitle, company: jobCompany, platform: "greenhouse",
+        job_url: jobUrl, cover_letter: coverLetter,
+        status: result.verified ? "applied" : "applied_unconfirmed",
+        verified: result.verified, verify_signal: result.signal,
+      },
+    });
+  }
+
+  function detectPhaseGreenhouse() {
+    // The apply form is inline on the job page.
+    const hasCoreField = document.querySelector('#first_name, #email, input[id="first_name"], input[type="file"]');
+    const hasSubmit = Array.from(document.querySelectorAll("button, input[type=submit]"))
+      .some((b) => /submit application/i.test((b.textContent || b.value || "")));
+    if (hasCoreField && (hasSubmit || document.querySelector("h1"))) return "form";
+    return "unknown";
+  }
+
+  // =========================================================================
   // Phase detection & routing
   // =========================================================================
 
   function detectPhase() {
     const platform = detectPlatform();
+    if (platform === "greenhouse") return detectPhaseGreenhouse();
     if (platform === "ziprecruiter") return detectPhaseZipRecruiter();
     return detectPhaseIndeed();
   }
@@ -2597,7 +2737,11 @@
           await phase2_jobDetail();
           break;
         case "form":
-          await phase3_fillForm();
+          if (detectPlatform() === "greenhouse") {
+            await phase_greenhouse();
+          } else {
+            await phase3_fillForm();
+          }
           break;
         default:
           // Unknown page. On ZipRecruiter this is usually /jobseeker/home or a

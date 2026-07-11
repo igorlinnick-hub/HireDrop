@@ -18,6 +18,8 @@
     "https://web-production-db45.up.railway.app/*",
     "https://*.indeed.com/*",
     "https://*.ziprecruiter.com/*",
+    "https://boards.greenhouse.io/*",
+    "https://job-boards.greenhouse.io/*",
     "https://*.glassdoor.com/*",
     "https://wellfound.com/*",
     "https://*.monster.com/*",
@@ -41,7 +43,9 @@
     {
       "matches": [
         "https://*.indeed.com/*",
-        "https://*.ziprecruiter.com/*"
+        "https://*.ziprecruiter.com/*",
+        "https://boards.greenhouse.io/*",
+        "https://job-boards.greenhouse.io/*"
       ],
       "js": ["content.js"],
       "run_at": "document_idle"
