@@ -1273,9 +1273,18 @@
       return;
     }
 
-    // Dedup
+    // Dedup — session (processedJobKeys) AND cross-session (appliedUrls). Without
+    // the appliedUrls check a job applied in a PREVIOUS campaign got re-applied on
+    // the next run — a real duplicate to the employer (seen live: Sushi House twice).
     const dedupeKey = jobUrl.split("?")[0];
     {
+      const appliedSet = await getAppliedUrls();
+      if (appliedSet.has(dedupeKey) || appliedSet.has(jobUrl)) {
+        log(`${jobTitle} — already applied in a previous run, skipping`, "");
+        logBackend(`Skip (already applied): ${jobTitle} @ ${jobCompany}`, "info");
+        await skipToNextJob();
+        return;
+      }
       const seen = await chrome.storage.local.get("processedJobKeys");
       const keys = seen.processedJobKeys || [];
       if (keys.includes(dedupeKey)) {
