@@ -898,6 +898,28 @@
     await chrome.storage.local.set({ appliedUrls: urls });
   }
 
+  // A URL-independent dedup key. Board job URLs carry volatile params (ZR's lk=,
+  // tracking) so the same posting can present different URLs across runs. Keying by
+  // title|company catches the same job regardless — the robust cross-session guard.
+  function jobDedupKey(title, company) {
+    return `${(title || "").toLowerCase().replace(/\s+/g, " ").trim()}|${(company || "").toLowerCase().replace(/\s+/g, " ").trim()}`;
+  }
+
+  async function getAppliedJobKeys() {
+    const data = await chrome.storage.local.get("appliedJobKeys");
+    return new Set(data.appliedJobKeys || []);
+  }
+
+  async function addAppliedJobKey(title, company) {
+    const key = jobDedupKey(title, company);
+    if (!key || key === "|") return;
+    const data = await chrome.storage.local.get("appliedJobKeys");
+    const keys = data.appliedJobKeys || [];
+    if (!keys.includes(key)) keys.push(key);
+    if (keys.length > 1000) keys.splice(0, keys.length - 1000);
+    await chrome.storage.local.set({ appliedJobKeys: keys });
+  }
+
   // Increment the local application count from the CONTENT SCRIPT (not the service
   // worker). MV3 service workers can run stale code after an extension reload, which
   // left the count at 0 despite real submissions. content.js reloads reliably on
@@ -1294,7 +1316,8 @@
     const dedupeKey = jobUrl.split("?")[0];
     {
       const appliedSet = await getAppliedUrls();
-      if (appliedSet.has(dedupeKey) || appliedSet.has(jobUrl)) {
+      const appliedJobs = await getAppliedJobKeys();
+      if (appliedSet.has(dedupeKey) || appliedSet.has(jobUrl) || appliedJobs.has(jobDedupKey(jobTitle, jobCompany))) {
         log(`${jobTitle} — already applied in a previous run, skipping`, "");
         logBackend(`Skip (already applied): ${jobTitle} @ ${jobCompany}`, "info");
         await skipToNextJob();
@@ -2188,6 +2211,7 @@
           // before an after-the-fact write runs — leaving the job un-marked and
           // re-appliable, and the count unincremented. Recording first is nav-safe.
           await addAppliedUrl(jobInfo.url || window.location.href);
+          await addAppliedJobKey(jobInfo.title, jobInfo.company);
           await recordLocalApplication(detectPlatform());
 
           if (shouldMisclick()) await performMisclick(submitBtn);
@@ -2497,9 +2521,13 @@
 
     if (!jobTitle) { log(`${label}: no job title — skipping`, "err"); return; }
 
-    // Never re-apply
+    // Never re-apply (URL or title|company)
     const applied = await getAppliedUrls();
-    if (applied.has(jobUrl)) { log(`${jobTitle} — already applied, skipping`, ""); return; }
+    const appliedJobs = await getAppliedJobKeys();
+    if (applied.has(jobUrl) || appliedJobs.has(jobDedupKey(jobTitle, jobCompany))) {
+      log(`${jobTitle} — already applied, skipping`, "");
+      return;
+    }
 
     log(`${label} job: ${jobTitle} @ ${jobCompany}`, "");
 
@@ -2572,6 +2600,7 @@
 
     // Record BEFORE the click — submit navigates to the thank-you page.
     await addAppliedUrl(jobUrl);
+    await addAppliedJobKey(jobTitle, jobCompany);
     await recordLocalApplication(platform);
     if (shouldMisclick()) await performMisclick(submitBtn);
     await humanClick(submitBtn);
