@@ -2213,6 +2213,16 @@
 
       // Check if this is the final submit step
       if (action.submit) {
+        // Review mode — fill everything but don't submit; report what's filled.
+        const reviewMode = (await chrome.storage.local.get("reviewMode")).reviewMode === true;
+        if (reviewMode) {
+          const nameEl = findFieldBySelectorsOrLabel("firstName") || findFieldBySelectorsOrLabel("fullName");
+          const emailEl = findFieldBySelectorsOrLabel("email");
+          const resumeEl = findResumeInput();
+          log(`REVIEW MODE — filled, NOT submitting: name="${nameEl?.value || ""}" email="${emailEl?.value || ""}" resume=${resumeEl?.files?.length ? resumeEl.files[0].name : "NONE"} radios=${document.querySelectorAll('input[type="radio"]:checked').length}`, "ok");
+          logBackend(`📝 Review: ${jobInfo.title} @ ${jobInfo.company} — filled, awaiting your submit`, "info");
+          return;
+        }
         log("Final step — submitting application...", "");
         // Last-look pause is longer than mid-form steps — real users
         // re-read the summary before committing.
@@ -2614,6 +2624,23 @@
     if (action.label) log(`${label} button: "${action.label}" → ${action.submit ? "SUBMIT" : "continue?"}`, "");
     const submitBtn = findFormButton();
     if (!submitBtn) { log(`${label}: submit button not found — skipping`, "err"); return; }
+
+    // Review mode (semi-auto / human-reviews-before-submit): fill everything but do
+    // NOT click submit. Report exactly what got filled so the user (or an E2E test)
+    // can confirm the form is correct before sending. Nothing is recorded/applied.
+    const reviewMode = (await chrome.storage.local.get("reviewMode")).reviewMode === true;
+    if (reviewMode) {
+      const nameEl = findFieldBySelectorsOrLabel("firstName") || findFieldBySelectorsOrLabel("fullName");
+      const emailEl = findFieldBySelectorsOrLabel("email");
+      const phoneEl = findFieldBySelectorsOrLabel("phone");
+      const resumeEl = findResumeInput();
+      const filledTextareas = Array.from(document.querySelectorAll("textarea")).filter((t) => (t.value || "").trim()).length;
+      const checkedRadios = document.querySelectorAll('input[type="radio"]:checked').length;
+      const summary = `name="${(nameEl?.value || "").slice(0, 40)}" email="${emailEl?.value || ""}" phone="${phoneEl?.value || ""}" resume=${resumeEl?.files?.length ? resumeEl.files[0].name : "NONE"} screener-textareas=${filledTextareas} radios=${checkedRadios} submitBtn="${(submitBtn.textContent || "").replace(/\s+/g, " ").trim().slice(0, 30)}"`;
+      log(`REVIEW MODE — filled, NOT submitting: ${summary}`, "ok");
+      logBackend(`📝 Review: ${jobTitle} @ ${jobCompany} — filled, awaiting your submit`, "info");
+      return; // never submits, never records applied
+    }
 
     await sleep(humanDelay(2000, 5000));
     if (!(await isCampaignRunning())) { log("Campaign stopped — not submitting", ""); return; }

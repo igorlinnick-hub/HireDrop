@@ -94,6 +94,18 @@ window.addEventListener("message", function (e) {
     chrome.runtime.sendMessage({ type: "STOP_CAMPAIGN" }, function () {});
   }
 
+  // Toggle review mode: fill applications but stop before Submit (semi-auto / the
+  // user reviews and submits). Also used for safe E2E testing (no real applications).
+  if (typeof e.data === "object" && e.data.type === "HIREDROP_SET_REVIEW") {
+    try {
+      chrome.storage.local.set({ reviewMode: e.data.on === true }, function () {
+        window.postMessage({ type: "HIREDROP_REVIEW_SET", on: e.data.on === true }, "*");
+      });
+    } catch (ex) {
+      window.postMessage({ type: "HIREDROP_REVIEW_SET", on: false, error: "context_invalidated" }, "*");
+    }
+  }
+
   // Seed the cross-run dedup set with title|company keys (lowercased, single-spaced).
   // Used to pre-mark jobs already applied to before the dedup existed, so they're
   // never re-applied. Writes chrome.storage.local directly (page context can't).
