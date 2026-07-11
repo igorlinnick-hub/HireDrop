@@ -122,9 +122,21 @@ async function apiPost(path, body, { retry = true } = {}) {
 // Profile — fetch from API, cache in chrome.storage.local
 // ---------------------------------------------------------------------------
 
+// The backend /profile has no email (email lives in Supabase auth, not the
+// profile table) — so ATS forms with a blank email field never got filled. The
+// user's email IS in the stored JWT's `email` claim; decode it and backfill.
 async function fetchAndCacheProfile() {
   try {
     const profile = await apiGet("/profile");
+    if (!profile.email) {
+      try {
+        const { supabase_token } = await chrome.storage.local.get("supabase_token");
+        if (supabase_token) {
+          const payload = JSON.parse(atob(supabase_token.split(".")[1]));
+          if (payload.email) profile.email = payload.email;
+        }
+      } catch { /* token missing/malformed — leave email empty */ }
+    }
     await chrome.storage.local.set({
       profile,
       profileCachedAt: Date.now(),

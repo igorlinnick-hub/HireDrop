@@ -896,6 +896,20 @@
     return new Set(data.appliedUrls || []);
   }
 
+  // The cached profile has no email (it lives in Supabase auth). Fall back to the
+  // stored JWT's `email` claim so ATS forms with a blank email field get filled.
+  async function resolveEmail(profile) {
+    if (profile && profile.email) return profile.email;
+    try {
+      const { supabase_token } = await chrome.storage.local.get("supabase_token");
+      if (supabase_token) {
+        const p = JSON.parse(atob(supabase_token.split(".")[1]));
+        if (p && p.email) return p.email;
+      }
+    } catch { /* no/broken token */ }
+    return "";
+  }
+
   async function addAppliedUrl(url) {
     const data = await chrome.storage.local.get("appliedUrls");
     const urls = data.appliedUrls || [];
@@ -2138,7 +2152,7 @@
       // Email
       const emEl = findFieldBySelectorsOrLabel("email");
       if (emEl && !emEl.value.trim()) {
-        await typeValue(emEl, profile.email || "");
+        await typeValue(emEl, await resolveEmail(profile));
         await sleep(humanDelay(3000, 5000));
         filledAny = true;
       }
@@ -2609,13 +2623,20 @@
       const fullName = [profile.name, profile.last_name].filter(Boolean).join(" ");
       await fillField("fullName", fullName);
     }
-    await fillField("email", profile.email || "");
+    await fillField("email", await resolveEmail(profile));
     await fillField("phone", profile.phone || "");
 
-    const resumeInput = findResumeInput();
-    if (resumeInput && !resumeInput.files?.length) {
-      try { await uploadResume(resumeInput); await sleep(humanDelay(2000, 4000)); }
-      catch (e) { log("Resume upload failed: " + e.message, "err"); }
+    // Resume: the file input can render slightly after the text fields — retry a few
+    // times before giving up, and ALWAYS log the outcome so we can see it.
+    let resumeInput = findResumeInput();
+    for (let i = 0; i < 6 && !resumeInput; i++) { await sleep(1000); resumeInput = findResumeInput(); }
+    if (resumeInput) {
+      if (!resumeInput.files?.length) {
+        try { await uploadResume(resumeInput); log("Resume attached", "ok"); await sleep(humanDelay(2000, 4000)); }
+        catch (e) { log("Resume upload failed: " + e.message, "err"); }
+      }
+    } else {
+      log(`${label}: resume file input not found`, "err");
     }
 
     // Screener questions — reuse the generic answerers (Loop 4 core)
