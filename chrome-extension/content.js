@@ -1352,7 +1352,9 @@
         const applyLinks = Array.from(panel.querySelectorAll("a")).filter(vis)
           .map((a) => (a.textContent || "").replace(/\s+/g, " ").trim())
           .filter((t) => /apply/i.test(t)).slice(0, 4).join(" | ");
-        log(`APPLY DIAG [${jobTitle.slice(0, 30)}] btns=[${btns}] applyLinks=[${applyLinks}]`, "");
+        const line = `APPLY DIAG [${jobTitle.slice(0, 30)}] btns=[${btns}] applyLinks=[${applyLinks}]`;
+        log(line, "");
+        logBackend(line, "info"); // durable on backend — survives osascript channel loss
       } catch (e) { log(`APPLY DIAG error: ${e.message}`, ""); }
       log(`${jobTitle} — no Quick Apply button found, skipping`, "");
       logBackend(`Skip (no Quick Apply button): ${jobTitle} @ ${jobCompany}`, "info");
@@ -1986,7 +1988,9 @@
         .map((b) => (b.textContent || b.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim())
         .filter(Boolean).slice(0, 8).join(" | ");
       const path = window.location.pathname + window.location.search.slice(0, 30);
-      log(`FORM DIAG [${detectPlatform()}] dialog=${!!dialog} inputs=${textInputs} textarea=${textareas} file=${fileInputs} btns=[${btns}] path=${path}`, "");
+      const line = `FORM DIAG [${detectPlatform()}] dialog=${!!dialog} inputs=${textInputs} textarea=${textareas} file=${fileInputs} btns=[${btns}] path=${path}`;
+      log(line, "");
+      logBackend(line, "info"); // durable on backend — survives osascript channel loss
     } catch (e) { log(`FORM DIAG error: ${e.message}`, ""); }
   }
 
