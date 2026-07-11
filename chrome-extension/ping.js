@@ -94,6 +94,23 @@ window.addEventListener("message", function (e) {
     chrome.runtime.sendMessage({ type: "STOP_CAMPAIGN" }, function () {});
   }
 
+  // Seed the cross-run dedup set with title|company keys (lowercased, single-spaced).
+  // Used to pre-mark jobs already applied to before the dedup existed, so they're
+  // never re-applied. Writes chrome.storage.local directly (page context can't).
+  if (typeof e.data === "object" && e.data.type === "HIREDROP_MARK_APPLIED" && Array.isArray(e.data.keys)) {
+    try {
+      chrome.storage.local.get("appliedJobKeys", function (d) {
+        const keys = d.appliedJobKeys || [];
+        for (const k of e.data.keys) { if (k && keys.indexOf(k) === -1) keys.push(k); }
+        chrome.storage.local.set({ appliedJobKeys: keys }, function () {
+          window.postMessage({ type: "HIREDROP_MARKED_APPLIED", count: keys.length }, "*");
+        });
+      });
+    } catch (ex) {
+      window.postMessage({ type: "HIREDROP_MARKED_APPLIED", count: -1, error: "context_invalidated" }, "*");
+    }
+  }
+
   // Platform account connection status (Indeed / ZipRecruiter login state).
   // Read chrome.storage.local DIRECTLY here — content.js writes it directly too,
   // so there's no need to round-trip through the service worker. This is also more
