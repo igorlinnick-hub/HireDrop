@@ -1480,21 +1480,41 @@
     return null;
   }
 
+  // A ZipRecruiter dialog is a REAL Quick Apply form only if it has form fields OR a
+  // genuine apply/submit action button. Many ZR "Quick Apply" jobs are actually
+  // external-apply: clicking Quick Apply opens a dialog with NO fields and only a
+  // "Close" button (verified live: btns=[Close | Close], inputs=0). The old heuristic
+  // ("Quick Apply" heading text) misfired on these, wasting a full phase3 cycle per
+  // job. Requiring a field or a real action button skips external jobs fast.
+  function isZipRecruiterApplyForm(d) {
+    if (!d || !d.offsetParent) return false;
+    if (d.querySelector('input[type="text"], input[type="tel"], input[type="email"], textarea, select, input[type="file"], input[name]')) {
+      return true;
+    }
+    for (const b of d.querySelectorAll("button")) {
+      if (b.offsetParent === null) continue;
+      const t = ((b.textContent || "") + " " + (b.getAttribute("aria-label") || "")).toLowerCase();
+      if (/\b(submit|apply|continue|next|send application)\b/.test(t)) return true;
+    }
+    return false;
+  }
+
+  function findZipRecruiterApplyForm() {
+    for (const d of document.querySelectorAll('[role="dialog"]')) {
+      if (isZipRecruiterApplyForm(d)) return d;
+    }
+    return null;
+  }
+
   async function waitForZipRecruiterForm(timeoutMs) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       if (!(await isCampaignRunning())) return false;
-      // Quick Apply modal: [role="dialog"] with form inputs (NOT the login/signup dialog)
-      // The login dialog has no input[type!="email"] for the form fields we care about
-      const dialogs = document.querySelectorAll('[role="dialog"]');
-      for (const d of dialogs) {
-        if (!d.offsetParent) continue;
-        // Quick Apply form has input/textarea fields or "Quick Apply" heading
-        if (d.querySelector('input[type="text"], input[type="tel"], textarea, input[name]') ||
-            /quick\s*apply/i.test(d.querySelector("h1, h2")?.textContent || "")) {
-          return true;
-        }
-      }
+      if (findZipRecruiterApplyForm()) return true;
+      // A dialog with only a Close button = external-apply job, no form to fill.
+      const anyDialog = Array.from(document.querySelectorAll('[role="dialog"]')).some((d) => d.offsetParent);
+      const onlyClose = anyDialog && !findZipRecruiterApplyForm();
+      if (onlyClose && Date.now() - start > 2500) return false; // external — skip fast
       // Redirected away to external ATS
       if (!window.location.hostname.includes("ziprecruiter.com")) return false;
       await sleep(500);
@@ -2679,15 +2699,9 @@
   function detectPhaseZipRecruiter() {
     const url = window.location.href;
 
-    // Phase 3: Quick Apply modal visible — [role="dialog"] with form inputs
-    const dialogs = document.querySelectorAll('[role="dialog"]');
-    for (const d of dialogs) {
-      if (!d.offsetParent) continue;
-      if (d.querySelector('input[type="text"], input[type="tel"], textarea, input[name]') ||
-          /quick\s*apply/i.test(d.querySelector("h1, h2")?.textContent || "")) {
-        return "form";
-      }
-    }
+    // Phase 3: a REAL Quick Apply form (fields or a genuine apply/submit button).
+    // A Close-only dialog (external-apply job) is NOT a form — don't route to phase3.
+    if (findZipRecruiterApplyForm()) return "form";
 
     // Phase 2: jobs-search page WITH lk= param (job selected, right panel populated)
     try {
