@@ -734,22 +734,12 @@ async function handleMessage(msg, sender) {
       }
       const platform = appData.platform || "indeed";
 
-      // Increment the LOCAL count FIRST, independent of the backend. content.js only
-      // sends this AFTER the application was actually submitted on the platform, so
-      // the daily cap + dashboard count must reflect it even if the backend save
-      // fails (stale token → 401, tier 429, or transient error). Previously an
-      // apiPost failure returned early here and the count stayed 0 despite a real
-      // submission — the whole ZipRecruiter run showed 0 applied.
-      const storageData = await chrome.storage.local.get(["todayCount", "platformCounts", "todayDate"]);
-      const today = new Date().toISOString().slice(0, 10);
-      let totalCount = storageData.todayDate === today ? (storageData.todayCount || 0) : 0;
-      let platformCounts = storageData.todayDate === today ? (storageData.platformCounts || {}) : {};
-      totalCount++;
-      platformCounts[platform] = (platformCounts[platform] || 0) + 1;
+      // NOTE: the LOCAL count is now incremented by content.js (recordLocalApplication)
+      // BEFORE it sends this message — because an MV3 service worker can run stale code
+      // after a reload, which left the count at 0 despite real submissions. Here we
+      // only record the "current job" and persist to the backend (best-effort). Do NOT
+      // increment the count here or it would double-count.
       await chrome.storage.local.set({
-        todayCount: totalCount,
-        platformCounts,
-        todayDate: today,
         currentJob: {
           title: appData.job_title,
           company: appData.company,
@@ -758,8 +748,6 @@ async function handleMessage(msg, sender) {
       });
       updateBadge();
 
-      // Then persist to the backend — best-effort. A failure must NOT undo the
-      // local count (the application is already out). Surface it so we can see it.
       let serverResult = null;
       try {
         serverResult = await apiPost("/applications/save", {
@@ -774,7 +762,8 @@ async function handleMessage(msg, sender) {
         addToActivityLog(`⚠️ Applied but backend save failed (${err.message}) — counted locally`, "warn");
       }
 
-      return { saved: true, todayCount: totalCount, platformCount: platformCounts[platform], job_id: serverResult?.job_id };
+      const cur = await chrome.storage.local.get("platformCounts");
+      return { saved: true, platformCount: (cur.platformCounts || {})[platform] || 0, job_id: serverResult?.job_id };
     }
 
     // ----- Cover letter generation -----

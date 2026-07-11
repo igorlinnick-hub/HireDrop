@@ -898,6 +898,21 @@
     await chrome.storage.local.set({ appliedUrls: urls });
   }
 
+  // Increment the local application count from the CONTENT SCRIPT (not the service
+  // worker). MV3 service workers can run stale code after an extension reload, which
+  // left the count at 0 despite real submissions. content.js reloads reliably on
+  // navigation, so counting here makes the daily cap + count robust regardless of SW
+  // state. background's APPLICATION_SAVED no longer increments (backend save only).
+  async function recordLocalApplication(platform) {
+    const s = await chrome.storage.local.get(["todayCount", "platformCounts", "todayDate"]);
+    const today = new Date().toISOString().slice(0, 10);
+    const totalCount = (s.todayDate === today ? (s.todayCount || 0) : 0) + 1;
+    const platformCounts = s.todayDate === today ? (s.platformCounts || {}) : {};
+    platformCounts[platform] = (platformCounts[platform] || 0) + 1;
+    await chrome.storage.local.set({ todayCount: totalCount, platformCounts, todayDate: today });
+    return platformCounts[platform];
+  }
+
   async function goToNextPage() {
     // Build the next-page URL the same way goBackToJobList() does — never click
     // Indeed's "Next" button because it generates a URL without our search params
@@ -2168,11 +2183,12 @@
         }
         const submitBtn = findFormButton();
         if (submitBtn) {
-          // Mark applied BEFORE the click: submitting can navigate the whole page
-          // (ZipRecruiter returns to results), which would kill this context before
-          // an after-the-fact addAppliedUrl runs — leaving the job un-marked and
-          // re-appliable. Recording first guarantees we never double-apply.
+          // Mark applied + count BEFORE the click: submitting can navigate the whole
+          // page (ZipRecruiter returns to results), which would kill this context
+          // before an after-the-fact write runs — leaving the job un-marked and
+          // re-appliable, and the count unincremented. Recording first is nav-safe.
           await addAppliedUrl(jobInfo.url || window.location.href);
+          await recordLocalApplication(detectPlatform());
 
           if (shouldMisclick()) await performMisclick(submitBtn);
           await humanClick(submitBtn);
@@ -2556,6 +2572,7 @@
 
     // Record BEFORE the click — submit navigates to the thank-you page.
     await addAppliedUrl(jobUrl);
+    await recordLocalApplication(platform);
     if (shouldMisclick()) await performMisclick(submitBtn);
     await humanClick(submitBtn);
 
