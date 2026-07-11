@@ -1341,6 +1341,19 @@
     await sleep(humanDelay(800, 1500));
     const applyBtn = await waitForZipRecruiterApplyButton(8000);
     if (!applyBtn) {
+      // Diagnose WHY: is this a genuine external-apply job, or a selector miss?
+      // Report the panel's actual buttons/apply-links so we learn from our own logs.
+      try {
+        const panel = document.querySelector('[data-testid="right-pane"]') || document.body;
+        const vis = (el) => el && el.offsetParent !== null;
+        const btns = Array.from(panel.querySelectorAll("button")).filter(vis)
+          .map((b) => (b.textContent || b.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim())
+          .filter(Boolean).slice(0, 10).join(" | ");
+        const applyLinks = Array.from(panel.querySelectorAll("a")).filter(vis)
+          .map((a) => (a.textContent || "").replace(/\s+/g, " ").trim())
+          .filter((t) => /apply/i.test(t)).slice(0, 4).join(" | ");
+        log(`APPLY DIAG [${jobTitle.slice(0, 30)}] btns=[${btns}] applyLinks=[${applyLinks}]`, "");
+      } catch (e) { log(`APPLY DIAG error: ${e.message}`, ""); }
       log(`${jobTitle} — no Quick Apply button found, skipping`, "");
       logBackend(`Skip (no Quick Apply button): ${jobTitle} @ ${jobCompany}`, "info");
       await skipToNextJob();
