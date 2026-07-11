@@ -314,16 +314,59 @@ def ats_decline(user=Depends(get_current_user)):
     return {"approved": False}
 
 
+def _lazy_tailor_for_job(user, job) -> None:
+    """Economics #2 — tailor a job's resume ON DEMAND at apply time (when the
+    extension fetches the best resume for this specific job), not eagerly for every
+    job discovered. Same gating as the old discovery path: Premium/admin + score ≥
+    the user's Apply-Mode threshold. Idempotent (skips if already tailored).
+    Best-effort — never raises into the resume-fetch path.
+    """
+    try:
+        if job.get("tailored_resume"):
+            return
+        from app.db.subscriptions import get_tier
+        if get_tier(user.id, getattr(user, "email", None)) not in ("premium", "admin"):
+            return
+        prof = profile_db.get_profile(user.id)
+        mode = prof.get("apply_mode") or "standard"
+        threshold = {"broad": 6, "standard": 7, "precise": 8}.get(mode, 7)
+        if (job.get("score") or 0) < threshold:
+            return
+        from modules.ai_cover_letter import load_resume_text
+        resume_text = load_resume_text(prof.get("resume_url"))
+        if not resume_text:
+            return
+        from modules.ai_resume_tailor import tailor_resume
+        tailored = tailor_resume(job, prof, resume_text)
+        if not tailored:
+            return
+        from app.db import jobs as jobs_db
+        jobs_db.update_tailored_resume(job["id"], tailored)
+        from modules.ats_pdf_generator import generate_ats_pdf
+        pdf_bytes = generate_ats_pdf(resume_text=tailored)
+        pdf_path = resume_storage.upload_job_tailored(user.id, job["id"], pdf_bytes)
+        jobs_db.update_tailored_resume_pdf(job["id"], pdf_path, user.id)
+    except Exception as e:
+        print(f"[profile] lazy tailor skipped: {e}", file=sys.stderr)
+
+
 @router.get("/profile/resume/url/best")
 def resume_best_url(job_url: str = None, user=Depends(get_current_user)):
     """Return signed URL for the best available resume.
 
     Priority: per-job tailored PDF (if job_url matches a scored job) →
     user-approved ATS PDF → original resume.
+
+    Lazy tailoring (economics #2): this endpoint is hit at apply time. If the matched
+    job is a strong match for a Premium user but isn't tailored yet, we tailor it NOW
+    — so tailoring cost is paid only on jobs that reach a real submission.
     """
     from app.db import jobs as jobs_db
     if job_url:
         job = jobs_db.get_by_link(user.id, job_url)
+        if job and not job.get("tailored_resume_pdf_url"):
+            _lazy_tailor_for_job(user, job)
+            job = jobs_db.get_by_link(user.id, job_url)  # re-read for the freshly-stored path
         if job and job.get("tailored_resume_pdf_url"):
             url = resume_storage.signed_url_from_path(job["tailored_resume_pdf_url"])
             if url:

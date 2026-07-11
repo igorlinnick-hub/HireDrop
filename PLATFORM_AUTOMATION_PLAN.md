@@ -15,13 +15,10 @@ _Last updated: 2026-07-11. Owner: extension/backend. Connect flow for all 7 plat
 - **#1 Tier-gate** — tailoring is Premium's differentiator (already stated in `subscriptions.py`); now enforced: `_tailor_allowed = tier in ("premium","admin")`. Free/pro no longer burn tailoring. `jobs.py`.
 - **#3 Threshold by Apply Mode** — `_tailor_threshold = {broad:6, standard:7, precise:8}[apply_mode]` (was hardcoded 7). `jobs.py`.
 
-**TODO — #2 Lazy tailoring (the real ~70% win, separate build):**
-Move tailoring from discovery-time → submit-time: tailor a job's resume ONLY when the extension is about to actually apply to that specific job (or a discovery job the user opens to apply). Requires:
-- Extension apply flow (phase2/phase3/phase_ats) to request a tailored resume for the current job on-demand (new backend endpoint `POST /jobs/{id}/tailor` or `/tailor-for-apply`), instead of relying on a pre-saved one.
-- `GET_RESUME_URL /best` already returns the per-job tailored PDF if present — so lazy tailoring = generate-then-fetch at apply, cache per job_id (don't re-tailor on retries).
-- Keep #1 tier-gate + #3 threshold in the lazy path too.
-- Net: pay for tailoring only on jobs that reach a real submission. Also removes tailoring latency from "Find Jobs".
-- Optional #4: prompt-cache the base resume in the tailor prompt (~30% input savings).
+**#2 Lazy tailoring — DONE (2026-07-11, econ pass). The ~70% win.**
+Implemented WITHOUT any extension change: `GET /profile/resume/url/best?job_url=…` — which the extension already calls at apply time (`background.js:550`) — now tailors the matched job on demand the first time its resume is fetched, via `_lazy_tailor_for_job()` in `app/routers/profile.py`. Idempotent (skips if `tailored_resume` already present), keeps the #1 tier-gate (Premium/admin) + #3 Apply-Mode threshold. Eager tailoring was removed from `jobs.py:find_jobs` (scoring + save remain). Net: pay ~$0.028/tailor only for jobs that reach a real submission, not every score-≥N job discovered.
+- **Remaining gap (frontend, NOT blocking):** discovery-platform *manual* applies no longer auto-tailor, and the dashboard job row won't show a tailored preview until applied. Fix later with a "Tailor for this job" button that calls the same lazy path on demand — those manual jobs were the bulk of the ~70% waste anyway.
+- **#4 prompt-cache — DROPPED (won't help here).** Tailor cost is ~80% OUTPUT (1500 tok × $15/M); caching only discounts input. Cacheable blocks (~300–900 tok) sit below Sonnet's 1024-tok cache minimum, and #4 is anti-synergistic with #2 (caching needs a batch to reuse; lazy tailoring is one job at a time). Real per-call lever if ever needed: lower `max_tokens` or tailor with Haiku (~60% cheaper output) — a quality-vs-cost decision, not a free win.
 
 ## Where we are
 
