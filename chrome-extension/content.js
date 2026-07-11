@@ -1899,6 +1899,33 @@
     return false;
   }
 
+  // Decide whether the current step's primary button SUBMITS the application
+  // (final step) or just advances to the next step. Button-text driven so it works
+  // across platforms — Indeed's multi-step modal AND ZipRecruiter's often single-step
+  // Quick Apply — even when Indeed's page-level progress heuristics don't apply.
+  //
+  // Bug this fixes (2026-07-10): on ZR the final "Submit"/"Apply" button wasn't
+  // recognized by isSubmitStep(), so it was clicked as a "Continue" — the app
+  // submitted but was never recorded (count stayed 0) and the job wasn't marked
+  // applied (duplicate-apply risk).
+  function classifyFormButton() {
+    const btn = findFormButton();
+    if (!btn) return { btn: null, submit: false, label: "" };
+    const label = ((btn.textContent || "") + " " + (btn.getAttribute("aria-label") || ""))
+      .replace(/\s+/g, " ").trim();
+    const s = label.toLowerCase();
+    // "Continue"/"Next"/"Review" always mean MORE steps — never a final submit,
+    // even if the word "submit" appears elsewhere on the button.
+    if (/\b(continue|next|review)\b/.test(s) && !/\bsubmit\b/.test(s)) {
+      return { btn, submit: false, label };
+    }
+    const submitIntent =
+      /\b(submit|finish|done)\b/.test(s) ||
+      /send (your )?application/.test(s) ||
+      s === "apply" || s === "apply now" || s === "apply for this job";
+    return { btn, submit: submitIntent || isSubmitStep(), label };
+  }
+
   function isFormVisible() {
     // Check if an Indeed Easy Apply modal/form is open.
     // IMPORTANT: keep selectors specific — [class*="ia-"] matches ia-IndeedApplyButton
@@ -2056,8 +2083,13 @@
         log(`Form step ${formStepCount}: filled fields`, "ok");
       }
 
+      // Classify the step's primary button (submit vs continue) by its own text —
+      // works on ZipRecruiter's single-step Quick Apply, not just Indeed's modal.
+      const action = classifyFormButton();
+      if (action.label) log(`Step ${formStepCount} button: "${action.label}" → ${action.submit ? "SUBMIT" : "continue"}`, "");
+
       // Check if this is the final submit step
-      if (isSubmitStep()) {
+      if (action.submit) {
         log("Final step — submitting application...", "");
         // Last-look pause is longer than mid-form steps — real users
         // re-read the summary before committing.
@@ -2071,20 +2103,19 @@
         }
         const submitBtn = findFormButton();
         if (submitBtn) {
+          // Mark applied BEFORE the click: submitting can navigate the whole page
+          // (ZipRecruiter returns to results), which would kill this context before
+          // an after-the-fact addAppliedUrl runs — leaving the job un-marked and
+          // re-appliable. Recording first guarantees we never double-apply.
+          await addAppliedUrl(jobInfo.url || window.location.href);
+
           if (shouldMisclick()) await performMisclick(submitBtn);
           await humanClick(submitBtn);
 
-          // Wait for a real signal that Indeed accepted the submission.
+          // Wait for a real signal the platform accepted the submission.
           // Without this, every Submit click was counted as 'applied' —
           // captcha, error toasts, or silent failures all looked the same.
           const result = await waitForSubmissionConfirmation(20000);
-
-          // We clicked Submit, so mark this job as attempted REGARDLESS of whether
-          // we detected the confirmation. Ground-truth (Indeed's "Applied" list)
-          // showed most "unverified" jobs actually DID submit — retrying them would
-          // fire a DUPLICATE application at the employer. Never re-apply a job we've
-          // already submitted; verification only affects reporting confidence.
-          await addAppliedUrl(jobInfo.url || window.location.href);
 
           const currentPlatform = detectPlatform();
           if (result.verified) {
@@ -2136,9 +2167,9 @@
       }
 
       // Click Continue/Next button to proceed to next step
-      const navBtn = findFormButton();
+      const navBtn = action.btn || findFormButton();
       if (navBtn) {
-        log(`Clicking "${navBtn.textContent.trim()}"...`, "");
+        log(`Clicking "${(navBtn.textContent || "").trim()}"...`, "");
         await sleep(humanDelay(2000, 4000));
         // Re-check after the pause so a Stop mid-step halts before advancing.
         if (!(await isCampaignRunning())) {
@@ -2580,8 +2611,9 @@
 
     // Check if campaign is already running (e.g., page reload)
     if (await isCampaignRunning()) {
+      const platformName = detectPlatform() === "ziprecruiter" ? "ZipRecruiter" : "Indeed";
       log("Campaign active — resuming on this page", "ok");
-      logBackend("Extension active on Indeed — starting automation", "info");
+      logBackend(`Extension active on ${platformName} — starting automation`, "info");
       await sleep(humanDelay(2000, 3000));
       // One-shot warmup before the very first action. No-op if already
       // warmed up this campaign.
