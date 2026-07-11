@@ -2364,6 +2364,39 @@
     window.location.href = url;
   }
 
+  // Recover when the campaign window lands on a ZipRecruiter page that isn't
+  // list/detail/form (e.g. /jobseeker/home after an apply, or a session redirect).
+  // Without this the phase is "unknown" forever and the campaign silently stalls.
+  // Loop-guarded: if ZR keeps bouncing us off the search, stop with a clear message.
+  async function recoverZipRecruiterPhase() {
+    const st = await chrome.storage.local.get("zrRecoveries");
+    const n = (st.zrRecoveries || 0) + 1;
+    if (n > 4) {
+      log("ZipRecruiter kept redirecting away from search — stopping campaign", "err");
+      logBackend("ZipRecruiter redirect loop — campaign stopped", "error");
+      await chrome.storage.local.set({ zrRecoveries: 0 });
+      await sendMsg({ type: "STOP_CAMPAIGN" });
+      return;
+    }
+    await chrome.storage.local.set({ zrRecoveries: n });
+
+    const data = await chrome.storage.local.get("campaignFilters");
+    const filters = data.campaignFilters || {};
+    const params = new URLSearchParams();
+    if (filters.keywords?.length) params.set("search", filters.keywords.join(" "));
+    const locMap = { usa: "United States", remote: "Remote", europe: "" };
+    const loc = locMap[filters.location] !== undefined ? locMap[filters.location] : (filters.location || "");
+    if (loc) params.set("location", loc);
+    if (filters.job_type) {
+      const jtMap = { "full-time": "full_time", "part-time": "part_time", contract: "contract" };
+      if (jtMap[filters.job_type]) params.set("employment_type[]", jtMap[filters.job_type]);
+    }
+    const url = `https://www.ziprecruiter.com/jobs-search?${params.toString()}`;
+    log(`Off-track on ZipRecruiter (${window.location.pathname}) — recovering to search (attempt ${n})...`, "");
+    await sleep(humanDelay(3000, 6000));
+    window.location.href = url;
+  }
+
   // =========================================================================
   // Phase detection & routing
   // =========================================================================
@@ -2533,6 +2566,11 @@
 
     const phase = detectPhase();
 
+    // Reaching a known phase means we're on track — clear the ZR recovery counter.
+    if (phase !== "unknown") {
+      chrome.storage.local.set({ zrRecoveries: 0 }).catch(() => {});
+    }
+
     try {
       switch (phase) {
         case "list":
@@ -2545,7 +2583,11 @@
           await phase3_fillForm();
           break;
         default:
-          // Unknown page — wait and re-check
+          // Unknown page. On ZipRecruiter this is usually /jobseeker/home or a
+          // session redirect — recover to the search instead of stalling forever.
+          if (detectPlatform() === "ziprecruiter" && (await isCampaignRunning())) {
+            await recoverZipRecruiterPhase();
+          }
           break;
       }
     } catch (err) {
