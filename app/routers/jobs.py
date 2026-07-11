@@ -58,12 +58,28 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
     # Keyword pre-filter removed: JobSpy platforms already filter via search_term,
     # and Claude Haiku (Haiku cost ~$0.025/200 jobs) is a better semantic judge.
     new_jobs = [j for j in all_jobs if not jobs_db.job_exists(user.id, j["link"])]
+    resume_text = None
     if new_jobs:
         from modules.ai_cover_letter import load_resume_text
         from modules.ai_job_scorer import score_jobs_batch
 
         resume_text = load_resume_text(profile.get("resume_url"))
         new_jobs = score_jobs_batch(new_jobs, profile, resume_text)
+
+    # ── Resume-tailoring cost controls (economics review 2026-07-11) ─────────────
+    # #1 Tier-gate: tailoring is Premium's differentiator (see subscriptions.py) —
+    #    don't burn ~$0.028/job tailoring for free/pro users. admin included for testing.
+    # #3 Threshold by Apply Mode: broad casts wider (≥6), precise is selective (≥8).
+    # #2 (SEPARATE plan step, not here): this tailoring is EAGER — every score-≥N job
+    #    is tailored at DISCOVERY, but most never reach a submission (discovery
+    #    platforms are apply-manually; ZR is mostly external/fit-skipped; daily cap 50),
+    #    so ~70%+ of tailored PDFs are never used. The real win is LAZY tailoring at
+    #    submit-time. Tracked in PLATFORM_AUTOMATION_PLAN.md.
+    from app.db.subscriptions import get_tier
+    _tier = get_tier(user.id, getattr(user, "email", None))
+    _tailor_allowed = _tier in ("premium", "admin")
+    _mode = profile.get("apply_mode") or "standard"
+    _tailor_threshold = {"broad": 6, "standard": 7, "precise": 8}.get(_mode, 7)
 
     saved = 0
     for job in new_jobs:
@@ -86,8 +102,8 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
                 job.get("ats_keywords", []),
                 job.get("ats_match_pct", 0),
             )
-        # Tailor resume for strong matches (score 7+)
-        if job_id and job.get("score", 0) >= 7 and resume_text:
+        # Tailor resume for strong matches — Premium only, threshold by Apply Mode.
+        if job_id and _tailor_allowed and job.get("score", 0) >= _tailor_threshold and resume_text:
             from modules.ai_resume_tailor import tailor_resume
             tailored = tailor_resume(job, profile, resume_text)
             if tailored:

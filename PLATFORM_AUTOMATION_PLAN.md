@@ -1,6 +1,27 @@
 # HireDrop — Platform Automation Plan
 
-_Last updated: 2026-07-10. Owner: extension/backend. Connect flow for all 7 platforms is LIVE (validated 7/7 on a real account set). This doc maps each platform's apply mechanism to the automation we build for it, and the build order._
+_Last updated: 2026-07-11. Owner: extension/backend. Connect flow for all 7 platforms is LIVE (validated 7/7 on a real account set). This doc maps each platform's apply mechanism to the automation we build for it, and the build order._
+
+## Resume-tailoring economics (2026-07-11)
+
+**Problem:** tailoring runs EAGER at "Find Jobs" — `jobs.py` tailors every score-≥N discovered job (tailored text + per-job ATS PDF, ~$0.028 each). But the tailor-set ≫ the apply-set, so most tailored PDFs are never used:
+- Discovery platforms (LinkedIn/Glassdoor/Google/Wellfound/RemoteOK) = apply-manually → most never submitted.
+- Indeed isn't in the tailor-set at all (not server-scraped).
+- ZR: re-filtered by the extension's fit-gate (M1) at apply, most jobs are external Close-only (skipped), daily cap 50.
+- Stop-campaign / user changes mind → tailoring already spent.
+→ Estimated **~70%+ of tailoring spend is on resumes no application ever uses.**
+
+**Done now (one-liners):**
+- **#1 Tier-gate** — tailoring is Premium's differentiator (already stated in `subscriptions.py`); now enforced: `_tailor_allowed = tier in ("premium","admin")`. Free/pro no longer burn tailoring. `jobs.py`.
+- **#3 Threshold by Apply Mode** — `_tailor_threshold = {broad:6, standard:7, precise:8}[apply_mode]` (was hardcoded 7). `jobs.py`.
+
+**TODO — #2 Lazy tailoring (the real ~70% win, separate build):**
+Move tailoring from discovery-time → submit-time: tailor a job's resume ONLY when the extension is about to actually apply to that specific job (or a discovery job the user opens to apply). Requires:
+- Extension apply flow (phase2/phase3/phase_ats) to request a tailored resume for the current job on-demand (new backend endpoint `POST /jobs/{id}/tailor` or `/tailor-for-apply`), instead of relying on a pre-saved one.
+- `GET_RESUME_URL /best` already returns the per-job tailored PDF if present — so lazy tailoring = generate-then-fetch at apply, cache per job_id (don't re-tailor on retries).
+- Keep #1 tier-gate + #3 threshold in the lazy path too.
+- Net: pay for tailoring only on jobs that reach a real submission. Also removes tailoring latency from "Find Jobs".
+- Optional #4: prompt-cache the base resume in the tailor prompt (~30% input savings).
 
 ## Where we are
 
