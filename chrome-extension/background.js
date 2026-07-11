@@ -732,31 +732,19 @@ async function handleMessage(msg, sender) {
       if (!appData || !appData.job_title) {
         return { error: "Missing application data" };
       }
+      const platform = appData.platform || "indeed";
 
-      let serverResult = null;
-      try {
-        serverResult = await apiPost("/applications/save", {
-          job_title: appData.job_title,
-          company: appData.company || "",
-          platform: appData.platform || "indeed",
-          job_url: appData.job_url || "",
-          cover_letter: appData.cover_letter || "",
-          status: appData.status || "applied",
-        });
-      } catch (err) {
-        return { saved: false, error: err.message };
-      }
-
+      // Increment the LOCAL count FIRST, independent of the backend. content.js only
+      // sends this AFTER the application was actually submitted on the platform, so
+      // the daily cap + dashboard count must reflect it even if the backend save
+      // fails (stale token → 401, tier 429, or transient error). Previously an
+      // apiPost failure returned early here and the count stayed 0 despite a real
+      // submission — the whole ZipRecruiter run showed 0 applied.
       const storageData = await chrome.storage.local.get(["todayCount", "platformCounts", "todayDate"]);
       const today = new Date().toISOString().slice(0, 10);
-      let totalCount = storageData.todayCount || 0;
-      let platformCounts = storageData.platformCounts || {};
-      if (storageData.todayDate !== today) {
-        totalCount = 0;
-        platformCounts = {};
-      }
+      let totalCount = storageData.todayDate === today ? (storageData.todayCount || 0) : 0;
+      let platformCounts = storageData.todayDate === today ? (storageData.platformCounts || {}) : {};
       totalCount++;
-      const platform = appData.platform || "indeed";
       platformCounts[platform] = (platformCounts[platform] || 0) + 1;
       await chrome.storage.local.set({
         todayCount: totalCount,
@@ -768,8 +756,24 @@ async function handleMessage(msg, sender) {
           savedAt: new Date().toISOString(),
         },
       });
-
       updateBadge();
+
+      // Then persist to the backend — best-effort. A failure must NOT undo the
+      // local count (the application is already out). Surface it so we can see it.
+      let serverResult = null;
+      try {
+        serverResult = await apiPost("/applications/save", {
+          job_title: appData.job_title,
+          company: appData.company || "",
+          platform,
+          job_url: appData.job_url || "",
+          cover_letter: appData.cover_letter || "",
+          status: appData.status || "applied",
+        });
+      } catch (err) {
+        addToActivityLog(`⚠️ Applied but backend save failed (${err.message}) — counted locally`, "warn");
+      }
+
       return { saved: true, todayCount: totalCount, platformCount: platformCounts[platform], job_id: serverResult?.job_id };
     }
 
