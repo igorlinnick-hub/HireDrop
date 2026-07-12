@@ -128,6 +128,25 @@ window.addEventListener("message", function (e) {
     }
   }
 
+  // Dev/feature flag setter (allowlisted). Both flags are individually safe: `hd_debug`
+  // only unlocks the review-mode-gated ATS test bridge (can't submit), `atsWiring` only
+  // lets a campaign navigate external jobs to Greenhouse/Lever (product behavior, still
+  // fail-closed in phase_ats). Used to enable P4 wiring for an observed live run.
+  if (typeof e.data === "object" && e.data.type === "HIREDROP_SET_FLAG" && typeof e.data.flag === "string") {
+    const ALLOW = ["hd_debug", "atsWiring"];
+    if (ALLOW.indexOf(e.data.flag) === -1) {
+      window.postMessage({ type: "HIREDROP_FLAG_SET", flag: e.data.flag, ok: false, reason: "not allowlisted" }, "*");
+    } else {
+      try {
+        chrome.storage.local.set({ [e.data.flag]: e.data.on === true }, function () {
+          window.postMessage({ type: "HIREDROP_FLAG_SET", flag: e.data.flag, ok: true, value: e.data.on === true }, "*");
+        });
+      } catch (ex) {
+        window.postMessage({ type: "HIREDROP_FLAG_SET", flag: e.data.flag, ok: false, error: "context_invalidated" }, "*");
+      }
+    }
+  }
+
   // Seed the cross-run dedup set with title|company keys (lowercased, single-spaced).
   // Used to pre-mark jobs already applied to before the dedup existed, so they're
   // never re-applied. Writes chrome.storage.local directly (page context can't).

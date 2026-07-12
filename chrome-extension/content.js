@@ -1442,6 +1442,9 @@
         log(line, "");
         logBackend(line, "info"); // durable on backend — survives osascript channel loss
       } catch (e) { log(`APPLY DIAG error: ${e.message}`, ""); }
+      // P4: external-apply job → try to route to its ATS (Greenhouse/Lever) instead of
+      // skipping. Navigates away if a supported ATS URL is found + wiring is enabled.
+      if (await routeExternalToAts(jobTitle, jobCompany, document.querySelector('[data-testid="right-pane"]') || document.body)) return;
       log(`${jobTitle} — no Quick Apply button found, skipping`, "");
       logBackend(`Skip (no Quick Apply button): ${jobTitle} @ ${jobCompany}`, "info");
       await skipToNextJob();
@@ -1493,6 +1496,62 @@
       await sleep(400);
     }
     return false;
+  }
+
+  // =========================================================================
+  // P4 — board external-apply → ATS wiring (ROADMAP_E2E.md P4)
+  // Most good-fit board jobs are "external apply" that funnel to Greenhouse/Lever.
+  // Instead of skipping them, route the campaign tab to the ATS URL so phase_ats
+  // (already fail-closed: fit-gate + resume-guard + review-mode) applies, then return
+  // to the board to continue. Gated behind the `atsWiring` flag (default OFF) until
+  // validated on an observed live run — untested navigation must not reach prod on.
+  // =========================================================================
+  const ATS_URL_RE = /(?:job-boards|boards)\.greenhouse\.io|jobs\.lever\.co/i;
+
+  function findExternalAtsUrl(scope) {
+    scope = scope || document;
+    for (const a of scope.querySelectorAll("a[href]")) {
+      const href = a.href || "";
+      if (ATS_URL_RE.test(href)) return href;
+      // Boards often wrap the real destination in a redirect query param.
+      const m = href.match(/[?&](?:url|redirect|redirect_url|to|dest|apply_url)=([^&]+)/i);
+      if (m) { try { const dec = decodeURIComponent(m[1]); if (ATS_URL_RE.test(dec)) return dec; } catch { /* not a URL */ } }
+    }
+    for (const el of scope.querySelectorAll("[data-href],[data-url],[data-apply-url]")) {
+      const cand = el.getAttribute("data-href") || el.getAttribute("data-url") || el.getAttribute("data-apply-url") || "";
+      if (ATS_URL_RE.test(cand)) return cand;
+    }
+    return null;
+  }
+
+  async function atsWiringEnabled() {
+    return (await chrome.storage.local.get("atsWiring")).atsWiring === true;
+  }
+
+  // Returns true if it navigated to an ATS (caller must NOT then skipToNextJob).
+  async function routeExternalToAts(jobTitle, jobCompany, scope) {
+    if (!(await atsWiringEnabled())) return false;
+    const url = findExternalAtsUrl(scope);
+    if (!url) return false;
+    // Mark applied FIRST so returning to the board list can't re-open this same job.
+    await addAppliedJobKey(jobTitle, jobCompany);
+    await chrome.storage.local.set({ atsReturnUrl: window.location.href });
+    logBackend(`↗️ External→ATS: ${jobTitle} @ ${jobCompany} — routing to ${url.slice(0, 90)}`, "info");
+    await sleep(humanDelay(800, 1500));
+    window.location.href = url;
+    return true;
+  }
+
+  // Called after phase_ats finishes (any exit) — if we arrived from a board, go back so
+  // the campaign continues. No-op for standalone ATS tabs (atsReturnUrl unset).
+  async function returnToBoardAfterAts() {
+    const { atsReturnUrl } = await chrome.storage.local.get("atsReturnUrl");
+    if (!atsReturnUrl) return;
+    await chrome.storage.local.remove("atsReturnUrl");
+    if (!(await isCampaignRunning())) return;
+    logBackend("↩️ Returning to board search after ATS apply", "info");
+    await sleep(humanDelay(1500, 3000));
+    window.location.href = atsReturnUrl;
   }
 
   async function waitForZipRecruiterApplyButton(timeoutMs) {
@@ -2949,6 +3008,7 @@
           const _p = detectPlatform();
           if (_p === "greenhouse" || _p === "lever") {
             await phase_ats(_p);
+            await returnToBoardAfterAts(); // P4: continue the board campaign if we came from one
           } else {
             await phase3_fillForm();
           }
