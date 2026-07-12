@@ -1064,21 +1064,24 @@
     // letter + application on a wrong-fit job. Runs after the cheap keyword filter
     // and before the expensive steps. Skips roles the resume clearly can't support
     // (too senior, missing hard requirements) with an honest, logged reason. Fails
-    // OPEN: a judge error/timeout returns decision "apply" so it never blocks the
-    // campaign. Also improves throughput — no more grinding long forms on bad fits.
+    // CLOSED (ROADMAP_E2E.md P1): a judge error/timeout/401 now SKIPS the job rather
+    // than applying blindly — never spray applications under the user's identity when
+    // we couldn't verify fit. Also improves throughput — no grinding bad-fit forms.
     {
       const fit = await sendMsg({
         type: "ASSESS_FIT",
         data: { job_title: jobTitle, company: jobCompany, description: jobDesc },
       });
-      if (fit && fit.decision === "skip") {
-        const why = (fit.reason || "not a strong fit").slice(0, 160);
+      // FAIL CLOSED: only proceed on an explicit "apply". A null fit (auth/SW error),
+      // a missing verdict, or "skip" all mean skip — never apply to a job we couldn't vet.
+      if (!fit || fit.decision !== "apply") {
+        const why = (fit && fit.reason ? fit.reason : "fit check unavailable — skipped for safety").slice(0, 160);
         log(`Skipping ${jobTitle} — ${why}`, "");
-        logBackend(`⏭️ Skipped (fit ${fit.fit_score ?? "?"}): ${jobTitle} @ ${jobCompany} — ${why}`, "info");
+        logBackend(`⏭️ Skipped (fit ${(fit && fit.fit_score != null) ? fit.fit_score : "?"}): ${jobTitle} @ ${jobCompany} — ${why}`, (!fit || fit.failClosed) ? "warn" : "info");
         await skipToNextJob();
         return;
       }
-      if (fit && fit.judged) {
+      if (fit.judged) {
         logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
       }
     }
@@ -1380,14 +1383,16 @@
         type: "ASSESS_FIT",
         data: { job_title: jobTitle, company: jobCompany, description: jobDesc },
       });
-      if (fit && fit.decision === "skip") {
-        const why = (fit.reason || "not a strong fit").slice(0, 160);
+      // FAIL CLOSED: only proceed on an explicit "apply". A null fit (auth/SW error),
+      // a missing verdict, or "skip" all mean skip — never apply to a job we couldn't vet.
+      if (!fit || fit.decision !== "apply") {
+        const why = (fit && fit.reason ? fit.reason : "fit check unavailable — skipped for safety").slice(0, 160);
         log(`Skipping ${jobTitle} — ${why}`, "");
-        logBackend(`⏭️ Skipped (fit ${fit.fit_score ?? "?"}): ${jobTitle} @ ${jobCompany} — ${why}`, "info");
+        logBackend(`⏭️ Skipped (fit ${(fit && fit.fit_score != null) ? fit.fit_score : "?"}): ${jobTitle} @ ${jobCompany} — ${why}`, (!fit || fit.failClosed) ? "warn" : "info");
         await skipToNextJob();
         return;
       }
-      if (fit && fit.judged) {
+      if (fit.judged) {
         logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
       }
     }
@@ -2590,11 +2595,13 @@
 
     // Fit gate (M1) — same selective decision layer as the boards
     const fit = await sendMsg({ type: "ASSESS_FIT", data: { job_title: jobTitle, company: jobCompany, description: jobDesc } });
-    if (fit && fit.decision === "skip") {
-      logBackend(`⏭️ Skipped (fit ${fit.fit_score ?? "?"}): ${jobTitle} @ ${jobCompany} — ${(fit.reason || "").slice(0, 140)}`, "info");
+    // FAIL CLOSED: only proceed on an explicit "apply" (null/missing verdict → skip).
+    if (!fit || fit.decision !== "apply") {
+      const why = (fit && fit.reason ? fit.reason : "fit check unavailable — skipped for safety").slice(0, 140);
+      logBackend(`⏭️ Skipped (fit ${(fit && fit.fit_score != null) ? fit.fit_score : "?"}): ${jobTitle} @ ${jobCompany} — ${why}`, (!fit || fit.failClosed) ? "warn" : "info");
       return;
     }
-    if (fit && fit.judged) logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
+    if (fit.judged) logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
 
     // Cover letter
     let coverLetter = "";
@@ -2638,16 +2645,22 @@
     // line — making it impossible to tell "attached" from "No resume on server".
     let resumeInput = findResumeInput();
     for (let i = 0; i < 6 && !resumeInput; i++) { await sleep(1000); resumeInput = findResumeInput(); }
+    // Track attach outcome so we can FAIL CLOSED before submit: never send an ATS
+    // application with a required-but-empty resume (a resume-less app silently torches
+    // the user's reputation — see ROADMAP_E2E.md P1).
+    const resumeRequired = !!resumeInput;
+    let resumeOk = false;
     if (resumeInput) {
       if (!resumeInput.files?.length) {
         try {
           await uploadResume(resumeInput);
           await sleep(humanDelay(2000, 4000));
-          const ok = !!findResumeInput()?.files?.length || document.body.textContent.includes("resume.pdf");
-          logBackend(`${label} resume: ${ok ? "attached ✓" : "set but not reflected in UI"}`, ok ? "info" : "error");
+          resumeOk = !!findResumeInput()?.files?.length || document.body.textContent.includes("resume.pdf");
+          logBackend(`${label} resume: ${resumeOk ? "attached ✓" : "set but not reflected in UI"}`, resumeOk ? "info" : "error");
         }
         catch (e) { logBackend(`${label} resume upload FAILED: ${e.message}`, "error"); }
       } else {
+        resumeOk = true;
         logBackend(`${label} resume: already attached`, "info");
       }
     } else {
@@ -2689,6 +2702,14 @@
       log(`REVIEW MODE — filled, NOT submitting: ${summary}`, "ok");
       logBackend(`📝 Review: ${jobTitle} @ ${jobCompany} — ${summary}`, "info");
       return; // never submits, never records applied
+    }
+
+    // FAIL CLOSED: never submit an application whose resume field is required but empty.
+    // A silent resume-less submission is irreversible and reputationally harmful; skip
+    // and log so it surfaces (usually a resume-upload 401 — the auth path, see P1/P2).
+    if (resumeRequired && !resumeOk) {
+      logBackend(`⏭️ Skipped (no resume attached): ${jobTitle} @ ${jobCompany} — not submitting a resume-less application`, "error");
+      return;
     }
 
     await sleep(humanDelay(2000, 5000));

@@ -101,9 +101,11 @@ first-person-neutral, why apply or skip>", "concerns": ["<short>", ...]}}"""
 
 
 def _fallback(job: dict) -> dict:
-    # No API key → don't block the pipeline; default to applying (current behavior)
-    # but flag it so the caller/telemetry knows the judge didn't run.
-    return {"fit_score": 50, "decision": "apply", "reason": "Fit judge unavailable — applied by default.", "concerns": [], "judged": False}
+    # FAIL CLOSED (ROADMAP_E2E.md P1): if the judge can't run (no API key / Claude error),
+    # SKIP rather than apply. Applying to an un-vetted job under the user's identity is the
+    # irreversible harm; a skipped job is recoverable. judged=False + fail_closed flag let
+    # telemetry tell a safety-skip apart from a real poor-fit skip.
+    return {"fit_score": 0, "decision": "skip", "reason": "Fit judge unavailable — skipped for safety.", "concerns": [], "judged": False, "fail_closed": True}
 
 
 def assess_fit(job=None, profile=None, screener_questions=None):

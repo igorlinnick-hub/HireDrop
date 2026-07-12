@@ -838,10 +838,13 @@ async function handleMessage(msg, sender) {
           }),
           new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 25000)),
         ]);
-        // Fail open: never block applying on a judge hiccup.
-        return result && result.decision ? result : { decision: "apply", judged: false };
+        // FAIL CLOSED (ROADMAP_E2E.md P1): a 401 / timeout / missing verdict must NOT
+        // auto-apply — applying to an un-vetted job under the user's identity is the
+        // irreversible harm. Skip instead; the content-script gate surfaces it.
+        return result && result.decision ? result
+          : { decision: "skip", judged: false, failClosed: true, reason: "fit check returned no verdict — skipped for safety" };
       } catch {
-        return { decision: "apply", judged: false };
+        return { decision: "skip", judged: false, failClosed: true, reason: "fit check unavailable (auth/timeout) — skipped for safety" };
       }
     }
 
