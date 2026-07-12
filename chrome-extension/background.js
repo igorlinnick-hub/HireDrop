@@ -180,6 +180,7 @@ chrome.runtime.onInstalled.addListener(async () => {
     currentJob: null,
   });
   await fetchAndCacheProfile().catch(() => {});
+  ensureExtensionKey().catch(() => {}); // mint durable key ASAP so cold-start never 401s
   updateBadge();
 });
 
@@ -190,6 +191,7 @@ chrome.runtime.onStartup.addListener(async () => {
     await chrome.storage.local.set({ todayCount: 0, platformCounts: {}, todayDate: today });
   }
   await fetchAndCacheProfile().catch(() => {});
+  ensureExtensionKey().catch(() => {}); // retry durable-key mint on SW wake
   updateBadge();
 });
 
@@ -536,6 +538,9 @@ async function handleMessage(msg, sender) {
       return await fetchAndCacheProfile();
 
     case "CHECK_CONNECTION": {
+      // Popup open = a good moment to retry minting the durable key (ROADMAP_E2E.md P2):
+      // once it exists, getAuthToken() stops depending on the fragile dashboard token push.
+      ensureExtensionKey().catch(() => {});
       try {
         await apiGet("/stats");
         return { connected: true };
