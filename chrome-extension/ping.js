@@ -4,6 +4,8 @@
 //   HIREDROP_PING          → respond with HIREDROP_PONG (extension detection)
 //   HIREDROP_STORE_TOKEN   → STORE_TOKEN to background, then HIREDROP_TOKEN_STORED back
 //   HIREDROP_READ_STORAGE  → read chrome.storage.local keys, post HIREDROP_STORAGE_DATA back (debug)
+//   HIREDROP_TEST_ARM_ATS  → (test-only, review-mode-gated) set campaignRunning so an open
+//                            Greenhouse/Lever tab runs phase_ats without a real campaign
 window.addEventListener("message", function (e) {
   if (e.source !== window || !e.data) return;
 
@@ -103,6 +105,26 @@ window.addEventListener("message", function (e) {
       });
     } catch (ex) {
       window.postMessage({ type: "HIREDROP_REVIEW_SET", on: false, error: "context_invalidated" }, "*");
+    }
+  }
+
+  // TEST-ONLY: flip campaignRunning so an already-open Greenhouse/Lever tab exercises
+  // phase_ats WITHOUT starting a real ZR/Indeed campaign (no window, no submissions).
+  // DOUBLE-GATED so it is dead in production: (1) requires chrome.storage.local.hd_debug
+  // === true (no prod user sets this), and (2) requires reviewMode === true so it can
+  // NEVER cause a real application — only the fill-but-don't-submit path. For safe E2E
+  // of the ATS fillers. To enable during dev: set hd_debug + reviewMode in storage first.
+  if (typeof e.data === "object" && e.data.type === "HIREDROP_TEST_ARM_ATS") {
+    try {
+      chrome.storage.local.get(["reviewMode", "hd_debug"], function (d) {
+        const armed = d.hd_debug === true && d.reviewMode === true;
+        if (armed) chrome.storage.local.set({ campaignRunning: true });
+        const reason = d.hd_debug !== true ? "hd_debug flag off (prod-safe)"
+          : d.reviewMode !== true ? "reviewMode must be ON first" : null;
+        window.postMessage({ type: "HIREDROP_TEST_ARMED", armed, reason }, "*");
+      });
+    } catch (ex) {
+      window.postMessage({ type: "HIREDROP_TEST_ARMED", armed: false, error: "context_invalidated" }, "*");
     }
   }
 

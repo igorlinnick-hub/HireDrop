@@ -2086,7 +2086,13 @@
   function logFormDiagnostic() {
     try {
       const vis = (el) => el && el.offsetParent !== null;
-      const dialog = document.querySelector('[role="dialog"]');
+      // Scope to the apply modal ONLY when it's a VISIBLE dialog that actually holds
+      // form fields (Indeed/ZR render the form inside a role=dialog). Don't be fooled
+      // by stray hidden dialogs — e.g. Greenhouse's intl-tel-input country dropdown is
+      // a hidden [role=dialog] with no inputs, which used to zero out the whole DIAG.
+      const dialog = Array.from(document.querySelectorAll('[role="dialog"]')).find(
+        (d) => vis(d) && d.querySelector('input, textarea, select')
+      );
       const scope = dialog || document;
       const textInputs = Array.from(scope.querySelectorAll('input[type="text"],input[type="email"],input[type="tel"],input:not([type])')).filter(vis).length;
       const textareas = Array.from(scope.querySelectorAll("textarea")).filter(vis).length;
@@ -2627,16 +2633,25 @@
     await fillField("phone", profile.phone || "");
 
     // Resume: the file input can render slightly after the text fields — retry a few
-    // times before giving up, and ALWAYS log the outcome so we can see it.
+    // times before giving up. The outcome is logged DURABLY (logBackend) because the
+    // 50-line activity ring buffer floods during a ZR campaign and used to swallow this
+    // line — making it impossible to tell "attached" from "No resume on server".
     let resumeInput = findResumeInput();
     for (let i = 0; i < 6 && !resumeInput; i++) { await sleep(1000); resumeInput = findResumeInput(); }
     if (resumeInput) {
       if (!resumeInput.files?.length) {
-        try { await uploadResume(resumeInput); log("Resume attached", "ok"); await sleep(humanDelay(2000, 4000)); }
-        catch (e) { log("Resume upload failed: " + e.message, "err"); }
+        try {
+          await uploadResume(resumeInput);
+          await sleep(humanDelay(2000, 4000));
+          const ok = !!findResumeInput()?.files?.length || document.body.textContent.includes("resume.pdf");
+          logBackend(`${label} resume: ${ok ? "attached ✓" : "set but not reflected in UI"}`, ok ? "info" : "error");
+        }
+        catch (e) { logBackend(`${label} resume upload FAILED: ${e.message}`, "error"); }
+      } else {
+        logBackend(`${label} resume: already attached`, "info");
       }
     } else {
-      log(`${label}: resume file input not found`, "err");
+      logBackend(`${label} resume: file input not found`, "error");
     }
 
     // Screener questions — reuse the generic answerers (Loop 4 core)
@@ -2662,11 +2677,17 @@
       const emailEl = findFieldBySelectorsOrLabel("email");
       const phoneEl = findFieldBySelectorsOrLabel("phone");
       const resumeEl = findResumeInput();
+      // A successful attach can REMOVE the file input (Greenhouse swaps #resume for a
+      // filename chip once it accepts the DataTransfer set) — so a null input does NOT
+      // mean "no resume". Treat the uploaded filename appearing on the page as attached.
+      const resumeStatus = resumeEl?.files?.length
+        ? resumeEl.files[0].name
+        : (document.body.textContent.includes("resume.pdf") ? "attached (chip)" : "NONE");
       const filledTextareas = Array.from(document.querySelectorAll("textarea")).filter((t) => (t.value || "").trim()).length;
       const checkedRadios = document.querySelectorAll('input[type="radio"]:checked').length;
-      const summary = `name="${(nameEl?.value || "").slice(0, 40)}" email="${emailEl?.value || ""}" phone="${phoneEl?.value || ""}" resume=${resumeEl?.files?.length ? resumeEl.files[0].name : "NONE"} screener-textareas=${filledTextareas} radios=${checkedRadios} submitBtn="${(submitBtn.textContent || "").replace(/\s+/g, " ").trim().slice(0, 30)}"`;
+      const summary = `name="${(nameEl?.value || "").slice(0, 40)}" email="${emailEl?.value || ""}" phone="${phoneEl?.value || ""}" resume=${resumeStatus} screener-textareas=${filledTextareas} radios=${checkedRadios} submitBtn="${(submitBtn.textContent || "").replace(/\s+/g, " ").trim().slice(0, 30)}"`;
       log(`REVIEW MODE — filled, NOT submitting: ${summary}`, "ok");
-      logBackend(`📝 Review: ${jobTitle} @ ${jobCompany} — filled, awaiting your submit`, "info");
+      logBackend(`📝 Review: ${jobTitle} @ ${jobCompany} — ${summary}`, "info");
       return; // never submits, never records applied
     }
 
