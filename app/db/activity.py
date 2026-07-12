@@ -6,6 +6,8 @@ chrome extension (background.js best-effort POST). Backend writers can
 be added incrementally without changing this module's contract.
 """
 
+from datetime import UTC, datetime, timedelta
+
 from app.db.client import get_supabase
 
 ALLOWED_LEVELS = {"info", "warn", "error"}
@@ -50,3 +52,71 @@ def list_recent(user_id: str, limit: int = 100) -> list[dict]:
         .execute()
     )
     return res.data or []
+
+
+# Message-prefix signatures written by the extension (content.js/background.js). Matching
+# on these lets the health summary categorize events without a schema change. Keep in sync
+# with the log strings — see ROADMAP_E2E.md P3. (A metadata `type` field is the future-proof
+# version; text-match is the cheap first cut.)
+def _categorize(msg: str) -> str | None:
+    m = (msg or "").lower()
+    if "✅ applied" in m or m.startswith("applied"):
+        return "applied"
+    if "no resume attached" in m:
+        return "skipped_no_resume"
+    if "resume upload failed" in m or "not reflected in ui" in m:
+        return "resume_fail"
+    if "api 401" in m or "token stale" in m:
+        return "auth_401"
+    if "⏭️ skipped (fit" in m or "skipped (fit" in m:
+        return "skipped_fit"
+    if "captcha" in m:
+        return "captcha"
+    if "not signed into" in m or "login required" in m:
+        return "login_required"
+    return None
+
+
+def summary(user_id: str, window_hours: int = 24, cap: int = 2000) -> dict:
+    """Health snapshot for the dashboard (ROADMAP_E2E.md P3): turns the raw activity feed
+    into at-a-glance counts so a silent failure (auth 401, resume fail, everything skipped)
+    becomes visible instead of buried in the log."""
+    cutoff = (datetime.now(UTC) - timedelta(hours=max(1, window_hours))).isoformat()
+    res = (
+        get_supabase()
+        .table("activity_log")
+        .select("timestamp, level, message")
+        .eq("user_id", user_id)
+        .gte("timestamp", cutoff)
+        .order("timestamp", desc=True)
+        .limit(cap)
+        .execute()
+    )
+    rows = res.data or []
+    by_level = {"info": 0, "warn": 0, "error": 0}
+    by_type: dict[str, int] = {}
+    last_error_at = None
+    last_error_msg = None
+    for r in rows:
+        lvl = r.get("level") if r.get("level") in by_level else "info"
+        by_level[lvl] += 1
+        if lvl == "error" and last_error_at is None:
+            last_error_at = r.get("timestamp")
+            last_error_msg = (r.get("message") or "")[:200]
+        cat = _categorize(r.get("message", ""))
+        if cat:
+            by_type[cat] = by_type.get(cat, 0) + 1
+    return {
+        "window_hours": window_hours,
+        "total": len(rows),
+        "truncated": len(rows) >= cap,
+        "by_level": by_level,
+        "by_type": by_type,
+        "applied": by_type.get("applied", 0),
+        "skipped_fit": by_type.get("skipped_fit", 0),
+        "skipped_no_resume": by_type.get("skipped_no_resume", 0),
+        "resume_fail": by_type.get("resume_fail", 0),
+        "auth_401": by_type.get("auth_401", 0),
+        "last_error_at": last_error_at,
+        "last_error_msg": last_error_msg,
+    }

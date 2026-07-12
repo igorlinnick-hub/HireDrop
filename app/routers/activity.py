@@ -37,3 +37,10 @@ def write_activity(req: ActivityWriteRequest, user=Depends(get_current_user)):
 @router.get("/activity")
 def list_activity(user=Depends(get_current_user), limit: int = 100):
     return activity_db.list_recent(user.id, limit=min(limit, 500))
+
+
+@router.get("/activity/summary")
+def activity_summary(user=Depends(get_current_user), window_hours: int = 24):
+    """Health snapshot (ROADMAP_E2E.md P3): counts of applied / fit-skips / resume-fails /
+    auth-401s + errors over a window, so silent failures surface on the dashboard."""
+    return activity_db.summary(user.id, window_hours=min(max(window_hours, 1), 168))
