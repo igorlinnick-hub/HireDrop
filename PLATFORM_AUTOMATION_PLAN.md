@@ -20,6 +20,17 @@ Implemented WITHOUT any extension change: `GET /profile/resume/url/best?job_url=
 - **Remaining gap (frontend, NOT blocking):** discovery-platform *manual* applies no longer auto-tailor, and the dashboard job row won't show a tailored preview until applied. Fix later with a "Tailor for this job" button that calls the same lazy path on demand — those manual jobs were the bulk of the ~70% waste anyway.
 - **#4 prompt-cache — DROPPED (won't help here).** Tailor cost is ~80% OUTPUT (1500 tok × $15/M); caching only discounts input. Cacheable blocks (~300–900 tok) sit below Sonnet's 1024-tok cache minimum, and #4 is anti-synergistic with #2 (caching needs a batch to reuse; lazy tailoring is one job at a time). Real per-call lever if ever needed: lower `max_tokens` or tailor with Haiku (~60% cheaper output) — a quality-vs-cost decision, not a free win.
 
+## Daily caps + throughput (economics review 2026-07-11)
+
+**DECISION — per-platform cap 50 → 20/day.** Bans are counted PER platform, so 20/day/platform keeps each account human-looking. Done in `app/db/subscriptions.py` (`MAX_PER_PLATFORM=20`). **TODO (extension workstream): align `chrome-extension/content.js:16` `MAX_APPLICATIONS_PER_PLATFORM` 50 → 20.** Until aligned, the extension will try up to 50 and the backend 429s at 20 (wasteful, not harmful).
+
+**Still open — TOTAL daily cap (economics, separate from ban-safety).** 20/platform ≠ profit protection: with premium's 50/day total across platforms, a maxed user = 50×$0.03 = ~$45/mo > $29. Recommend `TIER_LIMITS["premium"]` 50 → ~30/day total (break-even protected). Not yet changed — founder's call.
+
+**Throughput levers to raise apps/day WITHOUT losing quality or ban-safety** (browser click-speed is fixed by anti-detect — don't touch it):
+- **Lever A — hide AI latency under the human-paced fill (same-page, ~15-30% gain).** NOTE the architecture: jobs are a known queue (`pendingJobs`) but WITHOUT descriptions, and navigation is full-page-reload per job → cross-job N/N+1 pipelining is NOT feasible. Real wins are same-page: (1) **batch screener answers** — currently EACH open-ended screener = a separate sequential `ANSWER_QUESTION` Sonnet round-trip (content.js ~1721/1835); extract all questions → ONE batched call (~10-30s saved on multi-screener jobs, the biggest win); (2) fire cover-letter generation async right after fit-pass and `await` it only at the paste field, so its ~5-8s hides under the fill (currently blocking, line ~1095).
+- **Lever B — scale by BREADTH, not speed.** Ban-safety is per-platform → 20/day × N platforms = 20N total, no single account flagged. This is the ban-safe path to 100+/day. Build more fillers (ZR done; Greenhouse/Lever next) + ATS providers (one recipe = thousands of companies).
+- **Lever C — more unattended runtime (a TRADE-OFF, not savings).** Auto-solving captchas (CapSolver, Turnstile wired) removes the human-babysit bottleneck → longer unattended sessions → more apps/day. Does NOT lower per-app cost; it raises total volume (and cost) while cutting manual effort. Trades against the ban-safe/semi-auto pivot — founder's call.
+
 ## Where we are
 
 | Platform | Connect ✓ | Discovery (server fetch) | Auto-apply | Mechanism |

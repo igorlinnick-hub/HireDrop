@@ -26,7 +26,11 @@ TIER_LIMITS = {
     "elite": 200,
 }
 
-MAX_PER_PLATFORM = 50
+# Ban-safety cap: bans are counted PER platform, so 20/day/platform keeps each
+# account looking human. Volume scales by breadth (more platforms), not depth on one.
+# NOTE: keep the extension constant chrome-extension/content.js:16
+# (MAX_APPLICATIONS_PER_PLATFORM) aligned to this value.
+MAX_PER_PLATFORM = 20
 
 # Sentinel for admin "unlimited" so the dashboard renders ∞ instead of a number.
 ADMIN_DAILY_LIMIT = 10_000_000
