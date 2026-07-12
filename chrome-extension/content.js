@@ -2266,6 +2266,17 @@
           log("Campaign stopped — not submitting application", "");
           return;
         }
+        // FAIL CLOSED (ROADMAP_E2E.md P1): if a resume file input is visibly present on
+        // the submit step but empty (upload 401'd), don't send a resume-less application.
+        // Conservative on purpose — native ZR/Indeed usually pre-attach the resume from the
+        // account (no file input, or a filename chip), so this never blocks the happy path.
+        {
+          const rz = findResumeInput();
+          if (rz && !rz.files?.length && !document.body.textContent.includes("resume.pdf")) {
+            logBackend(`⏭️ Skipped (no resume attached): ${jobInfo.title} @ ${jobInfo.company} — not submitting a resume-less application`, "error");
+            return;
+          }
+        }
         const submitBtn = findFormButton();
         if (submitBtn) {
           // Mark applied + count BEFORE the click: submitting can navigate the whole
