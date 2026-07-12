@@ -301,15 +301,26 @@ async function detachDebugger(tabId) {
   } catch { /* not attached — fine */ }
 }
 
+// Live-preview capture allowlist — ONLY the job sites the automation itself drives, so
+// the user's other tabs are never captured (preserves the privacy intent of the original
+// Indeed-only guard) while the live window works ACROSS every platform (a CWS requirement:
+// the user must see what the extension is doing). Keep in sync with the platforms that
+// phase2 / phase3 / phase_ats operate on.
+const CAPTURE_HOSTS = ["indeed.com", "ziprecruiter.com", "greenhouse.io", "lever.co"];
+function isCapturableAutomationUrl(url) {
+  try {
+    const h = new URL(url).hostname;
+    return CAPTURE_HOSTS.some((d) => h === d || h.endsWith("." + d));
+  } catch {
+    return false;
+  }
+}
+
 async function sendScreenshot(tabId) {
-  // GDPR: only capture Indeed tabs.
+  // Only capture the automation's own job-application tabs (never arbitrary user tabs).
   try {
     const tab = await chrome.tabs.get(tabId);
-    const allowed = tab.url && (
-      tab.url.startsWith("https://www.indeed.com/") ||
-      tab.url.startsWith("https://smartapply.indeed.com/")
-    );
-    if (!allowed) return;
+    if (!isCapturableAutomationUrl(tab.url)) return;
   } catch {
     return;
   }
@@ -337,9 +348,9 @@ async function sendScreenshot(tabId) {
   } catch { /* capture failed — skip frame */ }
 }
 
-// Capture the ACTIVE Indeed tab of the automation window (follows the apply flow
-// as it navigates to smartapply.indeed.com). Shared by the message handler and the
-// service-worker capture loop.
+// Capture the ACTIVE automation tab of the campaign window (follows the apply flow as it
+// navigates: Indeed→smartapply, ZR quick-apply, or a board→Greenhouse/Lever hop). Shared
+// by the message handler and the service-worker capture loop.
 async function captureActiveAutomationTab() {
   const { campaignRunning, campaignTabId, campaignWindowId } = await chrome.storage.local.get([
     "campaignRunning",
@@ -352,9 +363,7 @@ async function captureActiveAutomationTab() {
   if (campaignWindowId != null) {
     try {
       const [active] = await chrome.tabs.query({ windowId: campaignWindowId, active: true });
-      if (active && active.id != null && active.url &&
-          (active.url.startsWith("https://www.indeed.com/") ||
-           active.url.startsWith("https://smartapply.indeed.com/"))) {
+      if (active && active.id != null && isCapturableAutomationUrl(active.url)) {
         tabId = active.id;
         if (tabId !== campaignTabId) {
           chrome.storage.local.set({ campaignTabId: tabId }).catch(() => {});
