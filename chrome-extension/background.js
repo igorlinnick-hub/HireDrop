@@ -316,6 +316,17 @@ function isCapturableAutomationUrl(url) {
   }
 }
 
+// Display name for a job site from its URL — used in user-facing captcha/pause messages
+// so they name the actual platform instead of always saying "Indeed".
+function platformDisplayNameFromUrl(url) {
+  const u = String(url || "");
+  if (u.includes("ziprecruiter.com")) return "ZipRecruiter";
+  if (u.includes("greenhouse.io")) return "Greenhouse";
+  if (u.includes("lever.co")) return "Lever";
+  if (u.includes("indeed.com")) return "Indeed";
+  return "The job site";
+}
+
 async function sendScreenshot(tabId) {
   // Only capture the automation's own job-application tabs (never arbitrary user tabs).
   try {
@@ -905,15 +916,17 @@ async function handleMessage(msg, sender) {
           metadata: { signal: data.signal, page_phase: data.phase, url: data.url },
         });
       } catch {}
+      // Name the actual platform (captchas fire on ZR/Greenhouse/Lever too, not just Indeed).
+      const site = platformDisplayNameFromUrl(data.url);
       // Local log so the popup shows it without waiting for a refresh.
-      await addToActivityLog(`⚠️ Indeed asked for a human check — campaign paused`, "err");
+      await addToActivityLog(`⚠️ ${site} asked for a human check — campaign paused`, "err");
       // System notification so the user sees this even if the popup is closed.
       try {
         await chrome.notifications.create({
           type: "basic",
           iconUrl: "icons/icon128.png",
           title: "HireDrop paused — action needed",
-          message: `Indeed is asking you to verify you're human. Open the automation window, solve it, and the campaign resumes automatically.`,
+          message: `${site} is asking you to verify you're human. Open the automation window, solve it, and the campaign resumes automatically.`,
         });
       } catch {}
       return { handled: true };
