@@ -15,6 +15,8 @@ class ProfileUpdate(BaseModel):
     job_type: str = "full-time"
     platforms: list[str] = ["remoteok"]
     writing_style: str = ""
+    linkedin_url: str = ""
+    portfolio_url: str = ""
 
 
 class LetterPreviewRequest(BaseModel):

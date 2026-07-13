@@ -65,6 +65,11 @@ def update_profile(user_id: str, data: dict) -> dict:
         "platforms": data.get("platforms", ["remoteok"]),
         "writing_style": data.get("writing_style", ""),
     }
+    # URL fields (LinkedIn / portfolio) for ATS applications — only write them when the
+    # caller actually provided them, so a partial save (e.g. search-prefs) never wipes them.
+    for k in ("linkedin_url", "portfolio_url"):
+        if k in data:
+            payload[k] = data[k]
     (get_supabase().table("profiles").update(payload).eq("user_id", user_id).execute())
     return get_profile(user_id)
 

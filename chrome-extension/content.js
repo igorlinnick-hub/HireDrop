@@ -1775,8 +1775,15 @@
         // Only treat as a numeric "years" field for short inputs — an open textarea
         // asking about experience wants prose, which the AI branch handles below.
         if (!isTextarea) value = "2";
-      } else if (label.includes("linkedin") || label.includes("portfolio") || label.includes("website") || label.includes("url")) {
-        value = profile.linkedin || profile.portfolio || "";
+      } else if (label.includes("linkedin") || label.includes("portfolio") || label.includes("website") || label.includes("url") || label.includes("github")) {
+        // Label-aware URL mapping: a LinkedIn question gets the LinkedIn URL, a
+        // portfolio/website question gets the portfolio URL. New profile fields
+        // linkedin_url/portfolio_url (old linkedin/portfolio kept as fallback).
+        const li = profile.linkedin_url || profile.linkedin || "";
+        const pf = profile.portfolio_url || profile.portfolio || "";
+        if (label.includes("linkedin")) value = li;
+        else if (label.includes("portfolio") || label.includes("website")) value = pf || li;
+        else value = li || pf; // generic "url" / github
         if (!value) continue;
       } else if (label.includes("city") || label.includes("location")) {
         value = profile.location || "Remote";
