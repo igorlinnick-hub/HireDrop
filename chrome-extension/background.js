@@ -15,6 +15,29 @@ async function getAuthToken() {
   return data.extension_api_key || data.supabase_token || null;
 }
 
+// Decode a Supabase JWT's payload (sub, email, …). base64url-safe — plain
+// atob() chokes on the '-'/'_' characters base64url allows.
+function jwtClaims(token) {
+  try {
+    const b64 = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(atob(b64));
+  } catch {
+    return null;
+  }
+}
+
+// Everything in chrome.storage.local that belongs to ONE HireDrop user.
+// chrome.storage is BROWSER-scoped, so on a dashboard user switch (or logout)
+// all of this must go — the durable key especially: getAuthToken() prefers it,
+// so a stale key silently keeps the extension acting as the PREVIOUS user
+// (their profile in forms, their account collecting the applications).
+const USER_SCOPED_KEYS = [
+  "extension_api_key", "supabase_refresh_token", "profile", "profileCachedAt",
+  "appliedUrls", "appliedJobKeys", "todayCount", "platformCounts",
+  "campaignFilters", "campaignStartedAt", "currentJob",
+  "platformConnections", "captchaWaiting", "reviewMode",
+];
+
 // Self-bootstrap the durable key: any connected user has a (dashboard-pushed) Supabase
 // token but a legacy install may have no key yet. The first time we see a token and no
 // key, mint one with the token so the extension becomes durable — no re-connect needed.
@@ -131,10 +154,8 @@ async function fetchAndCacheProfile() {
     if (!profile.email) {
       try {
         const { supabase_token } = await chrome.storage.local.get("supabase_token");
-        if (supabase_token) {
-          const payload = JSON.parse(atob(supabase_token.split(".")[1]));
-          if (payload.email) profile.email = payload.email;
-        }
+        const payload = supabase_token ? jwtClaims(supabase_token) : null;
+        if (payload && payload.email) profile.email = payload.email;
       } catch { /* token missing/malformed — leave email empty */ }
     }
     await chrome.storage.local.set({
@@ -178,7 +199,23 @@ chrome.runtime.onInstalled.addListener(async () => {
     platformCounts: {},
     todayDate: new Date().toISOString().slice(0, 10),
     currentJob: null,
+    captchaWaiting: null,
   });
+  // 2026-07-12: login detection went fail-closed (positive evidence only).
+  // "connected" statuses written by the old fail-open rules ("no login button
+  // ⇒ connected") may be false positives — drop them so the new detectors
+  // rebuild them honestly on the next site visit. Indeed always required
+  // positive evidence, so its status is kept. logged_out entries were positive
+  // evidence too — kept.
+  {
+    const s = await chrome.storage.local.get("platformConnections");
+    const conns = s.platformConnections || {};
+    let changed = false;
+    for (const p of ["ziprecruiter", "glassdoor", "wellfound", "monster", "careerbuilder", "dice"]) {
+      if (conns[p] && conns[p].status === "connected") { delete conns[p]; changed = true; }
+    }
+    if (changed) await chrome.storage.local.set({ platformConnections: conns });
+  }
   await fetchAndCacheProfile().catch(() => {});
   ensureExtensionKey().catch(() => {}); // mint durable key ASAP so cold-start never 401s
   updateBadge();
@@ -487,10 +524,26 @@ async function handleMessage(msg, sender) {
 
     // ----- Auth -----
     case "STORE_TOKEN": {
+      // Identity guard (2026-07-12): detect a dashboard USER SWITCH by JWT sub
+      // and reset all user-scoped state, fail-closed. Without this, the old
+      // user's durable key stayed put and the new user's campaign ran under
+      // the old identity end-to-end. A running campaign is stopped — it was
+      // started by (and authenticated as) someone else.
+      const claims = jwtClaims(msg.token);
+      if (claims && claims.sub) {
+        const idData = await chrome.storage.local.get(["hd_user_id", "campaignRunning"]);
+        if (idData.hd_user_id !== claims.sub) {
+          if (idData.campaignRunning) await handleMessage({ type: "STOP_CAMPAIGN" }, sender);
+          await chrome.storage.local.remove(USER_SCOPED_KEYS);
+          await chrome.storage.local.set({ hd_user_id: claims.sub });
+        }
+      }
       const storePayload = { supabase_token: msg.token };
       if (msg.refresh_token) storePayload.supabase_refresh_token = msg.refresh_token;
       await chrome.storage.local.set(storePayload);
       // Auto-upgrade to a durable key the first time we have a token but none yet.
+      // After a user switch the key was just cleared, so this mints one for the
+      // NEW user with the token that arrived in this very message.
       ensureExtensionKey().catch(() => {});
       // Use token directly from message (not re-read from storage) to avoid storage-read race
       let pingStatus = "not_attempted";
@@ -546,7 +599,11 @@ async function handleMessage(msg, sender) {
       return { authenticated: !!data.supabase_token };
     }
     case "LOGOUT": {
-      await chrome.storage.local.remove(["extension_api_key", "supabase_token", "supabase_refresh_token", "profile", "profileCachedAt"]);
+      // Full user-scope wipe — not just auth. Leaving dedup history, counts and
+      // platform statuses behind bleeds one user's state into the next login.
+      const lo = await chrome.storage.local.get("campaignRunning");
+      if (lo.campaignRunning) await handleMessage({ type: "STOP_CAMPAIGN" }, sender);
+      await chrome.storage.local.remove([...USER_SCOPED_KEYS, "supabase_token", "hd_user_id"]);
       return { loggedOut: true };
     }
 
@@ -591,7 +648,27 @@ async function handleMessage(msg, sender) {
 
     // ----- Campaign start -----
     case "START_CAMPAIGN": {
+      // A fresh start must not inherit a stale captcha hand-off from a past run.
+      await chrome.storage.local.set({ captchaWaiting: null });
       const profile = await getCachedProfile();
+      // Fail-closed onboarding gate: the popup can start a campaign without the
+      // user ever seeing the site (the dashboard's /dashboard/* layout gate
+      // can't help here). An un-onboarded profile is empty — the campaign
+      // would fill applications with blanks under the user's identity.
+      if (!profile || profile.onboarding_completed !== true) {
+        return { started: false, error: "onboarding_incomplete" };
+      }
+      // Resume is optional at onboarding — Indeed native applies use the resume
+      // stored on Indeed itself, but external-ATS forms (Greenhouse/Lever)
+      // hard-require one and the P1 guard will skip them. Say so UPFRONT in
+      // the activity feed instead of letting the user wonder why every ATS
+      // job silently lands in "skipped".
+      if (!profile.resume_url) {
+        await addToActivityLog(
+          "Heads-up: no resume in your HireDrop profile — company-site (ATS) applications will be skipped until you upload one in Settings. Indeed applies still work (they use the resume on your Indeed account).",
+          "warn"
+        );
+      }
       const raw = msg.filters || {};
       // Always merge with profile so partial/empty filters still work
       const filters = {
@@ -744,6 +821,7 @@ async function handleMessage(msg, sender) {
         campaignTabId: null,
         campaignWindowId: null,
         currentJob: null,
+        captchaWaiting: null,
       });
 
       try {
@@ -918,6 +996,11 @@ async function handleMessage(msg, sender) {
       } catch {}
       // Name the actual platform (captchas fire on ZR/Greenhouse/Lever too, not just Indeed).
       const site = platformDisplayNameFromUrl(data.url);
+      // Persist the hand-off so the popup (GET_STATUS) and the dashboard live
+      // view (ping.js HIREDROP_GET_LIVE_STATE) can show a "solve the captcha"
+      // CTA that survives popup reopen / page reload. Cleared by
+      // DETECTION_CLEARED, START_CAMPAIGN and STOP_CAMPAIGN.
+      await chrome.storage.local.set({ captchaWaiting: { url: data.url, site, signal: data.signal, at: Date.now() } });
       // Local log so the popup shows it without waiting for a refresh.
       await addToActivityLog(`⚠️ ${site} asked for a human check — campaign paused`, "err");
       // System notification so the user sees this even if the popup is closed.
@@ -927,6 +1010,20 @@ async function handleMessage(msg, sender) {
           iconUrl: "icons/icon128.png",
           title: "HireDrop paused — action needed",
           message: `${site} is asking you to verify you're human. Open the automation window, solve it, and the campaign resumes automatically.`,
+        });
+      } catch {}
+      return { handled: true };
+    }
+
+    // ----- Detection cleared (human solved the challenge; campaign resumed) -----
+    case "DETECTION_CLEARED": {
+      await chrome.storage.local.set({ captchaWaiting: null });
+      await addToActivityLog("Human check cleared — campaign resumed", "ok");
+      try {
+        await apiPost("/activity", {
+          message: "Human check cleared — campaign resumed",
+          level: "info",
+          phase: "detection_cleared",
         });
       } catch {}
       return { handled: true };
@@ -942,6 +1039,7 @@ async function handleMessage(msg, sender) {
         "platformCounts",
         "todayDate",
         "currentJob",
+        "captchaWaiting",
       ]);
 
       const today = new Date().toISOString().slice(0, 10);
@@ -966,6 +1064,10 @@ async function handleMessage(msg, sender) {
         platformCounts,
         limitPerPlatform: LIMIT_PER_PLATFORM,
         currentJob: data.currentJob || null,
+        // popup.js hides its captcha alert off this flag; captchaWaiting carries
+        // the details (site/url) for richer UIs.
+        captchaDetected: !!data.captchaWaiting,
+        captchaWaiting: data.captchaWaiting || null,
         totalJobs: serverStats?.total_jobs || 0,
         totalApplications: serverStats?.total_applications || 0,
       };
