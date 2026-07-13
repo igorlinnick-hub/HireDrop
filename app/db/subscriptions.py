@@ -65,13 +65,17 @@ def get_tier(user_id: str, email: Optional[str] = None) -> str:
     tier = row.get("subscription_tier") or "free"
     expires = row.get("subscription_expires_at")
 
-    if tier != "free" and expires:
+    if tier != "free":
+        # A paid tier MUST have a valid, future expiry. Missing or unparseable → fail
+        # CLOSED (treat as expired) so a NULL/malformed timestamp can't grant paid forever.
+        if not expires:
+            return "free"
         try:
             exp_dt = datetime.fromisoformat(expires.replace("Z", "+00:00"))
-            if exp_dt < datetime.now(timezone.utc):
-                return "free"
         except Exception:
-            pass
+            return "free"
+        if exp_dt < datetime.now(timezone.utc):
+            return "free"
 
     return tier if tier in TIER_LIMITS else "free"
 
