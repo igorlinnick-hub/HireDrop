@@ -102,6 +102,63 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
     return {"count": saved, "message": message, "platforms": searched, "indeed_note": indeed_note}
 
 
+@router.post("/jobs/find-ats")
+def find_ats_jobs(user=Depends(get_current_user)):
+    """Direct-source discovery from Greenhouse/Lever public board APIs (ROADMAP_E2E.md).
+
+    The real supply of good-fit external-apply jobs: a curated watchlist of company tokens
+    queried via their official board APIs → direct, phase_ats-fillable apply URLs. Scores +
+    saves into the same job pool as /jobs/find so the campaign + Fit Engine treat them
+    uniformly. Compliant (public APIs, server-side, no scraping). Mirrors find_jobs.
+    """
+    from app.db.profile import get_profile
+    from data.ats_watchlist import SEED_WATCHLIST
+    from modules.platforms.ats_boards import discover_ats
+
+    profile = get_profile(user.id)
+    keywords = profile.get("keywords", [])
+
+    try:
+        found = discover_ats(SEED_WATCHLIST, keywords, cap=120)
+    except Exception as e:  # never let a flaky company API break discovery
+        print(f"[find-ats] discovery failed: {e}", file=sys.stderr)
+        found = []
+
+    new_jobs = [j for j in found if not jobs_db.job_exists(user.id, j["link"])]
+    if new_jobs:
+        from modules.ai_cover_letter import load_resume_text
+        from modules.ai_job_scorer import score_jobs_batch
+
+        resume_text = load_resume_text(profile.get("resume_url"))
+        new_jobs = score_jobs_batch(new_jobs, profile, resume_text)
+
+    saved = 0
+    for job in new_jobs:
+        job_id = jobs_db.save_job(
+            user_id=user.id,
+            title=job["title"],
+            company=job["company"],
+            link=job["link"],
+            platform=job.get("platform", "unknown"),  # "greenhouse" | "lever"
+            description=job.get("description", ""),
+            location=job.get("location", ""),
+            job_type=job.get("job_type", ""),
+        )
+        if job_id and job.get("score") is not None:
+            jobs_db.update_job_score(
+                job_id, job["score"], job.get("ai_verdict", ""),
+                job.get("ai_flags", []), job.get("ats_keywords", []),
+                job.get("ats_match_pct", 0),
+            )
+        saved += 1
+
+    return {
+        "count": saved,
+        "found": len(found),
+        "message": f"{saved} new Greenhouse/Lever jobs saved (from {len(found)} live listings)",
+    }
+
+
 @router.patch("/jobs/{job_id}/status")
 def patch_job_status(job_id: str, req: JobStatusUpdate, user=Depends(get_current_user)):
     jobs_db.update_job_status(user.id, job_id, req.status)
