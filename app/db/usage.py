@@ -38,3 +38,19 @@ def increment_today(user_id: str) -> int:
         .execute()
     )
     return new_count
+
+
+def over_daily_ai_limit(user_id: str, email: str | None) -> bool:
+    """True when the user has hit the daily AI quota and enforcement is on.
+
+    Shared by every paid-AI endpoint (cover letters, screener answers, ATS resume
+    generation) so they all draw from one daily budget. Admins are never limited.
+    Imports are local to avoid an import cycle with subscriptions/config.
+    """
+    from config import RATE_LIMIT_ENFORCE, RATE_LIMIT_LETTERS_PER_DAY
+
+    from app.db.subscriptions import is_admin
+
+    if is_admin(email):
+        return False
+    return RATE_LIMIT_ENFORCE and get_today_count(user_id) >= RATE_LIMIT_LETTERS_PER_DAY

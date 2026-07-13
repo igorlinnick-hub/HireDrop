@@ -66,10 +66,13 @@ ADMIN_EMAILS = {
     if e.strip()
 }
 
-# Cover letter generation rate limit. Soft mode (default) just counts;
-# hard mode (RATE_LIMIT_ENFORCE=true) returns 429 once the daily count is hit.
+# Daily AI quota — cover letters, screener answers, AND ATS resume generation all
+# draw from this one budget. ENFORCED by default (a 429 is returned once the daily
+# count is hit) so a free account / script can't loop an AI endpoint to burn our
+# Anthropic spend. Set RATE_LIMIT_ENFORCE=false only to temporarily observe usage
+# without blocking anyone.
 RATE_LIMIT_LETTERS_PER_DAY = int(os.getenv("RATE_LIMIT_LETTERS_PER_DAY", "50"))
-RATE_LIMIT_ENFORCE = os.getenv("RATE_LIMIT_ENFORCE", "false").lower() in ("1", "true", "yes")
+RATE_LIMIT_ENFORCE = os.getenv("RATE_LIMIT_ENFORCE", "true").lower() in ("1", "true", "yes")
 
 
 # =============================================================================
