@@ -124,6 +124,29 @@ def _grant_from_subscription(stripe, user_id: str, subscription: dict) -> None:
     billing_db.grant(user_id, tier, _period_end_iso(subscription), subscription_id=subscription.get("id"))
 
 
+def _resolve_subscription(stripe, invoice_obj: dict, customer_id: str):
+    """Get the subscription for an invoice.paid event. On modern Stripe API versions
+    the invoice's subscription id isn't always a top-level field, so fall back to the
+    invoice line items and finally to the customer's current subscription.
+    """
+    sub_id = invoice_obj.get("subscription")
+    if not sub_id:
+        lines = (invoice_obj.get("lines") or {}).get("data") or []
+        sub_id = lines[0].get("subscription") if lines else None
+    if sub_id:
+        try:
+            return stripe.Subscription.retrieve(sub_id)
+        except Exception as e:
+            print(f"[billing] subscription retrieve failed: {e}", file=sys.stderr)
+    try:
+        subs = stripe.Subscription.list(customer=customer_id, status="all", limit=1)
+        data = subs.get("data") or []
+        return data[0] if data else None
+    except Exception as e:
+        print(f"[billing] subscription list failed: {e}", file=sys.stderr)
+        return None
+
+
 @router.post("/billing/webhook")
 async def stripe_webhook(request: Request, stripe_signature: str = Header(None)):
     """Handle Stripe events. Signature-verified; no auth dependency by design."""
@@ -142,6 +165,12 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
     etype = event["type"]
     obj = event["data"]["object"]
 
+    # Idempotency — Stripe delivers at-least-once; skip events we've already handled
+    # so a re-delivered event can't double-grant / corrupt tier state.
+    event_id = event.get("id")
+    if event_id and not billing_db.mark_event_processed(event_id, etype):
+        return {"received": True, "duplicate": True}
+
     try:
         if etype == "checkout.session.completed":
             # First payment. Link customer, then fetch the subscription to grant.
@@ -156,14 +185,11 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
 
         elif etype in ("customer.subscription.updated", "invoice.paid"):
             # Renewal or plan change. Resolve user via customer id.
-            sub_obj = obj if etype == "customer.subscription.updated" else None
             customer_id = obj.get("customer")
             user_id = billing_db.find_user_by_customer(customer_id) if customer_id else None
             if not user_id:
                 return {"received": True}
-            if sub_obj is None:
-                sub_id = obj.get("subscription")
-                sub_obj = stripe.Subscription.retrieve(sub_id) if sub_id else None
+            sub_obj = obj if etype == "customer.subscription.updated" else _resolve_subscription(stripe, obj, customer_id)
             if sub_obj is not None:
                 status = sub_obj.get("status")
                 if status in ("active", "trialing", "past_due"):

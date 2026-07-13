@@ -187,7 +187,12 @@ async function getCachedProfile() {
 // Install / Startup — seed the cache
 // ---------------------------------------------------------------------------
 
-const LIMIT_PER_PLATFORM = 50;
+// Fallback caps used only until the backend's authoritative numbers are fetched at
+// campaign start (single source: app/db/subscriptions.py, mirrored into campaignCaps).
+// SAFE defaults — the old hardcoded 50 let real applications run past the ban-safety
+// rail because the extension counted locally and ignored the backend's 429.
+const DEFAULT_PER_PLATFORM = 20;
+const DEFAULT_DAILY_TOTAL = 50;
 
 chrome.runtime.onInstalled.addListener(async () => {
   await chrome.storage.local.set({
@@ -700,8 +705,18 @@ async function handleMessage(msg, sender) {
 
       try {
         await apiPost("/campaign/start", filters);
+        // Pull the authoritative caps (single source: app/db/subscriptions.py) so
+        // content.js enforces the real per-platform rail + daily budget PRE-submit,
+        // instead of a stale local hardcode that let real applications past the cap.
+        const st = await apiGet("/campaign/status");
+        await chrome.storage.local.set({
+          campaignCaps: {
+            perPlatform: (st && st.limit_per_platform > 0) ? st.limit_per_platform : 20,
+            dailyTotal: (st && st.daily_limit > 0) ? st.daily_limit : 50,
+          },
+        });
       } catch {
-        // Continue even if server is down
+        // Continue even if server is down — content.js falls back to safe defaults (20/50).
       }
 
       const targetUrl = buildPlatformUrl(primaryPlatform, filters.keywords, filters.location, filters.job_type);
@@ -1040,6 +1055,7 @@ async function handleMessage(msg, sender) {
         "todayDate",
         "currentJob",
         "captchaWaiting",
+        "campaignCaps",
       ]);
 
       const today = new Date().toISOString().slice(0, 10);
@@ -1062,7 +1078,8 @@ async function handleMessage(msg, sender) {
         startedAt: data.campaignStartedAt || null,
         todayCount,
         platformCounts,
-        limitPerPlatform: LIMIT_PER_PLATFORM,
+        limitPerPlatform: (data.campaignCaps && data.campaignCaps.perPlatform > 0) ? data.campaignCaps.perPlatform : DEFAULT_PER_PLATFORM,
+        dailyLimit: (data.campaignCaps && data.campaignCaps.dailyTotal > 0) ? data.campaignCaps.dailyTotal : DEFAULT_DAILY_TOTAL,
         currentJob: data.currentJob || null,
         // popup.js hides its captcha alert off this flag; captchaWaiting carries
         // the details (site/url) for richer UIs.

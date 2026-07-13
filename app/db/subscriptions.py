@@ -21,15 +21,17 @@ from app.db.client import get_supabase
 
 TIER_LIMITS = {
     "free": 10,
-    "pro": 50,
-    "premium": 50,  # same daily volume as pro; premium's differentiator is ATS resume tailoring, not quota
-    "elite": 200,
+    "pro": 30,      # paid daily cap — 30/day × $0.03 ≈ $27/mo keeps a maxed user profitable at $29/mo
+    "premium": 30,  # same volume as pro; premium's differentiator is ATS resume tailoring, not quota
+    "elite": 200,   # legacy tier, not sold
 }
 
 # Ban-safety cap: bans are counted PER platform, so 20/day/platform keeps each
 # account looking human. Volume scales by breadth (more platforms), not depth on one.
-# NOTE: keep the extension constant chrome-extension/content.js:16
-# (MAX_APPLICATIONS_PER_PLATFORM) aligned to this value.
+# THIS IS THE SINGLE SOURCE OF TRUTH. GET /campaign/status serves this number (+ the
+# tier's daily_limit) to the extension at campaign start; content.js/background.js read
+# it into campaignCaps and enforce it PRE-submit. No more hand-aligned hardcodes — to
+# change the cap, edit this one value (and TIER_LIMITS above for the daily budget).
 MAX_PER_PLATFORM = 20
 
 # Sentinel for admin "unlimited" so the dashboard renders ∞ instead of a number.
@@ -63,13 +65,17 @@ def get_tier(user_id: str, email: Optional[str] = None) -> str:
     tier = row.get("subscription_tier") or "free"
     expires = row.get("subscription_expires_at")
 
-    if tier != "free" and expires:
+    if tier != "free":
+        # A paid tier MUST have a valid, future expiry. Missing or unparseable → fail
+        # CLOSED (treat as expired) so a NULL/malformed timestamp can't grant paid forever.
+        if not expires:
+            return "free"
         try:
             exp_dt = datetime.fromisoformat(expires.replace("Z", "+00:00"))
-            if exp_dt < datetime.now(timezone.utc):
-                return "free"
         except Exception:
-            pass
+            return "free"
+        if exp_dt < datetime.now(timezone.utc):
+            return "free"
 
     return tier if tier in TIER_LIMITS else "free"
 

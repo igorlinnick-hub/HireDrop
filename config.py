@@ -66,10 +66,13 @@ ADMIN_EMAILS = {
     if e.strip()
 }
 
-# Cover letter generation rate limit. Soft mode (default) just counts;
-# hard mode (RATE_LIMIT_ENFORCE=true) returns 429 once the daily count is hit.
+# Daily AI quota — cover letters, screener answers, AND ATS resume generation all
+# draw from this one budget. ENFORCED by default (a 429 is returned once the daily
+# count is hit) so a free account / script can't loop an AI endpoint to burn our
+# Anthropic spend. Set RATE_LIMIT_ENFORCE=false only to temporarily observe usage
+# without blocking anyone.
 RATE_LIMIT_LETTERS_PER_DAY = int(os.getenv("RATE_LIMIT_LETTERS_PER_DAY", "50"))
-RATE_LIMIT_ENFORCE = os.getenv("RATE_LIMIT_ENFORCE", "false").lower() in ("1", "true", "yes")
+RATE_LIMIT_ENFORCE = os.getenv("RATE_LIMIT_ENFORCE", "true").lower() in ("1", "true", "yes")
 
 
 # =============================================================================
@@ -81,8 +84,10 @@ RATE_LIMIT_ENFORCE = os.getenv("RATE_LIMIT_ENFORCE", "false").lower() in ("1", "
 # the billing router returns 503 until STRIPE_SECRET_KEY is set.
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
-STRIPE_PRICE_PRO = os.getenv("STRIPE_PRICE_PRO", "")
-STRIPE_PRICE_PREMIUM = os.getenv("STRIPE_PRICE_PREMIUM", "")
+# One paid product (everything, 30/day), billed weekly OR monthly. No free tier,
+# no trial, no annual. Create two recurring Prices in Stripe and put the IDs here.
+STRIPE_PRICE_WEEKLY = os.getenv("STRIPE_PRICE_WEEKLY", "")
+STRIPE_PRICE_MONTHLY = os.getenv("STRIPE_PRICE_MONTHLY", "")
 
 
 # =============================================================================

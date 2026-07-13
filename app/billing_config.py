@@ -1,33 +1,35 @@
-"""Billing plans — single source of truth for paid tiers.
+"""Billing plans — single source of truth for the paid product.
 
-Maps a plan the frontend can request → the tier string we grant → the Stripe
-Price object that charges for it. Keep this in sync with the tier limits in
-app/db/subscriptions.py (TIER_LIMITS) and the frontend pricing page.
-
-Free is not here — it's the default when no paid subscription is active.
+One product (everything included, 30/day), billed WEEKLY or MONTHLY. No free tier,
+no trial, no annual. Both cadences grant the same tier — the only difference is the
+Stripe Price / billing interval. Keep in sync with TIER_LIMITS in
+app/db/subscriptions.py and the frontend pricing.
 """
 
-from config import STRIPE_PRICE_PREMIUM, STRIPE_PRICE_PRO
+from config import STRIPE_PRICE_MONTHLY, STRIPE_PRICE_WEEKLY
 
-# plan key (what the checkout endpoint accepts) → plan metadata
+# plan key (what the checkout endpoint accepts) → plan metadata.
+# Both grant tier "pro" (the full paid product) — cadence is the only difference.
 PLANS = {
-    "pro": {
+    "weekly": {
         "tier": "pro",
-        "name": "Pro",
-        "price_usd": 19,
-        "price_id": STRIPE_PRICE_PRO,
+        "name": "Weekly",
+        "price_usd": 9,
+        "interval": "week",
+        "price_id": STRIPE_PRICE_WEEKLY,
     },
-    "premium": {
-        "tier": "premium",
-        "name": "Premium",
+    "monthly": {
+        "tier": "pro",
+        "name": "Monthly",
         "price_usd": 29,
-        "price_id": STRIPE_PRICE_PREMIUM,
+        "interval": "month",
+        "price_id": STRIPE_PRICE_MONTHLY,
     },
 }
 
 
 def plan_by_key(key: str) -> dict | None:
-    """Return the plan for a checkout request key ('pro' | 'premium')."""
+    """Return the plan for a checkout request key ('weekly' | 'monthly')."""
     return PLANS.get((key or "").lower())
 
 

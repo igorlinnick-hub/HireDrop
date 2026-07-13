@@ -25,12 +25,11 @@ TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "templates")
 
 
 def _rate_limit_check(user) -> None:
-    """Raise 429 if the user is past the daily quota.
+    """Raise 429 if the user is past the daily AI quota.
 
-    Admins skip the check entirely. Otherwise, during the soft-launch window set
-    RATE_LIMIT_ENFORCE=false in env — the counter still increments, so we get
-    visibility into who hits the limit without breaking anyone. Flip to true
-    once the data is healthy.
+    Admins skip the check entirely. Enforcement is ON by default (config.py) so a
+    free account / script can't loop this endpoint to burn Anthropic spend; set
+    RATE_LIMIT_ENFORCE=false only to temporarily observe usage without blocking.
     """
     if is_admin(getattr(user, "email", None)):
         return

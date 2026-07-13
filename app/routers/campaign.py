@@ -12,12 +12,17 @@ from app.db import campaign as campaign_db
 from app.db import jobs as jobs_db
 from app.db.client import get_supabase
 from app.db.profile import get_profile
+from app.db.subscriptions import MAX_PER_PLATFORM, daily_limit, get_tier
 from app.deps import get_current_user
 from app.schemas import CampaignStartRequest
 
 router = APIRouter(tags=["campaign"])
 
-LIMIT_PER_PLATFORM = 50
+# Single source of truth for the caps lives in app/db/subscriptions.py — the
+# extension used to hardcode its own 50 here and in content.js/background.js,
+# which diverged from the ban-safety gate (MAX_PER_PLATFORM). Status now serves
+# the authoritative numbers so the extension can enforce them PRE-submit (before
+# the irreversible application) instead of discovering the 429 after the fact.
 
 
 @router.get("/campaign/status")
@@ -30,13 +35,19 @@ def campaign_status(user=Depends(get_current_user)):
     platform_counts = apps_db.count_today_by_platform(user.id)
     jobs_ready = jobs_db.count_new_jobs(user.id, enabled_platforms)
 
+    tier = get_tier(user.id, getattr(user, "email", None))
+
     return {
         "running": state["running"],
         "filters": state["filters"],
         "started_at": state["started_at"],
         "today_applications": today_count,
         "platform_counts": platform_counts,
-        "limit_per_platform": LIMIT_PER_PLATFORM,
+        # Two-cap model: per-platform ceiling (ban-safety rail, counted per platform)
+        # + total daily budget (tier value/cost). The extension enforces BOTH pre-submit.
+        "limit_per_platform": MAX_PER_PLATFORM,
+        "daily_limit": daily_limit(tier),
+        "tier": tier,
         "jobs_ready": jobs_ready,
     }
 

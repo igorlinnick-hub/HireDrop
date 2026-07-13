@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 
 from app.db import profile as profile_db
 from app.db import resume as resume_storage
+from app.db import usage as usage_db
 from app.deps import get_current_user
 from app.schemas import ConnectPlatformRequest, ProfileUpdate, SearchPrefsUpdate
 from modules.ats_checker import check_ats_compliance
@@ -179,6 +180,9 @@ async def ats_generate(body: dict = None, user=Depends(get_current_user)):
     (DOCX for employers/boards that don't accept PDF). The resume is structured
     once via Claude, then rendered into both formats. Returns signed preview URLs.
     """
+    if usage_db.over_daily_ai_limit(user.id, getattr(user, "email", None)):
+        return JSONResponse(status_code=429, content={"error": "Daily AI limit reached — try again tomorrow."})
+
     answers = (body or {}).get("answers") or []
 
     signed_url = resume_storage.signed_download_url(user.id)
@@ -200,6 +204,7 @@ async def ats_generate(body: dict = None, user=Depends(get_current_user)):
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             resume_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
         data = structure_resume_data(resume_text, answers=answers)
+        usage_db.increment_today(user.id)  # count the paid Sonnet call against the daily quota
         ats_pdf_bytes = generate_ats_pdf(data=data)
         ats_docx_bytes = generate_ats_docx(data=data)
     except Exception as e:
@@ -263,8 +268,12 @@ async def ats_generate_from_text(body: dict, user=Depends(get_current_user)):
     if not resume_text:
         return JSONResponse(status_code=400, content={"error": "resume_text is required"})
 
+    if usage_db.over_daily_ai_limit(user.id, getattr(user, "email", None)):
+        return JSONResponse(status_code=429, content={"error": "Daily AI limit reached — try again tomorrow."})
+
     try:
         data = structure_resume_data(resume_text)
+        usage_db.increment_today(user.id)  # count the paid Sonnet call against the daily quota
         ats_pdf_bytes = generate_ats_pdf(data=data)
         ats_docx_bytes = generate_ats_docx(data=data)
     except Exception as e:
@@ -352,7 +361,9 @@ def _lazy_tailor_for_job(user, job) -> None:
                 print(f"[profile] tailored PDF rebuild failed: {pdf_err}", file=sys.stderr)
             return
         from app.db.subscriptions import get_tier
-        if get_tier(user.id, getattr(user, "email", None)) not in ("premium", "admin"):
+        # Paid = the full product (everything, incl. ATS tailoring). "pro" is what
+        # both the weekly and monthly plans grant; premium kept for legacy grants.
+        if get_tier(user.id, getattr(user, "email", None)) not in ("pro", "premium", "admin"):
             return
         prof = profile_db.get_profile(user.id)
         mode = prof.get("apply_mode") or "standard"

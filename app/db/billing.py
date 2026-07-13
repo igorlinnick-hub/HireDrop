@@ -48,3 +48,30 @@ def downgrade(user_id: str) -> None:
     get_supabase().table("profiles").update(
         {"subscription_tier": "free", "subscription_expires_at": None, "stripe_subscription_id": None}
     ).eq("user_id", user_id).execute()
+
+
+def mark_event_processed(event_id: str, event_type: str) -> bool:
+    """Record a Stripe event id for idempotency. Returns True if this is the FIRST
+    time we've seen it (→ process it), False if already processed (→ skip: dedup).
+
+    Stripe delivers at-least-once, so this stops a re-delivered event from double-
+    granting. Fails OPEN (returns True) if the bookkeeping insert errors — better to
+    risk a rare re-process than to silently drop a real payment event.
+    """
+    try:
+        res = (
+            get_supabase()
+            .table("stripe_events")
+            .upsert(
+                {"event_id": event_id, "type": event_type},
+                on_conflict="event_id",
+                ignore_duplicates=True,
+            )
+            .execute()
+        )
+        return bool(res.data)  # non-empty = freshly inserted; empty = duplicate (ignored)
+    except Exception as e:
+        import sys
+
+        print(f"[billing] event dedup check failed for {event_id}: {e}", file=sys.stderr)
+        return True

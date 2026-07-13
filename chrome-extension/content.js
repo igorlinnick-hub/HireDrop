@@ -13,7 +13,25 @@
   if (window.__hiredrop_loaded) return;
   window.__hiredrop_loaded = true;
 
-  const MAX_APPLICATIONS_PER_PLATFORM = 50;
+  // Per-platform ban-safety rail. The SINGLE source of truth is the backend
+  // (app/db/subscriptions.py MAX_PER_PLATFORM); background.js fetches it at campaign
+  // start into chrome.storage.local.campaignCaps and we mirror it here. Default is the
+  // SAFE number (20) — never the old 50 — so a fetch failure fails safe (fewer apps),
+  // not unsafe (real applications past the rail). All the cap-check sites below read
+  // this live value, so aligning the number is now a one-line change in the backend.
+  let MAX_APPLICATIONS_PER_PLATFORM = 20;
+  (async () => {
+    try {
+      const s = await chrome.storage.local.get("campaignCaps");
+      const pp = s.campaignCaps && s.campaignCaps.perPlatform;
+      if (typeof pp === "number" && pp > 0) MAX_APPLICATIONS_PER_PLATFORM = pp;
+    } catch {}
+  })();
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !changes.campaignCaps) return;
+    const pp = changes.campaignCaps.newValue && changes.campaignCaps.newValue.perPlatform;
+    if (typeof pp === "number" && pp > 0) MAX_APPLICATIONS_PER_PLATFORM = pp;
+  });
 
   // =========================================================================
   // Platform detection
@@ -2908,6 +2926,25 @@
 
   async function _runPhaseInner() {
     if (!(await isCampaignRunning())) return;
+
+    // Total daily budget (across ALL platforms) — the tier's cost/value cap. Bans are
+    // counted per-platform (that rail is MAX_APPLICATIONS_PER_PLATFORM, checked in each
+    // phase), but the daily budget is a cross-platform TOTAL, so it's enforced centrally
+    // here — once per tick, before any apply on any platform. Without this, a user on 2+
+    // platforms could submit past the budget (e.g. 20+20 > a 30/day cap): those extra
+    // applications reach the employer but the backend 429s the save — invisible spend +
+    // ban risk. campaignCaps.dailyTotal comes from the backend (app/db/subscriptions.py).
+    {
+      const c = await chrome.storage.local.get(["campaignCaps", "todayCount", "todayDate"]);
+      const today = new Date().toISOString().slice(0, 10);
+      const total = c.todayDate === today ? (c.todayCount || 0) : 0;
+      const dailyTotal = (c.campaignCaps && c.campaignCaps.dailyTotal > 0) ? c.campaignCaps.dailyTotal : 50;
+      if (total >= dailyTotal) {
+        log(`Daily budget reached (${total}/${dailyTotal}). Campaign complete.`, "ok");
+        await sendMsg({ type: "STOP_CAMPAIGN" });
+        return;
+      }
+    }
 
     // Anti-detect: a CAPTCHA / security challenge is HANDED TO THE USER — we no longer
     // auto-solve it (CapSolver dropped for compliance). The only thing we auto-handle is
