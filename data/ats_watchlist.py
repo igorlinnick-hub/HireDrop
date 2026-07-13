@@ -37,7 +37,19 @@ SEED_WATCHLIST: list[tuple[str, str]] = [
     ("webflow", "greenhouse"),
     ("mavenclinic", "greenhouse"),    # health/wellness
     ("modernhealth", "greenhouse"),   # mental health
+    # --- Greenhouse (added 2026-07-13 batch 2; diversified niches, token-validated) ---
+    ("postman", "greenhouse"),        # dev tools, 119
+    ("faire", "greenhouse"),          # marketplace, 75
+    ("carta", "greenhouse"),          # fintech, 59
+    ("mercury", "greenhouse"),        # fintech, 58
+    ("tanium", "greenhouse"),         # security, 44
+    ("amplitude", "greenhouse"),      # analytics, 41
+    ("omadahealth", "greenhouse"),    # health/wellness, 24
+    ("glossier", "greenhouse"),       # consumer/beauty marketing, 19
+    ("papa", "greenhouse"),           # health/care
     # --- Lever ---
+    ("spotify", "lever"),             # media/consumer, 111
+
     ("shieldai", "lever"),
     ("matchgroup", "lever"),
     ("Huckleberrylabs", "lever"),
