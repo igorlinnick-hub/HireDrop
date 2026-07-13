@@ -184,6 +184,46 @@ window.addEventListener("message", function (e) {
     }
   }
 
+  // Dashboard logout → wipe the extension's user-scoped state (durable key,
+  // profile, dedup history, platform statuses). Without this relay the key
+  // outlived the dashboard session and the extension kept acting as the
+  // logged-out user. Must round-trip through the service worker (storage
+  // writes + campaign stop live there).
+  if (typeof e.data === "object" && e.data.type === "HIREDROP_LOGOUT") {
+    try {
+      chrome.runtime.sendMessage({ type: "LOGOUT" }, function (resp) {
+        const err = chrome.runtime.lastError ? chrome.runtime.lastError.message : null;
+        window.postMessage({ type: "HIREDROP_LOGGED_OUT", ok: !!(resp && resp.loggedOut), error: err }, "*");
+      });
+    } catch (ex) {
+      window.postMessage({ type: "HIREDROP_LOGGED_OUT", ok: false, error: "context_invalidated" }, "*");
+    }
+  }
+
+  // Live campaign state for the dashboard Campaign Live view. Same direct-storage
+  // pattern as HIREDROP_GET_PLATFORM_CONNECTIONS (bypasses a possibly-stale MV3
+  // service worker). captchaWaiting = a human hand-off is pending (captcha /
+  // security check) — the dashboard shows a "solve the captcha" CTA off it.
+  if (typeof e.data === "object" && e.data.type === "HIREDROP_GET_LIVE_STATE") {
+    try {
+      chrome.storage.local.get(["campaignRunning", "captchaWaiting"], function (data) {
+        const err = chrome.runtime.lastError ? chrome.runtime.lastError.message : null;
+        window.postMessage(
+          {
+            type: "HIREDROP_LIVE_STATE",
+            ok: !err,
+            campaignRunning: !!(data && data.campaignRunning),
+            captchaWaiting: (data && data.captchaWaiting) || null,
+            error: err,
+          },
+          "*"
+        );
+      });
+    } catch (ex) {
+      window.postMessage({ type: "HIREDROP_LIVE_STATE", ok: false, campaignRunning: false, captchaWaiting: null, error: "context_invalidated" }, "*");
+    }
+  }
+
   // Open a platform's login / sign-up page so the user can connect (or register).
   if (typeof e.data === "object" && e.data.type === "HIREDROP_OPEN_PLATFORM_LOGIN" && typeof e.data.platform === "string") {
     try {

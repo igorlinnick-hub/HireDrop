@@ -4,7 +4,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from app.db import applications as apps_db
@@ -43,6 +43,13 @@ def campaign_status(user=Depends(get_current_user)):
 
 @router.post("/campaign/start")
 def campaign_start(req: CampaignStartRequest, user=Depends(get_current_user)):
+    # Fail-closed onboarding gate (defense-in-depth: the dashboard layout and
+    # the extension's START_CAMPAIGN both check too). An un-onboarded profile
+    # has no name/keywords/resume — a campaign would file applications with
+    # blanks under the user's identity.
+    profile = get_profile(user.id)
+    if not profile.get("onboarding_completed"):
+        raise HTTPException(status_code=403, detail="onboarding_incomplete")
     filters = {
         "keywords": req.keywords,
         "platforms": req.platforms,
