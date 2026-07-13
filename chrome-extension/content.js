@@ -59,9 +59,10 @@
       // The "Log In" link is server-rendered in the header whenever logged out.
       if (document.querySelector('a[href*="/authn/login"]')) return "logged_out";
       if (document.querySelector('a[href*="/authn/logout"], a[href*="/candidate/"]')) return "connected";
-      // No login link + a rendered header ⇒ treat as connected (logged-in nav
-      // hides the login link and shows an account menu we can't always name).
-      if (document.querySelector('header, [data-testid="header"], nav')) return "connected";
+      // FAIL-CLOSED (2026-07-12): no positive marker either way ⇒ unknown. The
+      // old "rendered header ⇒ connected" fallback false-positived logged-out
+      // pages whose login link didn't match the selector (fresh users saw
+      // ZipRecruiter as Connected without ever logging in).
       return "unknown";
     }
     return "unknown";
@@ -2956,6 +2957,9 @@
         if (!(await isCampaignRunning())) return; // user stopped it themselves
         if (!isDetected().detected) {
           log("CAPTCHA cleared — resuming campaign", "ok");
+          // Tell background to drop the captchaWaiting hand-off state so the
+          // popup alert and the dashboard "solve the captcha" CTA disappear.
+          await sendMsg({ type: "DETECTION_CLEARED" });
           break;
         }
       }

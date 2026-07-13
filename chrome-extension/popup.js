@@ -202,8 +202,12 @@ async function loadStatus() {
       $("current-job").style.display = "none";
     }
 
-    // Hide CAPTCHA alert once campaign is running normally
-    if (!status.captchaDetected) hideCaptchaAlert();
+    // Show the CAPTCHA alert whenever a hand-off is pending (captchaWaiting in
+    // storage) — this survives popup reopen, unlike the DETECTION_TRIPPED
+    // runtime message which only reaches an already-open popup. Hide it once
+    // the campaign is running normally again.
+    if (status.captchaDetected) showCaptchaAlert(status.captchaWaiting?.signal);
+    else hideCaptchaAlert();
   } else {
     $("campaign-stopped").style.display = "";
     $("campaign-running").style.display = "none";
@@ -260,6 +264,8 @@ $("btn-start").addEventListener("click", async () => {
 
   if (res && res.started) {
     addLog("Campaign started — Indeed tab opened", "ok");
+  } else if (res?.error === "onboarding_incomplete") {
+    addLog("Finish your profile setup on hiredrop.io first — the quiz collects the data we fill applications with.", "err");
   } else {
     addLog("Failed to start: " + (res?.error || "unknown"), "err");
   }
