@@ -214,7 +214,11 @@ async function loadStatus() {
     campaignStartedAt = null;
     stopElapsedTimer();
 
-    const limit = status.limitPerPlatform || 50;
+    // Show the daily budget (total across platforms), not the per-platform rail —
+    // todayCount is a cross-platform total, so pairing it with the per-platform cap
+    // read as "12 / 20" even when the real daily budget was 50. dailyLimit is the
+    // honest denominator; both now come from the backend (app/db/subscriptions.py).
+    const limit = status.dailyLimit || status.limitPerPlatform || 20;
     const today = status.todayCount || 0;
     $("limit-text").textContent = `${today} / ${limit} today`;
     $("btn-start").disabled = !isConnected;

@@ -28,8 +28,10 @@ TIER_LIMITS = {
 
 # Ban-safety cap: bans are counted PER platform, so 20/day/platform keeps each
 # account looking human. Volume scales by breadth (more platforms), not depth on one.
-# NOTE: keep the extension constant chrome-extension/content.js:16
-# (MAX_APPLICATIONS_PER_PLATFORM) aligned to this value.
+# THIS IS THE SINGLE SOURCE OF TRUTH. GET /campaign/status serves this number (+ the
+# tier's daily_limit) to the extension at campaign start; content.js/background.js read
+# it into campaignCaps and enforce it PRE-submit. No more hand-aligned hardcodes — to
+# change the cap, edit this one value (and TIER_LIMITS above for the daily budget).
 MAX_PER_PLATFORM = 20
 
 # Sentinel for admin "unlimited" so the dashboard renders ∞ instead of a number.
