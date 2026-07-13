@@ -24,6 +24,19 @@ SEED_WATCHLIST: list[tuple[str, str]] = [
     ("oura", "greenhouse"),           # wellness
     ("calm", "greenhouse"),           # wellness
     ("noom", "greenhouse"),           # wellness
+    # --- Greenhouse (added 2026-07-13; token-validated live, all zero-touch reCAPTCHA v3) ---
+    ("anthropic", "greenhouse"),      # 405 open roles
+    ("cloudflare", "greenhouse"),     # 260
+    ("reddit", "greenhouse"),         # 191
+    ("scaleai", "greenhouse"),        # 183
+    ("affirm", "greenhouse"),         # fintech, 179
+    ("twilio", "greenhouse"),         # 153
+    ("gusto", "greenhouse"),          # fintech/HR
+    ("chime", "greenhouse"),          # fintech
+    ("marqeta", "greenhouse"),        # fintech
+    ("webflow", "greenhouse"),
+    ("mavenclinic", "greenhouse"),    # health/wellness
+    ("modernhealth", "greenhouse"),   # mental health
     # --- Lever ---
     ("shieldai", "lever"),
     ("matchgroup", "lever"),
