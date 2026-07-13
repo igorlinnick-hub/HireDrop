@@ -49,7 +49,28 @@ def _keyword_match(text: str, keywords: list[str] | None) -> bool:
     return any(k.strip().lower() in t for k in keywords if k.strip())
 
 
+# Expected captcha burden per ATS platform — from live sitekey probing (2026-07-13) +
+# DOM measurement. Drives discovery ranking so users hit LOW-touch destinations first and
+# most applies are zero-touch:
+#   greenhouse → platform-wide reCAPTCHA v3 (one shared invisible sitekey 6Lfmcbcp…,
+#                score-based like Indeed) → LOW touch, usually no human action at submit.
+#   lever      → per-company hCaptcha (real sitekey, interactive image challenge common)
+#                → HIGH touch, human solves at submit.
+# CAPTCHA_OVERRIDES lets the extension's runtime isDetected() observations refine a single
+# company later (token -> "low"|"high"); empty until that feedback loop ships. Server-side
+# static probing can't tell v2-checkbox from v3-invisible (the widget is client-rendered),
+# so we rank by the reliable PLATFORM signal, not per-company HTML guessing.
+PLATFORM_CAPTCHA = {"greenhouse": "low", "lever": "high"}
+CAPTCHA_OVERRIDES: dict[str, str] = {}
+_TOUCH_RANK = {"low": 0, "medium": 1, "high": 2}
+
+
+def _captcha_touch(token: str, platform: str) -> str:
+    return CAPTCHA_OVERRIDES.get(token) or PLATFORM_CAPTCHA.get(platform, "medium")
+
+
 def _job(title, company, apply_url, location, platform, description=""):
+    touch = _captcha_touch(company, platform)
     return {
         "title": (title or "").strip(),
         "company": company,
@@ -59,6 +80,8 @@ def _job(title, company, apply_url, location, platform, description=""):
         "platform": platform,       # "greenhouse" | "lever" (matches detectPlatform)
         "description": (description or "")[:1500],
         "source": "ats_board",
+        "captcha_touch": touch,        # "low" | "medium" | "high" — expected human-solve burden
+        "zero_touch": touch == "low",  # true = usually submits with no captcha action needed
     }
 
 
@@ -121,7 +144,10 @@ def discover_ats(companies: list[tuple[str, str]], keywords: list[str] | None = 
     """Pull live jobs across a watchlist of (token, platform) companies, keyword-filtered.
 
     Dedups by apply_url. `companies` = [("airtable", "greenhouse"), ("shieldai", "lever"), ...].
+    Low-captcha platforms are queried FIRST so the cap fills with zero-touch destinations
+    before human-touch ones — the campaign then applies to the easy (no-captcha) wins first.
     """
+    companies = sorted(companies, key=lambda c: _TOUCH_RANK.get(_captcha_touch(c[0], c[1]), 1))
     seen: set[str] = set()
     out: list[dict] = []
     for token, platform in companies:
