@@ -49,24 +49,17 @@ def _keyword_match(text: str, keywords: list[str] | None) -> bool:
     return any(k.strip().lower() in t for k in keywords if k.strip())
 
 
-# Expected captcha burden per ATS platform — from live sitekey probing (2026-07-13) +
-# DOM measurement. Drives discovery ranking so users hit LOW-touch destinations first and
-# most applies are zero-touch:
-#   greenhouse → platform-wide reCAPTCHA v3 (one shared invisible sitekey 6Lfmcbcp…,
-#                score-based like Indeed) → LOW touch, usually no human action at submit.
-#   lever      → per-company hCaptcha (real sitekey, interactive image challenge common)
-#                → HIGH touch, human solves at submit.
-# CAPTCHA_OVERRIDES lets the extension's runtime isDetected() observations refine a single
-# company later (token -> "low"|"high"); empty until that feedback loop ships. Server-side
-# static probing can't tell v2-checkbox from v3-invisible (the widget is client-rendered),
-# so we rank by the reliable PLATFORM signal, not per-company HTML guessing.
-PLATFORM_CAPTCHA = {"greenhouse": "low", "lever": "high"}
-CAPTCHA_OVERRIDES: dict[str, str] = {}
-_TOUCH_RANK = {"low": 0, "medium": 1, "high": 2}
+# Captcha burden per platform now lives in the single source modules/captcha_profile.py
+# (shared with app/routers/jobs.py so the dashboard/campaign see the same touch labels).
+# Server-side static HTML can't tell v2-checkbox from v3-invisible (widget is client-
+# rendered), so we rank by the reliable PLATFORM signal, not per-company HTML guessing.
+from modules.captcha_profile import TOUCH_RANK as _TOUCH_RANK
+from modules.captcha_profile import captcha_touch as _captcha_touch_pt
 
 
 def _captcha_touch(token: str, platform: str) -> str:
-    return CAPTCHA_OVERRIDES.get(token) or PLATFORM_CAPTCHA.get(platform, "medium")
+    # ats_boards passes (token, platform); the shared helper takes (platform, token).
+    return _captcha_touch_pt(platform, token)
 
 
 def _job(title, company, apply_url, location, platform, description=""):

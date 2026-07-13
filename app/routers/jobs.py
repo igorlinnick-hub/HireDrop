@@ -8,11 +8,24 @@ from fastapi import APIRouter, Depends
 from app.db import jobs as jobs_db
 from app.deps import get_current_user
 from app.schemas import FindJobsRequest, JobStatusUpdate
+from modules.captcha_profile import captcha_touch, is_zero_touch
 router = APIRouter(tags=["jobs"])
+
+
+def _with_captcha(jobs: list) -> list:
+    """Tag each job with its expected captcha burden (single source: captcha_profile).
+    Lets the dashboard badge "quick apply / zero-touch" jobs and the campaign prefer
+    them, derived live from the persisted `platform` column (no schema change)."""
+    for j in jobs:
+        p = j.get("platform", "")
+        j["captcha_touch"] = captcha_touch(p, j.get("company", ""))
+        j["zero_touch"] = is_zero_touch(p, j.get("company", ""))
+    return jobs
+
 
 @router.get("/jobs")
 def get_jobs(user=Depends(get_current_user)):
-    return jobs_db.get_jobs(user.id)
+    return _with_captcha(jobs_db.get_jobs(user.id))
 
 
 @router.post("/jobs/find")
