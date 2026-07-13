@@ -65,11 +65,6 @@ def create_checkout(body: CheckoutRequest, user=Depends(get_current_user)):
             success_url=f"{FRONTEND_URL}/dashboard?checkout=success",
             cancel_url=f"{FRONTEND_URL}/dashboard/settings?tab=billing&checkout=cancel",
             allow_promotion_codes=True,
-            # 3-day free trial: card captured up front, no charge until day 4. Stripe
-            # fires subscription.updated with status="trialing" immediately, which the
-            # webhook already grants access for — so access starts now, auto-converts to
-            # paid on day 4 unless canceled. No custom trial state needed.
-            subscription_data={"trial_period_days": 3},
         )
         return {"url": session.url}
     except Exception as e:

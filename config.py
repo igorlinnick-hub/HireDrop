@@ -84,8 +84,10 @@ RATE_LIMIT_ENFORCE = os.getenv("RATE_LIMIT_ENFORCE", "true").lower() in ("1", "t
 # the billing router returns 503 until STRIPE_SECRET_KEY is set.
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
-STRIPE_PRICE_PRO = os.getenv("STRIPE_PRICE_PRO", "")
-STRIPE_PRICE_PREMIUM = os.getenv("STRIPE_PRICE_PREMIUM", "")
+# One paid product (everything, 30/day), billed weekly OR monthly. No free tier,
+# no trial, no annual. Create two recurring Prices in Stripe and put the IDs here.
+STRIPE_PRICE_WEEKLY = os.getenv("STRIPE_PRICE_WEEKLY", "")
+STRIPE_PRICE_MONTHLY = os.getenv("STRIPE_PRICE_MONTHLY", "")
 
 
 # =============================================================================

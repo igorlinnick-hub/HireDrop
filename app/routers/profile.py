@@ -361,7 +361,9 @@ def _lazy_tailor_for_job(user, job) -> None:
                 print(f"[profile] tailored PDF rebuild failed: {pdf_err}", file=sys.stderr)
             return
         from app.db.subscriptions import get_tier
-        if get_tier(user.id, getattr(user, "email", None)) not in ("premium", "admin"):
+        # Paid = the full product (everything, incl. ATS tailoring). "pro" is what
+        # both the weekly and monthly plans grant; premium kept for legacy grants.
+        if get_tier(user.id, getattr(user, "email", None)) not in ("pro", "premium", "admin"):
             return
         prof = profile_db.get_profile(user.id)
         mode = prof.get("apply_mode") or "standard"
