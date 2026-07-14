@@ -84,13 +84,16 @@ def update_job_status(user_id: str, job_id: str, status: str) -> None:
 
 def update_job_score(
     job_id: str,
+    user_id: str,
     score: int,
     verdict: str,
     flags: list,
     ats_keywords: list = None,
     ats_match_pct: int = 0,
 ) -> None:
-    """Store AI scoring result. Silently skips if columns don't exist yet."""
+    """Store AI scoring result. Silently skips if columns don't exist yet.
+    user_id-scoped (service_role bypasses RLS) so a job_id can only update the caller's
+    own row — defense-in-depth even though callers already pass user-scoped ids."""
     try:
         get_supabase().table("jobs").update({
             "score": score,
@@ -98,16 +101,16 @@ def update_job_score(
             "ai_flags": flags,
             "ats_keywords": ats_keywords or [],
             "ats_match_pct": ats_match_pct,
-        }).eq("id", job_id).execute()
+        }).eq("id", job_id).eq("user_id", user_id).execute()
     except Exception as e:
         print(f"[jobs] update_job_score skipped (run migration?): {e}")
 
 
-def update_tailored_resume(job_id: str, tailored_resume: str) -> None:
+def update_tailored_resume(job_id: str, user_id: str, tailored_resume: str) -> None:
     try:
         get_supabase().table("jobs").update({
             "tailored_resume": tailored_resume,
-        }).eq("id", job_id).execute()
+        }).eq("id", job_id).eq("user_id", user_id).execute()
     except Exception as e:
         print(f"[jobs] update_tailored_resume skipped: {e}")
 
