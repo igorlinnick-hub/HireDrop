@@ -192,7 +192,7 @@ async function getCachedProfile() {
 // SAFE defaults — the old hardcoded 50 let real applications run past the ban-safety
 // rail because the extension counted locally and ignored the backend's 429.
 const DEFAULT_PER_PLATFORM = 20;
-const DEFAULT_DAILY_TOTAL = 50;
+const DEFAULT_DAILY_TOTAL = 30; // matches the paid (pro) auto cap; real value fetched at campaign start
 
 chrome.runtime.onInstalled.addListener(async () => {
   await chrome.storage.local.set({

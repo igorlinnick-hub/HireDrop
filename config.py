@@ -71,7 +71,10 @@ ADMIN_EMAILS = {
 # count is hit) so a free account / script can't loop an AI endpoint to burn our
 # Anthropic spend. Set RATE_LIMIT_ENFORCE=false only to temporarily observe usage
 # without blocking anyone.
-RATE_LIMIT_LETTERS_PER_DAY = int(os.getenv("RATE_LIMIT_LETTERS_PER_DAY", "50"))
+# Must stay ABOVE the max daily application cap (tap mode = 100/day) or it becomes the
+# real bottleneck: a tap user applying to 100 jobs needs 100 cover letters, but a 50-letter
+# cap would 429 the second half. 120 gives headroom above the 100 tap cap.
+RATE_LIMIT_LETTERS_PER_DAY = int(os.getenv("RATE_LIMIT_LETTERS_PER_DAY", "120"))
 RATE_LIMIT_ENFORCE = os.getenv("RATE_LIMIT_ENFORCE", "true").lower() in ("1", "true", "yes")
 
 

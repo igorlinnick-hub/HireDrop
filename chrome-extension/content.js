@@ -2938,7 +2938,7 @@
       const c = await chrome.storage.local.get(["campaignCaps", "todayCount", "todayDate"]);
       const today = new Date().toISOString().slice(0, 10);
       const total = c.todayDate === today ? (c.todayCount || 0) : 0;
-      const dailyTotal = (c.campaignCaps && c.campaignCaps.dailyTotal > 0) ? c.campaignCaps.dailyTotal : 50;
+      const dailyTotal = (c.campaignCaps && c.campaignCaps.dailyTotal > 0) ? c.campaignCaps.dailyTotal : 30;
       if (total >= dailyTotal) {
         log(`Daily budget reached (${total}/${dailyTotal}). Campaign complete.`, "ok");
         await sendMsg({ type: "STOP_CAMPAIGN" });
