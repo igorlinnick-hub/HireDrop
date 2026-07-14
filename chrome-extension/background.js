@@ -501,6 +501,28 @@ function pickPrimaryPlatform(platforms) {
   return list.find((p) => AUTO_APPLY_PLATFORMS.includes(p)) || "indeed";
 }
 
+// ATS platforms applied to POOL-DRIVEN: discovery (board API) fills the job pool, then the
+// campaign walks the saved apply URLs in the automation tab (no board search). Only
+// zero-touch (no interactive captcha) platforms run FULL-auto here — Lever (hCaptcha) needs
+// the human tapalka to advance and is excluded from the auto pool for now (GLOBAL_PLAN P2).
+const ATS_PLATFORMS = ["greenhouse", "lever"];
+const ATS_ZERO_TOUCH_PLATFORMS = ["greenhouse"];
+
+// Build the ATS apply queue for a campaign (GLOBAL_PLAN P1a+P1b): populate the pool via
+// /jobs/find-ats, then pull the user's ZERO-TOUCH jobs for this platform (GET /jobs already
+// tags zero_touch + orders them first — PR #32), capped at the per-platform rail. Each item
+// = { applyUrl, title, company }. Returns [] on any error (campaign then reports "no jobs").
+async function buildAtsQueue(platform, perPlatformCap) {
+  try { await apiPost("/jobs/find-ats", {}); } catch (e) { /* discovery best-effort */ }
+  let jobs = [];
+  try { jobs = await apiGet("/jobs"); } catch (e) { return []; }
+  const cap = perPlatformCap > 0 ? perPlatformCap : 20;
+  return (jobs || [])
+    .filter((j) => j.platform === platform && j.zero_touch === true && (j.link || j.apply_url))
+    .slice(0, cap)
+    .map((j) => ({ applyUrl: j.link || j.apply_url, title: j.title || "", company: j.company || "" }));
+}
+
 // Unified auth page per platform (enter email → logs in or creates an account),
 // so a brand-new user can register from here. URLs verified live 2026-07-10.
 function platformLoginUrl(platform) {
@@ -685,12 +707,14 @@ async function handleMessage(msg, sender) {
 
       // Pick the auto-apply platform this campaign targets (first in the filter list)
       const primaryPlatform = pickPrimaryPlatform(filters.platforms);
+      // Pool-driven ATS target (GLOBAL_PLAN P1 — Greenhouse zero-touch full-auto): if the
+      // user selected a zero-touch ATS platform, the campaign walks saved apply URLs from the
+      // job pool instead of running a board search. Lever is excluded (hCaptcha → tapalka, P2).
+      const atsTarget = (filters.platforms || []).find((p) => ATS_ZERO_TOUCH_PLATFORMS.includes(p)) || null;
 
-      // Pre-flight: don't launch a doomed campaign if we already KNOW the user is
-      // logged out of the target platform. Open the login/sign-up page instead and
-      // tell the dashboard why. (Unknown/connected → proceed; the in-page login-wall
-      // guard still catches a stale "connected" once the window loads.)
-      {
+      // Pre-flight login check applies only to native board platforms (Indeed/ZR). ATS apply
+      // pages are public — no login wall — so skip it in pool-driven mode.
+      if (!atsTarget) {
         const conns = (await chrome.storage.local.get("platformConnections")).platformConnections || {};
         if (conns[primaryPlatform]?.status === "logged_out") {
           chrome.tabs.create({ url: platformLoginUrl(primaryPlatform) }).catch(() => {});
@@ -724,8 +748,29 @@ async function handleMessage(msg, sender) {
         // Continue even if server is down — content.js falls back to safe defaults (20/50).
       }
 
-      const targetUrl = buildPlatformUrl(primaryPlatform, filters.keywords, filters.location, filters.job_type);
-      const homeUrl = platformHomeUrl(primaryPlatform);
+      // ATS pool-driven mode: build the apply queue (find-ats → zero-touch jobs, capped) and
+      // target the FIRST job's apply URL instead of a board search. The automation tab then
+      // walks the queue: phase_ats fills+submits (zero-touch) → APPLICATION_SAVED → advance.
+      let atsQueue = [];
+      if (atsTarget) {
+        const capState = (await chrome.storage.local.get("campaignCaps")).campaignCaps || {};
+        atsQueue = await buildAtsQueue(atsTarget, capState.perPlatform || 20);
+        if (!atsQueue.length) {
+          return {
+            started: false,
+            error: "no_ats_jobs",
+            message: `No zero-touch ${atsTarget} jobs to apply to yet — try again shortly or broaden your keywords.`,
+          };
+        }
+        await chrome.storage.local.set({ atsQueue, atsPlatform: atsTarget });
+        await addToActivityLog(`Found ${atsQueue.length} zero-touch ${atsTarget} jobs — starting full-auto apply.`, "info");
+      } else {
+        await chrome.storage.local.remove(["atsQueue", "atsPlatform"]);
+      }
+
+      const targetUrl = atsTarget ? atsQueue[0].applyUrl
+        : buildPlatformUrl(primaryPlatform, filters.keywords, filters.location, filters.job_type);
+      const homeUrl = atsTarget ? atsQueue[0].applyUrl : platformHomeUrl(primaryPlatform);
 
       // Automation runs in a dedicated background window — minimized so it doesn't
       // steal focus from the user's browser. Screenshots are captured via CDP
@@ -896,6 +941,26 @@ async function handleMessage(msg, sender) {
       } catch (err) {
         addToActivityLog(`⚠️ Applied but backend save failed (${err.message}) — counted locally`, "warn");
       }
+
+      // ATS pool-driven ADVANCE (GLOBAL_PLAN P1b): after a zero-touch ATS submit, walk the
+      // automation tab to the next apply URL in the queue. Native (Indeed/ZR) campaigns have
+      // no atsQueue and are driven by in-page navigation, so this is a no-op for them.
+      try {
+        const { atsQueue, campaignTabId } = await chrome.storage.local.get(["atsQueue", "campaignTabId"]);
+        if (Array.isArray(atsQueue) && atsQueue.length && campaignTabId) {
+          const rest = atsQueue.slice(1);
+          await chrome.storage.local.set({ atsQueue: rest });
+          const running = (await chrome.storage.local.get("campaignRunning")).campaignRunning === true;
+          if (rest.length && running) {
+            await chrome.tabs.update(campaignTabId, { url: rest[0].applyUrl }).catch(() => {});
+          } else if (!rest.length) {
+            await addToActivityLog("ATS pool complete — all discovered zero-touch jobs applied. Campaign finished.", "ok");
+            await chrome.storage.local.set({ campaignRunning: false });
+            try { await apiPost("/campaign/stop", {}); } catch {}
+            updateBadge();
+          }
+        }
+      } catch (e) { /* advance is best-effort; a failure just pauses the walk */ }
 
       const cur = await chrome.storage.local.get("platformCounts");
       return { saved: true, platformCount: (cur.platformCounts || {})[platform] || 0, job_id: serverResult?.job_id };
