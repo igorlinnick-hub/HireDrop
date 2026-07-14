@@ -523,6 +523,51 @@
     return true;
   }
 
+  // GLOBAL_PLAN P1c — Greenhouse/Lever location + "how did you hear" fields are react-select
+  // typeaheads (confirmed: id="react-select-candidate-location-*"). A plain setNativeValue
+  // leaves them UNSELECTED (no chosen option), so a REQUIRED location silently blocks submit.
+  // Type into the input, wait for the options menu, and click the best-matching option (or the
+  // first). Does NOT blur mid-type (blur closes the menu). Falls back to a plain fill if no
+  // menu appears (so a non-react-select field can't be worse off).
+  async function fillReactSelect(el, value) {
+    if (!el || !value) return false;
+    el.focus();
+    el.dispatchEvent(new Event("focus", { bubbles: true }));
+    await sleep(humanDelay(150, 300));
+    setNativeValue(el, "");
+    for (let i = 0; i < value.length; i++) {
+      setNativeValue(el, value.slice(0, i + 1));
+      await sleep(humanDelay(60, 140));
+    }
+    let opts = [];
+    const start = Date.now();
+    while (Date.now() - start < 3500) {
+      opts = Array.from(document.querySelectorAll(
+        '[class*="select__option"], [id*="react-select"][id*="option"], [role="option"]'
+      )).filter((o) => o.offsetParent !== null && (o.textContent || "").trim());
+      if (opts.length) break;
+      await sleep(200);
+    }
+    if (!opts.length) {
+      setNativeValue(el, value);
+      el.dispatchEvent(new Event("blur", { bubbles: true }));
+      return false; // no typeahead menu → treat as a plain input
+    }
+    const v = value.toLowerCase();
+    const pick = opts.find((o) => (o.textContent || "").toLowerCase().includes(v)) || opts[0];
+    pick.click();
+    await sleep(humanDelay(300, 700));
+    return true;
+  }
+
+  // Is this field a react-select typeahead (needs option-selection, not a plain value set)?
+  function isReactSelectField(el) {
+    if (!el) return false;
+    return (el.id && el.id.indexOf("react-select") === 0) ||
+      el.getAttribute("aria-autocomplete") === "list" ||
+      !!(el.closest && el.closest('[class*="select__control"]'));
+  }
+
   // Set a native <select> value React-aware (prototype setter + change event).
   function setSelectValue(el, value) {
     const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
@@ -1835,7 +1880,8 @@
       }
 
       if (!value) continue;
-      if (isTextarea) quickSet(el, value);
+      if (isReactSelectField(el)) await fillReactSelect(el, value);   // P1c: GH/Lever location typeahead
+      else if (isTextarea) quickSet(el, value);
       else setNativeValue(el, value);
       await sleep(humanDelay(150, 400));
       filled++;
