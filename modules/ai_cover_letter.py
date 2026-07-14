@@ -8,6 +8,13 @@ from config import ANTHROPIC_API_KEY
 
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "..", "templates", "cover_letter.txt")
 
+# Cover-letter model by submit mode (PLAN_VOLUME_CAPTCHA_ECONOMICS.md §3):
+#   auto (default) → Sonnet (strong; no human reviews the letter, so quality must come from the model)
+#   tap            → Haiku (~10× cheaper; the human reads+edits before submit, so cheap is fine —
+#                    this is what makes the 100/day tap-mode cap profitable)
+COVER_LETTER_MODEL_AUTO = "claude-sonnet-4-6"
+COVER_LETTER_MODEL_TAP = "claude-haiku-4-5-20251001"
+
 _anthropic_client: anthropic.Anthropic | None = None
 
 
@@ -97,6 +104,14 @@ def generate_cover_letter(job, profile=None):
     writing_style = profile.get("writing_style", "")
     system = build_system_prompt(writing_style)
 
+    # Model by submit mode (PLAN_VOLUME_CAPTCHA_ECONOMICS.md §3): in "tap" mode the human
+    # reads + edits every cover letter before submit, so quality is held by the human and we
+    # generate with the ~10× cheaper Haiku — which is what makes the higher tap-mode daily cap
+    # (100/day) profitable. Full-auto has no human review → keep the stronger Sonnet.
+    # Defaults to "auto"/Sonnet when the field is absent, so this is backward-compatible.
+    submit_mode = (profile.get("submit_mode") or "auto").lower()
+    model = COVER_LETTER_MODEL_TAP if submit_mode == "tap" else COVER_LETTER_MODEL_AUTO
+
     description = job.get("description", "Not available")[:500]
 
     prompt = f"""Write a cover letter for this job application.
@@ -119,9 +134,9 @@ Candidate background (from resume):
     try:
         client = get_anthropic_client()
         message = client.messages.create(
-            # Sonnet 4 (claude-sonnet-4-20250514) reaches end-of-life 2026-06-15.
-            # 4.6 is the current default for cover-letter quality vs cost.
-            model="claude-sonnet-4-6",
+            # Model chosen by submit_mode above (Sonnet full-auto / Haiku tap). Sonnet 4
+            # (claude-sonnet-4-20250514) reaches end-of-life 2026-06-15; 4.6 is the current default.
+            model=model,
             max_tokens=512,
             system=system,
             messages=[{"role": "user", "content": prompt}],
