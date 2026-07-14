@@ -12,7 +12,7 @@ from app.db import campaign as campaign_db
 from app.db import jobs as jobs_db
 from app.db.client import get_supabase
 from app.db.profile import get_profile
-from app.db.subscriptions import MAX_PER_PLATFORM, daily_limit, get_tier
+from app.db.subscriptions import MAX_PER_PLATFORM, daily_limit, get_submit_mode, get_tier
 from app.deps import get_current_user
 from app.schemas import CampaignStartRequest
 
@@ -36,6 +36,7 @@ def campaign_status(user=Depends(get_current_user)):
     jobs_ready = jobs_db.count_new_jobs(user.id, enabled_platforms)
 
     tier = get_tier(user.id, getattr(user, "email", None))
+    submit_mode = get_submit_mode(user.id)
 
     return {
         "running": state["running"],
@@ -44,10 +45,11 @@ def campaign_status(user=Depends(get_current_user)):
         "today_applications": today_count,
         "platform_counts": platform_counts,
         # Two-cap model: per-platform ceiling (ban-safety rail, counted per platform)
-        # + total daily budget (tier value/cost). The extension enforces BOTH pre-submit.
+        # + total daily budget (tier value/cost, raised in tap mode). Extension enforces BOTH pre-submit.
         "limit_per_platform": MAX_PER_PLATFORM,
-        "daily_limit": daily_limit(tier),
+        "daily_limit": daily_limit(tier, submit_mode),
         "tier": tier,
+        "submit_mode": submit_mode,
         "jobs_ready": jobs_ready,
     }
 

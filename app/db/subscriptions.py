@@ -34,8 +34,24 @@ TIER_LIMITS = {
 # change the cap, edit this one value (and TIER_LIMITS above for the daily budget).
 MAX_PER_PLATFORM = 20
 
+# Tap-mode daily cap (PLAN_VOLUME_CAPTCHA_ECONOMICS.md §3): when the user runs "tap" mode
+# they review + edit every cover letter before submit, so we generate with the ~10× cheaper
+# model (see modules/ai_cover_letter) and a higher volume stays profitable. Paid tiers only.
+TAP_DAILY_LIMIT = 100
+
 # Sentinel for admin "unlimited" so the dashboard renders ∞ instead of a number.
 ADMIN_DAILY_LIMIT = 10_000_000
+
+
+def get_submit_mode(user_id: str) -> str:
+    """'auto' (default) | 'tap'. Absent/error → 'auto' (backward-compatible)."""
+    try:
+        res = get_supabase().table("profiles").select("submit_mode").eq("user_id", user_id).execute()
+        if res.data:
+            return (res.data[0].get("submit_mode") or "auto").lower()
+    except Exception:
+        pass
+    return "auto"
 
 
 def is_admin(email: Optional[str]) -> bool:
@@ -80,10 +96,14 @@ def get_tier(user_id: str, email: Optional[str] = None) -> str:
     return tier if tier in TIER_LIMITS else "free"
 
 
-def daily_limit(tier: str) -> int:
+def daily_limit(tier: str, submit_mode: str = "auto") -> int:
     if tier == "admin":
         return ADMIN_DAILY_LIMIT
-    return TIER_LIMITS.get(tier, TIER_LIMITS["free"])
+    base = TIER_LIMITS.get(tier, TIER_LIMITS["free"])
+    # Tap mode lifts the cap for PAID tiers only (free stays free-tier limited even in tap).
+    if submit_mode == "tap" and tier in ("pro", "premium", "elite"):
+        return max(TAP_DAILY_LIMIT, base)
+    return base
 
 
 def check_can_apply(user_id: str, platform: str, email: Optional[str] = None) -> dict:
@@ -100,7 +120,7 @@ def check_can_apply(user_id: str, platform: str, email: Optional[str] = None) ->
             "platform_used": 0,
         }
 
-    limit = daily_limit(tier)
+    limit = daily_limit(tier, get_submit_mode(user_id))
     used_today = apps_db.count_today(user_id)
 
     if used_today >= limit:
@@ -151,7 +171,8 @@ def get_usage_summary(user_id: str, email: Optional[str] = None) -> dict:
             "max_per_platform": ADMIN_DAILY_LIMIT,
         }
 
-    limit = daily_limit(tier)
+    submit_mode = get_submit_mode(user_id)
+    limit = daily_limit(tier, submit_mode)
     return {
         "tier": tier,
         "daily_limit": limit,
@@ -159,4 +180,5 @@ def get_usage_summary(user_id: str, email: Optional[str] = None) -> dict:
         "remaining_today": max(0, limit - used_today),
         "platform_counts": platform_counts,
         "max_per_platform": MAX_PER_PLATFORM,
+        "submit_mode": submit_mode,
     }
