@@ -379,7 +379,7 @@ def _lazy_tailor_for_job(user, job) -> None:
         if not tailored:
             return
         # Store the text FIRST so a later PDF/upload failure can never cause a re-tailor.
-        jobs_db.update_tailored_resume(job_id, tailored)
+        jobs_db.update_tailored_resume(job_id, user.id, tailored)
         try:
             _store_tailored_pdf(user.id, job_id, tailored)
         except Exception as pdf_err:
@@ -406,7 +406,7 @@ def resume_best_url(job_url: str = None, user=Depends(get_current_user)):
             _lazy_tailor_for_job(user, job)
             job = jobs_db.get_by_link(user.id, job_url)  # re-read for the freshly-stored path
         if job and job.get("tailored_resume_pdf_url"):
-            url = resume_storage.signed_url_from_path(job["tailored_resume_pdf_url"])
+            url = resume_storage.signed_url_from_path(job["tailored_resume_pdf_url"], user.id)
             if url:
                 return {
                     "url": url,

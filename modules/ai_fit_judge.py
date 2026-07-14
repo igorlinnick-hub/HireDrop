@@ -166,9 +166,14 @@ Decide: should this candidate apply? Return the JSON object only."""
     try:
         score = max(0, min(100, int(score)))
     except (TypeError, ValueError):
-        score = 50
+        # Unparseable score from a non-erroring model response → treat as WORST (0), not 50.
+        # Otherwise a garbage score would default to 50 and, with no valid decision below,
+        # green-light an "apply" in broad mode (threshold 35). Fail-closed on bad data.
+        score = 0
     decision = data.get("decision")
     if decision not in ("apply", "skip"):
+        # No explicit decision → derive from the score. With score=0 on garbage input this
+        # correctly skips; an explicit valid decision above still wins.
         decision = "apply" if score >= threshold else "skip"
     reason = str(data.get("reason") or "").strip()[:300]
     concerns = [str(c).strip()[:120] for c in (data.get("concerns") or []) if str(c).strip()][:5]

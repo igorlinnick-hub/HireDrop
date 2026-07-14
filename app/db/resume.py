@@ -159,7 +159,17 @@ def upload_job_tailored(user_id: str, job_id: str, content: bytes) -> str:
     return path
 
 
-def signed_url_from_path(path: str) -> str | None:
-    """Create a signed URL for any path in the resumes bucket."""
+def signed_url_from_path(path: str, user_id: str | None = None) -> str | None:
+    """Create a signed URL for a path in the resumes bucket.
+
+    Bucket paths are `<user_id>/…`. When user_id is given (all real callers do), REFUSE
+    to sign a path outside that user's prefix — so this can never mint a URL to another
+    user's resume even if a request-supplied path ever reaches it (defense-in-depth;
+    service_role bypasses storage RLS)."""
+    if not path:
+        return None
+    if user_id and not (path == f"{user_id}" or path.startswith(f"{user_id}/")):
+        print(f"[resume] refused signed URL: path '{path}' not owned by {user_id}")
+        return None
     res = get_supabase().storage.from_(BUCKET).create_signed_url(path, SIGNED_URL_TTL_SECONDS)
     return res.get("signedURL") or res.get("signed_url")

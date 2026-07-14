@@ -104,6 +104,7 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
         if job_id and job.get("score") is not None:
             jobs_db.update_job_score(
                 job_id,
+                user.id,
                 job["score"],
                 job.get("ai_verdict", ""),
                 job.get("ai_flags", []),
@@ -162,7 +163,7 @@ def find_ats_jobs(user=Depends(get_current_user)):
         )
         if job_id and job.get("score") is not None:
             jobs_db.update_job_score(
-                job_id, job["score"], job.get("ai_verdict", ""),
+                job_id, user.id, job["score"], job.get("ai_verdict", ""),
                 job.get("ai_flags", []), job.get("ats_keywords", []),
                 job.get("ats_match_pct", 0),
             )
@@ -199,5 +200,5 @@ def tailor_job(job_id: str, user=Depends(get_current_user)):
     _lazy_tailor_for_job(user, job)
     job = jobs_db.get_job_by_id(user.id, job_id)
     if job and job.get("tailored_resume_pdf_url"):
-        return {"tailored": True, "url": resume_storage.signed_url_from_path(job["tailored_resume_pdf_url"])}
+        return {"tailored": True, "url": resume_storage.signed_url_from_path(job["tailored_resume_pdf_url"], user.id)}
     return {"tailored": False, "reason": "Not eligible — Premium + strong match required, or no resume uploaded."}
