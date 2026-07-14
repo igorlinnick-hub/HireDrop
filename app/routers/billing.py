@@ -42,7 +42,7 @@ def _stripe():
 
 
 class CheckoutRequest(BaseModel):
-    plan: str  # "pro" | "premium"
+    plan: str  # "weekly" | "monthly"
 
 
 @router.post("/billing/checkout")

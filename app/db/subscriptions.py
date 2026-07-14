@@ -1,8 +1,9 @@
 """Subscription tier limits and enforcement for applications.
 
-Free/Pro/Elite tiers — each has its own daily quota for total applications,
-plus a per-platform cap that applies regardless of tier (so a power user
-can't burn 200 applications into one platform in a day).
+Two tiers: **free** (unpaid) and **pro** (THE paid product — Weekly and Monthly
+plans both grant it). Legacy `premium` / `elite` grants collapse to `pro` in
+get_tier(). Each tier has a daily quota, plus a per-platform cap that applies
+regardless of tier (so a power user can't spray one platform).
 
 Admin tier (env-controlled): emails in `ADMIN_EMAILS` skip all limits.
 Pass the user's email through from the router so we can short-circuit before
@@ -20,11 +21,11 @@ from app.db import applications as apps_db
 from app.db.client import get_supabase
 
 TIER_LIMITS = {
-    "free": 10,
-    "pro": 30,      # paid daily cap — 30/day × $0.03 ≈ $27/mo keeps a maxed user profitable at $29/mo
-    "premium": 30,  # same volume as pro; premium's differentiator is ATS resume tailoring, not quota
-    "elite": 200,   # legacy tier, not sold
+    "free": 10,  # unpaid — locked to a paywall at billing launch (Loop5)
+    "pro": 30,   # THE paid product (Weekly + Monthly both grant it): 30/day × $0.03 ≈ $27/mo, profitable at $29/mo
 }
+# Legacy tier names still found on old profiles/promos → treated as "pro" (see get_tier).
+_LEGACY_PAID_TIERS = ("premium", "elite")
 
 # Ban-safety cap: bans are counted PER platform, so 20/day/platform keeps each
 # account looking human. Volume scales by breadth (more platforms), not depth on one.
@@ -63,6 +64,9 @@ def get_tier(user_id: str, email: Optional[str] = None) -> str:
 
     row = res.data[0]
     tier = row.get("subscription_tier") or "free"
+    # Legacy premium/elite grants collapse to the single paid tier "pro".
+    if tier in _LEGACY_PAID_TIERS:
+        tier = "pro"
     expires = row.get("subscription_expires_at")
 
     if tier != "free":
