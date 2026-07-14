@@ -709,11 +709,16 @@ async function handleMessage(msg, sender) {
         // content.js enforces the real per-platform rail + daily budget PRE-submit,
         // instead of a stale local hardcode that let real applications past the cap.
         const st = await apiGet("/campaign/status");
+        // Tap mode (profile.submit_mode="tap") → the human approves + submits each
+        // application, so the filler must FILL-and-STOP (reviewMode) instead of
+        // auto-submitting. This is what justifies tap's cheaper model + higher 100/day
+        // cap; without it, tap would auto-fire 100 unreviewed applications. Auto mode → off.
         await chrome.storage.local.set({
           campaignCaps: {
             perPlatform: (st && st.limit_per_platform > 0) ? st.limit_per_platform : 20,
             dailyTotal: (st && st.daily_limit > 0) ? st.daily_limit : 50,
           },
+          reviewMode: !!(st && st.submit_mode === "tap"),
         });
       } catch {
         // Continue even if server is down — content.js falls back to safe defaults (20/50).
