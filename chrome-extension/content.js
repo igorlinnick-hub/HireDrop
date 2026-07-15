@@ -3358,5 +3358,9 @@
   const _screenshotPing = setInterval(() => {
     chrome.runtime.sendMessage({ type: "CAPTURE_SCREENSHOT" }).catch(() => {});
   }, 300);
-  window.addEventListener("unload", () => clearInterval(_screenshotPing));
+  // `pagehide`, not `unload`: some ATS hosts (Greenhouse) block `unload` via
+  // Permissions-Policy, which spams a console violation on every job page. pagehide
+  // is the modern, un-blocked equivalent and fires on navigation all the same. The
+  // interval dies with the page context anyway — this is just tidy cleanup.
+  window.addEventListener("pagehide", () => clearInterval(_screenshotPing));
 })();
