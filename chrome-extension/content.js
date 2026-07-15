@@ -2384,11 +2384,16 @@
           const resumeEl = findResumeInput();
           const summary = `name="${nameEl?.value || ""}" email="${emailEl?.value || ""}" resume=${resumeEl?.files?.length ? resumeEl.files[0].name : "NONE"} radios=${document.querySelectorAll('input[type="radio"]:checked').length}`;
           log(`REVIEW MODE — filled, awaiting your tap: ${summary}`, "ok");
-          logBackend(`📝 Review: ${jobInfo.title} @ ${jobInfo.company} — filled, tap Submit to send`, "info");
-          // Tap-mode: surface the review card in the automation window; the human
-          // eyeballs the filled form and decides. Only Submit falls through to the
-          // real submit path below — Skip returns without sending.
-          const choice = await showReviewCard(summary, `${jobInfo.title} @ ${jobInfo.company}`);
+          // Publish to the dashboard review card and wait for the human's verdict.
+          const choice = await awaitReview({
+            id: jobInfo.url || `${jobInfo.title}@${jobInfo.company}`,
+            job_title: jobInfo.title,
+            company: jobInfo.company,
+            description: (jobInfo.description || "").slice(0, 800),
+            cover_letter: "",
+            summary,
+            job_url: jobInfo.url || "",
+          });
           if (choice !== "submit") {
             logBackend(`⏭️ Skipped by you: ${jobInfo.title} @ ${jobInfo.company}`, "info");
             return;
@@ -2851,10 +2856,17 @@
       const checkedRadios = document.querySelectorAll('input[type="radio"]:checked').length;
       const summary = `name="${(nameEl?.value || "").slice(0, 40)}" email="${emailEl?.value || ""}" phone="${phoneEl?.value || ""}" resume=${resumeStatus} screener-textareas=${filledTextareas} radios=${checkedRadios} submitBtn="${(submitBtn.textContent || "").replace(/\s+/g, " ").trim().slice(0, 30)}"`;
       log(`REVIEW MODE — filled, awaiting your tap: ${summary}`, "ok");
-      logBackend(`📝 Review: ${jobTitle} @ ${jobCompany} — tap Submit to send`, "info");
-      // Tap-mode review card (automation window). Only Submit falls through to the
-      // real submit path below; Skip returns without recording anything.
-      const choice = await showReviewCard(summary, `${jobTitle} @ ${jobCompany}`);
+      // Publish the filled application to the dashboard review card and wait for the
+      // human's verdict. Only "submit" falls through to the real submit path below.
+      const choice = await awaitReview({
+        id: jobUrl,
+        job_title: jobTitle,
+        company: jobCompany,
+        description: (jobDesc || "").slice(0, 800),
+        cover_letter: coverLetter || "",
+        summary,
+        job_url: jobUrl,
+      });
       if (choice !== "submit") {
         logBackend(`⏭️ Skipped by you: ${jobTitle} @ ${jobCompany}`, "info");
         return; // never submits, never records applied
@@ -2898,69 +2910,110 @@
     });
   }
 
-  // Tap-mode review card ("тапалка"): when the form is filled but not yet submitted,
-  // surface an in-page overlay in the automation window so the human eyeballs the
-  // filled form and taps Submit or Skip. No dashboard round-trip — the human is
-  // already looking at the real page here. Resolves "submit" | "skip".
-  function showReviewCard(summary, jobLabel) {
+  // Tap-mode review ("тапалка"): publish the filled application to the DASHBOARD via
+  // chrome.storage (the same cross-window bridge the captcha hand-off uses), then wait
+  // for the human's Approve/Skip. The dashboard renders a rich card (job, cover letter,
+  // filled summary) and writes the verdict back to chrome.storage.reviewDecision; a small
+  // in-window overlay is a fallback if the dashboard tab is closed. Resolves
+  // "submit" | "skip". Fails SAFE: on timeout it SKIPS — never auto-submits unreviewed.
+  async function awaitReview(review) {
+    const id = review.id || review.job_url || String(Date.now());
+    try {
+      await chrome.storage.local.set({
+        reviewPending: { ...review, id, at: Date.now() },
+        reviewDecision: null,
+      });
+    } catch (_) { /* storage unavailable — overlay fallback still works */ }
+    logBackend(`📝 Ready to review: ${review.job_title} @ ${review.company} — approve it on your dashboard`, "info");
+
     return new Promise((resolve) => {
-      // Never stack two cards.
-      const existing = document.getElementById("hd-review-card");
-      if (existing) existing.remove();
-
-      const card = document.createElement("div");
-      card.id = "hd-review-card";
-      card.style.cssText = [
-        "position:fixed", "z-index:2147483647", "right:20px", "bottom:20px",
-        "width:340px", "max-width:calc(100vw - 40px)",
-        "background:#ffffff", "color:#1a1a2e",
-        "border:1px solid #e2e2ea", "border-radius:14px",
-        "box-shadow:0 12px 40px rgba(0,0,0,0.22)",
-        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
-        "padding:16px", "line-height:1.4",
-      ].join(";");
-
-      const title = document.createElement("div");
-      title.style.cssText = "font-weight:700;font-size:14px;margin-bottom:6px;";
-      title.textContent = "✋ Tap — review & submit";
-
-      const job = document.createElement("div");
-      job.style.cssText = "font-size:12px;color:#6b6b7b;margin-bottom:10px;";
-      job.textContent = jobLabel || "";
-
-      const body = document.createElement("div");
-      body.style.cssText = "font-size:11px;color:#4a4a5a;background:#f6f6fb;border-radius:8px;padding:8px;margin-bottom:12px;word-break:break-word;max-height:120px;overflow:auto;";
-      body.textContent = summary || "Form filled.";
-
-      const row = document.createElement("div");
-      row.style.cssText = "display:flex;gap:8px;";
-
-      const skipBtn = document.createElement("button");
-      skipBtn.textContent = "Skip";
-      skipBtn.style.cssText = "flex:1;padding:9px;border-radius:9px;border:1px solid #e2e2ea;background:#fff;color:#6b6b7b;font-weight:600;font-size:13px;cursor:pointer;";
-
-      const submitBtn = document.createElement("button");
-      submitBtn.textContent = "Submit ✓";
-      submitBtn.style.cssText = "flex:2;padding:9px;border-radius:9px;border:none;background:#635bff;color:#fff;font-weight:700;font-size:13px;cursor:pointer;";
-
       let done = false;
       const finish = (choice) => {
         if (done) return;
         done = true;
-        try { card.remove(); } catch (_) {}
+        clearInterval(poll);
+        clearTimeout(timer);
+        try { if (overlay) overlay.remove(); } catch (_) {}
+        try { chrome.storage.local.remove(["reviewPending", "reviewDecision"]); } catch (_) {}
         resolve(choice);
       };
-      skipBtn.addEventListener("click", () => finish("skip"));
-      submitBtn.addEventListener("click", () => finish("submit"));
 
-      row.appendChild(skipBtn);
-      row.appendChild(submitBtn);
-      card.appendChild(title);
-      if (jobLabel) card.appendChild(job);
-      card.appendChild(body);
-      card.appendChild(row);
-      (document.body || document.documentElement).appendChild(card);
+      // Poll for a decision made on the dashboard card (approve → submit, skip → skip).
+      const poll = setInterval(async () => {
+        try {
+          const d = (await chrome.storage.local.get("reviewDecision")).reviewDecision;
+          if (d && d.id === id) finish(d.decision === "approve" ? "submit" : "skip");
+        } catch (_) { /* transient */ }
+      }, 700);
+
+      // Fail safe: never hang forever, never auto-submit — default to skip.
+      const timer = setTimeout(() => {
+        logBackend(`⏭️ Review timed out (30 min) — skipped: ${review.job_title} @ ${review.company}`, "warn");
+        finish("skip");
+      }, 30 * 60 * 1000);
+
+      // In-window fallback overlay (dashboard card is the primary surface).
+      const overlay = buildReviewOverlay(review, finish);
     });
+  }
+
+  // Small automation-window overlay — a fallback for awaitReview() when the dashboard
+  // tab isn't open. Its buttons resolve the same review as the dashboard card.
+  function buildReviewOverlay(review, finish) {
+    const existing = document.getElementById("hd-review-card");
+    if (existing) existing.remove();
+
+    const card = document.createElement("div");
+    card.id = "hd-review-card";
+    card.style.cssText = [
+      "position:fixed", "z-index:2147483647", "right:20px", "bottom:20px",
+      "width:320px", "max-width:calc(100vw - 40px)",
+      "background:#ffffff", "color:#1a1a2e",
+      "border:1px solid #e2e2ea", "border-radius:14px",
+      "box-shadow:0 12px 40px rgba(0,0,0,0.22)",
+      "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
+      "padding:16px", "line-height:1.4",
+    ].join(";");
+
+    const title = document.createElement("div");
+    title.style.cssText = "font-weight:700;font-size:14px;margin-bottom:4px;";
+    title.textContent = "✋ Tap — review & submit";
+
+    const hint = document.createElement("div");
+    hint.style.cssText = "font-size:10px;color:#9a9aa8;margin-bottom:8px;";
+    hint.textContent = "Also on your HireDrop dashboard";
+
+    const job = document.createElement("div");
+    job.style.cssText = "font-size:12px;color:#4a4a5a;font-weight:600;margin-bottom:10px;";
+    job.textContent = `${review.job_title || ""} @ ${review.company || ""}`;
+
+    const body = document.createElement("div");
+    body.style.cssText = "font-size:11px;color:#4a4a5a;background:#f6f6fb;border-radius:8px;padding:8px;margin-bottom:12px;word-break:break-word;max-height:110px;overflow:auto;";
+    body.textContent = review.summary || "Form filled.";
+
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:8px;";
+
+    const skipBtn = document.createElement("button");
+    skipBtn.textContent = "Skip";
+    skipBtn.style.cssText = "flex:1;padding:9px;border-radius:9px;border:1px solid #e2e2ea;background:#fff;color:#6b6b7b;font-weight:600;font-size:13px;cursor:pointer;";
+
+    const submitBtn = document.createElement("button");
+    submitBtn.textContent = "Submit ✓";
+    submitBtn.style.cssText = "flex:2;padding:9px;border-radius:9px;border:none;background:#635bff;color:#fff;font-weight:700;font-size:13px;cursor:pointer;";
+
+    skipBtn.addEventListener("click", () => finish("skip"));
+    submitBtn.addEventListener("click", () => finish("submit"));
+
+    row.appendChild(skipBtn);
+    row.appendChild(submitBtn);
+    card.appendChild(title);
+    card.appendChild(hint);
+    card.appendChild(job);
+    card.appendChild(body);
+    card.appendChild(row);
+    (document.body || document.documentElement).appendChild(card);
+    return card;
   }
 
   function detectPhaseGreenhouse() {
