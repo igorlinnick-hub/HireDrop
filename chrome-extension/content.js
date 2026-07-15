@@ -2382,9 +2382,18 @@
           const nameEl = findFieldBySelectorsOrLabel("firstName") || findFieldBySelectorsOrLabel("fullName");
           const emailEl = findFieldBySelectorsOrLabel("email");
           const resumeEl = findResumeInput();
-          log(`REVIEW MODE — filled, NOT submitting: name="${nameEl?.value || ""}" email="${emailEl?.value || ""}" resume=${resumeEl?.files?.length ? resumeEl.files[0].name : "NONE"} radios=${document.querySelectorAll('input[type="radio"]:checked').length}`, "ok");
-          logBackend(`📝 Review: ${jobInfo.title} @ ${jobInfo.company} — filled, awaiting your submit`, "info");
-          return;
+          const summary = `name="${nameEl?.value || ""}" email="${emailEl?.value || ""}" resume=${resumeEl?.files?.length ? resumeEl.files[0].name : "NONE"} radios=${document.querySelectorAll('input[type="radio"]:checked').length}`;
+          log(`REVIEW MODE — filled, awaiting your tap: ${summary}`, "ok");
+          logBackend(`📝 Review: ${jobInfo.title} @ ${jobInfo.company} — filled, tap Submit to send`, "info");
+          // Tap-mode: surface the review card in the automation window; the human
+          // eyeballs the filled form and decides. Only Submit falls through to the
+          // real submit path below — Skip returns without sending.
+          const choice = await showReviewCard(summary, `${jobInfo.title} @ ${jobInfo.company}`);
+          if (choice !== "submit") {
+            logBackend(`⏭️ Skipped by you: ${jobInfo.title} @ ${jobInfo.company}`, "info");
+            return;
+          }
+          logBackend(`👍 You approved — submitting: ${jobInfo.title} @ ${jobInfo.company}`, "ok");
         }
         log("Final step — submitting application...", "");
         // Last-look pause is longer than mid-form steps — real users
@@ -2841,9 +2850,16 @@
       const filledTextareas = Array.from(document.querySelectorAll("textarea")).filter((t) => (t.value || "").trim()).length;
       const checkedRadios = document.querySelectorAll('input[type="radio"]:checked').length;
       const summary = `name="${(nameEl?.value || "").slice(0, 40)}" email="${emailEl?.value || ""}" phone="${phoneEl?.value || ""}" resume=${resumeStatus} screener-textareas=${filledTextareas} radios=${checkedRadios} submitBtn="${(submitBtn.textContent || "").replace(/\s+/g, " ").trim().slice(0, 30)}"`;
-      log(`REVIEW MODE — filled, NOT submitting: ${summary}`, "ok");
-      logBackend(`📝 Review: ${jobTitle} @ ${jobCompany} — ${summary}`, "info");
-      return; // never submits, never records applied
+      log(`REVIEW MODE — filled, awaiting your tap: ${summary}`, "ok");
+      logBackend(`📝 Review: ${jobTitle} @ ${jobCompany} — tap Submit to send`, "info");
+      // Tap-mode review card (automation window). Only Submit falls through to the
+      // real submit path below; Skip returns without recording anything.
+      const choice = await showReviewCard(summary, `${jobTitle} @ ${jobCompany}`);
+      if (choice !== "submit") {
+        logBackend(`⏭️ Skipped by you: ${jobTitle} @ ${jobCompany}`, "info");
+        return; // never submits, never records applied
+      }
+      logBackend(`👍 You approved — submitting: ${jobTitle} @ ${jobCompany}`, "ok");
     }
 
     // FAIL CLOSED: never submit an application whose resume field is required but empty.
@@ -2879,6 +2895,71 @@
         status: result.verified ? "applied" : "applied_unconfirmed",
         verified: result.verified, verify_signal: result.signal,
       },
+    });
+  }
+
+  // Tap-mode review card ("тапалка"): when the form is filled but not yet submitted,
+  // surface an in-page overlay in the automation window so the human eyeballs the
+  // filled form and taps Submit or Skip. No dashboard round-trip — the human is
+  // already looking at the real page here. Resolves "submit" | "skip".
+  function showReviewCard(summary, jobLabel) {
+    return new Promise((resolve) => {
+      // Never stack two cards.
+      const existing = document.getElementById("hd-review-card");
+      if (existing) existing.remove();
+
+      const card = document.createElement("div");
+      card.id = "hd-review-card";
+      card.style.cssText = [
+        "position:fixed", "z-index:2147483647", "right:20px", "bottom:20px",
+        "width:340px", "max-width:calc(100vw - 40px)",
+        "background:#ffffff", "color:#1a1a2e",
+        "border:1px solid #e2e2ea", "border-radius:14px",
+        "box-shadow:0 12px 40px rgba(0,0,0,0.22)",
+        "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
+        "padding:16px", "line-height:1.4",
+      ].join(";");
+
+      const title = document.createElement("div");
+      title.style.cssText = "font-weight:700;font-size:14px;margin-bottom:6px;";
+      title.textContent = "✋ Tap — review & submit";
+
+      const job = document.createElement("div");
+      job.style.cssText = "font-size:12px;color:#6b6b7b;margin-bottom:10px;";
+      job.textContent = jobLabel || "";
+
+      const body = document.createElement("div");
+      body.style.cssText = "font-size:11px;color:#4a4a5a;background:#f6f6fb;border-radius:8px;padding:8px;margin-bottom:12px;word-break:break-word;max-height:120px;overflow:auto;";
+      body.textContent = summary || "Form filled.";
+
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;gap:8px;";
+
+      const skipBtn = document.createElement("button");
+      skipBtn.textContent = "Skip";
+      skipBtn.style.cssText = "flex:1;padding:9px;border-radius:9px;border:1px solid #e2e2ea;background:#fff;color:#6b6b7b;font-weight:600;font-size:13px;cursor:pointer;";
+
+      const submitBtn = document.createElement("button");
+      submitBtn.textContent = "Submit ✓";
+      submitBtn.style.cssText = "flex:2;padding:9px;border-radius:9px;border:none;background:#635bff;color:#fff;font-weight:700;font-size:13px;cursor:pointer;";
+
+      let done = false;
+      const finish = (choice) => {
+        if (done) return;
+        done = true;
+        try { card.remove(); } catch (_) {}
+        resolve(choice);
+      };
+      skipBtn.addEventListener("click", () => finish("skip"));
+      submitBtn.addEventListener("click", () => finish("submit"));
+
+      row.appendChild(skipBtn);
+      row.appendChild(submitBtn);
+      card.appendChild(title);
+      if (jobLabel) card.appendChild(job);
+      card.appendChild(body);
+      card.appendChild(row);
+      (document.body || document.documentElement).appendChild(card);
     });
   }
 
