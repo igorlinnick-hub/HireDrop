@@ -3164,27 +3164,37 @@
       // longer force-stop after a few minutes — the user may step away and solve it
       // later; the campaign resumes the moment the page is clean. A generous 2h safety
       // cap avoids an eternal spinner if they never come back.
-      log(`⚠️ CAPTCHA — pausing. Solve it in this window; the campaign resumes automatically once it's cleared.`, "err");
-      await sendMsg({
-        type: "DETECTION_TRIPPED",
-        data: { signal: det.signal, url: window.location.href, phase: detectPhase() },
-      });
-      const _pauseStart = Date.now();
-      while (Date.now() - _pauseStart < 2 * 60 * 60 * 1000) {
-        await sleep(8000);
-        if (!(await isCampaignRunning())) return; // user stopped it themselves
-        if (!isDetected().detected) {
-          log("CAPTCHA cleared — resuming campaign", "ok");
-          // Tell background to drop the captchaWaiting hand-off state so the
-          // popup alert and the dashboard "solve the captcha" CTA disappear.
-          await sendMsg({ type: "DETECTION_CLEARED" });
-          break;
+      // Zero-touch ATS (Greenhouse/Lever) carry a PASSIVE invisible reCAPTCHA — a badge +
+      // a "protected by reCAPTCHA" notice — that Google auto-solves on submit. There is NO
+      // human task. The generic detector flags that passive presence (the "…recaptcha…"
+      // text / .g-recaptcha node), so on these platforms we must NOT park in the human
+      // captcha-pause: that was the dead 6-7min→2h hang on GH. Log it and let the apply
+      // proceed — the token is issued at submit time.
+      if (["greenhouse", "lever"].includes(detectPlatform())) {
+        logBackend(`🔓 Passive reCAPTCHA on ${detectPlatform()} — zero-touch, continuing (no human needed)`, "info");
+      } else {
+        log(`⚠️ CAPTCHA — pausing. Solve it in this window; the campaign resumes automatically once it's cleared.`, "err");
+        await sendMsg({
+          type: "DETECTION_TRIPPED",
+          data: { signal: det.signal, url: window.location.href, phase: detectPhase() },
+        });
+        const _pauseStart = Date.now();
+        while (Date.now() - _pauseStart < 2 * 60 * 60 * 1000) {
+          await sleep(8000);
+          if (!(await isCampaignRunning())) return; // user stopped it themselves
+          if (!isDetected().detected) {
+            log("CAPTCHA cleared — resuming campaign", "ok");
+            // Tell background to drop the captchaWaiting hand-off state so the
+            // popup alert and the dashboard "solve the captcha" CTA disappear.
+            await sendMsg({ type: "DETECTION_CLEARED" });
+            break;
+          }
         }
-      }
-      if (isDetected().detected) {
-        log("CAPTCHA still not cleared after 2h — stopping campaign", "err");
-        await sendMsg({ type: "STOP_CAMPAIGN" });
-        return;
+        if (isDetected().detected) {
+          log("CAPTCHA still not cleared after 2h — stopping campaign", "err");
+          await sendMsg({ type: "STOP_CAMPAIGN" });
+          return;
+        }
       }
     }
 
