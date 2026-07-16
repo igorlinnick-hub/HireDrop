@@ -3194,7 +3194,13 @@
     // as the CAPTCHA hand-off: we never fake-submit against a logged-out session.
     {
       const authPlatform = detectPlatform();
-      const authStatus = detectPlatformAuth(authPlatform);
+      // ATS guest-apply pages (Greenhouse/Lever) NEVER require a login — you apply as a
+      // guest. Skip the login-wall check for them: otherwise a stray "Sign in" link on the
+      // posting reads as logged_out and parks the campaign in the 2h login-pause loop below
+      // (looks like a dead 6-7-min+ hang on a zero-touch GH apply). Mirrors sessionWarmup's
+      // greenhouse/lever guard.
+      const isAtsGuest = authPlatform === "greenhouse" || authPlatform === "lever";
+      const authStatus = isAtsGuest ? "connected" : detectPlatformAuth(authPlatform);
       if (authStatus === "logged_out") {
         await reportPlatformAuth();
         const name = authPlatform === "ziprecruiter" ? "ZipRecruiter" : "Indeed";
