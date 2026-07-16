@@ -880,14 +880,19 @@ async function handleMessage(msg, sender) {
     case "STOP_CAMPAIGN": {
       const stopData = await chrome.storage.local.get(["campaignTabId", "campaignWindowId"]);
 
-      // Clear running state first so the onDetach listener won't auto-reattach
+      // Clear running state first so the onDetach listener won't auto-reattach.
+      // Also drop any pending tap review + ATS queue — a stopped campaign must not
+      // leave a dangling review card on the dashboard or resume a half-walked queue.
       await chrome.storage.local.set({
         campaignRunning: false,
         campaignTabId: null,
         campaignWindowId: null,
         currentJob: null,
         captchaWaiting: null,
+        reviewPending: null,
+        reviewDecision: null,
       });
+      await chrome.storage.local.remove(["atsQueue", "atsPlatform"]);
 
       try {
         if (stopData.campaignTabId) {
