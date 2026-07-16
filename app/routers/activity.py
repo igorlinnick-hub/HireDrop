@@ -40,7 +40,10 @@ def list_activity(user=Depends(get_current_user), limit: int = 100):
 
 
 @router.get("/activity/summary")
-def activity_summary(user=Depends(get_current_user), window_hours: int = 24):
+def activity_summary(user=Depends(get_current_user), window_hours: int = 24, since: str | None = None):
     """Health snapshot (ROADMAP_E2E.md P3): counts of applied / fit-skips / resume-fails /
-    auth-401s + errors over a window, so silent failures surface on the dashboard."""
-    return activity_db.summary(user.id, window_hours=min(max(window_hours, 1), 168))
+    auth-401s + errors over a window, so silent failures surface on the dashboard.
+
+    Pass `since` (ISO ts, e.g. campaign started_at) to scope the counts to the CURRENT run
+    instead of a rolling 24h window — keeps a prior run's cross-platform noise out of the chips."""
+    return activity_db.summary(user.id, window_hours=min(max(window_hours, 1), 168), since=since)

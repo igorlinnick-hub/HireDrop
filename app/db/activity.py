@@ -77,11 +77,24 @@ def _categorize(msg: str) -> str | None:
     return None
 
 
-def summary(user_id: str, window_hours: int = 24, cap: int = 2000) -> dict:
+def summary(user_id: str, window_hours: int = 24, cap: int = 2000, since: str | None = None) -> dict:
     """Health snapshot for the dashboard (ROADMAP_E2E.md P3): turns the raw activity feed
     into at-a-glance counts so a silent failure (auth 401, resume fail, everything skipped)
-    becomes visible instead of buried in the log."""
-    cutoff = (datetime.now(UTC) - timedelta(hours=max(1, window_hours))).isoformat()
+    becomes visible instead of buried in the log.
+
+    `since` (ISO timestamp, e.g. the campaign's started_at) scopes the counts to the CURRENT
+    run instead of a rolling 24h window — so a résumé-fail / fit-skip from a PRIOR run on a
+    different platform doesn't leak into this campaign's health chips. Falls back to the
+    window if `since` is absent or unparseable."""
+    scoped_since = None
+    if since:
+        try:
+            # Validate it's a real ISO timestamp before trusting it in the query.
+            datetime.fromisoformat(since.replace("Z", "+00:00"))
+            scoped_since = since
+        except (ValueError, AttributeError):
+            scoped_since = None
+    cutoff = scoped_since or (datetime.now(UTC) - timedelta(hours=max(1, window_hours))).isoformat()
     res = (
         get_supabase()
         .table("activity_log")
@@ -108,6 +121,7 @@ def summary(user_id: str, window_hours: int = 24, cap: int = 2000) -> dict:
             by_type[cat] = by_type.get(cat, 0) + 1
     return {
         "window_hours": window_hours,
+        "since": scoped_since,  # non-null when the counts are scoped to a single run
         "total": len(rows),
         "truncated": len(rows) >= cap,
         "by_level": by_level,
