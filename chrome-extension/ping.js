@@ -115,8 +115,12 @@ window.addEventListener("message", function (e) {
   if (typeof e.data === "object" && e.data.type === "HIREDROP_REVIEW_DECISION" && e.data.id) {
     try {
       const decision = e.data.decision === "approve" ? "approve" : "skip";
+      // Also clear reviewPending immediately so the card leaves the dashboard the moment
+      // you tap — even if no live content.js loop is around to consume the decision (a
+      // stale card from a stopped run). A live loop polls reviewDecision, not
+      // reviewPending, so clearing it here doesn't stop it from submitting/skipping.
       chrome.storage.local.set(
-        { reviewDecision: { id: e.data.id, decision: decision, at: Date.now() } },
+        { reviewDecision: { id: e.data.id, decision: decision, at: Date.now() }, reviewPending: null },
         function () {
           window.postMessage({ type: "HIREDROP_REVIEW_DECISION_SET", id: e.data.id, decision: decision }, "*");
         }
