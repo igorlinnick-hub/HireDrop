@@ -2734,7 +2734,8 @@
     const cm = window.location.pathname.match(/^\/(?:embed\/[^\/]+|([^\/]+))/);
     if (cm && cm[1]) jobCompany = cm[1].replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
     const descEl = document.querySelector('.job__description, .posting-page, #content, [class*="description" i], main');
-    const jobDesc = (descEl?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 1200);
+    // Keep more of the posting — the tap card shows this as the primary thing to read.
+    const jobDesc = (descEl?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 3000);
     const jobUrl = window.location.href.split("?")[0];
 
     if (!jobTitle) { log(`${label}: no job title — skipping`, "err"); return; }
@@ -2862,7 +2863,7 @@
         id: jobUrl,
         job_title: jobTitle,
         company: jobCompany,
-        description: (jobDesc || "").slice(0, 800),
+        description: jobDesc || "",
         cover_letter: coverLetter || "",
         summary,
         job_url: jobUrl,
