@@ -51,6 +51,28 @@ def update_apply_mode(body: dict, user=Depends(get_current_user)):
     return {"saved": True, "apply_mode": mode}
 
 
+@router.post("/profile/salary")
+def update_salary_range(body: dict, user=Depends(get_current_user)):
+    """Optional salary-range filter (annual USD) — set from the launch modal.
+
+    Forgiving by design: it's an optional filter, so junk never blocks a campaign
+    start — a non-numeric/absurd bound clears to NULL, inverted bounds are swapped.
+    """
+    def _bound(v) -> int | None:
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return None
+        return n if 0 < n < 100_000_000 else None
+
+    lo, hi = _bound(body.get("salary_min")), _bound(body.get("salary_max"))
+    if lo is not None and hi is not None and lo > hi:
+        lo, hi = hi, lo
+    listed_only = bool(body.get("salary_listed_only"))
+    profile_db.update_salary(user.id, lo, hi, listed_only)
+    return {"saved": True, "salary_min": lo, "salary_max": hi, "salary_listed_only": listed_only}
+
+
 @router.post("/profile/prefs")
 def update_search_prefs(prefs: SearchPrefsUpdate, user=Depends(get_current_user)):
     """Partial update — only search preferences, does not touch name/phone/etc."""

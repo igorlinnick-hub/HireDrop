@@ -84,6 +84,16 @@ def update_apply_mode(user_id: str, mode: str, ideal_job_description: str | None
     get_supabase().table("profiles").update(payload).eq("user_id", user_id).execute()
 
 
+def update_salary(user_id: str, salary_min: int | None, salary_max: int | None, listed_only: bool) -> None:
+    """Optional salary-range filter (annual USD). None clears a bound — an empty
+    filter means "don't filter by salary". Does not touch other profile columns."""
+    get_supabase().table("profiles").update({
+        "salary_min": salary_min,
+        "salary_max": salary_max,
+        "salary_listed_only": bool(listed_only),
+    }).eq("user_id", user_id).execute()
+
+
 def update_ats(user_id: str, data: dict) -> None:
     """Partial update — only ATS fields. Does not touch other profile columns."""
     payload = {k: v for k, v in data.items() if k in (
