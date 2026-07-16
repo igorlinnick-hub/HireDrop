@@ -45,6 +45,14 @@
     return "indeed";
   }
 
+  // Human-readable platform name for user-facing log lines. Every activity
+  // message the dashboard shows should name the ACTUAL platform — a Greenhouse
+  // campaign logging "Indeed" reads as broken.
+  const PLATFORM_LABELS = { indeed: "Indeed", ziprecruiter: "ZipRecruiter", greenhouse: "Greenhouse", lever: "Lever" };
+  function platformLabel() {
+    return PLATFORM_LABELS[detectPlatform()] || "Indeed";
+  }
+
   // =========================================================================
   // Account connection detection
   //
@@ -2247,7 +2255,7 @@
     if (!(await isCampaignRunning())) return;
 
     log("Application form detected — filling fields...", "");
-    logBackend("Application form detected — filling fields", "info");
+    logBackend(`📋 Application form detected — filling fields (${platformLabel()})`, "info");
     logFormDiagnostic();
 
     // Get profile and cover letter
@@ -2734,6 +2742,9 @@
     }
 
     log(`${label} job: ${jobTitle} @ ${jobCompany}`, "");
+    // Narrate the real steps to the dashboard's Live Activity — the user watches
+    // that line to understand what the bot is doing right now.
+    logBackend(`🔍 Reading job posting: ${jobTitle} @ ${jobCompany} — checking fit`, "info");
 
     // Fit gate (M1) — same selective decision layer as the boards
     const fit = await sendMsg({ type: "ASSESS_FIT", data: { job_title: jobTitle, company: jobCompany, description: jobDesc } });
@@ -2746,6 +2757,7 @@
     if (fit.judged) logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
 
     // Cover letter
+    logBackend(`✍️ Writing a tailored cover letter — ${jobTitle} @ ${jobCompany}`, "info");
     let coverLetter = "";
     try {
       const cl = await Promise.race([
@@ -2762,7 +2774,7 @@
     const profile = (await chrome.storage.local.get("profile")).profile || {};
 
     log(`${label} — filling application...`, "");
-    logBackend("Application form detected — filling fields", "info");
+    logBackend(`📋 Filling ${label} application: ${jobTitle} @ ${jobCompany}`, "info");
     logFormDiagnostic();
 
     const fillField = async (name, val) => {
@@ -3062,7 +3074,7 @@
       const authStatus = detectPlatformAuth(authPlatform);
       if (authStatus === "logged_out") {
         await reportPlatformAuth();
-        const name = authPlatform === "ziprecruiter" ? "ZipRecruiter" : "Indeed";
+        const name = platformLabel();
         log(`⚠️ Not signed into ${name}. Log in (or create an account) in this window — the campaign resumes automatically once you're in.`, "err");
         await sendMsg({ type: "PLATFORM_LOGIN_REQUIRED", platform: authPlatform, url: window.location.href });
         const _loginPauseStart = Date.now();
@@ -3199,7 +3211,7 @@
 
     // Check if campaign is already running (e.g., page reload)
     if (await isCampaignRunning()) {
-      const platformName = detectPlatform() === "ziprecruiter" ? "ZipRecruiter" : "Indeed";
+      const platformName = platformLabel();
       log("Campaign active — resuming on this page", "ok");
       logBackend(`Extension active on ${platformName} — starting automation`, "info");
       await sleep(humanDelay(2000, 3000));
