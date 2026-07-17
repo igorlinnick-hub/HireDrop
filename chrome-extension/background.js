@@ -517,10 +517,45 @@ async function buildAtsQueue(platform, perPlatformCap) {
   let jobs = [];
   try { jobs = await apiGet("/jobs"); } catch (e) { return []; }
   const cap = perPlatformCap > 0 ? perPlatformCap : 20;
+  // Drop jobs we already applied to (URL or title|company key) — an already-applied job
+  // at the queue head used to dead-stop the walk: phase_ats skips it silently and only a
+  // real submit advances the queue. Mirrors content.js's dedup (jobDedupKey format).
+  const dd = await chrome.storage.local.get(["appliedUrls", "appliedJobKeys"]);
+  const appliedUrls = new Set(dd.appliedUrls || []);
+  const appliedKeys = new Set(dd.appliedJobKeys || []);
+  const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
   return (jobs || [])
     .filter((j) => j.platform === platform && j.zero_touch === true && (j.link || j.apply_url))
+    .filter((j) => {
+      const url = (j.link || j.apply_url).split("?")[0];
+      return !appliedUrls.has(url) && !appliedKeys.has(`${norm(j.title)}|${norm(j.company)}`);
+    })
     .slice(0, cap)
     .map((j) => ({ applyUrl: j.link || j.apply_url, title: j.title || "", company: j.company || "" }));
+}
+
+// Walk the ATS queue one step: drop the head, open the next apply URL in the automation
+// tab, or finish the campaign when the queue is empty. Called after a submit
+// (APPLICATION_SAVED) AND after any non-submit outcome (ATS_JOB_DONE from phase_ats —
+// fit-skip / already-applied / missing form). Before that second caller existed, any
+// skipped job dead-stopped the walk: nothing advanced the queue except a real submit.
+async function advanceAtsQueue() {
+  try {
+    const { atsQueue, campaignTabId } = await chrome.storage.local.get(["atsQueue", "campaignTabId"]);
+    if (Array.isArray(atsQueue) && atsQueue.length && campaignTabId) {
+      const rest = atsQueue.slice(1);
+      await chrome.storage.local.set({ atsQueue: rest });
+      const running = (await chrome.storage.local.get("campaignRunning")).campaignRunning === true;
+      if (rest.length && running) {
+        await chrome.tabs.update(campaignTabId, { url: rest[0].applyUrl }).catch(() => {});
+      } else if (!rest.length) {
+        await addToActivityLog("ATS pool complete — walked every discovered zero-touch job. Campaign finished.", "ok");
+        await chrome.storage.local.set({ campaignRunning: false });
+        try { await apiPost("/campaign/stop", {}); } catch {}
+        updateBadge();
+      }
+    }
+  } catch (e) { /* advance is best-effort; a failure just pauses the walk */ }
 }
 
 // Unified auth page per platform (enter email → logs in or creates an account),
@@ -950,25 +985,18 @@ async function handleMessage(msg, sender) {
       // ATS pool-driven ADVANCE (GLOBAL_PLAN P1b): after a zero-touch ATS submit, walk the
       // automation tab to the next apply URL in the queue. Native (Indeed/ZR) campaigns have
       // no atsQueue and are driven by in-page navigation, so this is a no-op for them.
-      try {
-        const { atsQueue, campaignTabId } = await chrome.storage.local.get(["atsQueue", "campaignTabId"]);
-        if (Array.isArray(atsQueue) && atsQueue.length && campaignTabId) {
-          const rest = atsQueue.slice(1);
-          await chrome.storage.local.set({ atsQueue: rest });
-          const running = (await chrome.storage.local.get("campaignRunning")).campaignRunning === true;
-          if (rest.length && running) {
-            await chrome.tabs.update(campaignTabId, { url: rest[0].applyUrl }).catch(() => {});
-          } else if (!rest.length) {
-            await addToActivityLog("ATS pool complete — all discovered zero-touch jobs applied. Campaign finished.", "ok");
-            await chrome.storage.local.set({ campaignRunning: false });
-            try { await apiPost("/campaign/stop", {}); } catch {}
-            updateBadge();
-          }
-        }
-      } catch (e) { /* advance is best-effort; a failure just pauses the walk */ }
+      await advanceAtsQueue();
 
       const cur = await chrome.storage.local.get("platformCounts");
       return { saved: true, platformCount: (cur.platformCounts || {})[platform] || 0, job_id: serverResult?.job_id };
+    }
+
+    // ----- ATS queue advance on a NON-submit outcome (fit-skip / already-applied /
+    // missing form). phase_ats calls this from every early exit so a skipped job never
+    // dead-stops the pool walk; the submit path advances via APPLICATION_SAVED instead.
+    case "ATS_JOB_DONE": {
+      await advanceAtsQueue();
+      return { advanced: true };
     }
 
     // ----- Cover letter generation -----

@@ -2738,13 +2738,18 @@
     const jobDesc = (descEl?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 3000);
     const jobUrl = window.location.href.split("?")[0];
 
-    if (!jobTitle) { log(`${label}: no job title — skipping`, "err"); return; }
+    if (!jobTitle) {
+      logBackend(`⏭️ ${label}: no job title on page — skipping to next`, "warn");
+      await sendMsg({ type: "ATS_JOB_DONE" }); // advance the pool walk past this page
+      return;
+    }
 
     // Never re-apply (URL or title|company)
     const applied = await getAppliedUrls();
     const appliedJobs = await getAppliedJobKeys();
     if (applied.has(jobUrl) || appliedJobs.has(jobDedupKey(jobTitle, jobCompany))) {
-      log(`${jobTitle} — already applied, skipping`, "");
+      logBackend(`⏭️ Already applied: ${jobTitle} @ ${jobCompany} — next job`, "info");
+      await sendMsg({ type: "ATS_JOB_DONE" }); // was a silent dead-stop: nothing advanced the queue
       return;
     }
 
@@ -2756,6 +2761,7 @@
     if (!fit || fit.decision !== "apply") {
       const why = (fit && fit.reason ? fit.reason : "fit check unavailable — skipped for safety").slice(0, 140);
       logBackend(`⏭️ Skipped (fit ${(fit && fit.fit_score != null) ? fit.fit_score : "?"}): ${jobTitle} @ ${jobCompany} — ${why}`, (!fit || fit.failClosed) ? "warn" : "info");
+      await sendMsg({ type: "ATS_JOB_DONE" }); // fit-skip must still advance the pool walk
       return;
     }
     if (fit.judged) logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
@@ -2836,7 +2842,11 @@
     const action = classifyFormButton();
     if (action.label) log(`${label} button: "${action.label}" → ${action.submit ? "SUBMIT" : "continue?"}`, "");
     const submitBtn = findFormButton();
-    if (!submitBtn) { log(`${label}: submit button not found — skipping`, "err"); return; }
+    if (!submitBtn) {
+      logBackend(`⏭️ ${label}: submit button not found — skipping to next`, "warn");
+      await sendMsg({ type: "ATS_JOB_DONE" });
+      return;
+    }
 
     // Review mode (semi-auto / human-reviews-before-submit): fill everything but do
     // NOT click submit. Report exactly what got filled so the user (or an E2E test)
@@ -2870,6 +2880,7 @@
       });
       if (choice !== "submit") {
         logBackend(`⏭️ Skipped by you: ${jobTitle} @ ${jobCompany}`, "info");
+        await sendMsg({ type: "ATS_JOB_DONE" }); // tap-skip advances to the next card
         return; // never submits, never records applied
       }
       logBackend(`👍 You approved — submitting: ${jobTitle} @ ${jobCompany}`, "ok");
@@ -2880,6 +2891,7 @@
     // and log so it surfaces (usually a resume-upload 401 — the auth path, see P1/P2).
     if (resumeRequired && !resumeOk) {
       logBackend(`⏭️ Skipped (no resume attached): ${jobTitle} @ ${jobCompany} — not submitting a resume-less application`, "error");
+      await sendMsg({ type: "ATS_JOB_DONE" });
       return;
     }
 
