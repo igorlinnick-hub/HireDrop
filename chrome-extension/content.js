@@ -45,14 +45,6 @@
     return "indeed";
   }
 
-  // Human-readable platform name for user-facing log lines. Every activity
-  // message the dashboard shows should name the ACTUAL platform — a Greenhouse
-  // campaign logging "Indeed" reads as broken.
-  const PLATFORM_LABELS = { indeed: "Indeed", ziprecruiter: "ZipRecruiter", greenhouse: "Greenhouse", lever: "Lever" };
-  function platformLabel() {
-    return PLATFORM_LABELS[detectPlatform()] || "Indeed";
-  }
-
   // =========================================================================
   // Account connection detection
   //
@@ -2255,7 +2247,7 @@
     if (!(await isCampaignRunning())) return;
 
     log("Application form detected — filling fields...", "");
-    logBackend(`📋 Application form detected — filling fields (${platformLabel()})`, "info");
+    logBackend("Application form detected — filling fields", "info");
     logFormDiagnostic();
 
     // Get profile and cover letter
@@ -2390,9 +2382,23 @@
           const nameEl = findFieldBySelectorsOrLabel("firstName") || findFieldBySelectorsOrLabel("fullName");
           const emailEl = findFieldBySelectorsOrLabel("email");
           const resumeEl = findResumeInput();
-          log(`REVIEW MODE — filled, NOT submitting: name="${nameEl?.value || ""}" email="${emailEl?.value || ""}" resume=${resumeEl?.files?.length ? resumeEl.files[0].name : "NONE"} radios=${document.querySelectorAll('input[type="radio"]:checked').length}`, "ok");
-          logBackend(`📝 Review: ${jobInfo.title} @ ${jobInfo.company} — filled, awaiting your submit`, "info");
-          return;
+          const summary = `name="${nameEl?.value || ""}" email="${emailEl?.value || ""}" resume=${resumeEl?.files?.length ? resumeEl.files[0].name : "NONE"} radios=${document.querySelectorAll('input[type="radio"]:checked').length}`;
+          log(`REVIEW MODE — filled, awaiting your tap: ${summary}`, "ok");
+          // Publish to the dashboard review card and wait for the human's verdict.
+          const choice = await awaitReview({
+            id: jobInfo.url || `${jobInfo.title}@${jobInfo.company}`,
+            job_title: jobInfo.title,
+            company: jobInfo.company,
+            description: (jobInfo.description || "").slice(0, 800),
+            cover_letter: "",
+            summary,
+            job_url: jobInfo.url || "",
+          });
+          if (choice !== "submit") {
+            logBackend(`⏭️ Skipped by you: ${jobInfo.title} @ ${jobInfo.company}`, "info");
+            return;
+          }
+          logBackend(`👍 You approved — submitting: ${jobInfo.title} @ ${jobInfo.company}`, "ok");
         }
         log("Final step — submitting application...", "");
         // Last-look pause is longer than mid-form steps — real users
@@ -2728,23 +2734,26 @@
     const cm = window.location.pathname.match(/^\/(?:embed\/[^\/]+|([^\/]+))/);
     if (cm && cm[1]) jobCompany = cm[1].replace(/[-_]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
     const descEl = document.querySelector('.job__description, .posting-page, #content, [class*="description" i], main');
-    const jobDesc = (descEl?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 1200);
+    // Keep more of the posting — the tap card shows this as the primary thing to read.
+    const jobDesc = (descEl?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 3000);
     const jobUrl = window.location.href.split("?")[0];
 
-    if (!jobTitle) { log(`${label}: no job title — skipping`, "err"); return; }
+    if (!jobTitle) {
+      logBackend(`⏭️ ${label}: no job title on page — skipping to next`, "warn");
+      await sendMsg({ type: "ATS_JOB_DONE" }); // advance the pool walk past this page
+      return;
+    }
 
     // Never re-apply (URL or title|company)
     const applied = await getAppliedUrls();
     const appliedJobs = await getAppliedJobKeys();
     if (applied.has(jobUrl) || appliedJobs.has(jobDedupKey(jobTitle, jobCompany))) {
-      log(`${jobTitle} — already applied, skipping`, "");
+      logBackend(`⏭️ Already applied: ${jobTitle} @ ${jobCompany} — next job`, "info");
+      await sendMsg({ type: "ATS_JOB_DONE" }); // was a silent dead-stop: nothing advanced the queue
       return;
     }
 
     log(`${label} job: ${jobTitle} @ ${jobCompany}`, "");
-    // Narrate the real steps to the dashboard's Live Activity — the user watches
-    // that line to understand what the bot is doing right now.
-    logBackend(`🔍 Reading job posting: ${jobTitle} @ ${jobCompany} — checking fit`, "info");
 
     // Fit gate (M1) — same selective decision layer as the boards
     const fit = await sendMsg({ type: "ASSESS_FIT", data: { job_title: jobTitle, company: jobCompany, description: jobDesc } });
@@ -2752,12 +2761,12 @@
     if (!fit || fit.decision !== "apply") {
       const why = (fit && fit.reason ? fit.reason : "fit check unavailable — skipped for safety").slice(0, 140);
       logBackend(`⏭️ Skipped (fit ${(fit && fit.fit_score != null) ? fit.fit_score : "?"}): ${jobTitle} @ ${jobCompany} — ${why}`, (!fit || fit.failClosed) ? "warn" : "info");
+      await sendMsg({ type: "ATS_JOB_DONE" }); // fit-skip must still advance the pool walk
       return;
     }
     if (fit.judged) logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
 
     // Cover letter
-    logBackend(`✍️ Writing a tailored cover letter — ${jobTitle} @ ${jobCompany}`, "info");
     let coverLetter = "";
     try {
       const cl = await Promise.race([
@@ -2774,7 +2783,7 @@
     const profile = (await chrome.storage.local.get("profile")).profile || {};
 
     log(`${label} — filling application...`, "");
-    logBackend(`📋 Filling ${label} application: ${jobTitle} @ ${jobCompany}`, "info");
+    logBackend("Application form detected — filling fields", "info");
     logFormDiagnostic();
 
     const fillField = async (name, val) => {
@@ -2833,7 +2842,11 @@
     const action = classifyFormButton();
     if (action.label) log(`${label} button: "${action.label}" → ${action.submit ? "SUBMIT" : "continue?"}`, "");
     const submitBtn = findFormButton();
-    if (!submitBtn) { log(`${label}: submit button not found — skipping`, "err"); return; }
+    if (!submitBtn) {
+      logBackend(`⏭️ ${label}: submit button not found — skipping to next`, "warn");
+      await sendMsg({ type: "ATS_JOB_DONE" });
+      return;
+    }
 
     // Review mode (semi-auto / human-reviews-before-submit): fill everything but do
     // NOT click submit. Report exactly what got filled so the user (or an E2E test)
@@ -2853,9 +2866,24 @@
       const filledTextareas = Array.from(document.querySelectorAll("textarea")).filter((t) => (t.value || "").trim()).length;
       const checkedRadios = document.querySelectorAll('input[type="radio"]:checked').length;
       const summary = `name="${(nameEl?.value || "").slice(0, 40)}" email="${emailEl?.value || ""}" phone="${phoneEl?.value || ""}" resume=${resumeStatus} screener-textareas=${filledTextareas} radios=${checkedRadios} submitBtn="${(submitBtn.textContent || "").replace(/\s+/g, " ").trim().slice(0, 30)}"`;
-      log(`REVIEW MODE — filled, NOT submitting: ${summary}`, "ok");
-      logBackend(`📝 Review: ${jobTitle} @ ${jobCompany} — ${summary}`, "info");
-      return; // never submits, never records applied
+      log(`REVIEW MODE — filled, awaiting your tap: ${summary}`, "ok");
+      // Publish the filled application to the dashboard review card and wait for the
+      // human's verdict. Only "submit" falls through to the real submit path below.
+      const choice = await awaitReview({
+        id: jobUrl,
+        job_title: jobTitle,
+        company: jobCompany,
+        description: jobDesc || "",
+        cover_letter: coverLetter || "",
+        summary,
+        job_url: jobUrl,
+      });
+      if (choice !== "submit") {
+        logBackend(`⏭️ Skipped by you: ${jobTitle} @ ${jobCompany}`, "info");
+        await sendMsg({ type: "ATS_JOB_DONE" }); // tap-skip advances to the next card
+        return; // never submits, never records applied
+      }
+      logBackend(`👍 You approved — submitting: ${jobTitle} @ ${jobCompany}`, "ok");
     }
 
     // FAIL CLOSED: never submit an application whose resume field is required but empty.
@@ -2863,6 +2891,7 @@
     // and log so it surfaces (usually a resume-upload 401 — the auth path, see P1/P2).
     if (resumeRequired && !resumeOk) {
       logBackend(`⏭️ Skipped (no resume attached): ${jobTitle} @ ${jobCompany} — not submitting a resume-less application`, "error");
+      await sendMsg({ type: "ATS_JOB_DONE" });
       return;
     }
 
@@ -2892,6 +2921,112 @@
         verified: result.verified, verify_signal: result.signal,
       },
     });
+  }
+
+  // Tap-mode review ("тапалка"): publish the filled application to the DASHBOARD via
+  // chrome.storage (the same cross-window bridge the captcha hand-off uses), then wait
+  // for the human's Approve/Skip. The dashboard renders a rich card (job, cover letter,
+  // filled summary) and writes the verdict back to chrome.storage.reviewDecision; a small
+  // in-window overlay is a fallback if the dashboard tab is closed. Resolves
+  // "submit" | "skip". Fails SAFE: on timeout it SKIPS — never auto-submits unreviewed.
+  async function awaitReview(review) {
+    const id = review.id || review.job_url || String(Date.now());
+    try {
+      await chrome.storage.local.set({
+        reviewPending: { ...review, id, at: Date.now() },
+        reviewDecision: null,
+      });
+    } catch (_) { /* storage unavailable — overlay fallback still works */ }
+    logBackend(`📝 Ready to review: ${review.job_title} @ ${review.company} — approve it on your dashboard`, "info");
+
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (choice) => {
+        if (done) return;
+        done = true;
+        clearInterval(poll);
+        clearTimeout(timer);
+        try { if (overlay) overlay.remove(); } catch (_) {}
+        try { chrome.storage.local.remove(["reviewPending", "reviewDecision"]); } catch (_) {}
+        resolve(choice);
+      };
+
+      // Poll for a decision made on the dashboard card (approve → submit, skip → skip).
+      const poll = setInterval(async () => {
+        try {
+          const d = (await chrome.storage.local.get("reviewDecision")).reviewDecision;
+          if (d && d.id === id) finish(d.decision === "approve" ? "submit" : "skip");
+        } catch (_) { /* transient */ }
+      }, 700);
+
+      // Fail safe: never hang forever, never auto-submit — default to skip.
+      const timer = setTimeout(() => {
+        logBackend(`⏭️ Review timed out (30 min) — skipped: ${review.job_title} @ ${review.company}`, "warn");
+        finish("skip");
+      }, 30 * 60 * 1000);
+
+      // In-window fallback overlay (dashboard card is the primary surface).
+      const overlay = buildReviewOverlay(review, finish);
+    });
+  }
+
+  // Small automation-window overlay — a fallback for awaitReview() when the dashboard
+  // tab isn't open. Its buttons resolve the same review as the dashboard card.
+  function buildReviewOverlay(review, finish) {
+    const existing = document.getElementById("hd-review-card");
+    if (existing) existing.remove();
+
+    const card = document.createElement("div");
+    card.id = "hd-review-card";
+    card.style.cssText = [
+      "position:fixed", "z-index:2147483647", "right:20px", "bottom:20px",
+      "width:320px", "max-width:calc(100vw - 40px)",
+      "background:#ffffff", "color:#1a1a2e",
+      "border:1px solid #e2e2ea", "border-radius:14px",
+      "box-shadow:0 12px 40px rgba(0,0,0,0.22)",
+      "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif",
+      "padding:16px", "line-height:1.4",
+    ].join(";");
+
+    const title = document.createElement("div");
+    title.style.cssText = "font-weight:700;font-size:14px;margin-bottom:4px;";
+    title.textContent = "✋ Tap — review & submit";
+
+    const hint = document.createElement("div");
+    hint.style.cssText = "font-size:10px;color:#9a9aa8;margin-bottom:8px;";
+    hint.textContent = "Also on your HireDrop dashboard";
+
+    const job = document.createElement("div");
+    job.style.cssText = "font-size:12px;color:#4a4a5a;font-weight:600;margin-bottom:10px;";
+    job.textContent = `${review.job_title || ""} @ ${review.company || ""}`;
+
+    const body = document.createElement("div");
+    body.style.cssText = "font-size:11px;color:#4a4a5a;background:#f6f6fb;border-radius:8px;padding:8px;margin-bottom:12px;word-break:break-word;max-height:110px;overflow:auto;";
+    body.textContent = review.summary || "Form filled.";
+
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;gap:8px;";
+
+    const skipBtn = document.createElement("button");
+    skipBtn.textContent = "Skip";
+    skipBtn.style.cssText = "flex:1;padding:9px;border-radius:9px;border:1px solid #e2e2ea;background:#fff;color:#6b6b7b;font-weight:600;font-size:13px;cursor:pointer;";
+
+    const submitBtn = document.createElement("button");
+    submitBtn.textContent = "Submit ✓";
+    submitBtn.style.cssText = "flex:2;padding:9px;border-radius:9px;border:none;background:#635bff;color:#fff;font-weight:700;font-size:13px;cursor:pointer;";
+
+    skipBtn.addEventListener("click", () => finish("skip"));
+    submitBtn.addEventListener("click", () => finish("submit"));
+
+    row.appendChild(skipBtn);
+    row.appendChild(submitBtn);
+    card.appendChild(title);
+    card.appendChild(hint);
+    card.appendChild(job);
+    card.appendChild(body);
+    card.appendChild(row);
+    (document.body || document.documentElement).appendChild(card);
+    return card;
   }
 
   function detectPhaseGreenhouse() {
@@ -3041,27 +3176,37 @@
       // longer force-stop after a few minutes — the user may step away and solve it
       // later; the campaign resumes the moment the page is clean. A generous 2h safety
       // cap avoids an eternal spinner if they never come back.
-      log(`⚠️ CAPTCHA — pausing. Solve it in this window; the campaign resumes automatically once it's cleared.`, "err");
-      await sendMsg({
-        type: "DETECTION_TRIPPED",
-        data: { signal: det.signal, url: window.location.href, phase: detectPhase() },
-      });
-      const _pauseStart = Date.now();
-      while (Date.now() - _pauseStart < 2 * 60 * 60 * 1000) {
-        await sleep(8000);
-        if (!(await isCampaignRunning())) return; // user stopped it themselves
-        if (!isDetected().detected) {
-          log("CAPTCHA cleared — resuming campaign", "ok");
-          // Tell background to drop the captchaWaiting hand-off state so the
-          // popup alert and the dashboard "solve the captcha" CTA disappear.
-          await sendMsg({ type: "DETECTION_CLEARED" });
-          break;
+      // Zero-touch ATS (Greenhouse/Lever) carry a PASSIVE invisible reCAPTCHA — a badge +
+      // a "protected by reCAPTCHA" notice — that Google auto-solves on submit. There is NO
+      // human task. The generic detector flags that passive presence (the "…recaptcha…"
+      // text / .g-recaptcha node), so on these platforms we must NOT park in the human
+      // captcha-pause: that was the dead 6-7min→2h hang on GH. Log it and let the apply
+      // proceed — the token is issued at submit time.
+      if (["greenhouse", "lever"].includes(detectPlatform())) {
+        logBackend(`🔓 Passive reCAPTCHA on ${detectPlatform()} — zero-touch, continuing (no human needed)`, "info");
+      } else {
+        log(`⚠️ CAPTCHA — pausing. Solve it in this window; the campaign resumes automatically once it's cleared.`, "err");
+        await sendMsg({
+          type: "DETECTION_TRIPPED",
+          data: { signal: det.signal, url: window.location.href, phase: detectPhase() },
+        });
+        const _pauseStart = Date.now();
+        while (Date.now() - _pauseStart < 2 * 60 * 60 * 1000) {
+          await sleep(8000);
+          if (!(await isCampaignRunning())) return; // user stopped it themselves
+          if (!isDetected().detected) {
+            log("CAPTCHA cleared — resuming campaign", "ok");
+            // Tell background to drop the captchaWaiting hand-off state so the
+            // popup alert and the dashboard "solve the captcha" CTA disappear.
+            await sendMsg({ type: "DETECTION_CLEARED" });
+            break;
+          }
         }
-      }
-      if (isDetected().detected) {
-        log("CAPTCHA still not cleared after 2h — stopping campaign", "err");
-        await sendMsg({ type: "STOP_CAMPAIGN" });
-        return;
+        if (isDetected().detected) {
+          log("CAPTCHA still not cleared after 2h — stopping campaign", "err");
+          await sendMsg({ type: "STOP_CAMPAIGN" });
+          return;
+        }
       }
     }
 
@@ -3071,10 +3216,16 @@
     // as the CAPTCHA hand-off: we never fake-submit against a logged-out session.
     {
       const authPlatform = detectPlatform();
-      const authStatus = detectPlatformAuth(authPlatform);
+      // ATS guest-apply pages (Greenhouse/Lever) NEVER require a login — you apply as a
+      // guest. Skip the login-wall check for them: otherwise a stray "Sign in" link on the
+      // posting reads as logged_out and parks the campaign in the 2h login-pause loop below
+      // (looks like a dead 6-7-min+ hang on a zero-touch GH apply). Mirrors sessionWarmup's
+      // greenhouse/lever guard.
+      const isAtsGuest = authPlatform === "greenhouse" || authPlatform === "lever";
+      const authStatus = isAtsGuest ? "connected" : detectPlatformAuth(authPlatform);
       if (authStatus === "logged_out") {
         await reportPlatformAuth();
-        const name = platformLabel();
+        const name = authPlatform === "ziprecruiter" ? "ZipRecruiter" : "Indeed";
         log(`⚠️ Not signed into ${name}. Log in (or create an account) in this window — the campaign resumes automatically once you're in.`, "err");
         await sendMsg({ type: "PLATFORM_LOGIN_REQUIRED", platform: authPlatform, url: window.location.href });
         const _loginPauseStart = Date.now();
@@ -3211,7 +3362,7 @@
 
     // Check if campaign is already running (e.g., page reload)
     if (await isCampaignRunning()) {
-      const platformName = platformLabel();
+      const platformName = detectPlatform() === "ziprecruiter" ? "ZipRecruiter" : "Indeed";
       log("Campaign active — resuming on this page", "ok");
       logBackend(`Extension active on ${platformName} — starting automation`, "info");
       await sleep(humanDelay(2000, 3000));
@@ -3236,5 +3387,9 @@
   const _screenshotPing = setInterval(() => {
     chrome.runtime.sendMessage({ type: "CAPTURE_SCREENSHOT" }).catch(() => {});
   }, 300);
-  window.addEventListener("unload", () => clearInterval(_screenshotPing));
+  // `pagehide`, not `unload`: some ATS hosts (Greenhouse) block `unload` via
+  // Permissions-Policy, which spams a console violation on every job page. pagehide
+  // is the modern, un-blocked equivalent and fires on navigation all the same. The
+  // interval dies with the page context anyway — this is just tidy cleanup.
+  window.addEventListener("pagehide", () => clearInterval(_screenshotPing));
 })();

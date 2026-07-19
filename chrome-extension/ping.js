@@ -108,6 +108,28 @@ window.addEventListener("message", function (e) {
     }
   }
 
+  // Tap-mode verdict from the dashboard review card: the human tapped Approve or Skip.
+  // content.js (in the automation window) polls chrome.storage.reviewDecision and, when
+  // the id matches the pending review, submits (approve) or skips. This is the return
+  // leg of the reviewPending bridge — decision must carry the same id.
+  if (typeof e.data === "object" && e.data.type === "HIREDROP_REVIEW_DECISION" && e.data.id) {
+    try {
+      const decision = e.data.decision === "approve" ? "approve" : "skip";
+      // Also clear reviewPending immediately so the card leaves the dashboard the moment
+      // you tap — even if no live content.js loop is around to consume the decision (a
+      // stale card from a stopped run). A live loop polls reviewDecision, not
+      // reviewPending, so clearing it here doesn't stop it from submitting/skipping.
+      chrome.storage.local.set(
+        { reviewDecision: { id: e.data.id, decision: decision, at: Date.now() }, reviewPending: null },
+        function () {
+          window.postMessage({ type: "HIREDROP_REVIEW_DECISION_SET", id: e.data.id, decision: decision }, "*");
+        }
+      );
+    } catch (ex) {
+      window.postMessage({ type: "HIREDROP_REVIEW_DECISION_SET", ok: false, error: "context_invalidated" }, "*");
+    }
+  }
+
   // TEST-ONLY: flip campaignRunning so an already-open Greenhouse/Lever tab exercises
   // phase_ats WITHOUT starting a real ZR/Indeed campaign (no window, no submissions).
   // DOUBLE-GATED so it is dead in production: (1) requires chrome.storage.local.hd_debug
@@ -206,7 +228,7 @@ window.addEventListener("message", function (e) {
   // security check) — the dashboard shows a "solve the captcha" CTA off it.
   if (typeof e.data === "object" && e.data.type === "HIREDROP_GET_LIVE_STATE") {
     try {
-      chrome.storage.local.get(["campaignRunning", "captchaWaiting"], function (data) {
+      chrome.storage.local.get(["campaignRunning", "captchaWaiting", "reviewPending", "reviewMode"], function (data) {
         const err = chrome.runtime.lastError ? chrome.runtime.lastError.message : null;
         window.postMessage(
           {
@@ -214,13 +236,17 @@ window.addEventListener("message", function (e) {
             ok: !err,
             campaignRunning: !!(data && data.campaignRunning),
             captchaWaiting: (data && data.captchaWaiting) || null,
+            // Tap-mode: a filled application awaiting the human's Approve/Skip on the
+            // dashboard card, plus whether tap (review) mode is on at all.
+            reviewPending: (data && data.reviewPending) || null,
+            reviewMode: !!(data && data.reviewMode),
             error: err,
           },
           "*"
         );
       });
     } catch (ex) {
-      window.postMessage({ type: "HIREDROP_LIVE_STATE", ok: false, campaignRunning: false, captchaWaiting: null, error: "context_invalidated" }, "*");
+      window.postMessage({ type: "HIREDROP_LIVE_STATE", ok: false, campaignRunning: false, captchaWaiting: null, reviewPending: null, reviewMode: false, error: "context_invalidated" }, "*");
     }
   }
 
