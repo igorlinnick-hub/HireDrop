@@ -1067,6 +1067,25 @@ async function handleMessage(msg, sender) {
       return { ok: true };
     }
 
+    // ----- Tap relay: a PHONE approves what this desktop prepared -----
+    // Standalone bridge to the backend /review endpoints. awaitReview() (tap
+    // review flow) publishes its card and polls the verdict through these, so a
+    // dashboard open on a phone — where the chrome.storage bridge can't reach —
+    // still gets the card and can decide. Failures are non-fatal: the in-browser
+    // bridge remains the primary path.
+    case "RELAY_REVIEW_PENDING": {
+      try { return await apiPost("/review/pending", msg.data || {}); }
+      catch { return { ok: false }; }
+    }
+    case "FETCH_REVIEW_DECISION": {
+      try { return await apiGet("/review/pending"); }
+      catch { return { review: null }; }
+    }
+    case "RELAY_REVIEW_DECIDED": {
+      try { return await apiPost("/review/decision", msg.data || {}); }
+      catch { return { ok: false }; }
+    }
+
     // ----- Detection tripped (Phase 5.5) -----
     case "DETECTION_TRIPPED": {
       const data = msg.data || {};
