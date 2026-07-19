@@ -12,8 +12,16 @@ from app.db import campaign as campaign_db
 from app.db import jobs as jobs_db
 from app.db.client import get_supabase
 from app.db.profile import get_profile
-from app.db.subscriptions import MAX_PER_PLATFORM, daily_limit, get_submit_mode, get_tier
+from app.db.subscriptions import (
+    FREE_APP_LIMIT,
+    MAX_PER_PLATFORM,
+    daily_limit,
+    get_free_apps_used,
+    get_submit_mode,
+    get_tier,
+)
 from app.deps import get_current_user
+from app.disposable_email import is_disposable_email
 from app.schemas import CampaignStartRequest
 
 router = APIRouter(tags=["campaign"])
@@ -40,6 +48,7 @@ def campaign_status(user=Depends(get_current_user)):
 
     tier = get_tier(user.id, getattr(user, "email", None))
     submit_mode = get_submit_mode(user.id)
+    free = tier == "free"
 
     return {
         "running": state["running"],
@@ -54,11 +63,23 @@ def campaign_status(user=Depends(get_current_user)):
         "tier": tier,
         "submit_mode": submit_mode,
         "jobs_ready": jobs_ready,
+        # Third cap, free tier only: the lifetime 40-app taste (FREE_TASTE_PLAN.md).
+        # The extension stops the campaign when free_used hits free_limit; the
+        # dashboard shows the paywall. None for paid/admin.
+        "free_used": get_free_apps_used(user.id) if free else None,
+        "free_limit": FREE_APP_LIMIT if free else None,
     }
 
 
 @router.post("/campaign/start")
 def campaign_start(req: CampaignStartRequest, user=Depends(get_current_user)):
+    # Free-taste abuse guard: throwaway-email accounts never get to spend AI
+    # budget. Signup is Supabase-hosted, so the first backend chokepoint is here.
+    if is_disposable_email(getattr(user, "email", None)):
+        raise HTTPException(
+            status_code=403,
+            detail="disposable_email",
+        )
     # Fail-closed onboarding gate (defense-in-depth: the dashboard layout and
     # the extension's START_CAMPAIGN both check too). An un-onboarded profile
     # has no name/keywords/resume — a campaign would file applications with

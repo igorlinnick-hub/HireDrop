@@ -104,6 +104,31 @@ async function refreshAccessToken() {
 // a fresh token was seconds away. Keeping the token means the next request (or the next
 // push) just works. The popup still detects a genuinely-dead session via its live
 // CHECK_CONNECTION probe, so we don't lose the "reconnect" signal when it's real.
+// Consecutive UNRECOVERED 401s (refresh failed too). One or two are transient (dashboard
+// re-pushes a token every minute); a sustained run means the session is genuinely dead
+// (logged out / password reset) — a campaign then applies as NOBODY, so self-stop it.
+// Module-level is fine: an SW restart resets the count, but the 60s ping re-accumulates
+// it quickly if the auth is truly gone.
+let _auth401Streak = 0;
+const AUTH_401_SELF_STOP = 5;
+
+async function noteAuth401() {
+  _auth401Streak++;
+  if (_auth401Streak < AUTH_401_SELF_STOP) return;
+  const { campaignRunning, campaignWindowId } = await chrome.storage.local.get(["campaignRunning", "campaignWindowId"]);
+  if (!campaignRunning) return;
+  _auth401Streak = 0;
+  await chrome.storage.local.set({
+    campaignRunning: false, campaignTabId: null, campaignWindowId: null,
+    currentJob: null, captchaWaiting: null, reviewPending: null, reviewDecision: null,
+  });
+  await chrome.storage.local.remove(["atsQueue", "atsPlatform"]);
+  if (campaignWindowId) chrome.windows.remove(campaignWindowId).catch(() => {});
+  updateBadge();
+  // No backend call here — auth is dead, /campaign/stop would 401 too. The server-side
+  // heartbeat TTL flips the backend flag within ~150s of the pings stopping.
+}
+
 async function apiGet(path, { retry = true } = {}) {
   const token = await getAuthToken();
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
@@ -113,9 +138,11 @@ async function apiGet(path, { retry = true } = {}) {
       const newToken = await refreshAccessToken();
       if (newToken) return apiGet(path, { retry: false });
     }
+    noteAuth401().catch(() => {});
     throw new Error("API 401 (token stale — dashboard will refresh it)");
   }
   if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+  _auth401Streak = 0;
   return res.json();
 }
 
@@ -135,9 +162,11 @@ async function apiPost(path, body, { retry = true } = {}) {
       const newToken = await refreshAccessToken();
       if (newToken) return apiPost(path, body, { retry: false });
     }
+    noteAuth401().catch(() => {});
     throw new Error("API 401 (token stale — dashboard will refresh it)");
   }
   if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+  _auth401Streak = 0;
   return res.json();
 }
 
@@ -727,6 +756,20 @@ async function handleMessage(msg, sender) {
         }
       }
 
+      // Free taste (FREE_TASTE_PLAN.md): an exhausted free account must not start at
+      // all — the pre-submit caps don't know the lifetime 40-app limit, so a started
+      // campaign would submit applications the backend then refuses to save (they
+      // reach the employer, invisibly). Server unreachable → fail-open, like the caps.
+      let preSt = null;
+      try { preSt = await apiGet("/campaign/status"); } catch {}
+      if (preSt && preSt.free_limit != null && preSt.free_used >= preSt.free_limit) {
+        return {
+          started: false,
+          error: "free_limit_reached",
+          message: `You've used all ${preSt.free_limit} free applications — subscribe to keep applying.`,
+        };
+      }
+
       try {
         await apiPost("/campaign/start", filters);
         // Pull the authoritative caps (single source: app/db/subscriptions.py) so
@@ -940,6 +983,20 @@ async function handleMessage(msg, sender) {
         });
       } catch (err) {
         addToActivityLog(`⚠️ Applied but backend save failed (${err.message}) — counted locally`, "warn");
+      }
+
+      // Free taste: the backend returns the lifetime free counter on every save. Stop AT
+      // the limit — the pre-submit caps don't know it, so the next submit would reach the
+      // employer and only then be refused (invisible spend). Runs before the ATS advance
+      // so a stopped campaign doesn't navigate to the next apply URL.
+      if (serverResult && serverResult.free_limit != null && serverResult.free_used >= serverResult.free_limit) {
+        await addToActivityLog(
+          `All ${serverResult.free_limit} free applications used — subscribe to keep applying. Campaign stopped.`,
+          "warn"
+        );
+        await chrome.storage.local.set({ campaignRunning: false });
+        try { await apiPost("/campaign/stop", {}); } catch {}
+        updateBadge();
       }
 
       // ATS pool-driven ADVANCE (GLOBAL_PLAN P1b): after a zero-touch ATS submit, walk the
@@ -1197,6 +1254,23 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
     await chrome.storage.local.set({
       campaignRunning: false,
       campaignTabId: null,
+      currentJob: null,
+    });
+    try { await apiPost("/campaign/stop", {}); } catch {}
+    updateBadge();
+  }
+});
+
+// Closing the WHOLE automation window doesn't reliably fire tabs.onRemoved before the
+// process goes away — catch it at the window level too, or the campaign keeps "running"
+// with no window (one of the zombie paths in ZOMBIE_FIX_PLAN.md).
+chrome.windows.onRemoved.addListener(async (windowId) => {
+  const data = await chrome.storage.local.get(["campaignWindowId", "campaignRunning"]);
+  if (data.campaignRunning && data.campaignWindowId === windowId) {
+    await chrome.storage.local.set({
+      campaignRunning: false,
+      campaignTabId: null,
+      campaignWindowId: null,
       currentJob: null,
     });
     try { await apiPost("/campaign/stop", {}); } catch {}
