@@ -122,7 +122,7 @@ async function noteAuth401() {
     campaignRunning: false, campaignTabId: null, campaignWindowId: null,
     currentJob: null, captchaWaiting: null, reviewPending: null, reviewDecision: null,
   });
-  await chrome.storage.local.remove(["atsQueue", "atsPlatform"]);
+  await chrome.storage.local.remove(["atsQueue", "atsPlatform", "atsNavAt", "atsNavTries"]);
   if (campaignWindowId) chrome.windows.remove(campaignWindowId).catch(() => {});
   updateBadge();
   // No backend call here — auth is dead, /campaign/stop would 401 too. The server-side
@@ -340,7 +340,10 @@ async function sendExtensionPing() {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "badge-refresh") updateBadge();
-  if (alarm.name === "ext-ping") sendExtensionPing();
+  if (alarm.name === "ext-ping") {
+    sendExtensionPing();
+    atsWalkWatchdog().catch(() => {});
+  }
   // sw-keepalive: no-op — waking the SW is enough
 });
 
@@ -576,15 +579,47 @@ async function advanceAtsQueue() {
       await chrome.storage.local.set({ atsQueue: rest });
       const running = (await chrome.storage.local.get("campaignRunning")).campaignRunning === true;
       if (rest.length && running) {
+        // Fresh watchdog window for the next job page (see atsWalkWatchdog).
+        await chrome.storage.local.set({ atsNavAt: Date.now(), atsNavTries: 0 });
         await chrome.tabs.update(campaignTabId, { url: rest[0].applyUrl }).catch(() => {});
       } else if (!rest.length) {
         await addToActivityLog("ATS pool complete — walked every discovered zero-touch job. Campaign finished.", "ok");
         await chrome.storage.local.set({ campaignRunning: false });
+        await chrome.storage.local.remove(["atsNavAt", "atsNavTries"]);
         try { await apiPost("/campaign/stop", {}); } catch {}
         updateBadge();
       }
     }
   } catch (e) { /* advance is best-effort; a failure just pauses the walk */ }
+}
+
+// ATS walk WATCHDOG (the Oura freeze, GLOBAL_PLAN P1 polish c): after advancing to the
+// next queue page, the content script there once never initialized — no log, no fill,
+// walk frozen for an hour with "running" on. Whatever the root cause (SW race on
+// tabs.update, injection miss), the walk must self-heal: if a queue page stays silent
+// past the window (a legit fill takes ~5-6 min), reload it once; still silent → skip the
+// job and advance. Runs off the 60s ext-ping alarm. Every action is logged — visible, not
+// silent.
+const ATS_WATCHDOG_SILENT_MS = 8 * 60 * 1000;
+
+async function atsWalkWatchdog() {
+  const d = await chrome.storage.local.get([
+    "campaignRunning", "atsQueue", "atsPlatform", "campaignTabId", "atsNavAt", "atsNavTries",
+  ]);
+  if (!d.campaignRunning || !d.atsPlatform || !Array.isArray(d.atsQueue) || !d.atsQueue.length) return;
+  if (!d.campaignTabId || !d.atsNavAt) return;
+  const age = Date.now() - d.atsNavAt;
+  if (age < ATS_WATCHDOG_SILENT_MS) return;
+  const mins = Math.round(age / 60000);
+  if ((d.atsNavTries || 0) === 0) {
+    await chrome.storage.local.set({ atsNavAt: Date.now(), atsNavTries: 1 });
+    await addToActivityLog(`⏱ Watchdog: ${d.atsPlatform} job page silent for ${mins} min — reloading it`, "warn");
+    chrome.tabs.reload(d.campaignTabId).catch(() => {});
+  } else {
+    await addToActivityLog("⏱ Watchdog: still silent after a reload — skipping this job, moving on", "warn");
+    await chrome.storage.local.set({ atsNavTries: 0 });
+    await advanceAtsQueue();
+  }
 }
 
 // Unified auth page per platform (enter email → logs in or creates an account),
@@ -826,10 +861,15 @@ async function handleMessage(msg, sender) {
             message: `No zero-touch ${atsTarget} jobs to apply to yet — try again shortly or broaden your keywords.`,
           };
         }
-        await chrome.storage.local.set({ atsQueue, atsPlatform: atsTarget });
-        await addToActivityLog(`Found ${atsQueue.length} zero-touch ${atsTarget} jobs — starting full-auto apply.`, "info");
+        await chrome.storage.local.set({ atsQueue, atsPlatform: atsTarget, atsNavAt: Date.now(), atsNavTries: 0 });
+        await addToActivityLog(
+          atsTarget === "lever"
+            ? `Found ${atsQueue.length} Lever jobs — filling each; you approve + clear the captcha.`
+            : `Found ${atsQueue.length} zero-touch ${atsTarget} jobs — starting full-auto apply.`,
+          "info"
+        );
       } else {
-        await chrome.storage.local.remove(["atsQueue", "atsPlatform"]);
+        await chrome.storage.local.remove(["atsQueue", "atsPlatform", "atsNavAt", "atsNavTries"]);
       }
 
       const targetUrl = atsTarget ? atsQueue[0].applyUrl
