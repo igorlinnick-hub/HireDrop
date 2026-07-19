@@ -3347,30 +3347,43 @@
   // =========================================================================
 
   async function init() {
-    // Report whether the user is logged into this platform (for the dashboard's
-    // connection status). Runs FIRST — before the selectors fetch — so a slow or
-    // failing backend round-trip can never block login detection. Fire-and-forget.
-    reportPlatformAuth();
+    // OURA-BUG hardening (GLOBAL_PLAN P1 polish c): the walk once froze because the next
+    // queue page produced NO log at all — init either hung or died silently. Two rules now:
+    // (1) if a campaign is on, BEACON before any await that can hang, so "script alive on
+    // this page" always reaches the dashboard; (2) any init crash is reported, not lost.
+    try {
+      // Report whether the user is logged into this platform (for the dashboard's
+      // connection status). Runs FIRST — before the selectors fetch — so a slow or
+      // failing backend round-trip can never block login detection. Fire-and-forget.
+      reportPlatformAuth();
 
-    // Pull DOM selectors from backend (cached 24h) — Phase 4.1
-    await loadSelectors();
+      const campaignOn = await isCampaignRunning();
+      if (campaignOn) {
+        logBackend(`Content script alive on ${location.hostname}${location.pathname.slice(0, 40)} — resuming`, "info");
+      }
 
-    // Start observing DOM changes
-    if (document.body) {
-      observer.observe(document.body, { childList: true, subtree: true });
-    }
+      // Pull DOM selectors from backend (cached 24h) — Phase 4.1
+      await loadSelectors();
 
-    // Check if campaign is already running (e.g., page reload)
-    if (await isCampaignRunning()) {
-      const platformName = detectPlatform() === "ziprecruiter" ? "ZipRecruiter" : "Indeed";
-      log("Campaign active — resuming on this page", "ok");
-      logBackend(`Extension active on ${platformName} — starting automation`, "info");
-      await sleep(humanDelay(2000, 3000));
-      // One-shot warmup before the very first action. No-op if already
-      // warmed up this campaign.
-      await sessionWarmup();
-      lastPhase = detectPhase();
-      runPhase();
+      // Start observing DOM changes
+      if (document.body) {
+        observer.observe(document.body, { childList: true, subtree: true });
+      }
+
+      // Check if campaign is already running (e.g., page reload)
+      if (campaignOn && (await isCampaignRunning())) {
+        const platformName = detectPlatform() === "ziprecruiter" ? "ZipRecruiter" : "Indeed";
+        log("Campaign active — resuming on this page", "ok");
+        logBackend(`Extension active on ${platformName} — starting automation`, "info");
+        await sleep(humanDelay(2000, 3000));
+        // One-shot warmup before the very first action. No-op if already
+        // warmed up this campaign.
+        await sessionWarmup();
+        lastPhase = detectPhase();
+        runPhase();
+      }
+    } catch (e) {
+      try { logBackend(`⚠️ Init failed on ${location.hostname}: ${e.message}`, "error"); } catch (_) {}
     }
   }
 
