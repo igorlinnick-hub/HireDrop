@@ -77,6 +77,11 @@ ADMIN_EMAILS = {
 RATE_LIMIT_LETTERS_PER_DAY = int(os.getenv("RATE_LIMIT_LETTERS_PER_DAY", "120"))
 RATE_LIMIT_ENFORCE = os.getenv("RATE_LIMIT_ENFORCE", "true").lower() in ("1", "true", "yes")
 
+# Free taste: lifetime cap on the free tier (FREE_TASTE_PLAN.md). The first N
+# applications are the product demo (~$0.02/app AI cost, no ATS tailoring);
+# after that the free tier is paywalled — subscribe to keep applying.
+FREE_APP_LIMIT = int(os.getenv("FREE_APP_LIMIT", "40"))
+
 
 # =============================================================================
 # BILLING — Stripe (subscriptions)
