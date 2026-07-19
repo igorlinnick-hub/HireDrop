@@ -104,6 +104,31 @@ async function refreshAccessToken() {
 // a fresh token was seconds away. Keeping the token means the next request (or the next
 // push) just works. The popup still detects a genuinely-dead session via its live
 // CHECK_CONNECTION probe, so we don't lose the "reconnect" signal when it's real.
+// Consecutive UNRECOVERED 401s (refresh failed too). One or two are transient (dashboard
+// re-pushes a token every minute); a sustained run means the session is genuinely dead
+// (logged out / password reset) — a campaign then applies as NOBODY, so self-stop it.
+// Module-level is fine: an SW restart resets the count, but the 60s ping re-accumulates
+// it quickly if the auth is truly gone.
+let _auth401Streak = 0;
+const AUTH_401_SELF_STOP = 5;
+
+async function noteAuth401() {
+  _auth401Streak++;
+  if (_auth401Streak < AUTH_401_SELF_STOP) return;
+  const { campaignRunning, campaignWindowId } = await chrome.storage.local.get(["campaignRunning", "campaignWindowId"]);
+  if (!campaignRunning) return;
+  _auth401Streak = 0;
+  await chrome.storage.local.set({
+    campaignRunning: false, campaignTabId: null, campaignWindowId: null,
+    currentJob: null, captchaWaiting: null, reviewPending: null, reviewDecision: null,
+  });
+  await chrome.storage.local.remove(["atsQueue", "atsPlatform"]);
+  if (campaignWindowId) chrome.windows.remove(campaignWindowId).catch(() => {});
+  updateBadge();
+  // No backend call here — auth is dead, /campaign/stop would 401 too. The server-side
+  // heartbeat TTL flips the backend flag within ~150s of the pings stopping.
+}
+
 async function apiGet(path, { retry = true } = {}) {
   const token = await getAuthToken();
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
@@ -113,9 +138,11 @@ async function apiGet(path, { retry = true } = {}) {
       const newToken = await refreshAccessToken();
       if (newToken) return apiGet(path, { retry: false });
     }
+    noteAuth401().catch(() => {});
     throw new Error("API 401 (token stale — dashboard will refresh it)");
   }
   if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+  _auth401Streak = 0;
   return res.json();
 }
 
@@ -135,9 +162,11 @@ async function apiPost(path, body, { retry = true } = {}) {
       const newToken = await refreshAccessToken();
       if (newToken) return apiPost(path, body, { retry: false });
     }
+    noteAuth401().catch(() => {});
     throw new Error("API 401 (token stale — dashboard will refresh it)");
   }
   if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+  _auth401Streak = 0;
   return res.json();
 }
 
@@ -1211,6 +1240,23 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
     await chrome.storage.local.set({
       campaignRunning: false,
       campaignTabId: null,
+      currentJob: null,
+    });
+    try { await apiPost("/campaign/stop", {}); } catch {}
+    updateBadge();
+  }
+});
+
+// Closing the WHOLE automation window doesn't reliably fire tabs.onRemoved before the
+// process goes away — catch it at the window level too, or the campaign keeps "running"
+// with no window (one of the zombie paths in ZOMBIE_FIX_PLAN.md).
+chrome.windows.onRemoved.addListener(async (windowId) => {
+  const data = await chrome.storage.local.get(["campaignWindowId", "campaignRunning"]);
+  if (data.campaignRunning && data.campaignWindowId === windowId) {
+    await chrome.storage.local.set({
+      campaignRunning: false,
+      campaignTabId: null,
+      campaignWindowId: null,
       currentJob: null,
     });
     try { await apiPost("/campaign/stop", {}); } catch {}
