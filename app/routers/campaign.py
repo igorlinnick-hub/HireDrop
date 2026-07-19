@@ -27,7 +27,10 @@ router = APIRouter(tags=["campaign"])
 
 @router.get("/campaign/status")
 def campaign_status(user=Depends(get_current_user)):
-    state = campaign_db.get_state(user.id)
+    # Effective state = flag AND fresh extension heartbeat; a zombie (laptop closed,
+    # crash, offline — flag stuck true, no pings) self-heals here: reported not-running
+    # and the row is lazily flipped. See ZOMBIE_FIX_PLAN.md.
+    state = campaign_db.get_effective_state(user.id)
     profile = get_profile(user.id)
     enabled_platforms = profile.get("platforms", [])
 
@@ -106,6 +109,11 @@ def extension_ping(body: ExtensionPingBody, user=Depends(get_current_user)):
         "error": body.error,
         "version": body.version,
     }
+    # Heartbeat stamp (ZOMBIE_FIX_PLAN): this ping is the liveness signal the TTL reads.
+    # Stamp BEFORE computing should_run, so a live extension whose SW just woke from a
+    # long sleep refreshes its own heartbeat first and is never told to stop by its own
+    # staleness. DB-persisted (unlike _ext_status) → survives backend restarts.
+    campaign_db.touch_ping(user.id)
     # Return the backend's authoritative campaign flag so the extension can honor a Stop
     # even if the dashboard's postMessage stop was dropped (e.g. orphaned content script).
     try:
