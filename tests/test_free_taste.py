@@ -10,7 +10,6 @@ from unittest.mock import patch
 
 from app.disposable_email import is_disposable_email
 
-
 # ---------------------------------------------------------------------------
 # check_can_apply — lifetime gate
 # ---------------------------------------------------------------------------
