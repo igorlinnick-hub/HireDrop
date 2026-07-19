@@ -756,6 +756,20 @@ async function handleMessage(msg, sender) {
         }
       }
 
+      // Free taste (FREE_TASTE_PLAN.md): an exhausted free account must not start at
+      // all — the pre-submit caps don't know the lifetime 40-app limit, so a started
+      // campaign would submit applications the backend then refuses to save (they
+      // reach the employer, invisibly). Server unreachable → fail-open, like the caps.
+      let preSt = null;
+      try { preSt = await apiGet("/campaign/status"); } catch {}
+      if (preSt && preSt.free_limit != null && preSt.free_used >= preSt.free_limit) {
+        return {
+          started: false,
+          error: "free_limit_reached",
+          message: `You've used all ${preSt.free_limit} free applications — subscribe to keep applying.`,
+        };
+      }
+
       try {
         await apiPost("/campaign/start", filters);
         // Pull the authoritative caps (single source: app/db/subscriptions.py) so
@@ -969,6 +983,20 @@ async function handleMessage(msg, sender) {
         });
       } catch (err) {
         addToActivityLog(`⚠️ Applied but backend save failed (${err.message}) — counted locally`, "warn");
+      }
+
+      // Free taste: the backend returns the lifetime free counter on every save. Stop AT
+      // the limit — the pre-submit caps don't know it, so the next submit would reach the
+      // employer and only then be refused (invisible spend). Runs before the ATS advance
+      // so a stopped campaign doesn't navigate to the next apply URL.
+      if (serverResult && serverResult.free_limit != null && serverResult.free_used >= serverResult.free_limit) {
+        await addToActivityLog(
+          `All ${serverResult.free_limit} free applications used — subscribe to keep applying. Campaign stopped.`,
+          "warn"
+        );
+        await chrome.storage.local.set({ campaignRunning: false });
+        try { await apiPost("/campaign/stop", {}); } catch {}
+        updateBadge();
       }
 
       // ATS pool-driven ADVANCE (GLOBAL_PLAN P1b): after a zero-touch ATS submit, walk the
