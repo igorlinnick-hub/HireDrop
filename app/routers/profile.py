@@ -73,6 +73,27 @@ def update_salary_range(body: dict, user=Depends(get_current_user)):
     return {"saved": True, "salary_min": lo, "salary_max": hi, "salary_listed_only": listed_only}
 
 
+# Allowed radius steps (miles). Anything else clears the filter — an optional
+# filter must never wedge the search on a bad value.
+_RADIUS_STEPS = {10, 25, 50, 100}
+
+
+@router.post("/profile/radius")
+def update_search_radius(body: dict, user=Depends(get_current_user)):
+    """Optional non-remote search radius (miles), set from the dashboard filter row.
+
+    Forgiving: only 10/25/50/100 are honored; anything else (incl. null) clears it,
+    so a bad value never blocks a campaign start."""
+    try:
+        miles = int(body.get("search_radius_miles"))
+    except (TypeError, ValueError):
+        miles = None
+    if miles not in _RADIUS_STEPS:
+        miles = None
+    profile_db.update_radius(user.id, miles)
+    return {"saved": True, "search_radius_miles": miles}
+
+
 @router.post("/profile/send-desktop-link")
 def send_desktop_link(user=Depends(get_current_user)):
     """Mobile hand-off: the user set everything up on their phone; email them the

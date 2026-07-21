@@ -49,6 +49,7 @@ def get_profile(user_id: str) -> dict:
         "ats_checked_at": p.get("ats_checked_at"),
         "apply_mode": p.get("apply_mode") or "standard",
         "ideal_job_description": p.get("ideal_job_description") or None,
+        "search_radius_miles": p.get("search_radius_miles"),
     }
 
 
@@ -91,6 +92,14 @@ def update_salary(user_id: str, salary_min: int | None, salary_max: int | None, 
         "salary_min": salary_min,
         "salary_max": salary_max,
         "salary_listed_only": bool(listed_only),
+    }).eq("user_id", user_id).execute()
+
+
+def update_radius(user_id: str, miles: int | None) -> None:
+    """Optional non-remote search radius (miles). None clears it. Does not touch
+    other profile columns."""
+    get_supabase().table("profiles").update({
+        "search_radius_miles": miles,
     }).eq("user_id", user_id).execute()
 
 
