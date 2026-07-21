@@ -81,6 +81,11 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
     # Keyword pre-filter removed: JobSpy platforms already filter via search_term,
     # and Claude Haiku (Haiku cost ~$0.025/200 jobs) is a better semantic judge.
     new_jobs = [j for j in all_jobs if not jobs_db.job_exists(user.id, j["link"])]
+    # Salary filter runs BEFORE AI scoring (the whole point: don't spend model tokens or
+    # an application slot on out-of-range pay). Unlisted salary passes unless the user
+    # opted into listed-only — see modules/salary_filter.py.
+    from modules.salary_filter import filter_by_salary
+    new_jobs, salary_dropped = filter_by_salary(new_jobs, profile)
     resume_text = None
     if new_jobs:
         from modules.ai_cover_letter import load_resume_text
@@ -121,9 +126,12 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
         saved += 1
 
     message = f"{saved} new jobs saved"
+    if salary_dropped:
+        message = f"{message} ({salary_dropped} outside your salary range)"
     if indeed_note:
         message = f"{message}. {indeed_note}"
-    return {"count": saved, "message": message, "platforms": searched, "indeed_note": indeed_note}
+    return {"count": saved, "message": message, "platforms": searched, "indeed_note": indeed_note,
+            "salary_filtered": salary_dropped}
 
 
 @router.post("/jobs/find-ats")
@@ -170,6 +178,9 @@ def find_ats_jobs(user=Depends(get_current_user)):
         found = []
 
     new_jobs = [j for j in found if not jobs_db.job_exists(user.id, j["link"])]
+    # Salary filter BEFORE AI scoring — same early gate as /jobs/find.
+    from modules.salary_filter import filter_by_salary
+    new_jobs, salary_dropped = filter_by_salary(new_jobs, profile)
     if new_jobs:
         from modules.ai_cover_letter import load_resume_text
         from modules.ai_job_scorer import score_jobs_batch
@@ -200,7 +211,9 @@ def find_ats_jobs(user=Depends(get_current_user)):
     return {
         "count": saved,
         "found": len(found),
-        "message": f"{saved} new Greenhouse/Lever jobs saved (from {len(found)} live listings)",
+        "salary_filtered": salary_dropped,
+        "message": f"{saved} new Greenhouse/Lever jobs saved (from {len(found)} live listings)"
+        + (f", {salary_dropped} outside your salary range" if salary_dropped else ""),
     }
 
 
