@@ -32,7 +32,9 @@ TIER_LIMITS = {
 # tier's daily_limit) to the extension at campaign start; content.js/background.js read
 # it into campaignCaps and enforce it PRE-submit. No more hand-aligned hardcodes — to
 # change the cap, edit this one value (and TIER_LIMITS above for the daily budget).
-MAX_PER_PLATFORM = 20
+# 15 per platform per day (Igor 2026-07-16, "пока что" — was 20): the ban-safety rail for
+# the tap-pool era where one session can touch several platforms at once.
+MAX_PER_PLATFORM = 15
 
 # Tap-mode daily cap (PLAN_VOLUME_CAPTCHA_ECONOMICS.md §3): when the user runs "tap" mode
 # they review + edit every cover letter before submit, so we generate with the ~10× cheaper
