@@ -557,13 +557,44 @@ async function buildAtsQueue(platform, perPlatformCap) {
   const appliedKeys = new Set(dd.appliedJobKeys || []);
   const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
   return (jobs || [])
-    .filter((j) => j.platform === platform && j.zero_touch === true && (j.link || j.apply_url))
+    // greenhouse queue = zero-touch only (full-auto); lever jobs are human-touch by
+    // definition (hCaptcha) and only reach here in tap mode — platform match suffices.
+    .filter((j) => j.platform === platform && (platform === "lever" || j.zero_touch === true) && (j.link || j.apply_url))
     .filter((j) => {
       const url = (j.link || j.apply_url).split("?")[0];
       return !appliedUrls.has(url) && !appliedKeys.has(`${norm(j.title)}|${norm(j.company)}`);
     })
     .slice(0, cap)
     .map((j) => ({ applyUrl: j.link || j.apply_url, title: j.title || "", company: j.company || "" }));
+}
+
+// TAP-POOL queue (Igor 2026-07-16): the user's APPROVED swipe cards, platform-mixed
+// (greenhouse + lever together), capped per platform. The swipe UI PATCHes
+// jobs.status="approved"; this consumes them. Zero-touch first (GH before Lever) so the
+// no-human items clear while the user is still around for the Lever captchas.
+async function buildApprovedAtsQueue(perPlatformCap) {
+  let jobs = [];
+  try { jobs = await apiGet("/jobs"); } catch (e) { return []; }
+  const cap = perPlatformCap > 0 ? perPlatformCap : 15;
+  const dd = await chrome.storage.local.get(["appliedUrls", "appliedJobKeys"]);
+  const appliedUrls = new Set(dd.appliedUrls || []);
+  const appliedKeys = new Set(dd.appliedJobKeys || []);
+  const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
+  const perCount = {};
+  const out = [];
+  for (const j of (jobs || [])) {
+    if (!ATS_PLATFORMS.includes(j.platform)) continue;
+    if ((j.status || "") !== "approved") continue;
+    const url = j.link || j.apply_url;
+    if (!url) continue;
+    if (appliedUrls.has(url.split("?")[0]) || appliedKeys.has(`${norm(j.title)}|${norm(j.company)}`)) continue;
+    const c = perCount[j.platform] || 0;
+    if (c >= cap) continue;
+    perCount[j.platform] = c + 1;
+    out.push({ applyUrl: url, title: j.title || "", company: j.company || "", platform: j.platform });
+  }
+  // GET /jobs already orders zero-touch first (PR #32) — preserved by the linear walk.
+  return out;
 }
 
 // Walk the ATS queue one step: drop the head, open the next apply URL in the automation
@@ -806,14 +837,41 @@ async function handleMessage(msg, sender) {
 
       // Pick the auto-apply platform this campaign targets (first in the filter list)
       const primaryPlatform = pickPrimaryPlatform(filters.platforms);
-      // Pool-driven ATS target (GLOBAL_PLAN P1 — Greenhouse zero-touch full-auto): if the
-      // user selected a zero-touch ATS platform, the campaign walks saved apply URLs from the
-      // job pool instead of running a board search. Lever is excluded (hCaptcha → tapalka, P2).
-      const atsTarget = (filters.platforms || []).find((p) => ATS_ZERO_TOUCH_PLATFORMS.includes(p)) || null;
+
+      // Status BEFORE target selection: Lever/tap-pool eligibility depends on submit_mode.
+      let preSt = null;
+      try { preSt = await apiGet("/campaign/status"); } catch {}
+      const tapMode = !!(preSt && preSt.submit_mode === "tap");
+
+      // TAP-POOL (Igor 2026-07-16): in tap mode the queue is the user's APPROVED cards —
+      // platform-agnostic (GH + Lever mixed, per-platform cap) — swipe first, machine
+      // fills after. Falls through to the classic per-platform logic when there are no
+      // approvals yet, so tap keeps working before the swipe UI ships.
+      let tapPoolQueue = [];
+      if (tapMode) {
+        tapPoolQueue = await buildApprovedAtsQueue((preSt && preSt.limit_per_platform) || 15);
+      }
+
+      // Pool-driven ATS target (GLOBAL_PLAN P1+P2):
+      // - greenhouse: zero-touch → any mode, full-auto;
+      // - lever: hCaptcha at submit → tap mode only (human approves + clears it);
+      //   in auto mode refuse with a clear message instead of a campaign that can't submit.
+      let atsTarget = (filters.platforms || []).find((p) => ATS_ZERO_TOUCH_PLATFORMS.includes(p)) || null;
+      if (!tapPoolQueue.length && !atsTarget && (filters.platforms || []).includes("lever")) {
+        if (tapMode) {
+          atsTarget = "lever";
+        } else {
+          return {
+            started: false,
+            error: "lever_needs_tap",
+            message: "Lever applications need Tap mode (their captcha requires a human). Switch to Tap and start again.",
+          };
+        }
+      }
 
       // Pre-flight login check applies only to native board platforms (Indeed/ZR). ATS apply
       // pages are public — no login wall — so skip it in pool-driven mode.
-      if (!atsTarget) {
+      if (!atsTarget && !tapPoolQueue.length) {
         const conns = (await chrome.storage.local.get("platformConnections")).platformConnections || {};
         if (conns[primaryPlatform]?.status === "logged_out") {
           chrome.tabs.create({ url: platformLoginUrl(primaryPlatform) }).catch(() => {});
@@ -847,11 +905,17 @@ async function handleMessage(msg, sender) {
         // Continue even if server is down — content.js falls back to safe defaults (20/50).
       }
 
-      // ATS pool-driven mode: build the apply queue (find-ats → zero-touch jobs, capped) and
-      // target the FIRST job's apply URL instead of a board search. The automation tab then
-      // walks the queue: phase_ats fills+submits (zero-touch) → APPLICATION_SAVED → advance.
+      // ATS pool-driven mode: build the apply queue and target the FIRST job's apply URL
+      // instead of a board search. The automation tab then walks the queue: phase_ats
+      // fills (+submits when zero-touch) → APPLICATION_SAVED / ATS_JOB_DONE → advance.
       let atsQueue = [];
-      if (atsTarget) {
+      if (tapPoolQueue.length) {
+        // Approved-cards queue (platform-mixed). reviewMode is already set from
+        // submit_mode above; GH items auto-submit, Lever items stop for the human.
+        atsQueue = tapPoolQueue;
+        await chrome.storage.local.set({ atsQueue, atsPlatform: "pool", atsNavAt: Date.now(), atsNavTries: 0 });
+        await addToActivityLog(`Applying to ${atsQueue.length} approved jobs (your swipes) — working through them now.`, "info");
+      } else if (atsTarget) {
         const capState = (await chrome.storage.local.get("campaignCaps")).campaignCaps || {};
         atsQueue = await buildAtsQueue(atsTarget, capState.perPlatform || 20);
         if (!atsQueue.length) {
@@ -872,9 +936,9 @@ async function handleMessage(msg, sender) {
         await chrome.storage.local.remove(["atsQueue", "atsPlatform", "atsNavAt", "atsNavTries"]);
       }
 
-      const targetUrl = atsTarget ? atsQueue[0].applyUrl
+      const targetUrl = atsQueue.length ? atsQueue[0].applyUrl
         : buildPlatformUrl(primaryPlatform, filters.keywords, filters.location, filters.job_type);
-      const homeUrl = atsTarget ? atsQueue[0].applyUrl : platformHomeUrl(primaryPlatform);
+      const homeUrl = atsQueue.length ? atsQueue[0].applyUrl : platformHomeUrl(primaryPlatform);
 
       // Automation runs in a dedicated background window — minimized so it doesn't
       // steal focus from the user's browser. Screenshots are captured via CDP
