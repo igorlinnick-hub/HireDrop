@@ -139,4 +139,5 @@ def test_daily_limit_defaults_to_auto():
 
 
 def test_per_platform_rail_is_ban_safety_value():
-    assert MAX_PER_PLATFORM == 20
+    # 15/day per platform (Igor 2026-07-16, tap-pool era; was 20)
+    assert MAX_PER_PLATFORM == 15
