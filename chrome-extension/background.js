@@ -835,6 +835,17 @@ async function handleMessage(msg, sender) {
         job_type: raw.job_type || profile.job_type || "",
       };
 
+      // No keywords anywhere (request OR profile) → the campaign has nothing to search
+      // for. Refuse with a clear reason instead of "starting" an empty run (the popup
+      // Start path has no dashboard-side keyword check). Mirrors /campaign/readiness.
+      if (!filters.keywords.length) {
+        return {
+          started: false,
+          error: "no_keywords",
+          message: "Add at least one keyword first — the campaign needs something to search for.",
+        };
+      }
+
       // Pick the auto-apply platform this campaign targets (first in the filter list)
       const primaryPlatform = pickPrimaryPlatform(filters.platforms);
 
