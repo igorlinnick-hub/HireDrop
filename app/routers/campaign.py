@@ -97,6 +97,25 @@ def campaign_start(req: CampaignStartRequest, user=Depends(get_current_user)):
     return {"started": True, "state": state}
 
 
+@router.get("/campaign/readiness")
+def campaign_readiness(user=Depends(get_current_user)):
+    """What's left before a campaign can start meaningfully — the dashboard renders the
+    failed checks as a checklist with deep-links instead of a Start that silently no-ops.
+    (Extension installed/connected is checked client-side via the PING bridge.)"""
+    from config import FREE_APP_LIMIT
+
+    from app.db.subscriptions import get_free_apps_used
+
+    profile = get_profile(user.id)
+    state = campaign_db.get_effective_state(user.id)
+    tier = get_tier(user.id, getattr(user, "email", None))
+    submit_mode = get_submit_mode(user.id)
+    free_used = get_free_apps_used(user.id) if tier == "free" else None
+    return campaign_db.build_readiness(
+        profile, state["running"], tier, submit_mode, free_used, FREE_APP_LIMIT
+    )
+
+
 @router.post("/campaign/stop")
 def campaign_stop(user=Depends(get_current_user)):
     campaign_db.stop(user.id)
