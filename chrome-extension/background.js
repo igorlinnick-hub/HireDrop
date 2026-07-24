@@ -843,6 +843,18 @@ async function handleMessage(msg, sender) {
       try { preSt = await apiGet("/campaign/status"); } catch {}
       const tapMode = !!(preSt && preSt.submit_mode === "tap");
 
+      // Free taste (FREE_TASTE_PLAN.md): an exhausted free account must not start at all —
+      // the pre-submit caps don't know the lifetime 40-app limit, so a started campaign
+      // would submit applications the backend then refuses to save (they reach the
+      // employer, invisibly). Server unreachable → fail-open, like the caps.
+      if (preSt && preSt.free_limit != null && preSt.free_used >= preSt.free_limit) {
+        return {
+          started: false,
+          error: "free_limit_reached",
+          message: `You've used all ${preSt.free_limit} free applications — subscribe to keep applying.`,
+        };
+      }
+
       // TAP-POOL (Igor 2026-07-16): in tap mode the queue is the user's APPROVED cards —
       // platform-agnostic (GH + Lever mixed, per-platform cap) — swipe first, machine
       // fills after. Falls through to the classic per-platform logic when there are no
