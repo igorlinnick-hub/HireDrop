@@ -854,6 +854,26 @@ async function handleMessage(msg, sender) {
       try { preSt = await apiGet("/campaign/status"); } catch {}
       const tapMode = !!(preSt && preSt.submit_mode === "tap");
 
+      // Lock THIS run's review mode + caps from the pre-flight status we ALREADY
+      // fetched — now, before the start round-trip below. Two wins:
+      //  1) Correctness: the post-start set used to sit inside the /campaign/start
+      //     try/catch, so on a slow or failing backend it was skipped and a stale
+      //     reviewMode from a previous Tap run survived → Auto wrongly showed the
+      //     Tap review panel (Igor 2026-07-25). Here it always reflects the mode
+      //     the user actually started in.
+      //  2) Speed: /campaign/status returns caps + submit_mode both times, so the
+      //     second call after start was pure redundant latency (several DB queries)
+      //     on every start. Reuse preSt and drop it.
+      // Default (status unreachable) is Auto — never silently strand an Auto user
+      // in review-wait — and the ban-safe 20/50 caps.
+      await chrome.storage.local.set({
+        reviewMode: tapMode,
+        campaignCaps: {
+          perPlatform: (preSt && preSt.limit_per_platform > 0) ? preSt.limit_per_platform : 20,
+          dailyTotal: (preSt && preSt.daily_limit > 0) ? preSt.daily_limit : 50,
+        },
+      });
+
       // Free taste (FREE_TASTE_PLAN.md): an exhausted free account must not start at all —
       // the pre-submit caps don't know the lifetime 40-app limit, so a started campaign
       // would submit applications the backend then refuses to save (they reach the
@@ -907,23 +927,16 @@ async function handleMessage(msg, sender) {
         }
       }
 
+      // Immediate feedback: from here we're committed to starting, but opening the
+      // window + loading the board + writing the first tailored application takes
+      // ~1-2 min. Without a line NOW the Live Activity reads "Waiting for extension"
+      // and feels frozen (Igor 2026-07-25). Post progress the moment we commit.
+      await addToActivityLog("Starting your campaign — opening the browser and finding jobs now…", "info");
+
       try {
+        // Caps + reviewMode were already stamped from the pre-flight status above,
+        // so this is just the start signal — no second /campaign/status round-trip.
         await apiPost("/campaign/start", filters);
-        // Pull the authoritative caps (single source: app/db/subscriptions.py) so
-        // content.js enforces the real per-platform rail + daily budget PRE-submit,
-        // instead of a stale local hardcode that let real applications past the cap.
-        const st = await apiGet("/campaign/status");
-        // Tap mode (profile.submit_mode="tap") → the human approves + submits each
-        // application, so the filler must FILL-and-STOP (reviewMode) instead of
-        // auto-submitting. This is what justifies tap's cheaper model + higher 100/day
-        // cap; without it, tap would auto-fire 100 unreviewed applications. Auto mode → off.
-        await chrome.storage.local.set({
-          campaignCaps: {
-            perPlatform: (st && st.limit_per_platform > 0) ? st.limit_per_platform : 20,
-            dailyTotal: (st && st.daily_limit > 0) ? st.daily_limit : 50,
-          },
-          reviewMode: !!(st && st.submit_mode === "tap"),
-        });
       } catch {
         // Continue even if server is down — content.js falls back to safe defaults (20/50).
       }
