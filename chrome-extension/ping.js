@@ -75,25 +75,39 @@ window.addEventListener("message", function (e) {
   }
 
   if (typeof e.data === "object" && e.data.type === "HIREDROP_START_CAMPAIGN") {
-    chrome.runtime.sendMessage(
-      { type: "START_CAMPAIGN", filters: e.data.filters || {} },
-      function (resp) {
-        window.postMessage(
-          {
-            type: "HIREDROP_CAMPAIGN_STARTED",
-            ok: !!(resp && resp.started),
-            error: resp && resp.error,
-            message: resp && resp.message,
-            platform: resp && resp.platform,
-          },
-          "*"
-        );
-      }
-    );
+    try {
+      chrome.runtime.sendMessage(
+        { type: "START_CAMPAIGN", filters: e.data.filters || {} },
+        function (resp) {
+          // No receiver (service worker dead / message dropped) → lastError set,
+          // resp undefined. Report it as a stale context so the dashboard can prompt
+          // a reload instead of the user staring at an idle screen forever.
+          if (chrome.runtime.lastError || !resp) {
+            window.postMessage({ type: "HIREDROP_CAMPAIGN_STARTED", ok: false, error: "context_invalidated" }, "*");
+            return;
+          }
+          window.postMessage(
+            {
+              type: "HIREDROP_CAMPAIGN_STARTED",
+              ok: !!resp.started,
+              error: resp.error,
+              message: resp.message,
+              platform: resp.platform,
+            },
+            "*"
+          );
+        }
+      );
+    } catch (ex) {
+      // Synchronous throw = "Extension context invalidated" (extension was reloaded
+      // but this tab wasn't). Only a page reload reconnects the content script.
+      window.postMessage({ type: "HIREDROP_CAMPAIGN_STARTED", ok: false, error: "context_invalidated" }, "*");
+    }
   }
 
   if (typeof e.data === "object" && e.data.type === "HIREDROP_STOP_CAMPAIGN") {
-    chrome.runtime.sendMessage({ type: "STOP_CAMPAIGN" }, function () {});
+    try { chrome.runtime.sendMessage({ type: "STOP_CAMPAIGN" }, function () { void chrome.runtime.lastError; }); }
+    catch (ex) { /* stale context — the page reload that fixes Start fixes this too */ }
   }
 
   // Toggle review mode: fill applications but stop before Submit (semi-auto / the
