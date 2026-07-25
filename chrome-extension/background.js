@@ -704,14 +704,24 @@ async function handleMessage(msg, sender) {
 
     // ----- Campaign start -----
     case "START_CAMPAIGN": {
-      // A fresh start must not inherit a stale captcha hand-off from a past run.
-      await chrome.storage.local.set({ captchaWaiting: null });
+      // Self-heal + observability: a fresh Start must not inherit a stale captcha
+      // hand-off OR a phantom "running" flag from a prior stalled run (that phantom
+      // pinned the tap page on "preparing…" forever). Hard-reset the run state, and
+      // log that the SW actually RECEIVED the start — that first log line is how we
+      // tell "message never reached the extension" from "campaign ran but stalled".
+      await chrome.storage.local.set({
+        captchaWaiting: null, campaignRunning: false, currentJob: null,
+        reviewPending: null, reviewDecision: null,
+      });
+      await chrome.storage.local.remove(["atsQueue", "atsPlatform", "atsNavAt", "atsNavTries"]);
+      await addToActivityLog("▶ Start received by the extension — preparing your campaign…", "info");
       const profile = await getCachedProfile();
       // Fail-closed onboarding gate: the popup can start a campaign without the
       // user ever seeing the site (the dashboard's /dashboard/* layout gate
       // can't help here). An un-onboarded profile is empty — the campaign
       // would fill applications with blanks under the user's identity.
       if (!profile || profile.onboarding_completed !== true) {
+        await addToActivityLog("Can't start — finish your profile setup first.", "error");
         return { started: false, error: "onboarding_incomplete" };
       }
       // Resume is optional at onboarding — Indeed native applies use the resume
@@ -814,6 +824,7 @@ async function handleMessage(msg, sender) {
       const targetUrl = atsTarget ? atsQueue[0].applyUrl
         : buildPlatformUrl(primaryPlatform, filters.keywords, filters.location, filters.job_type);
       const homeUrl = atsTarget ? atsQueue[0].applyUrl : platformHomeUrl(primaryPlatform);
+      await addToActivityLog(`Opening the automation window → ${String(homeUrl).slice(0, 70)}`, "info");
 
       // Automation runs in a dedicated background window — minimized so it doesn't
       // steal focus from the user's browser. Screenshots are captured via CDP
@@ -851,6 +862,7 @@ async function handleMessage(msg, sender) {
       }
 
       const tabInfo = await chrome.tabs.get(tab.id);
+      await addToActivityLog(`Automation window ${reusingWindow ? "reused" : "opened"} (tab ${tab.id}) — loading the page…`, "info");
 
       await chrome.storage.local.set({
         campaignRunning: true,
