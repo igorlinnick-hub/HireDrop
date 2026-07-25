@@ -50,7 +50,11 @@ def over_daily_ai_limit(user_id: str, email: str | None) -> bool:
     from config import RATE_LIMIT_ENFORCE, RATE_LIMIT_LETTERS_PER_DAY
 
     from app.db.subscriptions import is_admin
+    from app.disposable_email import is_disposable_email
 
     if is_admin(email):
         return False
+    # Throwaway-email accounts can't spend AI budget (free-taste abuse guard).
+    if is_disposable_email(email):
+        return True
     return RATE_LIMIT_ENFORCE and get_today_count(user_id) >= RATE_LIMIT_LETTERS_PER_DAY

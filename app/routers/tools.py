@@ -13,6 +13,7 @@ from app.db import usage as usage_db
 from app.db.profile import get_profile
 from app.db.subscriptions import get_usage_summary, is_admin
 from app.deps import get_current_user
+from app.disposable_email import is_disposable_email
 from app.schemas import AnswerQuestionRequest, AssessFitRequest, CoverLetterRequest, LetterPreviewRequest, TemplateRequest
 from config import RATE_LIMIT_ENFORCE, RATE_LIMIT_LETTERS_PER_DAY
 from modules.ai_cover_letter import generate_cover_letter
@@ -33,6 +34,11 @@ def _rate_limit_check(user) -> None:
     """
     if is_admin(getattr(user, "email", None)):
         return
+    # Throwaway-email accounts never get to spend AI budget (free-taste abuse guard,
+    # FREE_TASTE_PLAN.md §3) — belt-and-suspenders with the /campaign/start gate, since
+    # these AI endpoints are directly callable without starting a campaign.
+    if is_disposable_email(getattr(user, "email", None)):
+        raise HTTPException(status_code=403, detail="disposable_email")
     used = usage_db.get_today_count(user.id)
     if RATE_LIMIT_ENFORCE and used >= RATE_LIMIT_LETTERS_PER_DAY:
         raise HTTPException(
@@ -138,6 +144,8 @@ _ASSESS_FIT_DAILY_CAP = int(os.getenv("ASSESS_FIT_DAILY_CAP", "800"))
 def _assess_fit_gate(user) -> None:
     if is_admin(getattr(user, "email", None)):
         return
+    if is_disposable_email(getattr(user, "email", None)):
+        raise HTTPException(status_code=403, detail="disposable_email")
     today = date.today().isoformat()
     rec = _assess_fit_counts.get(user.id)
     if not rec or rec.get("day") != today:
