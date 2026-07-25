@@ -1140,28 +1140,28 @@
     // than applying blindly — never spray applications under the user's identity when
     // we couldn't verify fit. Also improves throughput — no grinding bad-fit forms.
     {
-      const fit = await sendMsg({
-        type: "ASSESS_FIT",
-        data: { job_title: jobTitle, company: jobCompany, description: jobDesc },
-      });
-      // FAIL CLOSED: only proceed on an explicit "apply". A null fit (auth/SW error),
-      // a missing verdict, or "skip" all mean skip — never apply to a job we couldn't vet.
-      if (!fit || fit.decision !== "apply") {
-        // Tap/review mode: the HUMAN is the gate. A fit-check FAILURE (auth/timeout →
-        // failClosed) must NOT silently skip every job — present the card and let them
-        // decide. A real "poor fit" verdict (judged, not failClosed) still pre-filters.
-        const reviewMode = (await chrome.storage.local.get("reviewMode")).reviewMode === true;
-        if (!(reviewMode && (!fit || fit.failClosed))) {
+      // TAP MODE: YOU are the filter (a bad card is a 1-second swipe), so we skip the
+      // AI fit check entirely — cheaper and faster, no 25s round-trip. AUTO mode still
+      // runs it and FAILS CLOSED (a judge error/timeout/401 skips — never spray
+      // applications under the user's identity when we couldn't verify fit).
+      const reviewMode = (await chrome.storage.local.get("reviewMode")).reviewMode === true;
+      if (reviewMode) {
+        logBackend(`👉 ${jobTitle} @ ${jobCompany} — ready for your tap`, "info");
+      } else {
+        const fit = await sendMsg({
+          type: "ASSESS_FIT",
+          data: { job_title: jobTitle, company: jobCompany, description: jobDesc },
+        });
+        if (!fit || fit.decision !== "apply") {
           const why = (fit && fit.reason ? fit.reason : "fit check unavailable — skipped for safety").slice(0, 160);
           log(`Skipping ${jobTitle} — ${why}`, "");
           logBackend(`⏭️ Skipped (fit ${(fit && fit.fit_score != null) ? fit.fit_score : "?"}): ${jobTitle} @ ${jobCompany} — ${why}`, (!fit || fit.failClosed) ? "warn" : "info");
           await skipToNextJob();
           return;
         }
-        logBackend(`⚠️ Couldn't auto-check fit — sending it to your Tap review instead: ${jobTitle} @ ${jobCompany}`, "info");
-      }
-      if (fit.judged) {
-        logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
+        if (fit.judged) {
+          logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
+        }
       }
     }
 
@@ -1458,28 +1458,28 @@
 
     // Fit Engine M1
     {
-      const fit = await sendMsg({
-        type: "ASSESS_FIT",
-        data: { job_title: jobTitle, company: jobCompany, description: jobDesc },
-      });
-      // FAIL CLOSED: only proceed on an explicit "apply". A null fit (auth/SW error),
-      // a missing verdict, or "skip" all mean skip — never apply to a job we couldn't vet.
-      if (!fit || fit.decision !== "apply") {
-        // Tap/review mode: the HUMAN is the gate. A fit-check FAILURE (auth/timeout →
-        // failClosed) must NOT silently skip every job — present the card and let them
-        // decide. A real "poor fit" verdict (judged, not failClosed) still pre-filters.
-        const reviewMode = (await chrome.storage.local.get("reviewMode")).reviewMode === true;
-        if (!(reviewMode && (!fit || fit.failClosed))) {
+      // TAP MODE: YOU are the filter (a bad card is a 1-second swipe), so we skip the
+      // AI fit check entirely — cheaper and faster, no 25s round-trip. AUTO mode still
+      // runs it and FAILS CLOSED (a judge error/timeout/401 skips — never spray
+      // applications under the user's identity when we couldn't verify fit).
+      const reviewMode = (await chrome.storage.local.get("reviewMode")).reviewMode === true;
+      if (reviewMode) {
+        logBackend(`👉 ${jobTitle} @ ${jobCompany} — ready for your tap`, "info");
+      } else {
+        const fit = await sendMsg({
+          type: "ASSESS_FIT",
+          data: { job_title: jobTitle, company: jobCompany, description: jobDesc },
+        });
+        if (!fit || fit.decision !== "apply") {
           const why = (fit && fit.reason ? fit.reason : "fit check unavailable — skipped for safety").slice(0, 160);
           log(`Skipping ${jobTitle} — ${why}`, "");
           logBackend(`⏭️ Skipped (fit ${(fit && fit.fit_score != null) ? fit.fit_score : "?"}): ${jobTitle} @ ${jobCompany} — ${why}`, (!fit || fit.failClosed) ? "warn" : "info");
           await skipToNextJob();
           return;
         }
-        logBackend(`⚠️ Couldn't auto-check fit — sending it to your Tap review instead: ${jobTitle} @ ${jobCompany}`, "info");
-      }
-      if (fit.judged) {
-        logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
+        if (fit.judged) {
+          logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
+        }
       }
     }
 
@@ -2760,21 +2760,21 @@
     // that line to understand what the bot is doing right now.
     logBackend(`🔍 Reading job posting: ${jobTitle} @ ${jobCompany} — checking fit`, "info");
 
-    // Fit gate (M1) — same selective decision layer as the boards
-    const fit = await sendMsg({ type: "ASSESS_FIT", data: { job_title: jobTitle, company: jobCompany, description: jobDesc } });
-    // FAIL CLOSED: only proceed on an explicit "apply" (null/missing verdict → skip).
-    if (!fit || fit.decision !== "apply") {
-      // Tap/review mode: the HUMAN is the gate — a fit-check FAILURE (auth/timeout →
-      // failClosed) must not silently skip. A real "poor fit" verdict still pre-filters.
-      const reviewMode = (await chrome.storage.local.get("reviewMode")).reviewMode === true;
-      if (!(reviewMode && (!fit || fit.failClosed))) {
+    // Fit gate (M1) — same selective decision layer as the boards. TAP MODE skips the
+    // AI check entirely (you filter by swiping — cheaper + faster). AUTO fails closed.
+    // (Named tapReview here; phase_ats declares its own reviewMode later at the submit step.)
+    const tapReview = (await chrome.storage.local.get("reviewMode")).reviewMode === true;
+    if (tapReview) {
+      logBackend(`👉 ${jobTitle} @ ${jobCompany} — ready for your tap`, "info");
+    } else {
+      const fit = await sendMsg({ type: "ASSESS_FIT", data: { job_title: jobTitle, company: jobCompany, description: jobDesc } });
+      if (!fit || fit.decision !== "apply") {
         const why = (fit && fit.reason ? fit.reason : "fit check unavailable — skipped for safety").slice(0, 140);
         logBackend(`⏭️ Skipped (fit ${(fit && fit.fit_score != null) ? fit.fit_score : "?"}): ${jobTitle} @ ${jobCompany} — ${why}`, (!fit || fit.failClosed) ? "warn" : "info");
         return;
       }
-      logBackend(`⚠️ Couldn't auto-check fit — sending it to your Tap review instead: ${jobTitle} @ ${jobCompany}`, "info");
+      if (fit.judged) logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
     }
-    if (fit.judged) logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
 
     // Cover letter
     logBackend(`✍️ Writing a tailored cover letter — ${jobTitle} @ ${jobCompany}`, "info");
