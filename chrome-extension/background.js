@@ -453,12 +453,17 @@ async function sendScreenshot(tabId) {
 // navigates: Indeed→smartapply, ZR quick-apply, or a board→Greenhouse/Lever hop). Shared
 // by the message handler and the service-worker capture loop.
 async function captureActiveAutomationTab() {
-  const { campaignRunning, campaignTabId, campaignWindowId } = await chrome.storage.local.get([
+  const { campaignRunning, campaignTabId, campaignWindowId, reviewMode } = await chrome.storage.local.get([
     "campaignRunning",
     "campaignTabId",
     "campaignWindowId",
+    "reviewMode",
   ]);
   if (!campaignRunning) return false;
+  // TAP mode shows swipe CARDS, not a live browser preview — so never attach the CDP
+  // debugger here. Attaching triggers Chrome's intrusive "HireDrop started debugging
+  // this browser" banner for zero benefit in tap. Keeps tap clean and unintrusive.
+  if (reviewMode) return false;
 
   let tabId = campaignTabId;
   if (campaignWindowId != null) {
