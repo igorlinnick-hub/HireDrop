@@ -14,13 +14,13 @@ different counter table (`applications` instead of `cover_letter_usage`).
 from datetime import datetime, timezone
 from typing import Optional
 
-from config import ADMIN_EMAILS
+from config import ADMIN_EMAILS, FREE_APP_LIMIT
 
 from app.db import applications as apps_db
 from app.db.client import get_supabase
 
 TIER_LIMITS = {
-    "free": 10,
+    "free": 20,     # daily pace of the 40-app lifetime taste (FREE_TASTE_PLAN.md) — ~2 days of wow
     "pro": 30,      # paid daily cap — 30/day × $0.03 ≈ $27/mo keeps a maxed user profitable at $29/mo
     "premium": 30,  # same volume as pro; premium's differentiator is ATS resume tailoring, not quota
     "elite": 200,   # legacy tier, not sold
@@ -32,7 +32,9 @@ TIER_LIMITS = {
 # tier's daily_limit) to the extension at campaign start; content.js/background.js read
 # it into campaignCaps and enforce it PRE-submit. No more hand-aligned hardcodes — to
 # change the cap, edit this one value (and TIER_LIMITS above for the daily budget).
-MAX_PER_PLATFORM = 20
+# 15 per platform per day (Igor 2026-07-16, "пока что" — was 20): the ban-safety rail for
+# the tap-pool era where one session can touch several platforms at once.
+MAX_PER_PLATFORM = 15
 
 # Tap-mode daily cap (PLAN_VOLUME_CAPTCHA_ECONOMICS.md §3): when the user runs "tap" mode
 # they review + edit every cover letter before submit, so we generate with the ~10× cheaper
@@ -56,6 +58,32 @@ def get_submit_mode(user_id: str) -> str:
 
 def is_admin(email: Optional[str]) -> bool:
     return bool(email) and email.lower() in ADMIN_EMAILS
+
+
+def get_free_apps_used(user_id: str) -> int:
+    """Lifetime count of applications made on the free tier. Missing row/column → 0."""
+    try:
+        res = get_supabase().table("profiles").select("free_apps_used").eq("user_id", user_id).execute()
+        if res.data:
+            return int(res.data[0].get("free_apps_used") or 0)
+    except Exception:
+        pass
+    return 0
+
+
+def increment_free_apps(user_id: str) -> Optional[int]:
+    """Atomic +1 via the increment_free_apps RPC (migrations/2026-07-free-apps.sql).
+
+    RPC, not read-then-write: concurrent saves at 39 used must land on exactly 40,
+    never 41+. Returns the new count, or None if the RPC failed — the application
+    is already saved at that point, so the caller logs and moves on (the next
+    check_can_apply re-reads the column; worst case one uncounted app).
+    """
+    try:
+        res = get_supabase().rpc("increment_free_apps", {"p_user_id": user_id}).execute()
+        return int(res.data) if res.data is not None else None
+    except Exception:
+        return None
 
 
 def get_tier(user_id: str, email: Optional[str] = None) -> str:
@@ -118,6 +146,26 @@ def check_can_apply(user_id: str, platform: str, email: Optional[str] = None) ->
             "used_today": apps_db.count_today(user_id),
             "daily_limit": ADMIN_DAILY_LIMIT,
             "platform_used": 0,
+            "free_used": None,
+            "free_limit": None,
+        }
+
+    # Lifetime free-taste gate (FREE_TASTE_PLAN.md) — checked BEFORE the daily cap
+    # so the exhausted-taste user sees the paywall reason, not "come back tomorrow".
+    free_used = get_free_apps_used(user_id) if tier == "free" else None
+    if tier == "free" and free_used >= FREE_APP_LIMIT:
+        return {
+            "allowed": False,
+            "reason": (
+                f"You've used all {FREE_APP_LIMIT} free applications — "
+                "subscribe to keep applying."
+            ),
+            "tier": "free",
+            "used_today": apps_db.count_today(user_id),
+            "daily_limit": daily_limit("free"),
+            "platform_used": 0,
+            "free_used": free_used,
+            "free_limit": FREE_APP_LIMIT,
         }
 
     limit = daily_limit(tier, get_submit_mode(user_id))
@@ -131,6 +179,8 @@ def check_can_apply(user_id: str, platform: str, email: Optional[str] = None) ->
             "used_today": used_today,
             "daily_limit": limit,
             "platform_used": 0,
+            "free_used": free_used,
+            "free_limit": FREE_APP_LIMIT if tier == "free" else None,
         }
 
     platform_counts = apps_db.count_today_by_platform(user_id)
@@ -144,6 +194,8 @@ def check_can_apply(user_id: str, platform: str, email: Optional[str] = None) ->
             "used_today": used_today,
             "daily_limit": limit,
             "platform_used": platform_used,
+            "free_used": free_used,
+            "free_limit": FREE_APP_LIMIT if tier == "free" else None,
         }
 
     return {
@@ -153,6 +205,8 @@ def check_can_apply(user_id: str, platform: str, email: Optional[str] = None) ->
         "used_today": used_today,
         "daily_limit": limit,
         "platform_used": platform_used,
+        "free_used": free_used,
+        "free_limit": FREE_APP_LIMIT if tier == "free" else None,
     }
 
 
@@ -169,10 +223,13 @@ def get_usage_summary(user_id: str, email: Optional[str] = None) -> dict:
             "remaining_today": ADMIN_DAILY_LIMIT,
             "platform_counts": platform_counts,
             "max_per_platform": ADMIN_DAILY_LIMIT,
+            "free_used": None,
+            "free_limit": None,
         }
 
     submit_mode = get_submit_mode(user_id)
     limit = daily_limit(tier, submit_mode)
+    free = tier == "free"
     return {
         "tier": tier,
         "daily_limit": limit,
@@ -181,4 +238,6 @@ def get_usage_summary(user_id: str, email: Optional[str] = None) -> dict:
         "platform_counts": platform_counts,
         "max_per_platform": MAX_PER_PLATFORM,
         "submit_mode": submit_mode,
+        "free_used": get_free_apps_used(user_id) if free else None,
+        "free_limit": FREE_APP_LIMIT if free else None,
     }

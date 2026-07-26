@@ -12,8 +12,16 @@ from app.db import campaign as campaign_db
 from app.db import jobs as jobs_db
 from app.db.client import get_supabase
 from app.db.profile import get_profile
-from app.db.subscriptions import MAX_PER_PLATFORM, daily_limit, get_submit_mode, get_tier
+from app.db.subscriptions import (
+    FREE_APP_LIMIT,
+    MAX_PER_PLATFORM,
+    daily_limit,
+    get_free_apps_used,
+    get_submit_mode,
+    get_tier,
+)
 from app.deps import get_current_user
+from app.disposable_email import is_disposable_email
 from app.schemas import CampaignStartRequest
 
 router = APIRouter(tags=["campaign"])
@@ -27,7 +35,10 @@ router = APIRouter(tags=["campaign"])
 
 @router.get("/campaign/status")
 def campaign_status(user=Depends(get_current_user)):
-    state = campaign_db.get_state(user.id)
+    # Effective state = flag AND fresh extension heartbeat; a zombie (laptop closed,
+    # crash, offline — flag stuck true, no pings) self-heals here: reported not-running
+    # and the row is lazily flipped. See ZOMBIE_FIX_PLAN.md.
+    state = campaign_db.get_effective_state(user.id)
     profile = get_profile(user.id)
     enabled_platforms = profile.get("platforms", [])
 
@@ -37,6 +48,7 @@ def campaign_status(user=Depends(get_current_user)):
 
     tier = get_tier(user.id, getattr(user, "email", None))
     submit_mode = get_submit_mode(user.id)
+    free = tier == "free"
 
     return {
         "running": state["running"],
@@ -51,11 +63,23 @@ def campaign_status(user=Depends(get_current_user)):
         "tier": tier,
         "submit_mode": submit_mode,
         "jobs_ready": jobs_ready,
+        # Third cap, free tier only: the lifetime 40-app taste (FREE_TASTE_PLAN.md).
+        # The extension stops the campaign when free_used hits free_limit; the
+        # dashboard shows the paywall. None for paid/admin.
+        "free_used": get_free_apps_used(user.id) if free else None,
+        "free_limit": FREE_APP_LIMIT if free else None,
     }
 
 
 @router.post("/campaign/start")
 def campaign_start(req: CampaignStartRequest, user=Depends(get_current_user)):
+    # Free-taste abuse guard: throwaway-email accounts never get to spend AI
+    # budget. Signup is Supabase-hosted, so the first backend chokepoint is here.
+    if is_disposable_email(getattr(user, "email", None)):
+        raise HTTPException(
+            status_code=403,
+            detail="disposable_email",
+        )
     # Fail-closed onboarding gate (defense-in-depth: the dashboard layout and
     # the extension's START_CAMPAIGN both check too). An un-onboarded profile
     # has no name/keywords/resume — a campaign would file applications with
@@ -71,6 +95,25 @@ def campaign_start(req: CampaignStartRequest, user=Depends(get_current_user)):
     }
     state = campaign_db.start(user.id, filters)
     return {"started": True, "state": state}
+
+
+@router.get("/campaign/readiness")
+def campaign_readiness(user=Depends(get_current_user)):
+    """What's left before a campaign can start meaningfully — the dashboard renders the
+    failed checks as a checklist with deep-links instead of a Start that silently no-ops.
+    (Extension installed/connected is checked client-side via the PING bridge.)"""
+    from config import FREE_APP_LIMIT
+
+    from app.db.subscriptions import get_free_apps_used
+
+    profile = get_profile(user.id)
+    state = campaign_db.get_effective_state(user.id)
+    tier = get_tier(user.id, getattr(user, "email", None))
+    submit_mode = get_submit_mode(user.id)
+    free_used = get_free_apps_used(user.id) if tier == "free" else None
+    return campaign_db.build_readiness(
+        profile, state["running"], tier, submit_mode, free_used, FREE_APP_LIMIT
+    )
 
 
 @router.post("/campaign/stop")
@@ -106,6 +149,11 @@ def extension_ping(body: ExtensionPingBody, user=Depends(get_current_user)):
         "error": body.error,
         "version": body.version,
     }
+    # Heartbeat stamp (ZOMBIE_FIX_PLAN): this ping is the liveness signal the TTL reads.
+    # Stamp BEFORE computing should_run, so a live extension whose SW just woke from a
+    # long sleep refreshes its own heartbeat first and is never told to stop by its own
+    # staleness. DB-persisted (unlike _ext_status) → survives backend restarts.
+    campaign_db.touch_ping(user.id)
     # Return the backend's authoritative campaign flag so the extension can honor a Stop
     # even if the dashboard's postMessage stop was dropped (e.g. orphaned content script).
     try:

@@ -49,6 +49,7 @@ def get_profile(user_id: str) -> dict:
         "ats_checked_at": p.get("ats_checked_at"),
         "apply_mode": p.get("apply_mode") or "standard",
         "ideal_job_description": p.get("ideal_job_description") or None,
+        "search_radius_miles": p.get("search_radius_miles"),
     }
 
 
@@ -82,6 +83,24 @@ def update_apply_mode(user_id: str, mode: str, ideal_job_description: str | None
     elif mode != "precise":
         payload["ideal_job_description"] = None
     get_supabase().table("profiles").update(payload).eq("user_id", user_id).execute()
+
+
+def update_salary(user_id: str, salary_min: int | None, salary_max: int | None, listed_only: bool) -> None:
+    """Optional salary-range filter (annual USD). None clears a bound — an empty
+    filter means "don't filter by salary". Does not touch other profile columns."""
+    get_supabase().table("profiles").update({
+        "salary_min": salary_min,
+        "salary_max": salary_max,
+        "salary_listed_only": bool(listed_only),
+    }).eq("user_id", user_id).execute()
+
+
+def update_radius(user_id: str, miles: int | None) -> None:
+    """Optional non-remote search radius (miles). None clears it. Does not touch
+    other profile columns."""
+    get_supabase().table("profiles").update({
+        "search_radius_miles": miles,
+    }).eq("user_id", user_id).execute()
 
 
 def update_ats(user_id: str, data: dict) -> None:

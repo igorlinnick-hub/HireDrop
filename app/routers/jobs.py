@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -10,6 +11,12 @@ from app.deps import get_current_user
 from app.schemas import FindJobsRequest, JobStatusUpdate
 from modules.captcha_profile import TOUCH_RANK, captcha_touch, is_zero_touch
 router = APIRouter(tags=["jobs"])
+
+# Per-user cooldown for the heavy ATS discovery sweep (see find_ats_jobs) — repeated
+# campaign starts within the window reuse the already-populated pool instead of
+# re-scraping ~46 boards. user_id -> unix ts of the last real sweep.
+FIND_ATS_COOLDOWN_SECS = 10 * 60
+_FIND_ATS_LAST_RUN: dict[str, float] = {}
 
 
 def _with_captcha(jobs: list) -> list:
@@ -74,6 +81,11 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
     # Keyword pre-filter removed: JobSpy platforms already filter via search_term,
     # and Claude Haiku (Haiku cost ~$0.025/200 jobs) is a better semantic judge.
     new_jobs = [j for j in all_jobs if not jobs_db.job_exists(user.id, j["link"])]
+    # Salary filter runs BEFORE AI scoring (the whole point: don't spend model tokens or
+    # an application slot on out-of-range pay). Unlisted salary passes unless the user
+    # opted into listed-only — see modules/salary_filter.py.
+    from modules.salary_filter import filter_by_salary
+    new_jobs, salary_dropped = filter_by_salary(new_jobs, profile)
     resume_text = None
     if new_jobs:
         from modules.ai_cover_letter import load_resume_text
@@ -114,9 +126,12 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
         saved += 1
 
     message = f"{saved} new jobs saved"
+    if salary_dropped:
+        message = f"{message} ({salary_dropped} outside your salary range)"
     if indeed_note:
         message = f"{message}. {indeed_note}"
-    return {"count": saved, "message": message, "platforms": searched, "indeed_note": indeed_note}
+    return {"count": saved, "message": message, "platforms": searched, "indeed_note": indeed_note,
+            "salary_filtered": salary_dropped}
 
 
 @router.post("/jobs/find-ats")
@@ -132,6 +147,27 @@ def find_ats_jobs(user=Depends(get_current_user)):
     from data.ats_watchlist import SEED_WATCHLIST
     from modules.platforms.ats_boards import discover_ats
 
+    # WORKER-STARVATION GUARD (GLOBAL_PLAN "backend worker starvation → 504"): this
+    # handler synchronously hits ~46 board APIs (12s timeout each) + AI-scores up to 120
+    # jobs — it can hold a worker for minutes. The extension calls it on EVERY campaign
+    # start, so restart-loops during testing (or a zombie campaign) stack these and starve
+    # the pool → /campaign/status and /campaign/stop hang → dashboard 504s / minute-long
+    # Stops. The pool barely changes minute-to-minute, so within the cooldown just serve
+    # from the existing pool. In-memory is fine: worst case after a backend restart is one
+    # extra discovery sweep.
+    now = time.time()
+    last = _FIND_ATS_LAST_RUN.get(user.id, 0.0)
+    if now - last < FIND_ATS_COOLDOWN_SECS:
+        remaining = int(FIND_ATS_COOLDOWN_SECS - (now - last))
+        return {
+            "count": 0,
+            "found": 0,
+            "cooldown": True,
+            "retry_in_secs": remaining,
+            "message": f"ATS discovery ran recently — using the existing job pool (refresh in ~{max(1, remaining // 60)} min)",
+        }
+    _FIND_ATS_LAST_RUN[user.id] = now
+
     profile = get_profile(user.id)
     keywords = profile.get("keywords", [])
 
@@ -142,6 +178,9 @@ def find_ats_jobs(user=Depends(get_current_user)):
         found = []
 
     new_jobs = [j for j in found if not jobs_db.job_exists(user.id, j["link"])]
+    # Salary filter BEFORE AI scoring — same early gate as /jobs/find.
+    from modules.salary_filter import filter_by_salary
+    new_jobs, salary_dropped = filter_by_salary(new_jobs, profile)
     if new_jobs:
         from modules.ai_cover_letter import load_resume_text
         from modules.ai_job_scorer import score_jobs_batch
@@ -172,7 +211,9 @@ def find_ats_jobs(user=Depends(get_current_user)):
     return {
         "count": saved,
         "found": len(found),
-        "message": f"{saved} new Greenhouse/Lever jobs saved (from {len(found)} live listings)",
+        "salary_filtered": salary_dropped,
+        "message": f"{saved} new Greenhouse/Lever jobs saved (from {len(found)} live listings)"
+        + (f", {salary_dropped} outside your salary range" if salary_dropped else ""),
     }
 
 

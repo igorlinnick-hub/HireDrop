@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 
 from app.db import applications as apps_db
 from app.db import jobs as jobs_db
-from app.db.subscriptions import check_can_apply
+from app.db.subscriptions import check_can_apply, increment_free_apps
 from app.deps import get_current_user
 from app.schemas import ApplicationSaveRequest
 
@@ -28,6 +28,8 @@ def save_application(req: ApplicationSaveRequest, user=Depends(get_current_user)
                 "tier": check["tier"],
                 "used_today": check["used_today"],
                 "daily_limit": check["daily_limit"],
+                "free_used": check["free_used"],
+                "free_limit": check["free_limit"],
             },
         )
 
@@ -45,12 +47,18 @@ def save_application(req: ApplicationSaveRequest, user=Depends(get_current_user)
         cover_letter=req.cover_letter,
         status=req.status,
     )
+    # Free taste: count ONLY real saved applications (this path), never scans/skips.
+    free_used = check["free_used"]
+    if check["tier"] == "free":
+        free_used = increment_free_apps(user.id) or ((free_used or 0) + 1)
     return {
         "saved": True,
         "job_id": job_id,
         "used_today": check["used_today"] + 1,
         "daily_limit": check["daily_limit"],
         "tier": check["tier"],
+        "free_used": free_used,
+        "free_limit": check["free_limit"],
     }
 
 

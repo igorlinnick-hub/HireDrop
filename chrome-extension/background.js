@@ -15,6 +15,22 @@ async function getAuthToken() {
   return data.extension_api_key || data.supabase_token || null;
 }
 
+// Self-heal a STALE durable key. getAuthToken PREFERS extension_api_key, so once that
+// key is revoked/stale every backend call 401s forever while a perfectly fresh
+// dashboard-pushed supabase_token sits unused — the extension then self-stops and looks
+// completely broken (the "тапалка ни хера не работает" bug, 2026-07-25). On a 401 whose
+// request actually used the key, drop it so the next call falls back to the token (and
+// ensureExtensionKey re-mints a valid key). Returns true when it dropped the key.
+async function dropStaleKeyIfUsed(usedToken) {
+  if (!usedToken) return false;
+  const { extension_api_key } = await chrome.storage.local.get("extension_api_key");
+  if (extension_api_key && usedToken === extension_api_key) {
+    await chrome.storage.local.remove("extension_api_key");
+    return true;
+  }
+  return false;
+}
+
 // Decode a Supabase JWT's payload (sub, email, …). base64url-safe — plain
 // atob() chokes on the '-'/'_' characters base64url allows.
 function jwtClaims(token) {
@@ -135,6 +151,8 @@ async function apiGet(path, { retry = true } = {}) {
   const res = await fetch(`${CONFIG.API_BASE}${CONFIG.API_V1}${path}`, { headers });
   if (res.status === 401) {
     if (retry) {
+      // Stale durable key → drop it and retry with the dashboard token before anything else.
+      if (await dropStaleKeyIfUsed(token)) return apiGet(path, { retry: false });
       const newToken = await refreshAccessToken();
       if (newToken) return apiGet(path, { retry: false });
     }
@@ -159,6 +177,7 @@ async function apiPost(path, body, { retry = true } = {}) {
   });
   if (res.status === 401) {
     if (retry) {
+      if (await dropStaleKeyIfUsed(token)) return apiPost(path, body, { retry: false });
       const newToken = await refreshAccessToken();
       if (newToken) return apiPost(path, body, { retry: false });
     }
@@ -438,12 +457,17 @@ async function sendScreenshot(tabId) {
 // navigates: Indeed→smartapply, ZR quick-apply, or a board→Greenhouse/Lever hop). Shared
 // by the message handler and the service-worker capture loop.
 async function captureActiveAutomationTab() {
-  const { campaignRunning, campaignTabId, campaignWindowId } = await chrome.storage.local.get([
+  const { campaignRunning, campaignTabId, campaignWindowId, reviewMode } = await chrome.storage.local.get([
     "campaignRunning",
     "campaignTabId",
     "campaignWindowId",
+    "reviewMode",
   ]);
   if (!campaignRunning) return false;
+  // TAP mode shows swipe CARDS, not a live browser preview — so never attach the CDP
+  // debugger here. Attaching triggers Chrome's intrusive "HireDrop started debugging
+  // this browser" banner for zero benefit in tap. Keeps tap clean and unintrusive.
+  if (reviewMode) return false;
 
   let tabId = campaignTabId;
   if (campaignWindowId != null) {
@@ -846,14 +870,24 @@ async function handleMessage(msg, sender) {
 
     // ----- Campaign start -----
     case "START_CAMPAIGN": {
-      // A fresh start must not inherit a stale captcha hand-off from a past run.
-      await chrome.storage.local.set({ captchaWaiting: null });
+      // Self-heal + observability: a fresh Start must not inherit a stale captcha
+      // hand-off OR a phantom "running" flag from a prior stalled run (that phantom
+      // pinned the tap page on "preparing…" forever). Hard-reset the run state, and
+      // log that the SW actually RECEIVED the start — that first log line is how we
+      // tell "message never reached the extension" from "campaign ran but stalled".
+      await chrome.storage.local.set({
+        captchaWaiting: null, campaignRunning: false, currentJob: null,
+        reviewPending: null, reviewDecision: null,
+      });
+      await chrome.storage.local.remove(["atsQueue", "atsPlatform", "atsNavAt", "atsNavTries"]);
+      await addToActivityLog("▶ Start received by the extension — preparing your campaign…", "info");
       const profile = await getCachedProfile();
       // Fail-closed onboarding gate: the popup can start a campaign without the
       // user ever seeing the site (the dashboard's /dashboard/* layout gate
       // can't help here). An un-onboarded profile is empty — the campaign
       // would fill applications with blanks under the user's identity.
       if (!profile || profile.onboarding_completed !== true) {
+        await addToActivityLog("Can't start — finish your profile setup first.", "error");
         return { started: false, error: "onboarding_incomplete" };
       }
       // Resume is optional at onboarding — Indeed native applies use the resume
@@ -977,6 +1011,7 @@ async function handleMessage(msg, sender) {
       // window + loading the board + writing the first tailored application takes
       // ~1-2 min. Without a line NOW the Live Activity reads "Waiting for extension"
       // and feels frozen (Igor 2026-07-25). Post progress the moment we commit.
+      // (The free-taste gate + preSt fetch already ran earlier — not duplicated here.)
       await addToActivityLog("Starting your campaign — opening the browser and finding jobs now…", "info");
 
       try {
@@ -1020,7 +1055,10 @@ async function handleMessage(msg, sender) {
 
       const targetUrl = atsQueue.length ? atsQueue[0].applyUrl
         : buildPlatformUrl(primaryPlatform, filters.keywords, filters.location, filters.job_type);
+      // atsQueue.length (not atsTarget) so the tap swipe-pool run also points home at
+      // the first approved apply URL — main's atsTarget check missed the pool case.
       const homeUrl = atsQueue.length ? atsQueue[0].applyUrl : platformHomeUrl(primaryPlatform);
+      await addToActivityLog(`Opening the automation window → ${String(homeUrl).slice(0, 70)}`, "info");
 
       // Automation runs in a dedicated background window — minimized so it doesn't
       // steal focus from the user's browser. Screenshots are captured via CDP
@@ -1058,6 +1096,7 @@ async function handleMessage(msg, sender) {
       }
 
       const tabInfo = await chrome.tabs.get(tab.id);
+      await addToActivityLog(`Automation window ${reusingWindow ? "reused" : "opened"} (tab ${tab.id}) — loading the page…`, "info");
 
       await chrome.storage.local.set({
         campaignRunning: true,
@@ -1197,6 +1236,20 @@ async function handleMessage(msg, sender) {
         addToActivityLog(`⚠️ Applied but backend save failed (${err.message}) — counted locally`, "warn");
       }
 
+      // Free taste: the backend returns the lifetime free counter on every save. Stop AT
+      // the limit — the pre-submit caps don't know it, so the next submit would reach the
+      // employer and only then be refused (invisible spend). Runs before the ATS advance
+      // so a stopped campaign doesn't navigate to the next apply URL.
+      if (serverResult && serverResult.free_limit != null && serverResult.free_used >= serverResult.free_limit) {
+        await addToActivityLog(
+          `All ${serverResult.free_limit} free applications used — subscribe to keep applying. Campaign stopped.`,
+          "warn"
+        );
+        await chrome.storage.local.set({ campaignRunning: false });
+        try { await apiPost("/campaign/stop", {}); } catch {}
+        updateBadge();
+      }
+
       // ATS pool-driven ADVANCE (GLOBAL_PLAN P1b): after a zero-touch ATS submit, walk the
       // automation tab to the next apply URL in the queue. Native (Indeed/ZR) campaigns have
       // no atsQueue and are driven by in-page navigation, so this is a no-op for them.
@@ -1313,6 +1366,25 @@ async function handleMessage(msg, sender) {
       const level = msg.level || "info";
       await addToActivityLog(msg.text, level === "error" ? "err" : level === "ok" ? "ok" : "");
       return { ok: true };
+    }
+
+    // ----- Tap relay: a PHONE approves what this desktop prepared -----
+    // Standalone bridge to the backend /review endpoints. awaitReview() (tap
+    // review flow) publishes its card and polls the verdict through these, so a
+    // dashboard open on a phone — where the chrome.storage bridge can't reach —
+    // still gets the card and can decide. Failures are non-fatal: the in-browser
+    // bridge remains the primary path.
+    case "RELAY_REVIEW_PENDING": {
+      try { return await apiPost("/review/pending", msg.data || {}); }
+      catch { return { ok: false }; }
+    }
+    case "FETCH_REVIEW_DECISION": {
+      try { return await apiGet("/review/pending"); }
+      catch { return { review: null }; }
+    }
+    case "RELAY_REVIEW_DECIDED": {
+      try { return await apiPost("/review/decision", msg.data || {}); }
+      catch { return { ok: false }; }
     }
 
     // ----- Detection tripped (Phase 5.5) -----

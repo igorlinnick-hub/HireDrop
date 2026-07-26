@@ -51,6 +51,80 @@ def update_apply_mode(body: dict, user=Depends(get_current_user)):
     return {"saved": True, "apply_mode": mode}
 
 
+@router.post("/profile/salary")
+def update_salary_range(body: dict, user=Depends(get_current_user)):
+    """Optional salary-range filter (annual USD) — set from the launch modal.
+
+    Forgiving by design: it's an optional filter, so junk never blocks a campaign
+    start — a non-numeric/absurd bound clears to NULL, inverted bounds are swapped.
+    """
+    def _bound(v) -> int | None:
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return None
+        return n if 0 < n < 100_000_000 else None
+
+    lo, hi = _bound(body.get("salary_min")), _bound(body.get("salary_max"))
+    if lo is not None and hi is not None and lo > hi:
+        lo, hi = hi, lo
+    listed_only = bool(body.get("salary_listed_only"))
+    profile_db.update_salary(user.id, lo, hi, listed_only)
+    return {"saved": True, "salary_min": lo, "salary_max": hi, "salary_listed_only": listed_only}
+
+
+# Allowed radius steps (miles). Anything else clears the filter — an optional
+# filter must never wedge the search on a bad value.
+_RADIUS_STEPS = {10, 25, 50, 100}
+
+
+@router.post("/profile/radius")
+def update_search_radius(body: dict, user=Depends(get_current_user)):
+    """Optional non-remote search radius (miles), set from the dashboard filter row.
+
+    Forgiving: only 10/25/50/100 are honored; anything else (incl. null) clears it,
+    so a bad value never blocks a campaign start."""
+    try:
+        miles = int(body.get("search_radius_miles"))
+    except (TypeError, ValueError):
+        miles = None
+    if miles not in _RADIUS_STEPS:
+        miles = None
+    profile_db.update_radius(user.id, miles)
+    return {"saved": True, "search_radius_miles": miles}
+
+
+@router.post("/profile/send-desktop-link")
+def send_desktop_link(user=Depends(get_current_user)):
+    """Mobile hand-off: the user set everything up on their phone; email them the
+    link to finish on the computer (install the extension, launch a campaign)."""
+    from config import FRONTEND_URL
+    from modules.email_sender import send_email
+
+    email = getattr(user, "email", None)
+    if not email:
+        return JSONResponse(status_code=400, content={"error": "No email on this account"})
+    link = f"{FRONTEND_URL}/extension"
+    html = f"""
+    <div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;max-width:480px;margin:0 auto;padding:24px">
+      <h2 style="color:#1A1A2E;margin:0 0 8px">Finish setting up HireDrop 💻</h2>
+      <p style="color:#6B6B8A;font-size:14px;line-height:1.6;margin:0 0 20px">
+        Your profile is ready — one last step happens on your computer:
+        install the Chrome extension and hit Start. Applications run there;
+        you can watch progress and approve them from your phone.
+      </p>
+      <a href="{link}" style="display:inline-block;background:#6C5CE7;color:#fff;text-decoration:none;
+        font-weight:600;font-size:15px;padding:12px 24px;border-radius:10px">Open on this computer →</a>
+      <p style="color:#9395a5;font-size:12px;margin:20px 0 0">
+        Open this email on your computer and click the button — you'll be signed in already.
+      </p>
+    </div>"""
+    ok = send_email(email, "One step left — finish HireDrop setup on your computer", html)
+    if not ok:
+        return JSONResponse(status_code=502, content={"error": "Couldn't send the email — try again shortly"})
+    return {"sent": True, "to": email}
+
+
 @router.post("/profile/prefs")
 def update_search_prefs(prefs: SearchPrefsUpdate, user=Depends(get_current_user)):
     """Partial update — only search preferences, does not touch name/phone/etc."""

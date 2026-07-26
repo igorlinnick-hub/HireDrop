@@ -45,6 +45,14 @@
     return "indeed";
   }
 
+  // Human-readable platform name for user-facing log lines. Every activity
+  // message the dashboard shows should name the ACTUAL platform — a Greenhouse
+  // campaign logging "Indeed" reads as broken.
+  const PLATFORM_LABELS = { indeed: "Indeed", ziprecruiter: "ZipRecruiter", greenhouse: "Greenhouse", lever: "Lever" };
+  function platformLabel() {
+    return PLATFORM_LABELS[detectPlatform()] || "Indeed";
+  }
+
   // =========================================================================
   // Account connection detection
   //
@@ -1132,21 +1140,28 @@
     // than applying blindly — never spray applications under the user's identity when
     // we couldn't verify fit. Also improves throughput — no grinding bad-fit forms.
     {
-      const fit = await sendMsg({
-        type: "ASSESS_FIT",
-        data: { job_title: jobTitle, company: jobCompany, description: jobDesc },
-      });
-      // FAIL CLOSED: only proceed on an explicit "apply". A null fit (auth/SW error),
-      // a missing verdict, or "skip" all mean skip — never apply to a job we couldn't vet.
-      if (!fit || fit.decision !== "apply") {
-        const why = (fit && fit.reason ? fit.reason : "fit check unavailable — skipped for safety").slice(0, 160);
-        log(`Skipping ${jobTitle} — ${why}`, "");
-        logBackend(`⏭️ Skipped (fit ${(fit && fit.fit_score != null) ? fit.fit_score : "?"}): ${jobTitle} @ ${jobCompany} — ${why}`, (!fit || fit.failClosed) ? "warn" : "info");
-        await skipToNextJob();
-        return;
-      }
-      if (fit.judged) {
-        logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
+      // TAP MODE: YOU are the filter (a bad card is a 1-second swipe), so we skip the
+      // AI fit check entirely — cheaper and faster, no 25s round-trip. AUTO mode still
+      // runs it and FAILS CLOSED (a judge error/timeout/401 skips — never spray
+      // applications under the user's identity when we couldn't verify fit).
+      const reviewMode = (await chrome.storage.local.get("reviewMode")).reviewMode === true;
+      if (reviewMode) {
+        logBackend(`👉 ${jobTitle} @ ${jobCompany} — ready for your tap`, "info");
+      } else {
+        const fit = await sendMsg({
+          type: "ASSESS_FIT",
+          data: { job_title: jobTitle, company: jobCompany, description: jobDesc },
+        });
+        if (!fit || fit.decision !== "apply") {
+          const why = (fit && fit.reason ? fit.reason : "fit check unavailable — skipped for safety").slice(0, 160);
+          log(`Skipping ${jobTitle} — ${why}`, "");
+          logBackend(`⏭️ Skipped (fit ${(fit && fit.fit_score != null) ? fit.fit_score : "?"}): ${jobTitle} @ ${jobCompany} — ${why}`, (!fit || fit.failClosed) ? "warn" : "info");
+          await skipToNextJob();
+          return;
+        }
+        if (fit.judged) {
+          logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
+        }
       }
     }
 
@@ -1443,21 +1458,28 @@
 
     // Fit Engine M1
     {
-      const fit = await sendMsg({
-        type: "ASSESS_FIT",
-        data: { job_title: jobTitle, company: jobCompany, description: jobDesc },
-      });
-      // FAIL CLOSED: only proceed on an explicit "apply". A null fit (auth/SW error),
-      // a missing verdict, or "skip" all mean skip — never apply to a job we couldn't vet.
-      if (!fit || fit.decision !== "apply") {
-        const why = (fit && fit.reason ? fit.reason : "fit check unavailable — skipped for safety").slice(0, 160);
-        log(`Skipping ${jobTitle} — ${why}`, "");
-        logBackend(`⏭️ Skipped (fit ${(fit && fit.fit_score != null) ? fit.fit_score : "?"}): ${jobTitle} @ ${jobCompany} — ${why}`, (!fit || fit.failClosed) ? "warn" : "info");
-        await skipToNextJob();
-        return;
-      }
-      if (fit.judged) {
-        logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
+      // TAP MODE: YOU are the filter (a bad card is a 1-second swipe), so we skip the
+      // AI fit check entirely — cheaper and faster, no 25s round-trip. AUTO mode still
+      // runs it and FAILS CLOSED (a judge error/timeout/401 skips — never spray
+      // applications under the user's identity when we couldn't verify fit).
+      const reviewMode = (await chrome.storage.local.get("reviewMode")).reviewMode === true;
+      if (reviewMode) {
+        logBackend(`👉 ${jobTitle} @ ${jobCompany} — ready for your tap`, "info");
+      } else {
+        const fit = await sendMsg({
+          type: "ASSESS_FIT",
+          data: { job_title: jobTitle, company: jobCompany, description: jobDesc },
+        });
+        if (!fit || fit.decision !== "apply") {
+          const why = (fit && fit.reason ? fit.reason : "fit check unavailable — skipped for safety").slice(0, 160);
+          log(`Skipping ${jobTitle} — ${why}`, "");
+          logBackend(`⏭️ Skipped (fit ${(fit && fit.fit_score != null) ? fit.fit_score : "?"}): ${jobTitle} @ ${jobCompany} — ${why}`, (!fit || fit.failClosed) ? "warn" : "info");
+          await skipToNextJob();
+          return;
+        }
+        if (fit.judged) {
+          logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
+        }
       }
     }
 
@@ -2247,7 +2269,7 @@
     if (!(await isCampaignRunning())) return;
 
     log("Application form detected — filling fields...", "");
-    logBackend("Application form detected — filling fields", "info");
+    logBackend(`📋 Application form detected — filling fields (${platformLabel()})`, "info");
     logFormDiagnostic();
 
     // Get profile and cover letter
@@ -2754,19 +2776,31 @@
     }
 
     log(`${label} job: ${jobTitle} @ ${jobCompany}`, "");
+    // Narrate the real steps to the dashboard's Live Activity — the user watches
+    // that line to understand what the bot is doing right now.
+    logBackend(`🔍 Reading job posting: ${jobTitle} @ ${jobCompany} — checking fit`, "info");
 
-    // Fit gate (M1) — same selective decision layer as the boards
-    const fit = await sendMsg({ type: "ASSESS_FIT", data: { job_title: jobTitle, company: jobCompany, description: jobDesc } });
-    // FAIL CLOSED: only proceed on an explicit "apply" (null/missing verdict → skip).
-    if (!fit || fit.decision !== "apply") {
-      const why = (fit && fit.reason ? fit.reason : "fit check unavailable — skipped for safety").slice(0, 140);
-      logBackend(`⏭️ Skipped (fit ${(fit && fit.fit_score != null) ? fit.fit_score : "?"}): ${jobTitle} @ ${jobCompany} — ${why}`, (!fit || fit.failClosed) ? "warn" : "info");
-      await sendMsg({ type: "ATS_JOB_DONE" }); // fit-skip must still advance the pool walk
-      return;
+    // Fit gate (M1). In the TAP swipe-pool the user already approved this job by swiping
+    // (atsPlatform="pool"), so we DON'T re-run the AI fit check — just apply it. AUTO mode
+    // runs the gate and fails closed. (reviewMode is always off now — the swipe is the
+    // review — so we key off the pool marker, not reviewMode.)
+    const preApproved = (await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool";
+    if (preApproved) {
+      logBackend(`Applying your approved pick: ${jobTitle} @ ${jobCompany}`, "info");
+    } else {
+      const fit = await sendMsg({ type: "ASSESS_FIT", data: { job_title: jobTitle, company: jobCompany, description: jobDesc } });
+      // FAIL CLOSED: only proceed on an explicit "apply" (null/missing verdict → skip).
+      if (!fit || fit.decision !== "apply") {
+        const why = (fit && fit.reason ? fit.reason : "fit check unavailable — skipped for safety").slice(0, 140);
+        logBackend(`Skipped (fit ${(fit && fit.fit_score != null) ? fit.fit_score : "?"}): ${jobTitle} @ ${jobCompany} — ${why}`, (!fit || fit.failClosed) ? "warn" : "info");
+        await sendMsg({ type: "ATS_JOB_DONE" }); // fit-skip must still advance the pool walk
+        return;
+      }
+      if (fit.judged) logBackend(`Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
     }
-    if (fit.judged) logBackend(`✓ Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
 
     // Cover letter
+    logBackend(`✍️ Writing a tailored cover letter — ${jobTitle} @ ${jobCompany}`, "info");
     let coverLetter = "";
     try {
       const cl = await Promise.race([
@@ -2783,7 +2817,7 @@
     const profile = (await chrome.storage.local.get("profile")).profile || {};
 
     log(`${label} — filling application...`, "");
-    logBackend("Application form detected — filling fields", "info");
+    logBackend(`📋 Filling ${label} application: ${jobTitle} @ ${jobCompany}`, "info");
     logFormDiagnostic();
 
     const fillField = async (name, val) => {
@@ -3225,7 +3259,7 @@
       const authStatus = isAtsGuest ? "connected" : detectPlatformAuth(authPlatform);
       if (authStatus === "logged_out") {
         await reportPlatformAuth();
-        const name = authPlatform === "ziprecruiter" ? "ZipRecruiter" : "Indeed";
+        const name = platformLabel();
         log(`⚠️ Not signed into ${name}. Log in (or create an account) in this window — the campaign resumes automatically once you're in.`, "err");
         await sendMsg({ type: "PLATFORM_LOGIN_REQUIRED", platform: authPlatform, url: window.location.href });
         const _loginPauseStart = Date.now();
@@ -3372,7 +3406,7 @@
 
       // Check if campaign is already running (e.g., page reload)
       if (campaignOn && (await isCampaignRunning())) {
-        const platformName = detectPlatform() === "ziprecruiter" ? "ZipRecruiter" : "Indeed";
+        const platformName = platformLabel();
         log("Campaign active — resuming on this page", "ok");
         logBackend(`Extension active on ${platformName} — starting automation`, "info");
         await sleep(humanDelay(2000, 3000));

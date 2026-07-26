@@ -20,6 +20,7 @@ from app.routers import (
     jobs,
     profile,
     promo,
+    review,
     tools,
 )
 
@@ -102,6 +103,7 @@ app.include_router(auth.router, prefix="/api/v1")
 app.include_router(email_processor.router, prefix="/api/v1")
 app.include_router(promo.router, prefix="/api/v1")
 app.include_router(billing.router, prefix="/api/v1")
+app.include_router(review.router, prefix="/api/v1")
 
 
 @app.get("/health")
