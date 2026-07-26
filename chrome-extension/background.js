@@ -343,6 +343,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "ext-ping") {
     sendExtensionPing();
     atsWalkWatchdog().catch(() => {});
+    tapPoolIdleRefill().catch(() => {});
   }
   // sw-keepalive: no-op — waking the SW is enough
 });
@@ -614,6 +615,25 @@ async function advanceAtsQueue() {
         await chrome.storage.local.set({ atsNavAt: Date.now(), atsNavTries: 0 });
         await chrome.tabs.update(campaignTabId, { url: rest[0].applyUrl }).catch(() => {});
       } else if (!rest.length) {
+        // Tap swipe-pool: don't finish on empty — the user may have approved more while
+        // we worked. Rebuild from newly-approved jobs and keep walking; only go idle
+        // (STILL running) when nothing approved is left, so later swipes get picked up
+        // (the ext-ping alarm re-checks — see tapPoolIdleRefill).
+        const { atsPlatform, campaignCaps } = await chrome.storage.local.get(["atsPlatform", "campaignCaps"]);
+        if (atsPlatform === "pool" && running) {
+          const cap = (campaignCaps && campaignCaps.perPlatform) || 15;
+          const more = await buildApprovedAtsQueue(cap);
+          if (more.length) {
+            await chrome.storage.local.set({ atsQueue: more, atsNavAt: Date.now(), atsNavTries: 0 });
+            await addToActivityLog(`Applying ${more.length} more approved job${more.length > 1 ? "s" : ""} you swiped…`, "info");
+            await chrome.tabs.update(campaignTabId, { url: more[0].applyUrl }).catch(() => {});
+          } else {
+            await chrome.storage.local.set({ atsQueue: [] });
+            await chrome.storage.local.remove(["atsNavAt", "atsNavTries"]);
+            await addToActivityLog("Caught up on approved jobs — swipe more and we'll apply them.", "info");
+          }
+          return;
+        }
         await addToActivityLog("ATS pool complete — walked every discovered zero-touch job. Campaign finished.", "ok");
         await chrome.storage.local.set({ campaignRunning: false });
         await chrome.storage.local.remove(["atsNavAt", "atsNavTries"]);
@@ -651,6 +671,27 @@ async function atsWalkWatchdog() {
     await chrome.storage.local.set({ atsNavTries: 0 });
     await advanceAtsQueue();
   }
+}
+
+// Tap swipe-pool idle refill (Igor 2026-07-25 instant rebuild): while a tap run is live
+// but the approved queue has drained to empty, the user can swipe MORE cards. advanceAtsQueue
+// only fires after a job finishes, so an idle queue would never restart on its own. On the
+// 60s ext-ping alarm, rebuild from newly-approved jobs and kick the walk in the EXISTING
+// automation window. Idle = queue empty AND no nav in flight (atsNavAt cleared) — so this
+// never double-navigates a job that's actively being filled.
+async function tapPoolIdleRefill() {
+  const d = await chrome.storage.local.get([
+    "campaignRunning", "atsPlatform", "atsQueue", "campaignTabId", "atsNavAt", "campaignCaps",
+  ]);
+  if (!d.campaignRunning || d.atsPlatform !== "pool" || !d.campaignTabId) return;
+  if ((Array.isArray(d.atsQueue) && d.atsQueue.length) || d.atsNavAt) return; // busy, not idle
+  const cap = (d.campaignCaps && d.campaignCaps.perPlatform) || 15;
+  const more = await buildApprovedAtsQueue(cap);
+  if (!more.length) return;
+  try { await chrome.tabs.get(d.campaignTabId); } catch { return; } // automation tab gone
+  await chrome.storage.local.set({ atsQueue: more, atsNavAt: Date.now(), atsNavTries: 0 });
+  await addToActivityLog(`Applying ${more.length} more approved job${more.length > 1 ? "s" : ""} you swiped…`, "info");
+  await chrome.tabs.update(d.campaignTabId, { url: more[0].applyUrl }).catch(() => {});
 }
 
 // Unified auth page per platform (enter email → logs in or creates an account),
@@ -854,20 +895,15 @@ async function handleMessage(msg, sender) {
       try { preSt = await apiGet("/campaign/status"); } catch {}
       const tapMode = !!(preSt && preSt.submit_mode === "tap");
 
-      // Lock THIS run's review mode + caps from the pre-flight status we ALREADY
-      // fetched — now, before the start round-trip below. Two wins:
-      //  1) Correctness: the post-start set used to sit inside the /campaign/start
-      //     try/catch, so on a slow or failing backend it was skipped and a stale
-      //     reviewMode from a previous Tap run survived → Auto wrongly showed the
-      //     Tap review panel (Igor 2026-07-25). Here it always reflects the mode
-      //     the user actually started in.
-      //  2) Speed: /campaign/status returns caps + submit_mode both times, so the
-      //     second call after start was pure redundant latency (several DB queries)
-      //     on every start. Reuse preSt and drop it.
-      // Default (status unreachable) is Auto — never silently strand an Auto user
-      // in review-wait — and the ban-safe 20/50 caps.
+      // reviewMode is now ALWAYS off (Igor 2026-07-25, instant-tap rebuild). The new
+      // tap flow pre-approves via the swipe deck — the human decision happens on
+      // /dashboard/tap, so approved jobs auto-submit in the background. There is no
+      // in-browser fill-and-stop review anymore (auto mode never had one). This also
+      // permanently kills the "Auto showed the Tap review panel" mismatch.
+      // Caps come from the pre-flight status we already fetched (no redundant second
+      // /campaign/status round-trip); ban-safe 20/50 default when status is unreachable.
       await chrome.storage.local.set({
-        reviewMode: tapMode,
+        reviewMode: false,
         campaignCaps: {
           perPlatform: (preSt && preSt.limit_per_platform > 0) ? preSt.limit_per_platform : 20,
           dailyTotal: (preSt && preSt.daily_limit > 0) ? preSt.daily_limit : 50,
@@ -886,13 +922,23 @@ async function handleMessage(msg, sender) {
         };
       }
 
-      // TAP-POOL (Igor 2026-07-16): in tap mode the queue is the user's APPROVED cards —
-      // platform-agnostic (GH + Lever mixed, per-platform cap) — swipe first, machine
-      // fills after. Falls through to the classic per-platform logic when there are no
-      // approvals yet, so tap keeps working before the swipe UI ships.
+      // TAP-POOL (Igor 2026-07-25 instant rebuild): in tap mode the queue is ONLY the
+      // user's APPROVED swipe cards (GH + Lever, per-platform cap). Swipe first on the
+      // /dashboard/tap deck, machine applies after.
       let tapPoolQueue = [];
       if (tapMode) {
         tapPoolQueue = await buildApprovedAtsQueue((preSt && preSt.limit_per_platform) || 15);
+        // Footgun guard: with nothing approved yet, do NOT fall through to an auto walk
+        // (native Indeed search / GH auto-sweep) — that would apply jobs the user never
+        // swiped. Ask them to swipe first; the deck marks jobs approved instantly and
+        // Start applies exactly those.
+        if (!tapPoolQueue.length) {
+          return {
+            started: false,
+            error: "no_approved_jobs",
+            message: "Swipe Approve on a few jobs first — then Start and we'll apply exactly those.",
+          };
+        }
       }
 
       // Pool-driven ATS target (GLOBAL_PLAN P1+P2):
