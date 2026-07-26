@@ -15,6 +15,22 @@ async function getAuthToken() {
   return data.extension_api_key || data.supabase_token || null;
 }
 
+// Self-heal a STALE durable key. getAuthToken PREFERS extension_api_key, so once that
+// key is revoked/stale every backend call 401s forever while a perfectly fresh
+// dashboard-pushed supabase_token sits unused — the extension then self-stops and looks
+// completely broken (the "тапалка ни хера не работает" bug, 2026-07-25). On a 401 whose
+// request actually used the key, drop it so the next call falls back to the token (and
+// ensureExtensionKey re-mints a valid key). Returns true when it dropped the key.
+async function dropStaleKeyIfUsed(usedToken) {
+  if (!usedToken) return false;
+  const { extension_api_key } = await chrome.storage.local.get("extension_api_key");
+  if (extension_api_key && usedToken === extension_api_key) {
+    await chrome.storage.local.remove("extension_api_key");
+    return true;
+  }
+  return false;
+}
+
 // Decode a Supabase JWT's payload (sub, email, …). base64url-safe — plain
 // atob() chokes on the '-'/'_' characters base64url allows.
 function jwtClaims(token) {
@@ -135,6 +151,8 @@ async function apiGet(path, { retry = true } = {}) {
   const res = await fetch(`${CONFIG.API_BASE}${CONFIG.API_V1}${path}`, { headers });
   if (res.status === 401) {
     if (retry) {
+      // Stale durable key → drop it and retry with the dashboard token before anything else.
+      if (await dropStaleKeyIfUsed(token)) return apiGet(path, { retry: false });
       const newToken = await refreshAccessToken();
       if (newToken) return apiGet(path, { retry: false });
     }
@@ -159,6 +177,7 @@ async function apiPost(path, body, { retry = true } = {}) {
   });
   if (res.status === 401) {
     if (retry) {
+      if (await dropStaleKeyIfUsed(token)) return apiPost(path, body, { retry: false });
       const newToken = await refreshAccessToken();
       if (newToken) return apiPost(path, body, { retry: false });
     }
