@@ -168,8 +168,11 @@ def find_ats_jobs(user=Depends(get_current_user)):
         }
     _FIND_ATS_LAST_RUN[user.id] = now
 
+    from modules.ai_cover_letter import load_resume_text
+
     profile = get_profile(user.id)
     keywords = profile.get("keywords", [])
+    resume_text = load_resume_text(profile.get("resume_url"))
 
     try:
         found = discover_ats(SEED_WATCHLIST, keywords, cap=120)
@@ -182,10 +185,8 @@ def find_ats_jobs(user=Depends(get_current_user)):
     from modules.salary_filter import filter_by_salary
     new_jobs, salary_dropped = filter_by_salary(new_jobs, profile)
     if new_jobs:
-        from modules.ai_cover_letter import load_resume_text
         from modules.ai_job_scorer import score_jobs_batch
 
-        resume_text = load_resume_text(profile.get("resume_url"))
         new_jobs = score_jobs_batch(new_jobs, profile, resume_text)
 
     saved = 0
@@ -208,12 +209,113 @@ def find_ats_jobs(user=Depends(get_current_user)):
             )
         saved += 1
 
+    # Self-heal: re-score GH/Lever jobs still in the pool with an empty description from
+    # before the ?content=true fix, so the deck ranks best-fit-first without a manual
+    # trigger. Reuses the descriptions we JUST fetched in `found` (no extra board calls),
+    # and self-terminates once the pool is healed. Best-effort — never break discovery.
+    try:
+        fresh_desc = {f["link"]: f["description"] for f in found if f.get("description") and f.get("link")}
+        rescored = _backfill_thin_ats_scores(user.id, profile, resume_text, cap=40, desc_source=fresh_desc)
+    except Exception as e:
+        print(f"[find-ats] backfill skipped: {e}", file=sys.stderr)
+        rescored = 0
+
     return {
         "count": saved,
         "found": len(found),
         "salary_filtered": salary_dropped,
+        "rescored": rescored,
         "message": f"{saved} new Greenhouse/Lever jobs saved (from {len(found)} live listings)"
-        + (f", {salary_dropped} outside your salary range" if salary_dropped else ""),
+        + (f", {salary_dropped} outside your salary range" if salary_dropped else "")
+        + (f"; re-scored {rescored} older jobs" if rescored else ""),
+    }
+
+
+def _backfill_thin_ats_scores(
+    user_id: str, profile: dict, resume_text: str, cap: int = 80,
+    desc_source: dict[str, str] | None = None,
+) -> int:
+    """Re-fetch real descriptions for pooled GH/Lever jobs saved with an EMPTY description
+    (before the ?content=true fix) and re-score them, so the swipe deck ranks best-fit-first.
+    Only touches thin, not-yet-applied rows. Self-terminating: once healed there are no thin
+    rows, so later calls are no-ops. `desc_source` (link→description) lets callers reuse
+    descriptions they already fetched (e.g. find-ats' discovery pass) to avoid extra board
+    calls. Never raises. Returns how many were re-scored."""
+    from urllib.parse import urlparse
+
+    from modules.ai_job_scorer import score_job
+
+    pooled = [
+        j for j in jobs_db.get_jobs(user_id)
+        if j.get("platform") in ("greenhouse", "lever")
+        and j.get("status") != "applied"  # dedup/applied is the other lane — never touch it
+        and len(j.get("description") or "") < 200  # only the thin/empty ones
+    ][:cap]
+    if not pooled:
+        return 0
+
+    def _token(link: str) -> str | None:
+        try:
+            parts = [p for p in urlparse(link or "").path.split("/") if p]
+            return parts[0] if parts else None
+        except Exception:
+            return None
+
+    if desc_source is not None:
+        # Reuse already-fetched descriptions (no extra board calls). Only jobs present in
+        # the source get healed; the rest wait for a run whose discovery includes them.
+        desc_by_link = desc_source
+    else:
+        # Fetch fresh descriptions ONCE per (platform, token), then map by apply URL.
+        from modules.platforms.ats_boards import fetch_greenhouse, fetch_lever
+        desc_by_link = {}
+        fetched: set[tuple[str, str]] = set()
+        for j in pooled:
+            platform, token = j["platform"], _token(j.get("link", ""))
+            if not token or (platform, token) in fetched:
+                continue
+            fetched.add((platform, token))
+            try:
+                fresh = fetch_greenhouse(token, None, 200) if platform == "greenhouse" else fetch_lever(token, None, 200)
+            except Exception:
+                fresh = []
+            for f in fresh:
+                if f.get("description") and f.get("link"):
+                    desc_by_link[f["link"]] = f["description"]
+
+    rescored = 0
+    for j in pooled:
+        desc = desc_by_link.get(j.get("link"))
+        if not desc:
+            continue  # job closed / removed from the board — leave the row as-is
+        try:
+            jobs_db.update_job_description(j["id"], user_id, desc)
+            scored = score_job({**j, "description": desc}, profile, resume_text)
+            jobs_db.update_job_score(
+                j["id"], user_id, scored["score"], scored.get("verdict", ""),
+                scored.get("flags", []), scored.get("ats_keywords", []), scored.get("ats_match_pct", 0),
+            )
+            rescored += 1
+        except Exception as e:
+            print(f"[backfill-ats] job {j.get('id')} skipped: {e}", file=sys.stderr)
+    return rescored
+
+
+@router.post("/jobs/backfill-ats-scores")
+def backfill_ats_scores(user=Depends(get_current_user)):
+    """One-time fix for the swipe deck: GH/Lever jobs saved BEFORE the ?content=true
+    change have empty descriptions and near-zero fit scores → best-fit-first is broken.
+    Re-fetch their real descriptions, re-score, update in place. Idempotent."""
+    from app.db.profile import get_profile
+    from modules.ai_cover_letter import load_resume_text
+
+    profile = get_profile(user.id)
+    resume_text = load_resume_text(profile.get("resume_url"))
+    rescored = _backfill_thin_ats_scores(user.id, profile, resume_text)
+    return {
+        "rescored": rescored,
+        "message": f"Re-scored {rescored} GH/Lever jobs with real descriptions — the deck now ranks best-fit-first."
+        if rescored else "No thin-description GH/Lever jobs to backfill.",
     }
 
 
