@@ -2573,6 +2573,14 @@
   async function skipToNextJob() {
     if (!(await isCampaignRunning())) return;
 
+    // Tap swipe-pool (all-platforms): the background walks the approved queue, so a
+    // skip/fail on a native board must advance the POOL, not walk the Indeed search
+    // list (which would apply un-swiped jobs). Pool-gated → auto mode is unaffected.
+    if ((await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool") {
+      await sendMsg({ type: "ATS_JOB_DONE" });
+      return;
+    }
+
     const data = await chrome.storage.local.get(["pendingJobs", "currentJobIndex"]);
     const jobs = data.pendingJobs || [];
     const idx = (data.currentJobIndex || 0) + 1;
@@ -2606,6 +2614,11 @@
 
   async function goBackToJobList() {
     if (!(await isCampaignRunning())) return;
+
+    // Tap swipe-pool: an apply here already emitted APPLICATION_SAVED, which advances
+    // the pool queue in the background. Don't ALSO navigate to the board search — that
+    // would fight the pool walk for the automation tab. Pool-gated → auto unaffected.
+    if ((await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool") return;
 
     const platform = detectPlatform();
     if (platform === "ziprecruiter") return await goBackToZipRecruiterJobList();
