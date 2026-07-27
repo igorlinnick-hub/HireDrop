@@ -597,22 +597,58 @@ async function buildAtsQueue(platform, perPlatformCap) {
 // (greenhouse + lever together), capped per platform. The swipe UI PATCHes
 // jobs.status="approved"; this consumes them. Zero-touch first (GH before Lever) so the
 // no-human items clear while the user is still around for the Lever captchas.
+// Native boards the pool can apply BY LINK (Igor 2026-07-27: "тап должен работать по
+// всем платформам"). Gated behind the tapNativePool storage flag (default OFF) until
+// the link-normalization path is live-verified — a wrong Indeed URL shape reads as a
+// SEARCH page and phase1 would auto-apply un-swiped jobs (the footgun in
+// TAP_INSTANT_PLAN.md). Flip: chrome.storage.local.set({tapNativePool:true}).
+const POOL_NATIVE_PLATFORMS = ["indeed", "ziprecruiter"];
+
+// Return a SAFE single-job URL for the pool walk, or null when one can't be derived
+// (null = leave the job out of the queue rather than risk the search-walk footgun).
+function normalizePoolApplyUrl(platform, url) {
+  if (!url) return null;
+  if (platform === "indeed") {
+    // Card hrefs come as /rc/clk?jk=…, /jobs?...vjk=…, /viewjob?jk=… — anything with a
+    // jk/vjk collapses to the canonical single-job page. /jobs?* without it would be
+    // detected as phase "list" (the search walk) — never navigate there in pool mode.
+    try {
+      const u = new URL(url);
+      const jk = u.searchParams.get("jk") || u.searchParams.get("vjk");
+      if (jk) return `https://www.indeed.com/viewjob?jk=${jk}`;
+    } catch {}
+    return null;
+  }
+  if (platform === "ziprecruiter") {
+    // Direct job pages only; a search URL would re-enter the ZR walk.
+    if (/jobs-search|candidate\/search/.test(url)) return null;
+    return url;
+  }
+  return url; // greenhouse/lever apply URLs are already single-job pages
+}
+
 async function buildApprovedAtsQueue(perPlatformCap) {
   let jobs = [];
   try { jobs = await apiGet("/jobs"); } catch (e) { return []; }
   const cap = perPlatformCap > 0 ? perPlatformCap : 15;
-  const dd = await chrome.storage.local.get(["appliedUrls", "appliedJobKeys"]);
+  const dd = await chrome.storage.local.get(["appliedUrls", "appliedJobKeys", "tapNativePool"]);
   const appliedUrls = new Set(dd.appliedUrls || []);
   const appliedKeys = new Set(dd.appliedJobKeys || []);
+  const poolPlatforms = dd.tapNativePool === true
+    ? ATS_PLATFORMS.concat(POOL_NATIVE_PLATFORMS)
+    : ATS_PLATFORMS;
   const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
   const perCount = {};
   const out = [];
   for (const j of (jobs || [])) {
-    if (!ATS_PLATFORMS.includes(j.platform)) continue;
+    if (!poolPlatforms.includes(j.platform)) continue;
     if ((j.status || "") !== "approved") continue;
-    const url = j.link || j.apply_url;
+    const url = normalizePoolApplyUrl(j.platform, j.link || j.apply_url);
     if (!url) continue;
-    if (appliedUrls.has(url.split("?")[0]) || appliedKeys.has(`${norm(j.title)}|${norm(j.company)}`)) continue;
+    // Dedup: query-stripped base for path-unique ATS URLs, full URL for /viewjob?jk=
+    // (whose identity IS the query), plus the title|company key.
+    if (appliedUrls.has(url.split("?")[0]) || appliedUrls.has(url) ||
+        appliedKeys.has(`${norm(j.title)}|${norm(j.company)}`)) continue;
     const c = perCount[j.platform] || 0;
     if (c >= cap) continue;
     perCount[j.platform] = c + 1;

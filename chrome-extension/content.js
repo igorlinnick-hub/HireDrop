@@ -1115,9 +1115,11 @@
     // because no single phrase matched in full. Still blocks fully off-target
     // titles (e.g. "Provider Relations Specialist") from wasting cover-letter calls.
     {
+      // Pool swipe run: the user hand-picked this job — keyword title-match must not veto it.
+      const _kwPool = (await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool";
       const kwData = await chrome.storage.local.get("campaignFilters");
       const kwList = (kwData.campaignFilters?.keywords || []).filter(Boolean);
-      if (kwList.length > 0) {
+      if (!_kwPool && kwList.length > 0) {
         const titleWords = new Set(jobTitle.toLowerCase().split(/\W+/).filter(w => w.length > 2));
         const keywordWords = new Set(
           kwList.flatMap(phrase => phrase.toLowerCase().split(/\W+/).filter(w => w.length > 2))
@@ -1140,13 +1142,17 @@
     // than applying blindly — never spray applications under the user's identity when
     // we couldn't verify fit. Also improves throughput — no grinding bad-fit forms.
     {
-      // TAP MODE: YOU are the filter (a bad card is a 1-second swipe), so we skip the
-      // AI fit check entirely — cheaper and faster, no 25s round-trip. AUTO mode still
-      // runs it and FAILS CLOSED (a judge error/timeout/401 skips — never spray
-      // applications under the user's identity when we couldn't verify fit).
+      // POOL SWIPE RUN: the user already approved this job by swiping — the AI fit
+      // gate must never re-veto their explicit pick. Legacy TAP reviewMode also skips
+      // the gate (you are the filter). AUTO mode runs it and FAILS CLOSED (a judge
+      // error/timeout/401 skips — never spray applications under the user's identity
+      // when we couldn't verify fit).
+      const _poolRun = (await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool";
       const reviewMode = (await chrome.storage.local.get("reviewMode")).reviewMode === true;
-      if (reviewMode) {
-        logBackend(`👉 ${jobTitle} @ ${jobCompany} — ready for your tap`, "info");
+      if (_poolRun) {
+        logBackend(`Applying your approved pick: ${jobTitle} @ ${jobCompany}`, "info");
+      } else if (reviewMode) {
+        logBackend(`${jobTitle} @ ${jobCompany} — ready for your tap`, "info");
       } else {
         const fit = await sendMsg({
           type: "ASSESS_FIT",
@@ -1440,9 +1446,11 @@
 
     // Keyword relevance check
     {
+      // Pool swipe run: the user hand-picked this job — keyword title-match must not veto it.
+      const _kwPool = (await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool";
       const kwData = await chrome.storage.local.get("campaignFilters");
       const kwList = (kwData.campaignFilters?.keywords || []).filter(Boolean);
-      if (kwList.length > 0) {
+      if (!_kwPool && kwList.length > 0) {
         const titleWords = new Set(jobTitle.toLowerCase().split(/\W+/).filter((w) => w.length > 2));
         const keywordWords = new Set(
           kwList.flatMap((p) => p.toLowerCase().split(/\W+/).filter((w) => w.length > 2))
@@ -1458,13 +1466,17 @@
 
     // Fit Engine M1
     {
-      // TAP MODE: YOU are the filter (a bad card is a 1-second swipe), so we skip the
-      // AI fit check entirely — cheaper and faster, no 25s round-trip. AUTO mode still
-      // runs it and FAILS CLOSED (a judge error/timeout/401 skips — never spray
-      // applications under the user's identity when we couldn't verify fit).
+      // POOL SWIPE RUN: the user already approved this job by swiping — the AI fit
+      // gate must never re-veto their explicit pick. Legacy TAP reviewMode also skips
+      // the gate (you are the filter). AUTO mode runs it and FAILS CLOSED (a judge
+      // error/timeout/401 skips — never spray applications under the user's identity
+      // when we couldn't verify fit).
+      const _poolRun = (await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool";
       const reviewMode = (await chrome.storage.local.get("reviewMode")).reviewMode === true;
-      if (reviewMode) {
-        logBackend(`👉 ${jobTitle} @ ${jobCompany} — ready for your tap`, "info");
+      if (_poolRun) {
+        logBackend(`Applying your approved pick: ${jobTitle} @ ${jobCompany}`, "info");
+      } else if (reviewMode) {
+        logBackend(`${jobTitle} @ ${jobCompany} — ready for your tap`, "info");
       } else {
         const fit = await sendMsg({
           type: "ASSESS_FIT",
@@ -3319,8 +3331,17 @@
           break;
         }
         default:
-          // Unknown page. On ZipRecruiter this is usually /jobseeker/home or a
-          // session redirect — recover to the search instead of stalling forever.
+          // Unknown page. Pool swipe run: never "recover" into a board SEARCH (that
+          // walk applies un-swiped jobs) — skip this queue item and advance the pool.
+          if ((await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool") {
+            if (await isCampaignRunning()) {
+              logBackend(`Couldn't open this job page (${location.hostname}) — skipping to your next pick`, "warn");
+              await sendMsg({ type: "ATS_JOB_DONE" });
+            }
+            break;
+          }
+          // On ZipRecruiter this is usually /jobseeker/home or a session redirect —
+          // recover to the search instead of stalling forever.
           if (detectPlatform() === "ziprecruiter" && (await isCampaignRunning())) {
             await recoverZipRecruiterPhase();
           }
