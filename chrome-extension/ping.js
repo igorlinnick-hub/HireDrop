@@ -122,6 +122,25 @@ window.addEventListener("message", function (e) {
     }
   }
 
+  // Runtime feature flags, WHITELISTED (not a generic storage-write hole). Used by the
+  // all-platform tap rollout: tapNativePool gates whether swiped Indeed/ZR jobs enter
+  // the pool apply queue (see background.js normalizePoolApplyUrl). Boolean-only.
+  if (typeof e.data === "object" && e.data.type === "HIREDROP_SET_FLAG") {
+    const ALLOWED_FLAGS = ["tapNativePool", "hd_debug"];
+    if (ALLOWED_FLAGS.indexOf(e.data.key) !== -1) {
+      try {
+        const val = e.data.value === true;
+        const upd = {};
+        upd[e.data.key] = val;
+        chrome.storage.local.set(upd, function () {
+          window.postMessage({ type: "HIREDROP_FLAG_SET", key: e.data.key, value: val }, "*");
+        });
+      } catch (ex) {
+        window.postMessage({ type: "HIREDROP_FLAG_SET", key: e.data.key, error: "context_invalidated" }, "*");
+      }
+    }
+  }
+
   // Tap-mode verdict from the dashboard review card: the human tapped Approve or Skip.
   // content.js (in the automation window) polls chrome.storage.reviewDecision and, when
   // the id matches the pending review, submits (approve) or skips. This is the return
