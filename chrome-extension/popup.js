@@ -231,6 +231,9 @@ async function loadStatus() {
 // Start campaign — with profile completeness check
 // ---------------------------------------------------------------------------
 
+// Real version from the manifest — the header used to hardcode "v1.3" forever.
+try { document.getElementById("hd-version").textContent = "v" + chrome.runtime.getManifest().version; } catch (e) {}
+
 $("btn-start").addEventListener("click", async () => {
   hideWarn();
   $("btn-start").disabled = true;

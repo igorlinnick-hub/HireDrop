@@ -138,7 +138,7 @@ async function noteAuth401() {
     campaignRunning: false, campaignTabId: null, campaignWindowId: null,
     currentJob: null, captchaWaiting: null, reviewPending: null, reviewDecision: null,
   });
-  await chrome.storage.local.remove(["atsQueue", "atsPlatform"]);
+  await chrome.storage.local.remove(["atsQueue", "atsPlatform", "atsNavAt", "atsNavTries"]);
   if (campaignWindowId) chrome.windows.remove(campaignWindowId).catch(() => {});
   updateBadge();
   // No backend call here — auth is dead, /campaign/stop would 401 too. The server-side
@@ -359,7 +359,11 @@ async function sendExtensionPing() {
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "badge-refresh") updateBadge();
-  if (alarm.name === "ext-ping") sendExtensionPing();
+  if (alarm.name === "ext-ping") {
+    sendExtensionPing();
+    atsWalkWatchdog().catch(() => {});
+    tapPoolIdleRefill().catch(() => {});
+  }
   // sw-keepalive: no-op — waking the SW is enough
 });
 
@@ -570,10 +574,148 @@ async function buildAtsQueue(platform, perPlatformCap) {
   let jobs = [];
   try { jobs = await apiGet("/jobs"); } catch (e) { return []; }
   const cap = perPlatformCap > 0 ? perPlatformCap : 20;
+  // Drop jobs we already applied to (URL or title|company key) — an already-applied job
+  // at the queue head used to dead-stop the walk: phase_ats skips it silently and only a
+  // real submit advances the queue. Mirrors content.js's dedup (jobDedupKey format).
+  const dd = await chrome.storage.local.get(["appliedUrls", "appliedJobKeys"]);
+  const appliedUrls = new Set(dd.appliedUrls || []);
+  const appliedKeys = new Set(dd.appliedJobKeys || []);
+  const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
   return (jobs || [])
-    .filter((j) => j.platform === platform && j.zero_touch === true && (j.link || j.apply_url))
+    // greenhouse queue = zero-touch only (full-auto); lever jobs are human-touch by
+    // definition (hCaptcha) and only reach here in tap mode — platform match suffices.
+    .filter((j) => j.platform === platform && (platform === "lever" || j.zero_touch === true) && (j.link || j.apply_url))
+    .filter((j) => {
+      const url = (j.link || j.apply_url).split("?")[0];
+      return !appliedUrls.has(url) && !appliedKeys.has(`${norm(j.title)}|${norm(j.company)}`);
+    })
     .slice(0, cap)
     .map((j) => ({ applyUrl: j.link || j.apply_url, title: j.title || "", company: j.company || "" }));
+}
+
+// TAP-POOL queue (Igor 2026-07-16): the user's APPROVED swipe cards, platform-mixed
+// (greenhouse + lever together), capped per platform. The swipe UI PATCHes
+// jobs.status="approved"; this consumes them. Zero-touch first (GH before Lever) so the
+// no-human items clear while the user is still around for the Lever captchas.
+async function buildApprovedAtsQueue(perPlatformCap) {
+  let jobs = [];
+  try { jobs = await apiGet("/jobs"); } catch (e) { return []; }
+  const cap = perPlatformCap > 0 ? perPlatformCap : 15;
+  const dd = await chrome.storage.local.get(["appliedUrls", "appliedJobKeys"]);
+  const appliedUrls = new Set(dd.appliedUrls || []);
+  const appliedKeys = new Set(dd.appliedJobKeys || []);
+  const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
+  const perCount = {};
+  const out = [];
+  for (const j of (jobs || [])) {
+    if (!ATS_PLATFORMS.includes(j.platform)) continue;
+    if ((j.status || "") !== "approved") continue;
+    const url = j.link || j.apply_url;
+    if (!url) continue;
+    if (appliedUrls.has(url.split("?")[0]) || appliedKeys.has(`${norm(j.title)}|${norm(j.company)}`)) continue;
+    const c = perCount[j.platform] || 0;
+    if (c >= cap) continue;
+    perCount[j.platform] = c + 1;
+    out.push({ applyUrl: url, title: j.title || "", company: j.company || "", platform: j.platform });
+  }
+  // GET /jobs already orders zero-touch first (PR #32) — preserved by the linear walk.
+  return out;
+}
+
+// Walk the ATS queue one step: drop the head, open the next apply URL in the automation
+// tab, or finish the campaign when the queue is empty. Called after a submit
+// (APPLICATION_SAVED) AND after any non-submit outcome (ATS_JOB_DONE from phase_ats —
+// fit-skip / already-applied / missing form). Before that second caller existed, any
+// skipped job dead-stopped the walk: nothing advanced the queue except a real submit.
+async function advanceAtsQueue() {
+  try {
+    const { atsQueue, campaignTabId } = await chrome.storage.local.get(["atsQueue", "campaignTabId"]);
+    if (Array.isArray(atsQueue) && atsQueue.length && campaignTabId) {
+      const rest = atsQueue.slice(1);
+      await chrome.storage.local.set({ atsQueue: rest });
+      const running = (await chrome.storage.local.get("campaignRunning")).campaignRunning === true;
+      if (rest.length && running) {
+        // Fresh watchdog window for the next job page (see atsWalkWatchdog).
+        await chrome.storage.local.set({ atsNavAt: Date.now(), atsNavTries: 0 });
+        await chrome.tabs.update(campaignTabId, { url: rest[0].applyUrl }).catch(() => {});
+      } else if (!rest.length) {
+        // Tap swipe-pool: don't finish on empty — the user may have approved more while
+        // we worked. Rebuild from newly-approved jobs and keep walking; only go idle
+        // (STILL running) when nothing approved is left, so later swipes get picked up
+        // (the ext-ping alarm re-checks — see tapPoolIdleRefill).
+        const { atsPlatform, campaignCaps } = await chrome.storage.local.get(["atsPlatform", "campaignCaps"]);
+        if (atsPlatform === "pool" && running) {
+          const cap = (campaignCaps && campaignCaps.perPlatform) || 15;
+          const more = await buildApprovedAtsQueue(cap);
+          if (more.length) {
+            await chrome.storage.local.set({ atsQueue: more, atsNavAt: Date.now(), atsNavTries: 0 });
+            await addToActivityLog(`Applying ${more.length} more approved job${more.length > 1 ? "s" : ""} you swiped…`, "info");
+            await chrome.tabs.update(campaignTabId, { url: more[0].applyUrl }).catch(() => {});
+          } else {
+            await chrome.storage.local.set({ atsQueue: [] });
+            await chrome.storage.local.remove(["atsNavAt", "atsNavTries"]);
+            await addToActivityLog("Caught up on approved jobs — swipe more and we'll apply them.", "info");
+          }
+          return;
+        }
+        await addToActivityLog("ATS pool complete — walked every discovered zero-touch job. Campaign finished.", "ok");
+        await chrome.storage.local.set({ campaignRunning: false });
+        await chrome.storage.local.remove(["atsNavAt", "atsNavTries"]);
+        try { await apiPost("/campaign/stop", {}); } catch {}
+        updateBadge();
+      }
+    }
+  } catch (e) { /* advance is best-effort; a failure just pauses the walk */ }
+}
+
+// ATS walk WATCHDOG (the Oura freeze, GLOBAL_PLAN P1 polish c): after advancing to the
+// next queue page, the content script there once never initialized — no log, no fill,
+// walk frozen for an hour with "running" on. Whatever the root cause (SW race on
+// tabs.update, injection miss), the walk must self-heal: if a queue page stays silent
+// past the window (a legit fill takes ~5-6 min), reload it once; still silent → skip the
+// job and advance. Runs off the 60s ext-ping alarm. Every action is logged — visible, not
+// silent.
+const ATS_WATCHDOG_SILENT_MS = 8 * 60 * 1000;
+
+async function atsWalkWatchdog() {
+  const d = await chrome.storage.local.get([
+    "campaignRunning", "atsQueue", "atsPlatform", "campaignTabId", "atsNavAt", "atsNavTries",
+  ]);
+  if (!d.campaignRunning || !d.atsPlatform || !Array.isArray(d.atsQueue) || !d.atsQueue.length) return;
+  if (!d.campaignTabId || !d.atsNavAt) return;
+  const age = Date.now() - d.atsNavAt;
+  if (age < ATS_WATCHDOG_SILENT_MS) return;
+  const mins = Math.round(age / 60000);
+  if ((d.atsNavTries || 0) === 0) {
+    await chrome.storage.local.set({ atsNavAt: Date.now(), atsNavTries: 1 });
+    await addToActivityLog(`⏱ Watchdog: ${d.atsPlatform} job page silent for ${mins} min — reloading it`, "warn");
+    chrome.tabs.reload(d.campaignTabId).catch(() => {});
+  } else {
+    await addToActivityLog("⏱ Watchdog: still silent after a reload — skipping this job, moving on", "warn");
+    await chrome.storage.local.set({ atsNavTries: 0 });
+    await advanceAtsQueue();
+  }
+}
+
+// Tap swipe-pool idle refill (Igor 2026-07-25 instant rebuild): while a tap run is live
+// but the approved queue has drained to empty, the user can swipe MORE cards. advanceAtsQueue
+// only fires after a job finishes, so an idle queue would never restart on its own. On the
+// 60s ext-ping alarm, rebuild from newly-approved jobs and kick the walk in the EXISTING
+// automation window. Idle = queue empty AND no nav in flight (atsNavAt cleared) — so this
+// never double-navigates a job that's actively being filled.
+async function tapPoolIdleRefill() {
+  const d = await chrome.storage.local.get([
+    "campaignRunning", "atsPlatform", "atsQueue", "campaignTabId", "atsNavAt", "campaignCaps",
+  ]);
+  if (!d.campaignRunning || d.atsPlatform !== "pool" || !d.campaignTabId) return;
+  if ((Array.isArray(d.atsQueue) && d.atsQueue.length) || d.atsNavAt) return; // busy, not idle
+  const cap = (d.campaignCaps && d.campaignCaps.perPlatform) || 15;
+  const more = await buildApprovedAtsQueue(cap);
+  if (!more.length) return;
+  try { await chrome.tabs.get(d.campaignTabId); } catch { return; } // automation tab gone
+  await chrome.storage.local.set({ atsQueue: more, atsNavAt: Date.now(), atsNavTries: 0 });
+  await addToActivityLog(`Applying ${more.length} more approved job${more.length > 1 ? "s" : ""} you swiped…`, "info");
+  await chrome.tabs.update(d.campaignTabId, { url: more[0].applyUrl }).catch(() => {});
 }
 
 // Unified auth page per platform (enter email → logs in or creates an account),
@@ -768,16 +910,91 @@ async function handleMessage(msg, sender) {
         job_type: raw.job_type || profile.job_type || "",
       };
 
+      // No keywords anywhere (request OR profile) → the campaign has nothing to search
+      // for. Refuse with a clear reason instead of "starting" an empty run (the popup
+      // Start path has no dashboard-side keyword check). Mirrors /campaign/readiness.
+      if (!filters.keywords.length) {
+        return {
+          started: false,
+          error: "no_keywords",
+          message: "Add at least one keyword first — the campaign needs something to search for.",
+        };
+      }
+
       // Pick the auto-apply platform this campaign targets (first in the filter list)
       const primaryPlatform = pickPrimaryPlatform(filters.platforms);
-      // Pool-driven ATS target (GLOBAL_PLAN P1 — Greenhouse zero-touch full-auto): if the
-      // user selected a zero-touch ATS platform, the campaign walks saved apply URLs from the
-      // job pool instead of running a board search. Lever is excluded (hCaptcha → tapalka, P2).
-      const atsTarget = (filters.platforms || []).find((p) => ATS_ZERO_TOUCH_PLATFORMS.includes(p)) || null;
+
+      // Status BEFORE target selection: Lever/tap-pool eligibility depends on submit_mode.
+      let preSt = null;
+      try { preSt = await apiGet("/campaign/status"); } catch {}
+      const tapMode = !!(preSt && preSt.submit_mode === "tap");
+
+      // reviewMode is now ALWAYS off (Igor 2026-07-25, instant-tap rebuild). The new
+      // tap flow pre-approves via the swipe deck — the human decision happens on
+      // /dashboard/tap, so approved jobs auto-submit in the background. There is no
+      // in-browser fill-and-stop review anymore (auto mode never had one). This also
+      // permanently kills the "Auto showed the Tap review panel" mismatch.
+      // Caps come from the pre-flight status we already fetched (no redundant second
+      // /campaign/status round-trip); ban-safe 20/50 default when status is unreachable.
+      await chrome.storage.local.set({
+        reviewMode: false,
+        campaignCaps: {
+          perPlatform: (preSt && preSt.limit_per_platform > 0) ? preSt.limit_per_platform : 20,
+          dailyTotal: (preSt && preSt.daily_limit > 0) ? preSt.daily_limit : 50,
+        },
+      });
+
+      // Free taste (FREE_TASTE_PLAN.md): an exhausted free account must not start at all —
+      // the pre-submit caps don't know the lifetime 40-app limit, so a started campaign
+      // would submit applications the backend then refuses to save (they reach the
+      // employer, invisibly). Server unreachable → fail-open, like the caps.
+      if (preSt && preSt.free_limit != null && preSt.free_used >= preSt.free_limit) {
+        return {
+          started: false,
+          error: "free_limit_reached",
+          message: `You've used all ${preSt.free_limit} free applications — subscribe to keep applying.`,
+        };
+      }
+
+      // TAP-POOL (Igor 2026-07-25 instant rebuild): in tap mode the queue is ONLY the
+      // user's APPROVED swipe cards (GH + Lever, per-platform cap). Swipe first on the
+      // /dashboard/tap deck, machine applies after.
+      let tapPoolQueue = [];
+      if (tapMode) {
+        tapPoolQueue = await buildApprovedAtsQueue((preSt && preSt.limit_per_platform) || 15);
+        // Footgun guard: with nothing approved yet, do NOT fall through to an auto walk
+        // (native Indeed search / GH auto-sweep) — that would apply jobs the user never
+        // swiped. Ask them to swipe first; the deck marks jobs approved instantly and
+        // Start applies exactly those.
+        if (!tapPoolQueue.length) {
+          return {
+            started: false,
+            error: "no_approved_jobs",
+            message: "Swipe Approve on a few jobs first — then Start and we'll apply exactly those.",
+          };
+        }
+      }
+
+      // Pool-driven ATS target (GLOBAL_PLAN P1+P2):
+      // - greenhouse: zero-touch → any mode, full-auto;
+      // - lever: hCaptcha at submit → tap mode only (human approves + clears it);
+      //   in auto mode refuse with a clear message instead of a campaign that can't submit.
+      let atsTarget = (filters.platforms || []).find((p) => ATS_ZERO_TOUCH_PLATFORMS.includes(p)) || null;
+      if (!tapPoolQueue.length && !atsTarget && (filters.platforms || []).includes("lever")) {
+        if (tapMode) {
+          atsTarget = "lever";
+        } else {
+          return {
+            started: false,
+            error: "lever_needs_tap",
+            message: "Lever applications need Tap mode (their captcha requires a human). Switch to Tap and start again.",
+          };
+        }
+      }
 
       // Pre-flight login check applies only to native board platforms (Indeed/ZR). ATS apply
       // pages are public — no login wall — so skip it in pool-driven mode.
-      if (!atsTarget) {
+      if (!atsTarget && !tapPoolQueue.length) {
         const conns = (await chrome.storage.local.get("platformConnections")).platformConnections || {};
         if (conns[primaryPlatform]?.status === "logged_out") {
           chrome.tabs.create({ url: platformLoginUrl(primaryPlatform) }).catch(() => {});
@@ -790,46 +1007,32 @@ async function handleMessage(msg, sender) {
         }
       }
 
-      // Free taste (FREE_TASTE_PLAN.md): an exhausted free account must not start at
-      // all — the pre-submit caps don't know the lifetime 40-app limit, so a started
-      // campaign would submit applications the backend then refuses to save (they
-      // reach the employer, invisibly). Server unreachable → fail-open, like the caps.
-      let preSt = null;
-      try { preSt = await apiGet("/campaign/status"); } catch {}
-      if (preSt && preSt.free_limit != null && preSt.free_used >= preSt.free_limit) {
-        return {
-          started: false,
-          error: "free_limit_reached",
-          message: `You've used all ${preSt.free_limit} free applications — subscribe to keep applying.`,
-        };
-      }
+      // Immediate feedback: from here we're committed to starting, but opening the
+      // window + loading the board + writing the first tailored application takes
+      // ~1-2 min. Without a line NOW the Live Activity reads "Waiting for extension"
+      // and feels frozen (Igor 2026-07-25). Post progress the moment we commit.
+      // (The free-taste gate + preSt fetch already ran earlier — not duplicated here.)
+      await addToActivityLog("Starting your campaign — opening the browser and finding jobs now…", "info");
 
       try {
+        // Caps + reviewMode were already stamped from the pre-flight status above,
+        // so this is just the start signal — no second /campaign/status round-trip.
         await apiPost("/campaign/start", filters);
-        // Pull the authoritative caps (single source: app/db/subscriptions.py) so
-        // content.js enforces the real per-platform rail + daily budget PRE-submit,
-        // instead of a stale local hardcode that let real applications past the cap.
-        const st = await apiGet("/campaign/status");
-        // Tap mode (profile.submit_mode="tap") → the human approves + submits each
-        // application, so the filler must FILL-and-STOP (reviewMode) instead of
-        // auto-submitting. This is what justifies tap's cheaper model + higher 100/day
-        // cap; without it, tap would auto-fire 100 unreviewed applications. Auto mode → off.
-        await chrome.storage.local.set({
-          campaignCaps: {
-            perPlatform: (st && st.limit_per_platform > 0) ? st.limit_per_platform : 20,
-            dailyTotal: (st && st.daily_limit > 0) ? st.daily_limit : 50,
-          },
-          reviewMode: !!(st && st.submit_mode === "tap"),
-        });
       } catch {
         // Continue even if server is down — content.js falls back to safe defaults (20/50).
       }
 
-      // ATS pool-driven mode: build the apply queue (find-ats → zero-touch jobs, capped) and
-      // target the FIRST job's apply URL instead of a board search. The automation tab then
-      // walks the queue: phase_ats fills+submits (zero-touch) → APPLICATION_SAVED → advance.
+      // ATS pool-driven mode: build the apply queue and target the FIRST job's apply URL
+      // instead of a board search. The automation tab then walks the queue: phase_ats
+      // fills (+submits when zero-touch) → APPLICATION_SAVED / ATS_JOB_DONE → advance.
       let atsQueue = [];
-      if (atsTarget) {
+      if (tapPoolQueue.length) {
+        // Approved-cards queue (platform-mixed). reviewMode is already set from
+        // submit_mode above; GH items auto-submit, Lever items stop for the human.
+        atsQueue = tapPoolQueue;
+        await chrome.storage.local.set({ atsQueue, atsPlatform: "pool", atsNavAt: Date.now(), atsNavTries: 0 });
+        await addToActivityLog(`Applying to ${atsQueue.length} approved jobs (your swipes) — working through them now.`, "info");
+      } else if (atsTarget) {
         const capState = (await chrome.storage.local.get("campaignCaps")).campaignCaps || {};
         atsQueue = await buildAtsQueue(atsTarget, capState.perPlatform || 20);
         if (!atsQueue.length) {
@@ -839,15 +1042,22 @@ async function handleMessage(msg, sender) {
             message: `No zero-touch ${atsTarget} jobs to apply to yet — try again shortly or broaden your keywords.`,
           };
         }
-        await chrome.storage.local.set({ atsQueue, atsPlatform: atsTarget });
-        await addToActivityLog(`Found ${atsQueue.length} zero-touch ${atsTarget} jobs — starting full-auto apply.`, "info");
+        await chrome.storage.local.set({ atsQueue, atsPlatform: atsTarget, atsNavAt: Date.now(), atsNavTries: 0 });
+        await addToActivityLog(
+          atsTarget === "lever"
+            ? `Found ${atsQueue.length} Lever jobs — filling each; you approve + clear the captcha.`
+            : `Found ${atsQueue.length} zero-touch ${atsTarget} jobs — starting full-auto apply.`,
+          "info"
+        );
       } else {
-        await chrome.storage.local.remove(["atsQueue", "atsPlatform"]);
+        await chrome.storage.local.remove(["atsQueue", "atsPlatform", "atsNavAt", "atsNavTries"]);
       }
 
-      const targetUrl = atsTarget ? atsQueue[0].applyUrl
+      const targetUrl = atsQueue.length ? atsQueue[0].applyUrl
         : buildPlatformUrl(primaryPlatform, filters.keywords, filters.location, filters.job_type);
-      const homeUrl = atsTarget ? atsQueue[0].applyUrl : platformHomeUrl(primaryPlatform);
+      // atsQueue.length (not atsTarget) so the tap swipe-pool run also points home at
+      // the first approved apply URL — main's atsTarget check missed the pool case.
+      const homeUrl = atsQueue.length ? atsQueue[0].applyUrl : platformHomeUrl(primaryPlatform);
       await addToActivityLog(`Opening the automation window → ${String(homeUrl).slice(0, 70)}`, "info");
 
       // Automation runs in a dedicated background window — minimized so it doesn't
@@ -959,14 +1169,19 @@ async function handleMessage(msg, sender) {
     case "STOP_CAMPAIGN": {
       const stopData = await chrome.storage.local.get(["campaignTabId", "campaignWindowId"]);
 
-      // Clear running state first so the onDetach listener won't auto-reattach
+      // Clear running state first so the onDetach listener won't auto-reattach.
+      // Also drop any pending tap review + ATS queue — a stopped campaign must not
+      // leave a dangling review card on the dashboard or resume a half-walked queue.
       await chrome.storage.local.set({
         campaignRunning: false,
         campaignTabId: null,
         campaignWindowId: null,
         currentJob: null,
         captchaWaiting: null,
+        reviewPending: null,
+        reviewDecision: null,
       });
+      await chrome.storage.local.remove(["atsQueue", "atsPlatform"]);
 
       try {
         if (stopData.campaignTabId) {
@@ -1038,25 +1253,18 @@ async function handleMessage(msg, sender) {
       // ATS pool-driven ADVANCE (GLOBAL_PLAN P1b): after a zero-touch ATS submit, walk the
       // automation tab to the next apply URL in the queue. Native (Indeed/ZR) campaigns have
       // no atsQueue and are driven by in-page navigation, so this is a no-op for them.
-      try {
-        const { atsQueue, campaignTabId } = await chrome.storage.local.get(["atsQueue", "campaignTabId"]);
-        if (Array.isArray(atsQueue) && atsQueue.length && campaignTabId) {
-          const rest = atsQueue.slice(1);
-          await chrome.storage.local.set({ atsQueue: rest });
-          const running = (await chrome.storage.local.get("campaignRunning")).campaignRunning === true;
-          if (rest.length && running) {
-            await chrome.tabs.update(campaignTabId, { url: rest[0].applyUrl }).catch(() => {});
-          } else if (!rest.length) {
-            await addToActivityLog("ATS pool complete — all discovered zero-touch jobs applied. Campaign finished.", "ok");
-            await chrome.storage.local.set({ campaignRunning: false });
-            try { await apiPost("/campaign/stop", {}); } catch {}
-            updateBadge();
-          }
-        }
-      } catch (e) { /* advance is best-effort; a failure just pauses the walk */ }
+      await advanceAtsQueue();
 
       const cur = await chrome.storage.local.get("platformCounts");
       return { saved: true, platformCount: (cur.platformCounts || {})[platform] || 0, job_id: serverResult?.job_id };
+    }
+
+    // ----- ATS queue advance on a NON-submit outcome (fit-skip / already-applied /
+    // missing form). phase_ats calls this from every early exit so a skipped job never
+    // dead-stops the pool walk; the submit path advances via APPLICATION_SAVED instead.
+    case "ATS_JOB_DONE": {
+      await advanceAtsQueue();
+      return { advanced: true };
     }
 
     // ----- Cover letter generation -----
