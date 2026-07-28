@@ -16,10 +16,26 @@ Verified live 2026-07-12:
 """
 from __future__ import annotations
 
+import html as _html
+import re as _re
+
 import requests
 
-GREENHOUSE_BOARD_API = "https://boards-api.greenhouse.io/v1/boards/{token}/jobs"
+# `?content=true` makes the Greenhouse board API include each job's full description
+# (HTML) in the LIST response — one request, all descriptions. Without it, GH jobs had
+# EMPTY descriptions, so the fit-scorer saw only the title and scored them near-zero
+# (~6% in the swipe deck). Lever's postings API already returns descriptionPlain.
+GREENHOUSE_BOARD_API = "https://boards-api.greenhouse.io/v1/boards/{token}/jobs?content=true"
 LEVER_POSTINGS_API = "https://api.lever.co/v0/postings/{token}?mode=json"
+
+_TAG_RE = _re.compile(r"<[^>]+>")
+
+
+def _strip_html(s: str) -> str:
+    """GH `content` is HTML-escaped markup; turn it into plain text for scoring."""
+    if not s:
+        return ""
+    return _re.sub(r"\s+", " ", _TAG_RE.sub(" ", _html.unescape(s))).strip()
 
 _UA = {"User-Agent": "HireDrop/1.0 (+https://hiredrop.io)"}
 _TIMEOUT = 12
@@ -96,7 +112,8 @@ def fetch_greenhouse(token: str, keywords: list[str] | None = None, limit: int =
         url = j.get("absolute_url")
         if not url or not _is_fillable(url):
             continue  # custom career-domain embeds (stripe.com/jobs…) aren't phase_ats-fillable
-        out.append(_job(title, token, url, loc, "greenhouse"))
+        # Real description (from ?content=true) so the fit-scorer ranks GH jobs properly.
+        out.append(_job(title, token, url, loc, "greenhouse", _strip_html(j.get("content", ""))))
         if len(out) >= limit:
             break
     return out
@@ -123,7 +140,8 @@ def fetch_lever(token: str, keywords: list[str] | None = None, limit: int = 50) 
         url = p.get("applyUrl") or (p.get("hostedUrl", "") + "/apply" if p.get("hostedUrl") else None)
         if not url or not _is_fillable(url):
             continue
-        out.append(_job(title, token, url, loc, "lever", p.get("descriptionPlain", "")))
+        lever_desc = p.get("descriptionPlain") or _strip_html(p.get("description", ""))
+        out.append(_job(title, token, url, loc, "lever", lever_desc))
         if len(out) >= limit:
             break
     return out

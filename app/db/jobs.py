@@ -106,6 +106,17 @@ def update_job_score(
         print(f"[jobs] update_job_score skipped (run migration?): {e}")
 
 
+def update_job_description(job_id: str, user_id: str, description: str) -> None:
+    """Backfill a job's description (e.g. GH jobs saved before ?content=true).
+    user_id-scoped so a job_id only updates the caller's own row."""
+    try:
+        get_supabase().table("jobs").update({
+            "description": (description or "")[:5000],
+        }).eq("id", job_id).eq("user_id", user_id).execute()
+    except Exception as e:
+        print(f"[jobs] update_job_description skipped: {e}")
+
+
 def update_tailored_resume(job_id: str, user_id: str, tailored_resume: str) -> None:
     try:
         get_supabase().table("jobs").update({
