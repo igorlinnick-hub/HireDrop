@@ -938,6 +938,26 @@
     log(`Found ${easyApplyCards.length} Easy Apply jobs`, "ok");
     logBackend(`Found ${easyApplyCards.length} Easy Apply jobs on page`, "ok");
 
+    // HARVEST-TO-POOL (Igor 2026-07-27): the tap deck needs Indeed/ZR inventory, and the
+    // server deliberately never scrapes Indeed (compliant-by-design). So every Easy Apply
+    // card this browser SEES is saved to the job pool — canonical /viewjob?jk= link so the
+    // pool identity matches the by-link executor and the dedup lane. Fire-and-forget:
+    // a slow backend must never stall the walk. Server skips already-known links.
+    try {
+      const _plat = detectPlatform();
+      const harvest = easyApplyCards
+        .map((j) => ({
+          title: j.title || "",
+          company: j.company || "",
+          link: j.jk ? `https://www.indeed.com/viewjob?jk=${j.jk}` : (j.url || ""),
+          platform: _plat,
+        }))
+        .filter((j) => j.link && j.title);
+      if (harvest.length) {
+        Promise.resolve(sendMsg({ type: "INGEST_JOBS", data: { jobs: harvest } })).catch(() => {});
+      }
+    } catch (_) { /* harvest is best-effort */ }
+
     // Save pending jobs
     await chrome.storage.local.set({
       pendingJobs: easyApplyCards.map((j) => ({

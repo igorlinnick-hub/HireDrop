@@ -1042,7 +1042,10 @@ async function handleMessage(msg, sender) {
           return {
             started: false,
             error: "no_approved_jobs",
-            message: "Swipe Approve on a few jobs first — then Start and we'll apply exactly those.",
+            // Covers both truths honestly: nothing approved yet, OR everything approved
+            // was already applied/dead (dedup excluded it) — live-test 2026-07-27 found
+            // the old "swipe first" wording gaslighting a user whose swipes WERE consumed.
+            message: "Nothing new to apply — jobs you approved before are already applied or closed. Swipe Approve on new cards, then Start.",
           };
         }
       }
@@ -1334,6 +1337,23 @@ async function handleMessage(msg, sender) {
     // ----- ATS queue advance on a NON-submit outcome (fit-skip / already-applied /
     // missing form). phase_ats calls this from every early exit so a skipped job never
     // dead-stops the pool walk; the submit path advances via APPLICATION_SAVED instead.
+    // Harvest-to-pool relay: content.js posts the job cards it saw on a board search
+    // page; we forward them to the backend pool (INSERT-only server-side). This is the
+    // compliant Indeed discovery path — the user's own browser saw these listings.
+    case "INGEST_JOBS": {
+      try {
+        const jobs = (msg.data && msg.data.jobs) || [];
+        if (!jobs.length) return { ok: true, saved: 0 };
+        const r = await apiPost("/jobs/ingest", { jobs });
+        if (r && r.saved > 0) {
+          await addToActivityLog(`Added ${r.saved} new job${r.saved > 1 ? "s" : ""} from this search to your pool`, "info");
+        }
+        return { ok: true, saved: (r && r.saved) || 0 };
+      } catch (e) {
+        return { ok: false };
+      }
+    }
+
     case "ATS_JOB_DONE": {
       // Pool mode: this head is being skipped (dead posting / fit-skip / no form).
       // Durably flip it out of `approved` in the DB so it never re-enters the queue
