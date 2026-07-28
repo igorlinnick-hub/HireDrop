@@ -141,6 +141,18 @@ window.addEventListener("message", function (e) {
     }
   }
 
+  // DEV-ONLY: relay a self-reload request (background double-checks hd_debug).
+  if (typeof e.data === "object" && e.data.type === "HIREDROP_RELOAD_EXT") {
+    try {
+      chrome.runtime.sendMessage({ type: "RELOAD_SELF" }, function (resp) {
+        const err = chrome.runtime.lastError ? chrome.runtime.lastError.message : null;
+        window.postMessage({ type: "HIREDROP_RELOAD_ACK", ok: !!(resp && resp.reloading), error: err || (resp && resp.error) }, "*");
+      });
+    } catch (ex) {
+      window.postMessage({ type: "HIREDROP_RELOAD_ACK", ok: false, error: "context_invalidated" }, "*");
+    }
+  }
+
   // Tap-mode verdict from the dashboard review card: the human tapped Approve or Skip.
   // content.js (in the automation window) polls chrome.storage.reviewDecision and, when
   // the id matches the pending review, submits (approve) or skips. This is the return
