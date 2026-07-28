@@ -3334,9 +3334,20 @@
 
     try {
       switch (phase) {
-        case "list":
+        case "list": {
+          // POOL SWIPE RUN: the walk navigates straight to single-job pages
+          // (/viewjob?jk=…). Landing on a SEARCH list here means Indeed redirected a
+          // dead/invalid posting to the SERP (live-test 2026-07-27: viewjob →
+          // /jobs?q=&l=remote&vjk=…). Running phase1 would walk the search and apply
+          // jobs the user never swiped — the exact footgun. Skip the item instead.
+          if ((await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool") {
+            logBackend("Posting looks closed (Indeed sent us to search) — skipping to your next pick", "warn");
+            await sendMsg({ type: "ATS_JOB_DONE" });
+            break;
+          }
           await phase1_jobList();
           break;
+        }
         case "detail":
           await phase2_jobDetail();
           break;
