@@ -1340,6 +1340,19 @@ async function handleMessage(msg, sender) {
     // Harvest-to-pool relay: content.js posts the job cards it saw on a board search
     // page; we forward them to the backend pool (INSERT-only server-side). This is the
     // compliant Indeed discovery path — the user's own browser saw these listings.
+    // DEV-ONLY self-reload (double-gated): lets the test harness reload the unpacked
+    // extension without hands on chrome://extensions. Requires hd_debug===true in
+    // storage (set via the whitelisted flag bridge; no prod user has it). Reload wipes
+    // nothing — chrome.storage survives.
+    case "RELOAD_SELF": {
+      const g = await chrome.storage.local.get("hd_debug");
+      if (g.hd_debug === true) {
+        setTimeout(() => chrome.runtime.reload(), 300);
+        return { reloading: true };
+      }
+      return { reloading: false, error: "hd_debug required" };
+    }
+
     case "INGEST_JOBS": {
       try {
         const jobs = (msg.data && msg.data.jobs) || [];
