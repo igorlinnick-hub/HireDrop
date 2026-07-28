@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 
 from app.db import jobs as jobs_db
 from app.deps import get_current_user
-from app.schemas import FindJobsRequest, JobStatusUpdate
+from app.schemas import FindJobsRequest, IngestJobsRequest, JobStatusUpdate
 from modules.captcha_profile import TOUCH_RANK, captcha_touch, is_zero_touch
 router = APIRouter(tags=["jobs"])
 
@@ -317,6 +317,42 @@ def backfill_ats_scores(user=Depends(get_current_user)):
         "message": f"Re-scored {rescored} GH/Lever jobs with real descriptions — the deck now ranks best-fit-first."
         if rescored else "No thin-description GH/Lever jobs to backfill.",
     }
+
+
+@router.post("/jobs/ingest")
+def ingest_jobs(req: IngestJobsRequest, user=Depends(get_current_user)):
+    """Harvest-to-pool: the extension saves job cards it SEES in the user's browser
+    during a campaign walk (Indeed/ZR search pages). This is the compliant-by-design
+    Indeed discovery path — the server never scrapes Indeed (see find_jobs); the
+    user's own browser on their home IP does, and the tap deck feeds from this pool.
+
+    INSERT-only: existing links are skipped entirely (an upsert would reset the row's
+    status to 'new', resurrecting applied/skipped/approved jobs — the dedup lane).
+    No AI scoring here: cards carry no description, and title-only scoring is the
+    exact ~6%-noise trap the GH backfill just fixed. score stays null → the deck
+    sorts them after scored jobs until a description-bearing pass rescores them.
+    """
+    HARVEST_PLATFORMS = {"indeed", "ziprecruiter"}
+    saved, skipped = 0, 0
+    for j in (req.jobs or [])[:30]:  # per-call cap: one search page is ~15 cards
+        if j.platform not in HARVEST_PLATFORMS or not j.link or not j.title:
+            continue
+        if jobs_db.job_exists(user.id, j.link):
+            skipped += 1
+            continue
+        jobs_db.save_job(
+            user_id=user.id,
+            title=j.title,
+            company=j.company,
+            link=j.link,
+            status="new",
+            platform=j.platform,
+            description=j.description,
+            location=j.location,
+            job_type=j.job_type,
+        )
+        saved += 1
+    return {"saved": saved, "skipped_existing": skipped}
 
 
 @router.patch("/jobs/{job_id}/status")

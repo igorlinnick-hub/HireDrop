@@ -80,5 +80,21 @@ class JobStatusUpdate(BaseModel):
     status: str
 
 
+class IngestJob(BaseModel):
+    """One job card harvested in-browser by the extension during a campaign walk."""
+
+    title: str
+    link: str
+    company: str = ""
+    platform: str = "indeed"
+    description: str = ""
+    location: str = ""
+    job_type: str = ""
+
+
+class IngestJobsRequest(BaseModel):
+    jobs: list[IngestJob] = []
+
+
 class ForgotPasswordRequest(BaseModel):
     email: str

@@ -597,26 +597,89 @@ async function buildAtsQueue(platform, perPlatformCap) {
 // (greenhouse + lever together), capped per platform. The swipe UI PATCHes
 // jobs.status="approved"; this consumes them. Zero-touch first (GH before Lever) so the
 // no-human items clear while the user is still around for the Lever captchas.
+// Minimal PATCH twin of apiPost — used to durably flip a dead pool job's status so it
+// stops re-entering the approved queue on every run (live-test finding 2026-07-27:
+// a closed posting looped skip→rebuild→same-job forever).
+async function apiPatch(path, body, { retry = true } = {}) {
+  const token = await getAuthToken();
+  const headers = {
+    "Content-Type": "application/json",
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+  const res = await fetch(`${CONFIG.API_BASE}${CONFIG.API_V1}${path}`, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401 && retry) {
+    if (await dropStaleKeyIfUsed(token)) return apiPatch(path, body, { retry: false });
+    const newToken = await refreshAccessToken();
+    if (newToken) return apiPatch(path, body, { retry: false });
+  }
+  if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+  return res.json();
+}
+
+// Native boards the pool can apply BY LINK (Igor 2026-07-27: "тап должен работать по
+// всем платформам"). Gated behind the tapNativePool storage flag (default OFF) until
+// the link-normalization path is live-verified — a wrong Indeed URL shape reads as a
+// SEARCH page and phase1 would auto-apply un-swiped jobs (the footgun in
+// TAP_INSTANT_PLAN.md). Flip: chrome.storage.local.set({tapNativePool:true}).
+const POOL_NATIVE_PLATFORMS = ["indeed", "ziprecruiter"];
+
+// Return a SAFE single-job URL for the pool walk, or null when one can't be derived
+// (null = leave the job out of the queue rather than risk the search-walk footgun).
+function normalizePoolApplyUrl(platform, url) {
+  if (!url) return null;
+  if (platform === "indeed") {
+    // Card hrefs come as /rc/clk?jk=…, /jobs?...vjk=…, /viewjob?jk=… — anything with a
+    // jk/vjk collapses to the canonical single-job page. /jobs?* without it would be
+    // detected as phase "list" (the search walk) — never navigate there in pool mode.
+    try {
+      const u = new URL(url);
+      const jk = u.searchParams.get("jk") || u.searchParams.get("vjk");
+      if (jk) return `https://www.indeed.com/viewjob?jk=${jk}`;
+    } catch {}
+    return null;
+  }
+  if (platform === "ziprecruiter") {
+    // Direct job pages only; a search URL would re-enter the ZR walk.
+    if (/jobs-search|candidate\/search/.test(url)) return null;
+    return url;
+  }
+  return url; // greenhouse/lever apply URLs are already single-job pages
+}
+
 async function buildApprovedAtsQueue(perPlatformCap) {
   let jobs = [];
   try { jobs = await apiGet("/jobs"); } catch (e) { return []; }
   const cap = perPlatformCap > 0 ? perPlatformCap : 15;
-  const dd = await chrome.storage.local.get(["appliedUrls", "appliedJobKeys"]);
+  const dd = await chrome.storage.local.get(["appliedUrls", "appliedJobKeys", "tapNativePool", "poolDoneUrls"]);
   const appliedUrls = new Set(dd.appliedUrls || []);
   const appliedKeys = new Set(dd.appliedJobKeys || []);
+  // URLs already walked THIS run (applied or skipped) — without this, a dead posting
+  // that skips stays `approved` in the DB and the rebuild re-queues it forever
+  // (live-test finding: oura?error=true looped every 4s).
+  const doneUrls = new Set(dd.poolDoneUrls || []);
+  const poolPlatforms = dd.tapNativePool === true
+    ? ATS_PLATFORMS.concat(POOL_NATIVE_PLATFORMS)
+    : ATS_PLATFORMS;
   const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
   const perCount = {};
   const out = [];
   for (const j of (jobs || [])) {
-    if (!ATS_PLATFORMS.includes(j.platform)) continue;
+    if (!poolPlatforms.includes(j.platform)) continue;
     if ((j.status || "") !== "approved") continue;
-    const url = j.link || j.apply_url;
+    const url = normalizePoolApplyUrl(j.platform, j.link || j.apply_url);
     if (!url) continue;
-    if (appliedUrls.has(url.split("?")[0]) || appliedKeys.has(`${norm(j.title)}|${norm(j.company)}`)) continue;
+    // Dedup: query-stripped base for path-unique ATS URLs, full URL for /viewjob?jk=
+    // (whose identity IS the query), plus the title|company key.
+    if (doneUrls.has(url) || appliedUrls.has(url.split("?")[0]) || appliedUrls.has(url) ||
+        appliedKeys.has(`${norm(j.title)}|${norm(j.company)}`)) continue;
     const c = perCount[j.platform] || 0;
     if (c >= cap) continue;
     perCount[j.platform] = c + 1;
-    out.push({ applyUrl: url, title: j.title || "", company: j.company || "", platform: j.platform });
+    out.push({ id: j.id, applyUrl: url, title: j.title || "", company: j.company || "", platform: j.platform });
   }
   // GET /jobs already orders zero-touch first (PR #32) — preserved by the linear walk.
   return out;
@@ -629,10 +692,18 @@ async function buildApprovedAtsQueue(perPlatformCap) {
 // skipped job dead-stopped the walk: nothing advanced the queue except a real submit.
 async function advanceAtsQueue() {
   try {
-    const { atsQueue, campaignTabId } = await chrome.storage.local.get(["atsQueue", "campaignTabId"]);
+    const { atsQueue, campaignTabId, atsPlatform: plat, poolDoneUrls } =
+      await chrome.storage.local.get(["atsQueue", "campaignTabId", "atsPlatform", "poolDoneUrls"]);
     if (Array.isArray(atsQueue) && atsQueue.length && campaignTabId) {
       const rest = atsQueue.slice(1);
       await chrome.storage.local.set({ atsQueue: rest });
+      // Pool mode: remember every walked head (applied OR skipped) for THIS run, so
+      // the rebuild below can never re-queue it (dead postings stay `approved` in the
+      // DB and would otherwise loop forever).
+      if (plat === "pool" && atsQueue[0] && atsQueue[0].applyUrl) {
+        const done = (poolDoneUrls || []).concat([atsQueue[0].applyUrl]).slice(-300);
+        await chrome.storage.local.set({ poolDoneUrls: done });
+      }
       const running = (await chrome.storage.local.get("campaignRunning")).campaignRunning === true;
       if (rest.length && running) {
         // Fresh watchdog window for the next job page (see atsWalkWatchdog).
@@ -878,6 +949,7 @@ async function handleMessage(msg, sender) {
       await chrome.storage.local.set({
         captchaWaiting: null, campaignRunning: false, currentJob: null,
         reviewPending: null, reviewDecision: null,
+        poolDoneUrls: [], // per-run walked-pool memory — a fresh run starts clean
       });
       await chrome.storage.local.remove(["atsQueue", "atsPlatform", "atsNavAt", "atsNavTries"]);
       await addToActivityLog("▶ Start received by the extension — preparing your campaign…", "info");
@@ -1263,6 +1335,14 @@ async function handleMessage(msg, sender) {
     // missing form). phase_ats calls this from every early exit so a skipped job never
     // dead-stops the pool walk; the submit path advances via APPLICATION_SAVED instead.
     case "ATS_JOB_DONE": {
+      // Pool mode: this head is being skipped (dead posting / fit-skip / no form).
+      // Durably flip it out of `approved` in the DB so it never re-enters the queue
+      // in FUTURE runs either (the in-run guard is poolDoneUrls). Best-effort.
+      try {
+        const d = await chrome.storage.local.get(["atsPlatform", "atsQueue"]);
+        const head = d.atsPlatform === "pool" && Array.isArray(d.atsQueue) ? d.atsQueue[0] : null;
+        if (head && head.id) apiPatch(`/jobs/${head.id}/status`, { status: "skipped" }).catch(() => {});
+      } catch {}
       await advanceAtsQueue();
       return { advanced: true };
     }
