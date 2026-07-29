@@ -155,4 +155,13 @@ SEED_WATCHLIST: list[tuple[str, str]] = [
     ("binance", "lever"),
     ("anchorage", "lever"),
     ("verifiable", "lever"),
+    # --- Lever MARKETING/consumer/media (added 2026-07-29; script-verified live: board 200
+    # AND has marketing/social roles — the old lever set was tech/fintech-only, so Igor's
+    # marketing keywords yielded 0 Lever inventory. These give Lever real supply to test). ---
+    ("wpromote", "lever"),        # performance-marketing agency, 15 mktg roles
+    ("superside", "lever"),       # creative/design-as-a-service, 11
+    ("theathletic", "lever"),     # sports media, 5
+    ("rover", "lever"),           # consumer marketplace, 5
+    ("gopuff", "lever"),          # delivery/consumer, 4
+    ("morningbrew", "lever"),     # media/newsletter, 3
 ]
