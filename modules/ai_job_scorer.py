@@ -91,15 +91,25 @@ ats_keywords: extract 5-12 critical terms an ATS would filter on — skills, too
         return _default_score()
 
 
-def score_jobs_batch(jobs: list[dict], profile: dict, resume_text: str = "") -> list[dict]:
+def score_jobs_batch(
+    jobs: list[dict], profile: dict, resume_text: str = "", min_score: int = 0
+) -> list[dict]:
     """Score a list of jobs, attach score fields, sort by score desc.
 
-    Skips jobs scoring below 4 (пропустить). Returns enriched job dicts.
+    min_score: drop jobs scoring below this. Default 0 = KEEP EVERYTHING. The old
+    hardcoded `>= 4` silently discarded ~95% of discovery yield before it ever reached
+    the pool (live 2026-07-29: a 120-job ATS sweep saved only +4 — the "pool = 48 ever"
+    bug's second head, after keyword matching). Both callers are DISCOVERY paths that
+    FILL the pool; precision is enforced downstream — the swipe deck ranks by score and
+    caps 15/platform (junk sinks below the fold), and AUTO applies run the fail-closed
+    fit gate (M1 ASSESS_FIT) before any submission. Dropping here starved both for no
+    safety gain. Pass min_score=4 to restore the old skip behavior for a future caller
+    that truly wants pre-filtered output.
     """
     results = []
     for job in jobs:
         scored = score_job(job, profile, resume_text)
-        if scored["score"] >= 4:
+        if scored["score"] >= min_score:
             job["score"] = scored["score"]
             job["ai_verdict"] = scored["verdict"]
             job["ai_flags"] = scored["flags"]
