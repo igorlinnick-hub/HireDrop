@@ -1,5 +1,6 @@
 import os
 import sys
+import threading
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -17,6 +18,9 @@ router = APIRouter(tags=["jobs"])
 # re-scraping ~46 boards. user_id -> unix ts of the last real sweep.
 FIND_ATS_COOLDOWN_SECS = 10 * 60
 _FIND_ATS_LAST_RUN: dict[str, float] = {}
+# Users with a discovery sweep running in a background thread right now — so a second
+# request doesn't spawn a duplicate while the first is still working.
+_FIND_ATS_IN_PROGRESS: set[str] = set()
 
 
 def _with_captcha(jobs: list) -> list:
@@ -134,100 +138,89 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
             "salary_filtered": salary_dropped}
 
 
-@router.post("/jobs/find-ats")
-def find_ats_jobs(user=Depends(get_current_user)):
-    """Direct-source discovery from Greenhouse/Lever public board APIs (ROADMAP_E2E.md).
-
-    The real supply of good-fit external-apply jobs: a curated watchlist of company tokens
-    queried via their official board APIs → direct, phase_ats-fillable apply URLs. Scores +
-    saves into the same job pool as /jobs/find so the campaign + Fit Engine treat them
-    uniformly. Compliant (public APIs, server-side, no scraping). Mirrors find_jobs.
-    """
+def _run_ats_discovery(user_id: str) -> None:
+    """Heavy ATS discovery — runs in a BACKGROUND thread, OFF the request worker. Fetches
+    ~46 boards (now in parallel with a hard deadline in discover_ats), scores, saves into
+    the pool, and self-heals thin descriptions. Never raises; always clears the in-progress
+    flag. P0: nothing here ever holds an API worker → no more worker-starvation / API 000."""
     from app.db.profile import get_profile
     from data.ats_watchlist import SEED_WATCHLIST
+    from modules.ai_cover_letter import load_resume_text
+    from modules.ai_job_scorer import score_jobs_batch
     from modules.platforms.ats_boards import discover_ats
+    from modules.salary_filter import filter_by_salary
 
-    # WORKER-STARVATION GUARD (GLOBAL_PLAN "backend worker starvation → 504"): this
-    # handler synchronously hits ~46 board APIs (12s timeout each) + AI-scores up to 120
-    # jobs — it can hold a worker for minutes. The extension calls it on EVERY campaign
-    # start, so restart-loops during testing (or a zombie campaign) stack these and starve
-    # the pool → /campaign/status and /campaign/stop hang → dashboard 504s / minute-long
-    # Stops. The pool barely changes minute-to-minute, so within the cooldown just serve
-    # from the existing pool. In-memory is fine: worst case after a backend restart is one
-    # extra discovery sweep.
+    try:
+        profile = get_profile(user_id)
+        resume_text = load_resume_text(profile.get("resume_url"))
+        keywords = profile.get("keywords", [])
+
+        try:
+            found = discover_ats(SEED_WATCHLIST, keywords, cap=120)
+        except Exception as e:
+            print(f"[find-ats bg] discovery failed: {e}", file=sys.stderr)
+            found = []
+
+        new_jobs = [j for j in found if not jobs_db.job_exists(user_id, j["link"])]
+        new_jobs, _salary_dropped = filter_by_salary(new_jobs, profile)
+        if new_jobs:
+            new_jobs = score_jobs_batch(new_jobs, profile, resume_text)
+
+        for job in new_jobs:
+            job_id = jobs_db.save_job(
+                user_id=user_id,
+                title=job["title"],
+                company=job["company"],
+                link=job["link"],
+                platform=job.get("platform", "unknown"),
+                description=job.get("description", ""),
+                location=job.get("location", ""),
+                job_type=job.get("job_type", ""),
+            )
+            if job_id and job.get("score") is not None:
+                jobs_db.update_job_score(
+                    job_id, user_id, job["score"], job.get("ai_verdict", ""),
+                    job.get("ai_flags", []), job.get("ats_keywords", []),
+                    job.get("ats_match_pct", 0),
+                )
+
+        # Self-heal older thin-description rows using the descriptions we just fetched.
+        try:
+            fresh_desc = {f["link"]: f["description"] for f in found if f.get("description") and f.get("link")}
+            _backfill_thin_ats_scores(user_id, profile, resume_text, cap=40, desc_source=fresh_desc)
+        except Exception as e:
+            print(f"[find-ats bg] backfill skipped: {e}", file=sys.stderr)
+    except Exception as e:
+        print(f"[find-ats bg] worker error: {e}", file=sys.stderr)
+    finally:
+        _FIND_ATS_IN_PROGRESS.discard(user_id)
+
+
+@router.post("/jobs/find-ats")
+def find_ats_jobs(user=Depends(get_current_user)):
+    """Direct-source discovery from Greenhouse/Lever public board APIs.
+
+    Kicks off discovery in a BACKGROUND thread and returns IMMEDIATELY — the request
+    worker never blocks on the ~46 board fetches (the old synchronous sweep held a worker
+    for minutes and starved the pool → API 000). The pool fills within ~30s; callers read
+    it via GET /jobs. A 10-min cooldown + an in-progress guard throttle sweeps.
+    """
     now = time.time()
     last = _FIND_ATS_LAST_RUN.get(user.id, 0.0)
-    if now - last < FIND_ATS_COOLDOWN_SECS:
+    if user.id in _FIND_ATS_IN_PROGRESS or now - last < FIND_ATS_COOLDOWN_SECS:
         remaining = int(FIND_ATS_COOLDOWN_SECS - (now - last))
         return {
-            "count": 0,
-            "found": 0,
+            "started": False,
             "cooldown": True,
-            "retry_in_secs": remaining,
-            "message": f"ATS discovery ran recently — using the existing job pool (refresh in ~{max(1, remaining // 60)} min)",
+            "retry_in_secs": max(0, remaining),
+            "message": "ATS discovery is already running / ran recently — using the existing job pool.",
         }
     _FIND_ATS_LAST_RUN[user.id] = now
-
-    from modules.ai_cover_letter import load_resume_text
-
-    profile = get_profile(user.id)
-    keywords = profile.get("keywords", [])
-    resume_text = load_resume_text(profile.get("resume_url"))
-
-    try:
-        found = discover_ats(SEED_WATCHLIST, keywords, cap=120)
-    except Exception as e:  # never let a flaky company API break discovery
-        print(f"[find-ats] discovery failed: {e}", file=sys.stderr)
-        found = []
-
-    new_jobs = [j for j in found if not jobs_db.job_exists(user.id, j["link"])]
-    # Salary filter BEFORE AI scoring — same early gate as /jobs/find.
-    from modules.salary_filter import filter_by_salary
-    new_jobs, salary_dropped = filter_by_salary(new_jobs, profile)
-    if new_jobs:
-        from modules.ai_job_scorer import score_jobs_batch
-
-        new_jobs = score_jobs_batch(new_jobs, profile, resume_text)
-
-    saved = 0
-    for job in new_jobs:
-        job_id = jobs_db.save_job(
-            user_id=user.id,
-            title=job["title"],
-            company=job["company"],
-            link=job["link"],
-            platform=job.get("platform", "unknown"),  # "greenhouse" | "lever"
-            description=job.get("description", ""),
-            location=job.get("location", ""),
-            job_type=job.get("job_type", ""),
-        )
-        if job_id and job.get("score") is not None:
-            jobs_db.update_job_score(
-                job_id, user.id, job["score"], job.get("ai_verdict", ""),
-                job.get("ai_flags", []), job.get("ats_keywords", []),
-                job.get("ats_match_pct", 0),
-            )
-        saved += 1
-
-    # Self-heal: re-score GH/Lever jobs still in the pool with an empty description from
-    # before the ?content=true fix, so the deck ranks best-fit-first without a manual
-    # trigger. Reuses the descriptions we JUST fetched in `found` (no extra board calls),
-    # and self-terminates once the pool is healed. Best-effort — never break discovery.
-    try:
-        fresh_desc = {f["link"]: f["description"] for f in found if f.get("description") and f.get("link")}
-        rescored = _backfill_thin_ats_scores(user.id, profile, resume_text, cap=40, desc_source=fresh_desc)
-    except Exception as e:
-        print(f"[find-ats] backfill skipped: {e}", file=sys.stderr)
-        rescored = 0
-
+    _FIND_ATS_IN_PROGRESS.add(user.id)
+    threading.Thread(target=_run_ats_discovery, args=(user.id,), daemon=True).start()
     return {
-        "count": saved,
-        "found": len(found),
-        "salary_filtered": salary_dropped,
-        "rescored": rescored,
-        "message": f"{saved} new Greenhouse/Lever jobs saved (from {len(found)} live listings)"
-        + (f", {salary_dropped} outside your salary range" if salary_dropped else "")
-        + (f"; re-scored {rescored} older jobs" if rescored else ""),
+        "started": True,
+        "message": "Discovery is running in the background — new jobs land in your pool within ~30s.",
     }
 
 

@@ -38,7 +38,14 @@ def _strip_html(s: str) -> str:
     return _re.sub(r"\s+", " ", _TAG_RE.sub(" ", _html.unescape(s))).strip()
 
 _UA = {"User-Agent": "HireDrop/1.0 (+https://hiredrop.io)"}
-_TIMEOUT = 12
+# Per-board HTTP timeout (connect + read). Kept tight: a single slow/hanging board or a
+# Cloudflare challenge must not stall discovery. `discover_ats` fetches boards in PARALLEL
+# and abandons stragglers past _DISCOVER_DEADLINE, so total discovery time is bounded no
+# matter how many boards are slow (P0: sequential fetch = 46×timeout held a worker for
+# minutes → API 000).
+_TIMEOUT = 6
+_DISCOVER_DEADLINE = 25  # hard cap (seconds) on a whole discovery sweep
+_DISCOVER_WORKERS = 16
 
 # Hosts phase_ats can actually fill (detectPlatform recognizes greenhouse.io / lever.co).
 # Some companies (stripe, databricks, coinbase…) embed Greenhouse but expose the job on
@@ -154,23 +161,45 @@ def discover_ats(companies: list[tuple[str, str]], keywords: list[str] | None = 
                  cap: int = 100) -> list[dict]:
     """Pull live jobs across a watchlist of (token, platform) companies, keyword-filtered.
 
-    Dedups by apply_url. `companies` = [("airtable", "greenhouse"), ("shieldai", "lever"), ...].
-    Low-captcha platforms are queried FIRST so the cap fills with zero-touch destinations
-    before human-touch ones — the campaign then applies to the easy (no-captcha) wins first.
+    Boards are fetched in PARALLEL with a hard overall deadline (_DISCOVER_DEADLINE): one
+    slow board or a Cloudflare challenge can no longer hold the caller for minutes (the
+    old sequential loop was the API-000 worker-starvation cause). Dedups by apply_url and
+    keeps zero-touch (low-captcha) destinations first so the cap fills with the easy wins.
     """
-    companies = sorted(companies, key=lambda c: _TOUCH_RANK.get(_captcha_touch(c[0], c[1]), 1))
+    import concurrent.futures
+
+    fetch_targets = [(t, p) for t, p in companies if p in _FETCHERS]
+
+    def _one(token: str, platform: str) -> list[dict]:
+        try:
+            return _FETCHERS[platform](token, keywords) or []
+        except Exception:
+            return []
+
+    collected: list[dict] = []
+    ex = concurrent.futures.ThreadPoolExecutor(max_workers=_DISCOVER_WORKERS)
+    try:
+        futs = [ex.submit(_one, t, p) for t, p in fetch_targets]
+        done, _pending = concurrent.futures.wait(futs, timeout=_DISCOVER_DEADLINE)
+        for fut in done:
+            try:
+                collected.extend(fut.result())
+            except Exception:
+                pass
+    finally:
+        # Never block on stragglers — their per-board requests time out at _TIMEOUT anyway.
+        ex.shutdown(wait=False)
+
+    # Zero-touch first (the concurrent gather loses the input ordering), then dedup + cap.
+    collected.sort(key=lambda j: _TOUCH_RANK.get(_captcha_touch(j.get("company", ""), j.get("platform", "")), 1))
     seen: set[str] = set()
     out: list[dict] = []
-    for token, platform in companies:
-        fetch = _FETCHERS.get(platform)
-        if not fetch:
+    for job in collected:
+        u = job.get("apply_url")
+        if not u or u in seen:
             continue
-        for job in fetch(token, keywords):
-            u = job["apply_url"]
-            if u in seen:
-                continue
-            seen.add(u)
-            out.append(job)
-            if len(out) >= cap:
-                return out
+        seen.add(u)
+        out.append(job)
+        if len(out) >= cap:
+            break
     return out
