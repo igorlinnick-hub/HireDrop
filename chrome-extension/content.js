@@ -272,14 +272,41 @@
   // (anything < 3-5s is suspicious) catch this. We run a one-shot
   // warmup the first time content.js sees a running campaign on this
   // page, then mark it done so reloads/page transitions don't re-warmup.
+  // True if two URLs point at the same job posting. Indeed jobs are identified by the
+  // jk/vjk key (the path may be /viewjob, /rc/clk, /jobs — all the same job); everything
+  // else falls back to origin+path (query-stripped). Used so pool warmup doesn't re-
+  // navigate when it's already sitting on its target job.
+  function urlsSameJob(a, b) {
+    try {
+      const ua = new URL(a), ub = new URL(b);
+      const jka = (ua.searchParams.get("jk") || ua.searchParams.get("vjk") || "").toLowerCase();
+      const jkb = (ub.searchParams.get("jk") || ub.searchParams.get("vjk") || "").toLowerCase();
+      if (jka || jkb) return jka === jkb;
+      return ua.origin + ua.pathname === ub.origin + ub.pathname;
+    } catch {
+      return a === b;
+    }
+  }
+
   async function sessionWarmup() {
-    // Warmup (and its navigate-to-search tail) is a BOARD behavior. On an ATS page
-    // (greenhouse/lever) it must never run — the Indeed branch would navigate the
-    // ATS tab away to the board search URL, killing the apply we came here for.
+    // Warmup exists to (a) look human before engaging (anti-bot) and (b) establish a
+    // Cloudflare cf_clearance cookie by first landing on a NON-deep-link page (homepage /
+    // search) that passes CF's JS challenge, so the later navigation to the real target
+    // isn't a cold "bot jump" that trips "Additional Verification Required".
+    //
+    // On an ATS page (greenhouse/lever) it must never run — the Indeed branch below would
+    // navigate the ATS tab away to the board search URL, killing the apply we came here for.
     {
       const p = detectPlatform();
       if (p === "greenhouse" || p === "lever") return;
     }
+    // POOL (by-link) mode: background opens the automation window on the platform HOMEPAGE
+    // (see background.js homeUrl), NOT on the deep /viewjob link — a cold deep-link nav is a
+    // bot jump that Cloudflare challenges. We warm here on the homepage (scroll → CF auto-
+    // solves → cf_clearance set), then navigate to the specific target /viewjob, which now
+    // carries cf_clearance and passes. Every job is a canonical link, so we must NOT type a
+    // search query (the old auto tail did that and looped the pool on the head job forever).
+    const poolRun = (await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool";
     const flag = await chrome.storage.local.get("campaignWarmedUp");
     if (flag.campaignWarmedUp) return;
 
@@ -306,6 +333,23 @@
 
     // Navigate to the target search URL if we're not already on it.
     const { campaignTargetUrl } = await chrome.storage.local.get("campaignTargetUrl");
+
+    // POOL (by-link) mode: campaignTargetUrl is a SPECIFIC job (Indeed /viewjob?jk= or a
+    // ZR job page), not a search URL. We warmed on the homepage above; now that cf_clearance
+    // is set, navigate straight to that job. Do NOT fall through to the typed-search branches
+    // (they'd rewrite the URL to a search and the pool would never reach its picked job).
+    if (poolRun) {
+      if (campaignTargetUrl && !urlsSameJob(window.location.href, campaignTargetUrl)) {
+        log(`Warmup done (${Math.round(elapsed / 1000)}s) — opening your picked job`, "ok");
+        logBackend(`Warmup complete — opening approved pick`, "ok");
+        window.location.href = campaignTargetUrl;
+        return;
+      }
+      log(`Warmup complete (${Math.round(elapsed / 1000)}s) — on picked job`, "ok");
+      logBackend(`Session warmup complete (${Math.round(elapsed / 1000)}s) — applying your pick`, "ok");
+      return;
+    }
+
     if (campaignTargetUrl) {
       const platform = detectPlatform();
 
@@ -788,6 +832,13 @@
       }
     }
     for (const pat of det.scriptSrcPatterns || []) {
+      // NEVER treat Cloudflare's PASSIVE bot-management scripts as a challenge. cdn-cgi/
+      // challenge-platform and cdn-cgi/bm load on EVERY Indeed page (see note above), so if
+      // a stale/mis-set backend detection config lists them here, isDetected() would flag a
+      // normal job page → runPhase's CF-JS branch waits 60s then reloads the tab → reload
+      // nukes the content script → re-detect → loop forever, phase2 never runs (live
+      // 2026-07-28: pool stalled on a clean /viewjob, re-init every ~63s, 0 applies). Skip.
+      if (pat.includes("cdn-cgi")) continue;
       const scripts = document.querySelectorAll("script[src]");
       for (const s of scripts) {
         if ((s.src || "").toLowerCase().includes(pat)) {
@@ -1390,6 +1441,20 @@
 
     log(`Found ${quickApplyJobs.length} Quick Apply jobs`, "ok");
     logBackend(`Found ${quickApplyJobs.length} Quick Apply jobs on ZipRecruiter`, "ok");
+
+    // HARVEST-TO-POOL (P0c 2026-07-29): server-side ZR scraping is dead (JobSpy → CF 403),
+    // so — exactly like Indeed — every Quick Apply card this browser SEES goes to the pool.
+    // The link is the search-URL + lk=<uuid> form: that IS ZR's single-job page (detectPhase
+    // → "detail" → right-pane apply), so the by-link pool executor can walk it with the
+    // selectors we already have. Fire-and-forget; server dedups known links.
+    try {
+      const zrHarvest = quickApplyJobs
+        .map((j) => ({ title: j.title || "", company: j.company || "", link: j.url || "", platform: "ziprecruiter" }))
+        .filter((j) => j.link && j.title);
+      if (zrHarvest.length) {
+        Promise.resolve(sendMsg({ type: "INGEST_JOBS", data: { jobs: zrHarvest } })).catch(() => {});
+      }
+    } catch (_) { /* harvest is best-effort */ }
 
     await chrome.storage.local.set({
       pendingJobs: quickApplyJobs,
@@ -2297,8 +2362,36 @@
     } catch (e) { log(`FORM DIAG error: ${e.message}`, ""); }
   }
 
+  // Indeed SmartApply (especially the in-page variant that renders in a
+  // smartapply.indeed.com iframe, starting on the "/pre" intro step) populates its fields
+  // and its Continue/Submit button ASYNC — a beat or two after the "form" phase first
+  // fires. If phase3 acts on that first beat it sees an empty step (FORM DIAG inputs=0, no
+  // button), fills nothing, finds no button, and bails to the next job — silently dropping
+  // an applyable posting (live 2026-07-28: Indeed pool jobs completed only when the form
+  // happened to render fast enough). Wait for the step to actually have something to do.
+  async function waitForFormReady(timeoutMs = 10000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (!(await isCampaignRunning())) return false;
+      const hasField = !!(
+        findFieldBySelectorsOrLabel("firstName") ||
+        findFieldBySelectorsOrLabel("email") ||
+        findResumeInput() ||
+        document.querySelector(
+          'input[type="radio"], input[type="checkbox"], select, textarea, input[type="text"], input:not([type])'
+        )
+      );
+      if (hasField || findFormButton()) return true;
+      await sleep(400);
+    }
+    return false;
+  }
+
   async function phase3_fillForm() {
     if (!(await isCampaignRunning())) return;
+
+    // Let the step finish rendering before we fill/decide (see waitForFormReady above).
+    await waitForFormReady(10000);
 
     log("Application form detected — filling fields...", "");
     logBackend(`📋 Application form detected — filling fields (${platformLabel()})`, "info");
@@ -2557,7 +2650,12 @@
         // Wait for next step to load
         await sleep(humanDelay(2000, 3000));
       } else {
-        // No button found — form might have closed or errored
+        // No button yet — the step may still be rendering (Smart-Apply renders async, and
+        // late steps race the same way the first one does). Wait once; only bail if nothing
+        // actionable appears, so we don't drop a job on a mid-fill hiccup.
+        if ((await waitForFormReady(6000)) && findFormButton()) {
+          continue;
+        }
         log("No Continue/Submit button found", "err");
         break;
       }
@@ -3223,6 +3321,9 @@
     // Cloudflare's passive "Just a moment" JS interstitial, which self-resolves with no
     // user action. Everything else pauses and waits for the human to clear it.
     const det = isDetected();
+    // Page is clean → reset the CF reload cap so a later genuine (transient) challenge gets
+    // its full 2 retries instead of inheriting a stale count.
+    if (!det.detected) { chrome.storage.local.set({ cfReloadCount: 0 }).catch(() => {}); }
     if (det.detected) {
       // Cloudflare JS challenge ("Just a moment") — auto-resolves in 3-5s,
       // no user action needed. Wait silently up to 15s before escalating.
@@ -3239,15 +3340,27 @@
             return;
           }
         }
-        // Didn't resolve in 60s — reload tab and try once more before manual pause
-        log("Cloudflare didn't resolve in 60s — reloading tab...", "");
-        window.location.reload();
-        await sleep(15000);
-        if (!isDetected().detected) {
-          log("Cloudflare resolved after reload — continuing", "ok");
-          return;
+        // Didn't resolve in 60s — reload at most TWICE, then hand off to the human. The
+        // counter lives in chrome.storage because window.location.reload() destroys this
+        // content-script context: without a persistent cap a mis-detected passive signal
+        // becomes an INFINITE reload loop (page reloads → fresh context → re-detect →
+        // reload…), which is exactly how the pool froze on a clean /viewjob (2026-07-28).
+        const _cf = await chrome.storage.local.get("cfReloadCount");
+        const cfCount = _cf.cfReloadCount || 0;
+        if (cfCount < 2) {
+          await chrome.storage.local.set({ cfReloadCount: cfCount + 1 });
+          log(`Cloudflare didn't resolve in 60s — reloading tab (try ${cfCount + 1}/2)...`, "");
+          window.location.reload();
+          await sleep(15000);
+          if (!isDetected().detected) {
+            await chrome.storage.local.set({ cfReloadCount: 0 });
+            log("Cloudflare resolved after reload — continuing", "ok");
+            return;
+          }
+        } else {
+          log("Cloudflare still flagged after 2 reloads — handing off to you", "err");
         }
-        // Fall through to the human hand-off if reload also failed.
+        // Fall through to the human hand-off if reload also failed / retries exhausted.
       }
 
       // Real challenge (CF managed interstitial, reCAPTCHA / Turnstile checkbox,
@@ -3263,6 +3376,16 @@
       // proceed — the token is issued at submit time.
       if (["greenhouse", "lever"].includes(detectPlatform())) {
         logBackend(`🔓 Passive reCAPTCHA on ${detectPlatform()} — zero-touch, continuing (no human needed)`, "info");
+      } else if ((await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool") {
+        // POOL (tap) mode: the automation window runs in the BACKGROUND — the user isn't
+        // watching it, so a "solve the captcha in this window" hand-off is a dead end. A pool
+        // job still CF-challenged after the auto-resolve + reload attempts is a dead / fake /
+        // blocked posting (live 2026-07-28: a seeded fake jk `fedcba…` CF-looped the pool
+        // forever). Skip it and advance to the next pick instead of parking for 2h.
+        logBackend(`⏭️ Skipping (verification wall / dead posting) — moving to your next pick`, "warn");
+        await chrome.storage.local.set({ cfReloadCount: 0 }).catch(() => {});
+        await skipToNextJob();
+        return;
       } else {
         log(`⚠️ CAPTCHA — pausing. Solve it in this window; the campaign resumes automatically once it's cleared.`, "err");
         await sendMsg({
@@ -3366,6 +3489,14 @@
           // walk applies un-swiped jobs) — skip this queue item and advance the pool.
           if ((await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool") {
             if (await isCampaignRunning()) {
+              // EXCEPT the warm-landing homepage: for Indeed/ZR pool jobs background opens
+              // the platform HOMEPAGE first (to pass Cloudflare), then sessionWarmup
+              // navigates to the picked job. That homepage (pathname "/") is an "unknown"
+              // phase — skipping here would burn an approved pick before warmup even runs
+              // (live 2026-07-28: "Couldn't open this job page (www.indeed.com)" ate a job).
+              // Leave it to warmup; only skip a genuinely broken job page.
+              const onHomeRoot = location.pathname === "/" || location.pathname === "";
+              if (onHomeRoot) break;
               logBackend(`Couldn't open this job page (${location.hostname}) — skipping to your next pick`, "warn");
               await sendMsg({ type: "ATS_JOB_DONE" });
             }
