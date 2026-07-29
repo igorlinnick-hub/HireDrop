@@ -643,8 +643,17 @@ function normalizePoolApplyUrl(platform, url) {
     return null;
   }
   if (platform === "ziprecruiter") {
-    // Direct job pages only; a search URL would re-enter the ZR walk.
-    if (/jobs-search|candidate\/search/.test(url)) return null;
+    // ZR's single-job identity IS a search URL + lk=<uuid> (that's what opens the job in
+    // the right pane; detectPhase reads it as "detail"). Harvested pool links come in this
+    // form (P0c), so ALLOW search URLs when lk= is present — only a bare search URL (no lk)
+    // would re-enter the ZR walk and apply un-swiped jobs. Everything else (standalone job
+    // pages) passes through as before.
+    if (/jobs-search|candidate\/search/.test(url)) {
+      try {
+        if (new URL(url).searchParams.get("lk")) return url;
+      } catch {}
+      return null;
+    }
     return url;
   }
   return url; // greenhouse/lever apply URLs are already single-job pages
@@ -1130,9 +1139,22 @@ async function handleMessage(msg, sender) {
 
       const targetUrl = atsQueue.length ? atsQueue[0].applyUrl
         : buildPlatformUrl(primaryPlatform, filters.keywords, filters.location, filters.job_type);
-      // atsQueue.length (not atsTarget) so the tap swipe-pool run also points home at
-      // the first approved apply URL — main's atsTarget check missed the pool case.
-      const homeUrl = atsQueue.length ? atsQueue[0].applyUrl : platformHomeUrl(primaryPlatform);
+      // Where the automation window first lands. For a pool run whose FIRST job is an
+      // Indeed/ZR native posting we must NOT cold-open its deep /viewjob link — a direct
+      // deep-link nav is a bot jump that Cloudflare answers with "Additional Verification
+      // Required", and the apply never starts. Open the platform HOMEPAGE instead; content.js
+      // sessionWarmup passes CF there (sets cf_clearance), then navigates to targetUrl (the
+      // picked job), which now loads clean. GH/Lever pool jobs have no such CF gate, so open
+      // their apply URL directly. Non-pool (auto) keeps homepage → typed-search as before.
+      // (Edge case for later: a MIXED pool whose head is GH/Lever but which also contains an
+      // Indeed/ZR job — that later deep-link isn't pre-warmed. Today's deck ships GH+Lever
+      // only and native jobs enter via tapNativePool, so pools are single-native-domain.)
+      const headPlatform = atsQueue.length ? atsQueue[0].platform : null;
+      const homeUrl = !atsQueue.length
+        ? platformHomeUrl(primaryPlatform)
+        : POOL_NATIVE_PLATFORMS.includes(headPlatform)
+          ? platformHomeUrl(headPlatform)
+          : atsQueue[0].applyUrl;
       await addToActivityLog(`Opening the automation window → ${String(homeUrl).slice(0, 70)}`, "info");
 
       // Automation runs in a dedicated background window — minimized so it doesn't
