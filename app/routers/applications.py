@@ -46,6 +46,11 @@ def save_application(req: ApplicationSaveRequest, user=Depends(get_current_user)
         job_id=job_id,
         cover_letter=req.cover_letter,
         status=req.status,
+        # Snapshots: history must not depend on the jobs row existing (P3).
+        job_title=req.job_title,
+        company=req.company,
+        platform=req.platform,
+        job_url=req.job_url,
     )
     # Free taste: count ONLY real saved applications (this path), never scans/skips.
     free_used = check["free_used"]

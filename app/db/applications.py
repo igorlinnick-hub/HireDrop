@@ -10,20 +10,33 @@ def save_application(
     job_id: str,
     cover_letter: str = "",
     status: str = "applied",
+    job_title: str = "",
+    company: str = "",
+    platform: str = "",
+    job_url: str = "",
 ) -> str:
-    res = (
-        get_supabase()
-        .table("applications")
-        .insert(
-            {
-                "user_id": user_id,
-                "job_id": job_id,
-                "cover_letter": cover_letter,
-                "status": status,
-            }
-        )
-        .execute()
-    )
+    # Snapshot the display fields ONTO the history row (P3 counter integrity,
+    # migrations/2026-07-29_applications_snapshot.sql): history must survive the
+    # jobs row disappearing — job_id is a live join key, not the source of truth.
+    row = {
+        "user_id": user_id,
+        "job_id": job_id,
+        "cover_letter": cover_letter,
+        "status": status,
+        "job_title": job_title,
+        "company": company,
+        "platform": platform,
+        "job_url": job_url,
+    }
+    try:
+        res = get_supabase().table("applications").insert(row).execute()
+    except Exception:
+        # DEPLOY-BEFORE-MIGRATION SAFETY: if the snapshot columns don't exist yet,
+        # PostgREST rejects the whole insert — losing the history row would be worse
+        # than losing the snapshot. Fall back to the legacy shape; the migration's
+        # backfill fills the snapshots later.
+        legacy = {k: row[k] for k in ("user_id", "job_id", "cover_letter", "status")}
+        res = get_supabase().table("applications").insert(legacy).execute()
     return res.data[0]["id"] if res.data else ""
 
 
@@ -39,14 +52,16 @@ def get_history(user_id: str, limit: int = 50) -> list:
     )
     rows = []
     for row in res.data or []:
+        # Snapshot fields first (survive job deletion — P3); joined jobs row is the
+        # fallback for legacy rows and the only source of tailored_resume.
         job = row.get("jobs") or {}
         rows.append(
             {
                 "id": row["id"],
-                "title": job.get("title", ""),
-                "company": job.get("company", ""),
-                "platform": job.get("platform", ""),
-                "link": job.get("link", ""),
+                "title": row.get("job_title") or job.get("title", ""),
+                "company": row.get("company") or job.get("company", ""),
+                "platform": row.get("platform") or job.get("platform", ""),
+                "link": row.get("job_url") or job.get("link", ""),
                 "date_applied": row["date_applied"],
                 "status": row["status"],
                 "cover_letter": row.get("cover_letter", ""),
