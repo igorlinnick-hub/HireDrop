@@ -222,14 +222,36 @@ def discover_ats(companies: list[tuple[str, str]], keywords: list[str] | None = 
 
     # Zero-touch first (the concurrent gather loses the input ordering), then dedup + cap.
     collected.sort(key=lambda j: _TOUCH_RANK.get(_captcha_touch(j.get("company", ""), j.get("platform", "")), 1))
+    # PER-PLATFORM QUOTA so an abundant platform can't starve a scarce one. With ~185 GH
+    # postings and a global cap of 120, pure zero-touch-first ordering filled every slot
+    # with Greenhouse and Lever NEVER entered the pool (live 2026-07-29: lever stayed 0
+    # even after adding marketing-heavy Lever boards). Reserve a minimum share per platform;
+    # if a platform doesn't use its quota, later platforms still fill the global cap below.
+    per_platform_cap = max(cap // 2, 40)  # e.g. cap 120 -> up to 60 each; ensures a minority
     seen: set[str] = set()
+    per: dict[str, int] = {}
     out: list[dict] = []
     for job in collected:
         u = job.get("apply_url")
         if not u or u in seen:
             continue
+        p = job.get("platform", "")
+        if per.get(p, 0) >= per_platform_cap:
+            continue  # this platform hit its share — leave room for the others
         seen.add(u)
+        per[p] = per.get(p, 0) + 1
         out.append(job)
         if len(out) >= cap:
             break
+    # If the quota left the global cap unfilled (only one platform had supply), top up
+    # with whatever's left so we never under-deliver inventory.
+    if len(out) < cap:
+        for job in collected:
+            u = job.get("apply_url")
+            if not u or u in seen:
+                continue
+            seen.add(u)
+            out.append(job)
+            if len(out) >= cap:
+                break
     return out
