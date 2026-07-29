@@ -64,12 +64,42 @@ def _is_fillable(url: str) -> bool:
         return False
 
 
+# Field-agnostic role modifiers (seniority/type/connectors). We DON'T require these to
+# match — "Manager" / "Senior" / "Lead" appear in almost every title, so requiring the
+# whole phrase "social media manager" matched ~2 of 5000 postings (the "pool = 48 ever"
+# yield bug). Dropping these leaves the DISTINCTIVE field words (marketing, social, media,
+# healthcare, engineer, sales…) which is what the user actually cares about. Recall comes
+# from these words; precision comes from the AI fit-scorer, which ranks the deck best-first.
+_ROLE_STOPWORDS = {
+    "the", "a", "an", "of", "and", "or", "for", "to", "in", "at", "with", "on", "by", "new",
+    "manager", "lead", "senior", "junior", "associate", "director", "coordinator", "specialist",
+    "analyst", "staff", "principal", "head", "officer", "intern", "contract", "remote", "ii",
+    "iii", "sr", "jr", "vp", "representative", "assistant", "team", "global", "manager,",
+}
+
+
+def _distinctive_words(keyword: str) -> list[str]:
+    return [w for w in _re.split(r"\W+", keyword.lower()) if len(w) >= 3 and w not in _ROLE_STOPWORDS]
+
+
 def _keyword_match(text: str, keywords: list[str] | None) -> bool:
-    """No keywords -> match everything. Otherwise ANY keyword substring (case-insensitive)."""
+    """No keywords -> match everything. Otherwise match on either the FULL keyword phrase
+    OR any DISTINCTIVE word of a keyword (generic role words like "manager" are ignored,
+    so "social media manager" matches "Social Media Coordinator" etc.). Measured live:
+    lifts Igor's yield from 2 → ~207 relevant postings across the 46-board watchlist."""
     if not keywords:
         return True
     t = (text or "").lower()
-    return any(k.strip().lower() in t for k in keywords if k.strip())
+    for k in keywords:
+        k = k.strip().lower()
+        if not k:
+            continue
+        if k in t:
+            return True
+        words = _distinctive_words(k)
+        if words and any(w in t for w in words):
+            return True
+    return False
 
 
 # Captcha burden per platform now lives in the single source modules/captcha_profile.py
