@@ -50,9 +50,17 @@ async def _email_poll_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app_: FastAPI):
-    task = asyncio.create_task(_email_poll_loop())
+    # Email response-tracking is OFF by default. It was crude (keyword subject matching) and
+    # cross-tenant (find_by_company_all_users mutates every user's apps by company name from
+    # ONE shared inbox), and check_email_responses() did BLOCKING imaplib IO right inside the
+    # event loop — a hung IMAP call could stall the whole API. Set EMAIL_POLL_ENABLED=1 to
+    # bring it back (and move it off the loop first).
+    task = None
+    if os.getenv("EMAIL_POLL_ENABLED", "").lower() in ("1", "true", "yes"):
+        task = asyncio.create_task(_email_poll_loop())
     yield
-    task.cancel()
+    if task:
+        task.cancel()
 
 
 app = FastAPI(title="HireDrop API", version="1.0.0", lifespan=lifespan)
