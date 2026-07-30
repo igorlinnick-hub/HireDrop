@@ -3072,6 +3072,24 @@
       return;
     }
 
+    // LEVER hCaptcha — we do NOT solve captchas (compliance/ban-safety); we NOTIFY the user.
+    // The form is already FILLED above. GH's invisible reCAPTCHA auto-solves (zero-touch), so
+    // this fires ONLY on a real interactive challenge (isDetected signal = hcaptcha iframe).
+    // The old path treated any GH/Lever captcha as "passive — continuing" and fake-submitted
+    // into the unsolved hCaptcha → silent fail (Lever = 0 applies ever). Now: send the
+    // dashboard "solve the captcha" notification and DON'T submit. Advance the pool so the
+    // walk isn't frozen; the notification carries the job so the user finishes it themselves.
+    // (Refinement for later — preserve the fill instead of advancing — is a UX call for Igor.)
+    if (platform === "lever") {
+      const _det = isDetected();
+      if (/hcaptcha/i.test(_det.signal || "")) {
+        logBackend(`🧩 Lever: ${jobTitle} @ ${jobCompany} — заполнено, нужна ВАША капча. Открой Lever и submit (капчу не решаем за тебя).`, "warn");
+        await sendMsg({ type: "DETECTION_TRIPPED", data: { signal: _det.signal, url: jobUrl, phase: "form", job_title: jobTitle, company: jobCompany, needs_captcha: true } });
+        await sendMsg({ type: "ATS_JOB_DONE" }); // notify + advance; don't fake-submit, don't freeze the pool
+        return;
+      }
+    }
+
     await sleep(humanDelay(2000, 5000));
     if (!(await isCampaignRunning())) { log("Campaign stopped — not submitting", ""); return; }
 
