@@ -3284,10 +3284,16 @@
     // A Close-only dialog (external-apply job) is NOT a form — don't route to phase3.
     if (findZipRecruiterApplyForm()) return "form";
 
-    // Phase 2: jobs-search page WITH lk= param (job selected, right panel populated)
+    // Phase 2: any ZR surface with an lk= param AND a populated right-pane = a specific job
+    // is selected. Covers /jobs-search?lk=, /candidate/search?lk=, AND /co/<Company>/Jobs?lk=
+    // (clicking a search card navigates here — live 2026-07-30). The old check only matched
+    // /jobs-search|/candidate/search, so a /co/…?lk= page fell through to "unknown" and the
+    // walk stalled on it. Gate on the right-pane so a bare /co/ company page isn't mis-read.
     try {
       const params = new URL(url).searchParams;
-      if (params.get("lk") && (url.includes("/jobs-search") || url.includes("/candidate/search"))) {
+      if (params.get("lk") &&
+          (url.includes("/jobs-search") || url.includes("/candidate/search") ||
+           document.querySelector('[data-testid="right-pane"]'))) {
         return "detail";
       }
     } catch {}
