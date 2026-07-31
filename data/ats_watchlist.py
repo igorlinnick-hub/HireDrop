@@ -164,4 +164,21 @@ SEED_WATCHLIST: list[tuple[str, str]] = [
     ("rover", "lever"),           # consumer marketplace, 5
     ("gopuff", "lever"),          # delivery/consumer, 4
     ("morningbrew", "lever"),     # media/newsletter, 3
+    # --- Ashby (added 2026-07-31; 5th platform, script-verified live: board 200 AND has
+    # marketing/social roles. Ashby = guest-apply ATS like GH, api.ashbyhq.com posting-api.
+    # 40 orgs, 427 marketing roles total; ordered by marketing yield). ---
+    ("elevenlabs", "ashby"),  # 35 mktg
+    ("supabase", "ashby"),    # 29
+    ("suno", "ashby"),        # 21
+    ("eightsleep", "ashby"),  # 12
+    ("gamma", "ashby"),       # 11
+    ("harvey", "ashby"), ("perplexity", "ashby"), ("sierra", "ashby"), ("vanta", "ashby"),
+    ("notion", "ashby"), ("cursor", "ashby"), ("ramp", "ashby"), ("cohere", "ashby"),
+    ("column", "ashby"), ("mercor", "ashby"), ("decagon", "ashby"), ("baseten", "ashby"),
+    ("temporal", "ashby"), ("render", "ashby"), ("zip", "ashby"), ("warp", "ashby"),
+    ("photoroom", "ashby"), ("writer", "ashby"), ("found", "ashby"), ("workos", "ashby"),
+    ("linear", "ashby"), ("posthog", "ashby"), ("modal", "ashby"), ("neon", "ashby"),
+    ("pika", "ashby"), ("krea", "ashby"), ("hedra", "ashby"), ("semgrep", "ashby"),
+    ("infisical", "ashby"), ("watershed", "ashby"), ("runway", "ashby"), ("resend", "ashby"),
+    ("unit", "ashby"), ("persona", "ashby"), ("ideogram", "ashby"),
 ]
