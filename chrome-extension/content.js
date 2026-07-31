@@ -722,6 +722,11 @@
         'input[name*="full_name" i]',
         'input[name*="fullName" i]',
         'input[autocomplete="name"]',
+        // Ashby renders a single full-name field as _systemfield_name (label "Name").
+        // Without this, firstName/fullName both miss it → the app submits nameless and
+        // Ashby's required-field validation blocks the submit (verified on a live form).
+        'input[name="_systemfield_name"]',
+        'input[id="_systemfield_name"]',
       ],
       email: [
         'input[type="email"]',
