@@ -12,6 +12,7 @@ Measured/confirmed 2026-07-12/13:
   greenhouse   = reCAPTCHA Enterprise invisible (no checkbox)    → LOW  (zero-touch, confirmed live)
   ziprecruiter = native; captcha profile not yet measured        → MEDIUM (assume some, pending measure)
   lever        = per-company hCaptcha (interactive image grid)   → HIGH (human-touch)
+  ashby        = guest-apply, usually no interactive challenge    → LOW (zero-touch, pending live confirm)
 Dependency-free on purpose so the DB/router layers can import it without pulling scrapers.
 """
 
@@ -20,6 +21,7 @@ PLATFORM_CAPTCHA = {
     "greenhouse": "low",
     "ziprecruiter": "medium",
     "lever": "high",
+    "ashby": "low",
 }
 
 # Runtime-learned per-company/platform overrides (token -> "low"|"medium"|"high").

@@ -42,13 +42,14 @@
     if (host.includes("ziprecruiter.com")) return "ziprecruiter";
     if (host.includes("greenhouse.io")) return "greenhouse";
     if (host.includes("lever.co")) return "lever";
+    if (host.includes("ashbyhq.com")) return "ashby";
     return "indeed";
   }
 
   // Human-readable platform name for user-facing log lines. Every activity
   // message the dashboard shows should name the ACTUAL platform — a Greenhouse
   // campaign logging "Indeed" reads as broken.
-  const PLATFORM_LABELS = { indeed: "Indeed", ziprecruiter: "ZipRecruiter", greenhouse: "Greenhouse", lever: "Lever" };
+  const PLATFORM_LABELS = { indeed: "Indeed", ziprecruiter: "ZipRecruiter", greenhouse: "Greenhouse", lever: "Lever", ashby: "Ashby" };
   function platformLabel() {
     return PLATFORM_LABELS[detectPlatform()] || "Indeed";
   }
@@ -298,7 +299,7 @@
     // navigate the ATS tab away to the board search URL, killing the apply we came here for.
     {
       const p = detectPlatform();
-      if (p === "greenhouse" || p === "lever") return;
+      if (p === "greenhouse" || p === "lever" || p === "ashby") return;
     }
     // POOL (by-link) mode: background opens the automation window on the platform HOMEPAGE
     // (see background.js homeUrl), NOT on the deep /viewjob link — a cold deep-link nav is a
@@ -2879,7 +2880,7 @@
   // =========================================================================
   async function phase_ats(platform) {
     if (!(await isCampaignRunning())) return;
-    const label = platform === "lever" ? "Lever" : "Greenhouse";
+    const label = platform === "lever" ? "Lever" : platform === "ashby" ? "Ashby" : "Greenhouse";
 
     const count = await getPlatformCount(platform);
     if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
@@ -3248,8 +3249,22 @@
     const platform = detectPlatform();
     if (platform === "greenhouse") return detectPhaseGreenhouse();
     if (platform === "lever") return detectPhaseLever();
+    if (platform === "ashby") return detectPhaseAshby();
     if (platform === "ziprecruiter") return detectPhaseZipRecruiter();
     return detectPhaseIndeed();
+  }
+
+  function detectPhaseAshby() {
+    // Ashby guest-apply form lives at jobs.ashbyhq.com/<org>/<id>/application with
+    // name/email/resume fields (React-rendered). The JD page (no /application) has an
+    // "Apply for this Job" link — we navigate straight to /application (see fetch_ashby),
+    // so treat a page with the core fields as the form; everything else is unknown so the
+    // auto-walk's dead-job skip advances past closed/errored postings.
+    const hasCoreField = document.querySelector(
+      'input[name="_systemfield_name" i], input[name*="name" i], input[type="email"], input[type="file"]'
+    );
+    const hasApplyForm = /\/application\/?$/.test(location.pathname) || hasCoreField;
+    return hasCoreField && hasApplyForm ? "form" : "unknown";
   }
 
   function detectPhaseIndeed() {
@@ -3398,7 +3413,10 @@
       // text / .g-recaptcha node), so on these platforms we must NOT park in the human
       // captcha-pause: that was the dead 6-7min→2h hang on GH. Log it and let the apply
       // proceed — the token is issued at submit time.
-      if (["greenhouse", "lever"].includes(detectPlatform())) {
+      if (["greenhouse", "lever", "ashby"].includes(detectPlatform())) {
+        // GH/Ashby carry only a PASSIVE invisible reCAPTCHA (auto-solves at submit). Lever is
+        // here too so phase_ats still FILLS the form — its REAL hCaptcha is caught at submit
+        // (phase_ats notifies the user, #72), not at this pre-fill gate.
         logBackend(`🔓 Passive reCAPTCHA on ${detectPlatform()} — zero-touch, continuing (no human needed)`, "info");
       } else if ((await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool") {
         // POOL (tap) mode: the automation window runs in the BACKGROUND — the user isn't
@@ -3447,7 +3465,7 @@
       // posting reads as logged_out and parks the campaign in the 2h login-pause loop below
       // (looks like a dead 6-7-min+ hang on a zero-touch GH apply). Mirrors sessionWarmup's
       // greenhouse/lever guard.
-      const isAtsGuest = authPlatform === "greenhouse" || authPlatform === "lever";
+      const isAtsGuest = authPlatform === "greenhouse" || authPlatform === "lever" || authPlatform === "ashby";
       const authStatus = isAtsGuest ? "connected" : detectPlatformAuth(authPlatform);
       if (authStatus === "logged_out") {
         await reportPlatformAuth();
@@ -3500,7 +3518,7 @@
           break;
         case "form": {
           const _p = detectPlatform();
-          if (_p === "greenhouse" || _p === "lever") {
+          if (_p === "greenhouse" || _p === "lever" || _p === "ashby") {
             await phase_ats(_p);
             await returnToBoardAfterAts(); // P4: continue the board campaign if we came from one
           } else {
@@ -3532,7 +3550,7 @@
           // forever → applied=0 (live 2026-07-31 on reddit?error=true). Skip + advance the queue.
           {
             const _atsP = (await chrome.storage.local.get("atsPlatform")).atsPlatform;
-            if ((_atsP === "greenhouse" || _atsP === "lever") && (await isCampaignRunning())) {
+            if ((_atsP === "greenhouse" || _atsP === "lever" || _atsP === "ashby") && (await isCampaignRunning())) {
               logBackend(`Skipping (posting closed/errored on ${location.hostname}) — next job`, "warn");
               await sendMsg({ type: "ATS_JOB_DONE" });
               break;

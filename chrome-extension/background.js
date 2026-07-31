@@ -400,7 +400,7 @@ async function detachDebugger(tabId) {
 // Indeed-only guard) while the live window works ACROSS every platform (a CWS requirement:
 // the user must see what the extension is doing). Keep in sync with the platforms that
 // phase2 / phase3 / phase_ats operate on.
-const CAPTURE_HOSTS = ["indeed.com", "ziprecruiter.com", "greenhouse.io", "lever.co"];
+const CAPTURE_HOSTS = ["indeed.com", "ziprecruiter.com", "greenhouse.io", "lever.co", "ashbyhq.com"];
 function isCapturableAutomationUrl(url) {
   try {
     const h = new URL(url).hostname;
@@ -417,6 +417,7 @@ function platformDisplayNameFromUrl(url) {
   if (u.includes("ziprecruiter.com")) return "ZipRecruiter";
   if (u.includes("greenhouse.io")) return "Greenhouse";
   if (u.includes("lever.co")) return "Lever";
+  if (u.includes("ashbyhq.com")) return "Ashby";
   if (u.includes("indeed.com")) return "Indeed";
   return "The job site";
 }
@@ -562,7 +563,7 @@ function pickPrimaryPlatform(platforms) {
 // campaign walks the saved apply URLs in the automation tab (no board search). Only
 // zero-touch (no interactive captcha) platforms run FULL-auto here — Lever (hCaptcha) needs
 // the human tapalka to advance and is excluded from the auto pool for now (GLOBAL_PLAN P2).
-const ATS_PLATFORMS = ["greenhouse", "lever"];
+const ATS_PLATFORMS = ["greenhouse", "lever", "ashby"];
 const ATS_ZERO_TOUCH_PLATFORMS = ["greenhouse"];
 
 // Build the ATS apply queue for a campaign (GLOBAL_PLAN P1a+P1b): populate the pool via

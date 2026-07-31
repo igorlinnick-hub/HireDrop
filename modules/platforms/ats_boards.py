@@ -27,6 +27,9 @@ import requests
 # (~6% in the swipe deck). Lever's postings API already returns descriptionPlain.
 GREENHOUSE_BOARD_API = "https://boards-api.greenhouse.io/v1/boards/{token}/jobs?content=true"
 LEVER_POSTINGS_API = "https://api.lever.co/v0/postings/{token}?mode=json"
+# Ashby public job-board API — returns jobs with descriptionPlain + jobUrl/applyUrl
+# (both jobs.ashbyhq.com/<org>/<id>). Guest-apply, form at <jobUrl>/application.
+ASHBY_BOARD_API = "https://api.ashbyhq.com/posting-api/job-board/{token}?includeCompensation=true"
 
 _TAG_RE = _re.compile(r"<[^>]+>")
 
@@ -52,7 +55,7 @@ _DISCOVER_WORKERS = 16
 # their OWN career domain (stripe.com/jobs?gh_jid=…) — the board API still lists those, but
 # their apply_url isn't a form phase_ats handles, so we drop them here rather than hand the
 # filler a URL it can't drive. (Verified 2026-07-12: ~half of GH matches are custom-domain.)
-_FILLABLE_SUFFIXES = ("greenhouse.io", "lever.co")
+_FILLABLE_SUFFIXES = ("greenhouse.io", "lever.co", "ashbyhq.com")
 
 
 def _is_fillable(url: str) -> bool:
@@ -184,7 +187,39 @@ def fetch_lever(token: str, keywords: list[str] | None = None, limit: int = 50) 
     return out
 
 
-_FETCHERS = {"greenhouse": fetch_greenhouse, "lever": fetch_lever}
+def fetch_ashby(token: str, keywords: list[str] | None = None, limit: int = 50) -> list[dict]:
+    """Live Ashby postings for one company. Returns [] on any error / bad token.
+
+    Ashby's board API returns descriptionPlain (no HTML strip needed) and jobUrl/applyUrl
+    at jobs.ashbyhq.com/<org>/<id>. The guest application form is at <jobUrl>/application,
+    so we target that directly (phase_ats lands on the form, not the JD page)."""
+    try:
+        r = requests.get(ASHBY_BOARD_API.format(token=token), headers=_UA, timeout=_TIMEOUT)
+        if r.status_code != 200:
+            return []
+        jobs = (r.json() or {}).get("jobs", []) or []
+    except Exception:
+        return []
+    out = []
+    for j in jobs:
+        if j.get("isListed") is False:
+            continue
+        title = (j.get("title") or "").strip()
+        loc = j.get("location") or ""
+        if not _keyword_match(f"{title} {loc}", keywords):
+            continue
+        base = j.get("applyUrl") or j.get("jobUrl")
+        if not base or not _is_fillable(base):
+            continue
+        url = base.rstrip("/") + "/application"  # land on the form, not the JD page
+        desc = j.get("descriptionPlain") or _strip_html(j.get("descriptionHtml", ""))
+        out.append(_job(title, token, url, loc, "ashby", desc))
+        if len(out) >= limit:
+            break
+    return out
+
+
+_FETCHERS = {"greenhouse": fetch_greenhouse, "lever": fetch_lever, "ashby": fetch_ashby}
 
 
 def discover_ats(companies: list[tuple[str, str]], keywords: list[str] | None = None,
