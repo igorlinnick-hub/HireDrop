@@ -622,11 +622,18 @@ async function apiPatch(path, body, { retry = true } = {}) {
 }
 
 // Native boards the pool can apply BY LINK (Igor 2026-07-27: "тап должен работать по
-// всем платформам"). Gated behind the tapNativePool storage flag (default OFF) until
-// the link-normalization path is live-verified — a wrong Indeed URL shape reads as a
-// SEARCH page and phase1 would auto-apply un-swiped jobs (the footgun in
-// TAP_INSTANT_PLAN.md). Flip: chrome.storage.local.set({tapNativePool:true}).
-const POOL_NATIVE_PLATFORMS = ["indeed", "ziprecruiter"];
+// всем платформам"). Split by verification status:
+//  - VERIFIED: link-normalization path proven live (Indeed by-link, 2 real applies #68).
+//    normalizePoolApplyUrl() returns null unless a jk/vjk is present, so a search URL can
+//    never slip through as an un-swiped auto-apply — the footgun is closed. Always in pool.
+//  - PENDING: by-link path not yet live-verified (ZR ephemeral /co/…?lk= URLs). Kept behind
+//    the tapNativePool storage flag (default OFF) until verified.
+//    Flip: chrome.storage.local.set({tapNativePool:true}).
+const POOL_NATIVE_VERIFIED = ["indeed"];
+const POOL_NATIVE_PENDING = ["ziprecruiter"];
+// Every native (verified or pending), for the CF-homepage-warm decision: a native pool head
+// must never be cold deep-linked regardless of whether it's flag-gated.
+const POOL_NATIVE_ALL = POOL_NATIVE_VERIFIED.concat(POOL_NATIVE_PENDING);
 
 // Return a SAFE single-job URL for the pool walk, or null when one can't be derived
 // (null = leave the job out of the queue rather than risk the search-walk footgun).
@@ -671,9 +678,10 @@ async function buildApprovedAtsQueue(perPlatformCap) {
   // that skips stays `approved` in the DB and the rebuild re-queues it forever
   // (live-test finding: oura?error=true looped every 4s).
   const doneUrls = new Set(dd.poolDoneUrls || []);
+  // Verified natives (Indeed) are always poolable; pending natives (ZR) only under the flag.
   const poolPlatforms = dd.tapNativePool === true
-    ? ATS_PLATFORMS.concat(POOL_NATIVE_PLATFORMS)
-    : ATS_PLATFORMS;
+    ? ATS_PLATFORMS.concat(POOL_NATIVE_VERIFIED, POOL_NATIVE_PENDING)
+    : ATS_PLATFORMS.concat(POOL_NATIVE_VERIFIED);
   const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
   const perCount = {};
   const out = [];
@@ -693,6 +701,34 @@ async function buildApprovedAtsQueue(perPlatformCap) {
   }
   // GET /jobs already orders zero-touch first (PR #32) — preserved by the linear walk.
   return out;
+}
+
+// Navigate the automation tab to the next pool job — CF-safely.
+// GH/Lever/Ashby apply URLs have no Cloudflare gate → open them directly. A NATIVE job
+// (Indeed/ZR) deep-link is a cold "bot jump" CF answers with "Additional Verification
+// Required" UNLESS indeed.com/ziprecruiter.com already carries cf_clearance. The head
+// open warms the head's domain; a MIXED pool (GH head + Indeed later) would otherwise
+// cold-deep-link that Indeed job. So: the FIRST time we reach each native domain this run,
+// route via its HOMEPAGE (campaignWarmedUp=false → content.js sessionWarmup warms CF, then
+// navigates to campaignTargetUrl); once warmed, the cf_clearance cookie covers the rest.
+async function navigatePoolNext(tabId, job) {
+  if (!job || !job.applyUrl) return;
+  if (POOL_NATIVE_ALL.includes(job.platform)) {
+    const st = await chrome.storage.local.get("poolWarmedNatives");
+    const warmed = new Set(st.poolWarmedNatives || []);
+    if (!warmed.has(job.platform)) {
+      warmed.add(job.platform);
+      await chrome.storage.local.set({
+        campaignTargetUrl: job.applyUrl,
+        campaignWarmedUp: false,
+        poolWarmedNatives: Array.from(warmed),
+      });
+      await chrome.tabs.update(tabId, { url: platformHomeUrl(job.platform) }).catch(() => {});
+      return;
+    }
+  }
+  await chrome.storage.local.set({ campaignTargetUrl: job.applyUrl });
+  await chrome.tabs.update(tabId, { url: job.applyUrl }).catch(() => {});
 }
 
 // Walk the ATS queue one step: drop the head, open the next apply URL in the automation
@@ -718,7 +754,7 @@ async function advanceAtsQueue() {
       if (rest.length && running) {
         // Fresh watchdog window for the next job page (see atsWalkWatchdog).
         await chrome.storage.local.set({ atsNavAt: Date.now(), atsNavTries: 0 });
-        await chrome.tabs.update(campaignTabId, { url: rest[0].applyUrl }).catch(() => {});
+        await navigatePoolNext(campaignTabId, rest[0]);
       } else if (!rest.length) {
         // Tap swipe-pool: don't finish on empty — the user may have approved more while
         // we worked. Rebuild from newly-approved jobs and keep walking; only go idle
@@ -731,7 +767,7 @@ async function advanceAtsQueue() {
           if (more.length) {
             await chrome.storage.local.set({ atsQueue: more, atsNavAt: Date.now(), atsNavTries: 0 });
             await addToActivityLog(`Applying ${more.length} more approved job${more.length > 1 ? "s" : ""} you swiped…`, "info");
-            await chrome.tabs.update(campaignTabId, { url: more[0].applyUrl }).catch(() => {});
+            await navigatePoolNext(campaignTabId, more[0]);
           } else {
             await chrome.storage.local.set({ atsQueue: [] });
             await chrome.storage.local.remove(["atsNavAt", "atsNavTries"]);
@@ -796,7 +832,7 @@ async function tapPoolIdleRefill() {
   try { await chrome.tabs.get(d.campaignTabId); } catch { return; } // automation tab gone
   await chrome.storage.local.set({ atsQueue: more, atsNavAt: Date.now(), atsNavTries: 0 });
   await addToActivityLog(`Applying ${more.length} more approved job${more.length > 1 ? "s" : ""} you swiped…`, "info");
-  await chrome.tabs.update(d.campaignTabId, { url: more[0].applyUrl }).catch(() => {});
+  await navigatePoolNext(d.campaignTabId, more[0]);
 }
 
 // Unified auth page per platform (enter email → logs in or creates an account),
@@ -1147,13 +1183,13 @@ async function handleMessage(msg, sender) {
       // sessionWarmup passes CF there (sets cf_clearance), then navigates to targetUrl (the
       // picked job), which now loads clean. GH/Lever pool jobs have no such CF gate, so open
       // their apply URL directly. Non-pool (auto) keeps homepage → typed-search as before.
-      // (Edge case for later: a MIXED pool whose head is GH/Lever but which also contains an
-      // Indeed/ZR job — that later deep-link isn't pre-warmed. Today's deck ships GH+Lever
-      // only and native jobs enter via tapNativePool, so pools are single-native-domain.)
+      // MIXED pool (GH head + Indeed later): the later native deep-link is CF-warmed on the
+      // fly by navigatePoolNext (first hit of each native domain routes via its homepage).
+      // We seed poolWarmedNatives with the head below so a native head isn't re-warmed.
       const headPlatform = atsQueue.length ? atsQueue[0].platform : null;
       const homeUrl = !atsQueue.length
         ? platformHomeUrl(primaryPlatform)
-        : POOL_NATIVE_PLATFORMS.includes(headPlatform)
+        : POOL_NATIVE_ALL.includes(headPlatform)
           ? platformHomeUrl(headPlatform)
           : atsQueue[0].applyUrl;
       await addToActivityLog(`Opening the automation window → ${String(homeUrl).slice(0, 70)}`, "info");
@@ -1205,6 +1241,9 @@ async function handleMessage(msg, sender) {
         campaignWindowId: tabInfo.windowId,
         currentJob: null,
         campaignWarmedUp: false,
+        // A native head is CF-warmed by the homepage open above → seed it so the queue walk
+        // doesn't re-warm the same domain. GH/Lever/Ashby heads need no warm, so [] for them.
+        poolWarmedNatives: POOL_NATIVE_ALL.includes(headPlatform) ? [headPlatform] : [],
         processedJobKeys: [],
         processedPageStarts: [0],
       });
