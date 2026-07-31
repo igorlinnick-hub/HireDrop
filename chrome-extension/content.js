@@ -3526,6 +3526,18 @@
             }
             break;
           }
+          // Auto-ATS walk (greenhouse/lever, non-pool): an unknown page here is a DEAD/closed
+          // posting — e.g. GH redirects an expired job to job-boards.greenhouse.io/<org>?error=
+          // true (board root, no form). Without advancing, the walk STALLS on it and re-inits
+          // forever → applied=0 (live 2026-07-31 on reddit?error=true). Skip + advance the queue.
+          {
+            const _atsP = (await chrome.storage.local.get("atsPlatform")).atsPlatform;
+            if ((_atsP === "greenhouse" || _atsP === "lever") && (await isCampaignRunning())) {
+              logBackend(`Skipping (posting closed/errored on ${location.hostname}) — next job`, "warn");
+              await sendMsg({ type: "ATS_JOB_DONE" });
+              break;
+            }
+          }
           // On ZipRecruiter this is usually /jobseeker/home or a session redirect —
           // recover to the search instead of stalling forever.
           if (detectPlatform() === "ziprecruiter" && (await isCampaignRunning())) {
