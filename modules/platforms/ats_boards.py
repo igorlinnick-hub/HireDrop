@@ -30,6 +30,14 @@ LEVER_POSTINGS_API = "https://api.lever.co/v0/postings/{token}?mode=json"
 # Ashby public job-board API — returns jobs with descriptionPlain + jobUrl/applyUrl
 # (both jobs.ashbyhq.com/<org>/<id>). Guest-apply, form at <jobUrl>/application.
 ASHBY_BOARD_API = "https://api.ashbyhq.com/posting-api/job-board/{token}?includeCompensation=true"
+# Workday public "cxs" discovery API — POST per tenant/site (there's no global search).
+# tenant + data-center (wd1..wd12) + site are company-specific → the watchlist token encodes
+# all three as "tenant|dc|site". DISCOVERY ONLY for now: Workday apply is an account-gated
+# multi-step wizard (My Info → Experience → Questions → Voluntary → Review), NOT the single-
+# page form phase_ats fills, so these jobs feed the pool ("scrapeable") but the executor
+# never walks them (workday ∉ ATS_PLATFORMS). Verified live 2026-07-31: 2.8k marketing roles
+# across nvidia/adobe/salesforce/mastercard/hp/paypal/target/workday/cvshealth.
+WORKDAY_CXS_API = "https://{tenant}.{dc}.myworkdayjobs.com/wday/cxs/{tenant}/{site}/jobs"
 
 _TAG_RE = _re.compile(r"<[^>]+>")
 
@@ -219,7 +227,55 @@ def fetch_ashby(token: str, keywords: list[str] | None = None, limit: int = 50) 
     return out
 
 
-_FETCHERS = {"greenhouse": fetch_greenhouse, "lever": fetch_lever, "ashby": fetch_ashby}
+def fetch_workday(token: str, keywords: list[str] | None = None, limit: int = 50) -> list[dict]:
+    """Live Workday postings for one tenant. token = "tenant|dc|site".
+
+    DISCOVERY ONLY — Workday apply is an account-gated multi-step wizard (not phase_ats-
+    fillable), so we do NOT run the _is_fillable gate here; these jobs enter the pool for
+    "scrapeable" coverage but the extension never walks them (workday ∉ ATS_PLATFORMS).
+    The cxs API is a POST with a searchText query (there is no global search)."""
+    try:
+        tenant, dc, site = token.split("|")
+    except ValueError:
+        return []
+    url = WORKDAY_CXS_API.format(tenant=tenant, dc=dc, site=site)
+    search_text = " ".join((keywords or [])[:3])
+    try:
+        r = requests.post(
+            url,
+            headers={**_UA, "Content-Type": "application/json", "Accept": "application/json"},
+            json={"appliedFacets": {}, "limit": 20, "offset": 0, "searchText": search_text},
+            timeout=_TIMEOUT,
+        )
+        if r.status_code != 200:
+            return []
+        posts = (r.json() or {}).get("jobPostings", []) or []
+    except Exception:
+        return []
+    base = f"https://{tenant}.{dc}.myworkdayjobs.com/{site}"
+    out = []
+    for p in posts:
+        title = (p.get("title") or "").strip()
+        loc = p.get("locationsText") or ""
+        if not _keyword_match(f"{title} {loc}", keywords):
+            continue
+        path = p.get("externalPath") or ""
+        if not path:
+            continue
+        # No description in the list response (a per-job detail call is a separate endpoint);
+        # the thin-description backfill / title-based scoring handles it (min_score=0 keeps them).
+        out.append(_job(title, tenant, base + path, loc, "workday", ""))
+        if len(out) >= limit:
+            break
+    return out
+
+
+_FETCHERS = {
+    "greenhouse": fetch_greenhouse,
+    "lever": fetch_lever,
+    "ashby": fetch_ashby,
+    "workday": fetch_workday,
+}
 
 
 def discover_ats(companies: list[tuple[str, str]], keywords: list[str] | None = None,
@@ -262,7 +318,11 @@ def discover_ats(companies: list[tuple[str, str]], keywords: list[str] | None = 
     # with Greenhouse and Lever NEVER entered the pool (live 2026-07-29: lever stayed 0
     # even after adding marketing-heavy Lever boards). Reserve a minimum share per platform;
     # if a platform doesn't use its quota, later platforms still fill the global cap below.
-    per_platform_cap = max(cap // 2, 40)  # e.g. cap 120 -> up to 60 each; ensures a minority
+    # Share the cap across however many platforms are actually in this sweep, so adding a
+    # platform (e.g. Workday) can't be starved by zero-touch boards saturating the cap first
+    # (with the old cap//2, gh+ashby alone filled 120 and lever/workday got 0).
+    _platforms_present = {p for _, p in fetch_targets} or {""}
+    per_platform_cap = max(cap // len(_platforms_present), 40)
     seen: set[str] = set()
     per: dict[str, int] = {}
     out: list[dict] = []

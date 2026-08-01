@@ -181,4 +181,17 @@ SEED_WATCHLIST: list[tuple[str, str]] = [
     ("pika", "ashby"), ("krea", "ashby"), ("hedra", "ashby"), ("semgrep", "ashby"),
     ("infisical", "ashby"), ("watershed", "ashby"), ("runway", "ashby"), ("resend", "ashby"),
     ("unit", "ashby"), ("persona", "ashby"), ("ideogram", "ashby"),
+    # --- Workday (added 2026-07-31; DISCOVERY-ONLY, big US enterprise. Token = tenant|dc|site;
+    # apply is account-gated multi-step (not yet auto-filled) so these feed the pool for
+    # "scrapeable" coverage but the extension never walks them. Script-verified live: cxs API
+    # 200 + marketing>0. Ordered by marketing yield). ---
+    ("nvidia|wd5|NVIDIAExternalCareerSite", "workday"),   # 780 mktg
+    ("adobe|wd5|external_experienced", "workday"),         # 701
+    ("salesforce|wd12|External_Career_Site", "workday"),   # 458
+    ("mastercard|wd1|CorporateCareers", "workday"),        # 307
+    ("hp|wd5|ExternalCareerSite", "workday"),              # 227
+    ("paypal|wd1|jobs", "workday"),                        # 112
+    ("target|wd5|targetcareers", "workday"),               # 91
+    ("workday|wd5|Workday", "workday"),                    # 90
+    ("cvshealth|wd1|CVS_Health_Careers", "workday"),       # 79
 ]
