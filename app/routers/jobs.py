@@ -156,7 +156,7 @@ def _run_ats_discovery(user_id: str) -> None:
         keywords = profile.get("keywords", [])
 
         try:
-            found = discover_ats(SEED_WATCHLIST, keywords, cap=120)
+            found = discover_ats(SEED_WATCHLIST, keywords, cap=160)
         except Exception as e:
             print(f"[find-ats bg] discovery failed: {e}", file=sys.stderr)
             found = []

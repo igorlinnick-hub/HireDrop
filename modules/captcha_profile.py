@@ -22,6 +22,9 @@ PLATFORM_CAPTCHA = {
     "ziprecruiter": "medium",
     "lever": "high",
     "ashby": "low",
+    # Workday: discovery-only (account-gated multi-step apply) → rank LAST in discovery so
+    # zero-touch applyable boards fill the pool first; it still gets its per-platform share.
+    "workday": "high",
 }
 
 # Runtime-learned per-company/platform overrides (token -> "low"|"medium"|"high").
