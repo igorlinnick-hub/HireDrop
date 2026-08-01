@@ -55,7 +55,9 @@ _UA = {"User-Agent": "HireDrop/1.0 (+https://hiredrop.io)"}
 # matter how many boards are slow (P0: sequential fetch = 46×timeout held a worker for
 # minutes → API 000).
 _TIMEOUT = 6
-_DISCOVER_DEADLINE = 25  # hard cap (seconds) on a whole discovery sweep
+_DISCOVER_DEADLINE = 35  # hard cap (seconds) on a whole discovery sweep. Bumped 25→35 as the
+# watchlist grew to ~196 boards (find-ats runs in a background thread since #64, so a longer
+# sweep no longer holds an API worker — the deadline just bounds total work).
 _DISCOVER_WORKERS = 16
 
 # Hosts phase_ats can actually fill (detectPlatform recognizes greenhouse.io / lever.co).
@@ -288,8 +290,24 @@ def discover_ats(companies: list[tuple[str, str]], keywords: list[str] | None = 
     keeps zero-touch (low-captcha) destinations first so the cap fills with the easy wins.
     """
     import concurrent.futures
+    from collections import deque
 
     fetch_targets = [(t, p) for t, p in companies if p in _FETCHERS]
+    # Interleave by platform so a platform listed LAST in the watchlist (e.g. Workday, 9
+    # boards after 187 others) isn't starved when _DISCOVER_DEADLINE cuts off stragglers:
+    # spreading each platform's boards through the submission order makes the deadline trim
+    # all platforms proportionally instead of killing whichever comes last (live 2026-07-31:
+    # Workday landed only 3 of ~40 because its boards were submitted after GH/Lever/Ashby).
+    _byp: dict[str, deque] = {}
+    for t, p in fetch_targets:
+        _byp.setdefault(p, deque()).append((t, p))
+    _queues = list(_byp.values())
+    _interleaved: list[tuple[str, str]] = []
+    while any(_queues):
+        for q in _queues:
+            if q:
+                _interleaved.append(q.popleft())
+    fetch_targets = _interleaved
 
     def _one(token: str, platform: str) -> list[dict]:
         try:
