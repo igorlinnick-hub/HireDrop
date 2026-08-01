@@ -241,28 +241,36 @@ def fetch_workday(token: str, keywords: list[str] | None = None, limit: int = 50
     except ValueError:
         return []
     url = WORKDAY_CXS_API.format(tenant=tenant, dc=dc, site=site)
-    search_text = " ".join((keywords or [])[:3])
-    try:
-        r = requests.post(
-            url,
-            headers={**_UA, "Content-Type": "application/json", "Accept": "application/json"},
-            json={"appliedFacets": {}, "limit": 20, "offset": 0, "searchText": search_text},
-            timeout=_TIMEOUT,
-        )
-        if r.status_code != 200:
-            return []
-        posts = (r.json() or {}).get("jobPostings", []) or []
-    except Exception:
-        return []
+    hdr = {**_UA, "Content-Type": "application/json", "Accept": "application/json"}
+    # Workday's searchText AND-matches EVERY word, so joining several keyword PHRASES into one
+    # query returns nothing (live 2026-07-31: "healthcare marketing social media manager" → 0,
+    # but "healthcare marketing" → 29 and "social media manager" → 13). Query each keyword
+    # phrase separately and merge, deduping by externalPath. searchText="" (no keywords) just
+    # returns the most-recent jobs, which _keyword_match then can't narrow — so keep it as a
+    # last resort only.
+    queries = [k for k in (keywords or []) if k and k.strip()] or [""]
+    posts: dict[str, dict] = {}
+    for q in queries[:4]:
+        try:
+            r = requests.post(
+                url, headers=hdr,
+                json={"appliedFacets": {}, "limit": 20, "offset": 0, "searchText": q},
+                timeout=_TIMEOUT,
+            )
+            if r.status_code != 200:
+                continue
+            for p in (r.json() or {}).get("jobPostings", []) or []:
+                path = p.get("externalPath")
+                if path and path not in posts:
+                    posts[path] = p
+        except Exception:
+            continue
     base = f"https://{tenant}.{dc}.myworkdayjobs.com/{site}"
     out = []
-    for p in posts:
+    for path, p in posts.items():
         title = (p.get("title") or "").strip()
         loc = p.get("locationsText") or ""
         if not _keyword_match(f"{title} {loc}", keywords):
-            continue
-        path = p.get("externalPath") or ""
-        if not path:
             continue
         # No description in the list response (a per-job detail call is a separate endpoint);
         # the thin-description backfill / title-based scoring handles it (min_score=0 keeps them).
