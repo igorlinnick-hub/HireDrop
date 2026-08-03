@@ -110,6 +110,14 @@ window.addEventListener("message", function (e) {
     catch (ex) { /* stale context — the page reload that fixes Start fixes this too */ }
   }
 
+  // Dev self-reload: reload the unpacked extension without a manual chrome://extensions click,
+  // so live-testing iterates fast. Safe: ping.js runs ONLY on hiredrop.io (manifest), so only
+  // our own dashboard can trigger it, and chrome.runtime.reload() carries no data risk.
+  if (typeof e.data === "object" && e.data.type === "HIREDROP_DEV_RELOAD") {
+    try { chrome.runtime.sendMessage({ type: "DEV_RELOAD" }, function () { void chrome.runtime.lastError; }); }
+    catch (ex) { /* stale context */ }
+  }
+
   // Toggle review mode: fill applications but stop before Submit (semi-auto / the
   // user reviews and submits). Also used for safe E2E testing (no real applications).
   if (typeof e.data === "object" && e.data.type === "HIREDROP_SET_REVIEW") {
