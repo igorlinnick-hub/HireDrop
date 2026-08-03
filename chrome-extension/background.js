@@ -539,12 +539,19 @@ function buildZipRecruiterUrl(keywords, location, jobType) {
 
 // LinkedIn search-walk — Easy Apply ONLY (f_AL=true). We only drive the in-modal 1-click
 // flow; external-apply jobs are skipped by the content script (PLATFORMS_MASTER_PLAN Phase 2).
+// ONE keyword phrase per search: joining phrases ("healthcare marketing social media manager")
+// over-narrows LinkedIn to ~2 results with 0 Easy Apply (live 2026-08-01: single phrase → 25
+// cards, 3-5 Easy Apply). Same root cause as Workday's compound searchText (#80). Phrase
+// rotation when one is exhausted = v2.
+// location: use a real GEO ("United States") — the literal string "Remote" makes LinkedIn
+// rewrite the URL (location→f_WT=2) and DROP f_AL in that rewrite (live 2026-08-01).
 function buildLinkedInUrl(keywords, location, jobType) {
   const params = new URLSearchParams();
-  if (keywords && keywords.length) params.set("keywords", keywords.join(" "));
-  const locMap = { usa: "United States", remote: "Remote", europe: "" };
-  const loc = locMap[location] !== undefined ? locMap[location] : (location || "");
+  if (keywords && keywords.length) params.set("keywords", String(keywords[0]));
+  const locMap = { usa: "United States", remote: "United States", europe: "" };
+  const loc = locMap[location] !== undefined ? locMap[location] : (location || "United States");
   if (loc) params.set("location", loc);
+  if (location === "remote") params.set("f_WT", "2"); // remote-work filter, the param LinkedIn itself uses
   params.set("f_AL", "true"); // Easy Apply filter — the only jobs our handler can drive
   return `https://www.linkedin.com/jobs/search/?${params.toString()}`;
 }
