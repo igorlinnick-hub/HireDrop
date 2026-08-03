@@ -43,13 +43,14 @@
     if (host.includes("greenhouse.io")) return "greenhouse";
     if (host.includes("lever.co")) return "lever";
     if (host.includes("ashbyhq.com")) return "ashby";
+    if (host.includes("linkedin.com")) return "linkedin";
     return "indeed";
   }
 
   // Human-readable platform name for user-facing log lines. Every activity
   // message the dashboard shows should name the ACTUAL platform — a Greenhouse
   // campaign logging "Indeed" reads as broken.
-  const PLATFORM_LABELS = { indeed: "Indeed", ziprecruiter: "ZipRecruiter", greenhouse: "Greenhouse", lever: "Lever", ashby: "Ashby" };
+  const PLATFORM_LABELS = { indeed: "Indeed", ziprecruiter: "ZipRecruiter", greenhouse: "Greenhouse", lever: "Lever", ashby: "Ashby", linkedin: "LinkedIn" };
   function platformLabel() {
     return PLATFORM_LABELS[detectPlatform()] || "Indeed";
   }
@@ -3256,7 +3257,159 @@
     if (platform === "lever") return detectPhaseLever();
     if (platform === "ashby") return detectPhaseAshby();
     if (platform === "ziprecruiter") return detectPhaseZipRecruiter();
+    if (platform === "linkedin") return detectPhaseLinkedIn();
     return detectPhaseIndeed();
+  }
+
+  // LinkedIn Easy Apply (PLATFORMS_MASTER_PLAN.md Phase 2). Type A native — applies via the
+  // user's logged-in LinkedIn session. We ONLY touch Easy Apply (the in-modal 1-click subset,
+  // .jobs-apply-button labelled "Easy Apply"); external-apply jobs (a "Apply" button that
+  // leaves LinkedIn) are skipped. Selectors below are LinkedIn's stable public class/aria names;
+  // refine live if LinkedIn ships a redesign.
+  function detectPhaseLinkedIn() {
+    const url = window.location.href;
+    // Phase 3: the Easy Apply modal is open (artdeco dialog with the form).
+    if (document.querySelector(".jobs-easy-apply-modal, .jobs-easy-apply-content, [data-test-modal] .jobs-easy-apply-form-section__grouping")) return "form";
+    const modal = document.querySelector('div.artdeco-modal[role="dialog"], [aria-label*="Easy Apply" i][role="dialog"]');
+    if (modal && modal.querySelector("input, select, textarea, button[aria-label*='Submit' i], button[aria-label*='next step' i]")) return "form";
+    // Phase 2: a job is selected/open with an Easy Apply button (search detail pane or /jobs/view/).
+    const easyBtn = findLinkedInEasyApplyButton();
+    if (easyBtn) return "detail";
+    // Phase 1: jobs search results list.
+    if (url.includes("/jobs/search") || url.includes("/jobs/collections")) return "list";
+    return "unknown";
+  }
+
+  // The Easy Apply button only — NOT a generic "Apply" (external-apply leaves LinkedIn, which
+  // we can't drive as the user). Match on the "Easy Apply" label so we never click a redirect.
+  function findLinkedInEasyApplyButton() {
+    const cands = Array.from(document.querySelectorAll(
+      "button.jobs-apply-button, .jobs-apply-button button, button[aria-label*='Easy Apply' i]"
+    ));
+    for (const b of cands) {
+      if (b.offsetParent === null) continue;
+      const txt = `${b.getAttribute("aria-label") || ""} ${b.textContent || ""}`.toLowerCase();
+      if (txt.includes("easy apply")) return b;
+    }
+    return null;
+  }
+
+  function linkedinModal() {
+    return document.querySelector(".jobs-easy-apply-modal") ||
+      document.querySelector("div.artdeco-modal[role='dialog']") ||
+      document.querySelector("[role='dialog']");
+  }
+
+  // The modal's step-navigation button, by priority: Submit (final) > Review > Continue/Next.
+  // LinkedIn labels these on aria-label. Returns {el, kind} or null.
+  function findLinkedInNavButton() {
+    const modal = linkedinModal() || document;
+    const btns = Array.from(modal.querySelectorAll("button"))
+      .filter((b) => b.offsetParent !== null && !b.disabled);
+    const label = (b) => `${b.getAttribute("aria-label") || ""} ${b.textContent || ""}`;
+    const find = (re) => btns.find((b) => re.test(label(b)));
+    const submit = find(/submit application/i);
+    if (submit) return { el: submit, kind: "submit" };
+    const review = find(/review( your application)?/i);
+    if (review) return { el: review, kind: "review" };
+    const next = find(/continue to next step|next step|(^|\s)next(\s|$)/i);
+    if (next) return { el: next, kind: "next" };
+    return null;
+  }
+
+  // Phase 2 (LinkedIn): open the Easy Apply modal on the selected job.
+  async function phase2_linkedinDetail() {
+    if (!(await isCampaignRunning())) return;
+    const count = await getPlatformCount("linkedin");
+    if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
+      log(`LinkedIn daily limit reached (${count}/${MAX_APPLICATIONS_PER_PLATFORM}). Stopping.`, "");
+      await sendMsg({ type: "STOP_CAMPAIGN" });
+      return;
+    }
+    const btn = findLinkedInEasyApplyButton();
+    if (!btn) { log("No Easy Apply on this job — moving on", ""); return; }
+    log("Opening Easy Apply…", "");
+    await humanClick(btn);
+    await sleep(humanDelay(1500, 3000)); // modal opens → next tick detectPhase → "form"
+  }
+
+  // Phase 3 (LinkedIn Easy Apply) — v1 SEMI-AUTO: fill every step with the universal filler,
+  // advance through Continue/Review, and at the FINAL Submit step DON'T click — notify the user
+  // to review + submit (same "final human click" model as Lever's captcha). This ships safe
+  // BEFORE live selector-verification: it can never fire a blind/wrong auto-submit. Once the
+  // flow is live-verified we can enable auto-submit for zero-screener Easy Applies.
+  async function phase3_linkedinForm() {
+    if (!(await isCampaignRunning())) return;
+    const jobTitle = (document.querySelector("h1")?.textContent || "").replace(/\s+/g, " ").trim();
+    const jobCompany = (document.querySelector(
+      ".job-details-jobs-unified-top-card__company-name, .jobs-unified-top-card__company-name, [class*='company-name']"
+    )?.textContent || "").replace(/\s+/g, " ").trim();
+
+    const MAX_STEPS = 8;
+    for (let step = 0; step < MAX_STEPS; step++) {
+      if (!(await isCampaignRunning())) return;
+      if (!linkedinModal()) { log("Easy Apply modal closed", "warn"); return; }
+
+      // Fill whatever this step shows (contact info is usually pre-filled; screeners aren't).
+      const emailEl = findFieldBySelectorsOrLabel("email");
+      if (emailEl && !(emailEl.value || "").trim()) await typeValue(emailEl, await resolveEmail((await chrome.storage.local.get("profile")).profile || {}));
+      const phoneEl = findFieldBySelectorsOrLabel("phone");
+      if (phoneEl && !(phoneEl.value || "").trim()) await typeValue(phoneEl, ((await chrome.storage.local.get("profile")).profile || {}).phone || "");
+      // Full universal-filler suite (LinkedIn Easy Apply is SELECT- and combobox-heavy — live
+      // recon 2026-08-01: step 1 had 2 SELECTs + 1 text input). Same set phase_ats uses.
+      await fillRadioQuestions();
+      await fillTextQuestions();
+      await fillSelectQuestions();
+      await fillComboboxes();
+      await sleep(humanDelay(900, 1800));
+
+      const nav = findLinkedInNavButton();
+      if (!nav) { logBackend(`🧩 LinkedIn Easy Apply — заполнено, доделай и submit сам: ${jobTitle} @ ${jobCompany}`, "warn"); return; }
+
+      if (nav.kind === "submit") {
+        // v1: NEVER auto-submit — hand off to the human (final click keeps applications real).
+        logBackend(`🧩 LinkedIn: ${jobTitle} @ ${jobCompany} — форма заполнена, ПРОВЕРЬ и нажми Submit сам (v1 semi-auto).`, "warn");
+        await sendMsg({ type: "DETECTION_TRIPPED", data: { signal: "linkedin_review", url: location.href, phase: "form", job_title: jobTitle, company: jobCompany, needs_review: true } });
+        return;
+      }
+      // Continue / Review → advance to the next step.
+      await humanClick(nav.el);
+      await sleep(humanDelay(1200, 2500));
+    }
+    logBackend("LinkedIn Easy Apply: many steps — left for you to finish", "warn");
+  }
+
+  // Phase 1 (LinkedIn): search-walk — open the next not-yet-applied Easy Apply job card.
+  // Defensive/minimal for v1 (live-refine selectors); clicking a card loads it in the detail
+  // pane (SPA), so the next tick runs phase2 → phase3.
+  async function phase1_linkedinList() {
+    if (!(await isCampaignRunning())) return;
+    const count = await getPlatformCount("linkedin");
+    if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
+      log(`LinkedIn daily limit reached (${count}/${MAX_APPLICATIONS_PER_PLATFORM}). Stopping.`, "");
+      await sendMsg({ type: "STOP_CAMPAIGN" });
+      return;
+    }
+    const cards = Array.from(document.querySelectorAll(
+      "li[data-occludable-job-id], .job-card-container, .jobs-search-results__list-item"
+    )).filter((c) => c.offsetParent !== null);
+    if (!cards.length) { log("No LinkedIn job cards on this page", "warn"); return; }
+    const dd = await chrome.storage.local.get("appliedJobKeys");
+    const applied = new Set(dd.appliedJobKeys || []);
+    const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
+    for (const c of cards) {
+      const title = norm(c.querySelector("a, .job-card-list__title, [class*='title']")?.textContent);
+      const company = norm(c.querySelector("[class*='subtitle'], [class*='company']")?.textContent);
+      if (title && applied.has(`${title}|${company}`)) continue;
+      const link = c.querySelector("a");
+      if (link) {
+        log("Opening next LinkedIn job…", "");
+        await humanClick(link);
+        await sleep(humanDelay(1500, 3000));
+        return;
+      }
+    }
+    log("LinkedIn: no new Easy Apply jobs on this page", "");
   }
 
   function detectPhaseAshby() {
@@ -3515,10 +3668,12 @@
             await sendMsg({ type: "ATS_JOB_DONE" });
             break;
           }
+          if (detectPlatform() === "linkedin") { await phase1_linkedinList(); break; }
           await phase1_jobList();
           break;
         }
         case "detail":
+          if (detectPlatform() === "linkedin") { await phase2_linkedinDetail(); break; }
           await phase2_jobDetail();
           break;
         case "form": {
@@ -3526,6 +3681,8 @@
           if (_p === "greenhouse" || _p === "lever" || _p === "ashby") {
             await phase_ats(_p);
             await returnToBoardAfterAts(); // P4: continue the board campaign if we came from one
+          } else if (_p === "linkedin") {
+            await phase3_linkedinForm();
           } else {
             await phase3_fillForm();
           }
