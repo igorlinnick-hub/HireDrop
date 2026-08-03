@@ -1203,7 +1203,10 @@ async function handleMessage(msg, sender) {
       // We seed poolWarmedNatives with the head below so a native head isn't re-warmed.
       const headPlatform = atsQueue.length ? atsQueue[0].platform : null;
       const homeUrl = !atsQueue.length
-        ? platformHomeUrl(primaryPlatform)
+        // LinkedIn has NO Cloudflare gate, so skip the homepage→search hop (built for Indeed's
+        // CF) and open the Easy-Apply search DIRECTLY — the homepage-first warmup was landing
+        // on /feed and not reliably navigating on (live 2026-08-01). Direct nav is proven.
+        ? (primaryPlatform === "linkedin" ? targetUrl : platformHomeUrl(primaryPlatform))
         : POOL_NATIVE_ALL.includes(headPlatform)
           ? platformHomeUrl(headPlatform)
           : atsQueue[0].applyUrl;
