@@ -3409,26 +3409,14 @@
       await sendMsg({ type: "STOP_CAMPAIGN" });
       return;
     }
-    const cards = Array.from(document.querySelectorAll(
-      "li[data-occludable-job-id], .job-card-container, .jobs-search-results__list-item"
-    )).filter((c) => c.offsetParent !== null);
-    if (!cards.length) { log("No LinkedIn job cards on this page", "warn"); return; }
-    const dd = await chrome.storage.local.get("appliedJobKeys");
-    const applied = new Set(dd.appliedJobKeys || []);
-    const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
-    for (const c of cards) {
-      const title = norm(c.querySelector("a, .job-card-list__title, [class*='title']")?.textContent);
-      const company = norm(c.querySelector("[class*='subtitle'], [class*='company']")?.textContent);
-      if (title && applied.has(`${title}|${company}`)) continue;
-      const link = c.querySelector("a");
-      if (link) {
-        log("Opening next LinkedIn job…", "");
-        await humanClick(link);
-        await sleep(humanDelay(1500, 3000));
-        return;
-      }
-    }
-    log("LinkedIn: no new Easy Apply jobs on this page", "");
+    // CRITICAL: never click a job card's link here. LinkedIn cards are <a> to the job's
+    // CANONICAL url (/jobs/view/<id>), and navigating there DROPS the f_AL Easy-Apply filter
+    // (live 2026-08-01: f_AL=false → non-Easy-Apply jobs selected → no Easy Apply button).
+    // LinkedIn auto-selects the first result within ~1-2s and renders its detail pane; just
+    // wait for that — detectPhase then returns "detail" and phase2 opens Easy Apply. (Hopping
+    // to the NEXT job in-pane without losing the filter is a v2 concern.)
+    log("Waiting for LinkedIn to select the first job…", "");
+    await sleep(humanDelay(1500, 2500));
   }
 
   function detectPhaseAshby() {
