@@ -537,19 +537,34 @@ function buildZipRecruiterUrl(keywords, location, jobType) {
   return `https://www.ziprecruiter.com/jobs-search?${params.toString()}`;
 }
 
+// LinkedIn search-walk — Easy Apply ONLY (f_AL=true). We only drive the in-modal 1-click
+// flow; external-apply jobs are skipped by the content script (PLATFORMS_MASTER_PLAN Phase 2).
+function buildLinkedInUrl(keywords, location, jobType) {
+  const params = new URLSearchParams();
+  if (keywords && keywords.length) params.set("keywords", keywords.join(" "));
+  const locMap = { usa: "United States", remote: "Remote", europe: "" };
+  const loc = locMap[location] !== undefined ? locMap[location] : (location || "");
+  if (loc) params.set("location", loc);
+  params.set("f_AL", "true"); // Easy Apply filter — the only jobs our handler can drive
+  return `https://www.linkedin.com/jobs/search/?${params.toString()}`;
+}
+
 function buildPlatformUrl(platform, keywords, location, jobType) {
   if (platform === "ziprecruiter") return buildZipRecruiterUrl(keywords, location, jobType);
+  if (platform === "linkedin") return buildLinkedInUrl(keywords, location, jobType);
   return buildIndeedUrl(keywords, location, jobType);
 }
 
 function platformHomeUrl(platform) {
   if (platform === "ziprecruiter") return "https://www.ziprecruiter.com/";
+  if (platform === "linkedin") return "https://www.linkedin.com/";
   return "https://www.indeed.com/";
 }
 
 // Platforms the extension actually auto-applies on. Everything else in
 // filters.platforms is a discovery-only source (scraped, applied to externally).
-const AUTO_APPLY_PLATFORMS = ["indeed", "ziprecruiter"];
+// LinkedIn = native search-walk like Indeed/ZR (v1 semi-auto: fills, human submits).
+const AUTO_APPLY_PLATFORMS = ["indeed", "ziprecruiter", "linkedin"];
 
 // The campaign window targets the first auto-apply platform in the filter list.
 // Selecting by membership (not platforms[0]) is robust to discovery platforms

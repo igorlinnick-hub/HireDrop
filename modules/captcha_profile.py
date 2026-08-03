@@ -25,6 +25,9 @@ PLATFORM_CAPTCHA = {
     # Workday: discovery-only (account-gated multi-step apply) → rank LAST in discovery so
     # zero-touch applyable boards fill the pool first; it still gets its per-platform share.
     "workday": "high",
+    # LinkedIn Easy Apply: no captcha in-modal usually, but LinkedIn has aggressive bot
+    # detection → medium (human pacing matters; v1 is semi-auto, human does final submit).
+    "linkedin": "medium",
 }
 
 # Runtime-learned per-company/platform overrides (token -> "low"|"medium"|"high").
