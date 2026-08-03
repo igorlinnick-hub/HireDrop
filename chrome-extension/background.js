@@ -1318,6 +1318,14 @@ async function handleMessage(msg, sender) {
     }
 
     // ----- Campaign stop -----
+    case "DEV_RELOAD": {
+      // Reload the unpacked extension from disk (new content.js/background.js) without a
+      // manual chrome://extensions click. Triggered only from hiredrop.io via ping.js.
+      // Fire-and-forget: the SW restarts, so no response is delivered.
+      try { chrome.runtime.reload(); } catch (e) { /* noop */ }
+      return { ok: true };
+    }
+
     case "STOP_CAMPAIGN": {
       const stopData = await chrome.storage.local.get(["campaignTabId", "campaignWindowId"]);
 

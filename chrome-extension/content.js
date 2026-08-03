@@ -3275,7 +3275,13 @@
     // Phase 2: a job is selected/open with an Easy Apply button (search detail pane or /jobs/view/).
     const easyBtn = findLinkedInEasyApplyButton();
     if (easyBtn) return "detail";
-    // Phase 1: jobs search results list.
+    // LinkedIn's search AUTO-SELECTS a job and renders its detail pane, but the Easy Apply
+    // button loads a beat after the results. Treat a selected job as "detail" so phase2 WAITS
+    // for the button — returning "list" here raced phase1 into clicking a card, which navigated
+    // away and dropped the f_AL Easy-Apply filter (live 2026-08-01).
+    if (/[?&]currentJobId=/.test(url) ||
+        document.querySelector(".jobs-search__job-details, .jobs-details, .job-details-jobs-unified-top-card__container")) return "detail";
+    // Phase 1: jobs search results list (no job selected yet).
     if (url.includes("/jobs/search") || url.includes("/jobs/collections")) return "list";
     return "unknown";
   }
@@ -3326,8 +3332,21 @@
       await sendMsg({ type: "STOP_CAMPAIGN" });
       return;
     }
-    const btn = findLinkedInEasyApplyButton();
-    if (!btn) { log("No Easy Apply on this job — moving on", ""); return; }
+    // Wait for the Easy Apply button — the detail pane loads a beat after the search results,
+    // so an immediate check races (returned nothing → phase1 used to misfire). Poll ~8s.
+    let btn = findLinkedInEasyApplyButton();
+    for (let i = 0; i < 8 && !btn; i++) {
+      await sleep(1000);
+      if (!(await isCampaignRunning())) return;
+      btn = findLinkedInEasyApplyButton();
+    }
+    if (!btn) {
+      // Selected job isn't Easy Apply (external-apply) — skip it. v1 doesn't hop cards (that
+      // navigation dropped the f_AL filter); the f_AL search means most selected jobs ARE
+      // Easy Apply, so this is the rare case. Leave it for the user rather than misnavigate.
+      logBackend("LinkedIn: selected job isn't Easy Apply — skipping (v1 applies the auto-selected Easy Apply job)", "");
+      return;
+    }
     log("Opening Easy Apply…", "");
     await humanClick(btn);
     await sleep(humanDelay(1500, 3000)); // modal opens → next tick detectPhase → "form"
