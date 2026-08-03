@@ -301,6 +301,10 @@
     {
       const p = detectPlatform();
       if (p === "greenhouse" || p === "lever" || p === "ashby") return;
+      // LinkedIn: no Cloudflare and we DIRECT-open the Easy-Apply search (background.js), so
+      // there's nothing to warm. The scroll-warmup was taking 32-103s in the throttled
+      // background window and delaying phase1 forever (live 2026-08-03). Skip it.
+      if (p === "linkedin") return;
     }
     // POOL (by-link) mode: background opens the automation window on the platform HOMEPAGE
     // (see background.js homeUrl), NOT on the deep /viewjob link — a cold deep-link nav is a
@@ -3273,16 +3277,15 @@
     const modal = document.querySelector('div.artdeco-modal[role="dialog"], [aria-label*="Easy Apply" i][role="dialog"]');
     if (modal && modal.querySelector("input, select, textarea, button[aria-label*='Submit' i], button[aria-label*='next step' i]")) return "form";
     // Phase 2: a job is selected/open with an Easy Apply button (search detail pane or /jobs/view/).
-    const easyBtn = findLinkedInEasyApplyButton();
-    if (easyBtn) return "detail";
-    // LinkedIn's search AUTO-SELECTS a job and renders its detail pane, but the Easy Apply
-    // button loads a beat after the results. Treat a selected job as "detail" so phase2 WAITS
-    // for the button — returning "list" here raced phase1 into clicking a card, which navigated
-    // away and dropped the f_AL Easy-Apply filter (live 2026-08-01).
-    if (/[?&]currentJobId=/.test(url) ||
-        document.querySelector(".jobs-search__job-details, .jobs-details, .job-details-jobs-unified-top-card__container")) return "detail";
-    // Phase 1: jobs search results list (no job selected yet).
+    // ORDER MATTERS. On /jobs/search LinkedIn auto-selects a job whose detail-pane Easy Apply
+    // button FLICKERS in and out as the SPA re-renders (live 2026-08-03: detectPhase caught
+    // "detail", but by the time phase2 ran the button was gone → stuck). So treat search as
+    // "list" FIRST — phase1 picks a stable Easy-Apply-badged card and navigates to its
+    // canonical /jobs/view/<id> page, where the button is stable. Only THEN check for a button.
     if (url.includes("/jobs/search") || url.includes("/jobs/collections")) return "list";
+    // A single-job page (/jobs/view/<id>) — phase2 opens Easy Apply on the stable button.
+    if (url.includes("/jobs/view/")) return "detail";
+    if (findLinkedInEasyApplyButton()) return "detail";
     return "unknown";
   }
 
@@ -3409,14 +3412,40 @@
       await sendMsg({ type: "STOP_CAMPAIGN" });
       return;
     }
-    // CRITICAL: never click a job card's link here. LinkedIn cards are <a> to the job's
-    // CANONICAL url (/jobs/view/<id>), and navigating there DROPS the f_AL Easy-Apply filter
-    // (live 2026-08-01: f_AL=false → non-Easy-Apply jobs selected → no Easy Apply button).
-    // LinkedIn auto-selects the first result within ~1-2s and renders its detail pane; just
-    // wait for that — detectPhase then returns "detail" and phase2 opens Easy Apply. (Hopping
-    // to the NEXT job in-pane without losing the filter is a v2 concern.)
-    log("Waiting for LinkedIn to select the first job…", "");
-    await sleep(humanDelay(1500, 2500));
+    // The f_AL Easy-Apply URL filter is UNRELIABLE — LinkedIn rewrites the URL on load/auto-
+    // select (location→f_WT, currentJobId) and drops f_AL (live 2026-08-01), so the auto-
+    // selected job is often external-apply. Instead: scan the results list for cards that
+    // actually show the "Easy Apply" badge, then navigate to that job's CANONICAL single-job
+    // page (/jobs/view/<id>/) — a clean URL with the Easy Apply button, no filter needed.
+    // Poll for the results list WITHIN this run — the MutationObserver only re-runs a phase
+    // when it CHANGES, so if we returned early on an empty list (phase stays "list") phase1
+    // would never fire again once cards loaded (live 2026-08-01). Wait up to ~10s here.
+    let cards = [];
+    for (let i = 0; i < 10; i++) {
+      cards = Array.from(document.querySelectorAll(
+        "li[data-occludable-job-id], .job-card-container, .scaffold-layout__list-item"
+      )).filter((c) => c.offsetParent !== null);
+      if (cards.length) break;
+      await sleep(1000);
+      if (!(await isCampaignRunning())) return;
+    }
+    if (!cards.length) { log("LinkedIn job list didn't load", "warn"); return; }
+    const dd = await chrome.storage.local.get("linkedinDoneIds");
+    const doneIds = new Set(dd.linkedinDoneIds || []);
+    for (const c of cards) {
+      if (!/easy apply/i.test(c.textContent || "")) continue; // only Easy Apply cards
+      const id = c.getAttribute("data-occludable-job-id") ||
+        (c.querySelector("a[href*='/jobs/view/']")?.getAttribute("href") || "").match(/\/jobs\/view\/(\d+)/)?.[1];
+      if (!id || doneIds.has(id)) continue;
+      // Mark done BEFORE navigating so a re-scan advances to the next Easy Apply job instead
+      // of re-opening this one (v2 multi-job walk; harmless for v1's single job).
+      doneIds.add(id);
+      await chrome.storage.local.set({ linkedinDoneIds: Array.from(doneIds).slice(-200) });
+      log(`Opening an Easy Apply job (${id})…`, "");
+      window.location.href = `https://www.linkedin.com/jobs/view/${id}/`;
+      return;
+    }
+    log("No new Easy Apply jobs in this list", "");
   }
 
   function detectPhaseAshby() {
