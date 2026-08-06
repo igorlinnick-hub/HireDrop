@@ -700,10 +700,14 @@ async function buildApprovedAtsQueue(perPlatformCap) {
   // that skips stays `approved` in the DB and the rebuild re-queues it forever
   // (live-test finding: oura?error=true looped every 4s).
   const doneUrls = new Set(dd.poolDoneUrls || []);
-  // Verified natives (Indeed) are always poolable; pending natives (ZR) only under the flag.
+  // Default tap pool = ATS only (greenhouse/lever/ashby — proven guest-submit). Native
+  // by-link (Indeed verified, ZR pending) ONLY under the tapNativePool flag: Indeed's
+  // SmartApply last-step doesn't complete in the throttled background window, so leaving
+  // it in the default pool made the walk burn every run on non-completing Indeed jobs and
+  // never reach the ATS submitters (2026-08-04 root-cause: todayCount stayed 0 all night).
   const poolPlatforms = dd.tapNativePool === true
     ? ATS_PLATFORMS.concat(POOL_NATIVE_VERIFIED, POOL_NATIVE_PENDING)
-    : ATS_PLATFORMS.concat(POOL_NATIVE_VERIFIED);
+    : ATS_PLATFORMS;
   const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
   const perCount = {};
   const out = [];
@@ -735,6 +739,12 @@ async function buildApprovedAtsQueue(perPlatformCap) {
 // navigates to campaignTargetUrl); once warmed, the cf_clearance cookie covers the rest.
 async function navigatePoolNext(tabId, job) {
   if (!job || !job.applyUrl) return;
+  // Fix stale pool rows carrying a DOUBLED Ashby path (/application/application) — that
+  // renders a form-less stub -> phase_ats "couldn't open" -> 0 Ashby submits (2026-08-04).
+  // Backend now appends /application idempotently; this rescues already-discovered rows.
+  if (typeof job.applyUrl === "string") {
+    job.applyUrl = job.applyUrl.replace(/\/application\/application(\/?)$/, "/application$1");
+  }
   if (POOL_NATIVE_ALL.includes(job.platform)) {
     const st = await chrome.storage.local.get("poolWarmedNatives");
     const warmed = new Set(st.poolWarmedNatives || []);

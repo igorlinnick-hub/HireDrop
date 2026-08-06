@@ -2667,7 +2667,7 @@
         if ((await waitForFormReady(6000)) && findFormButton()) {
           continue;
         }
-        log("No Continue/Submit button found", "err");
+        logBackend(`⚠️ Form step had no Continue/Submit button (${location.hostname}) — giving up on this job`, "warn");
         break;
       }
     }
@@ -3005,9 +3005,17 @@
       if (!resumeInput.files?.length) {
         try {
           await uploadResume(resumeInput);
-          await sleep(humanDelay(2000, 4000));
-          resumeOk = !!findResumeInput()?.files?.length || document.body.textContent.includes("resume.pdf");
-          logBackend(`${label} resume: ${resumeOk ? "attached ✓" : "set but not reflected in UI"}`, resumeOk ? "info" : "error");
+          // GH/Ashby accept the file ASYNC and swap the <input> for a "resume.pdf" chip.
+          // In a throttled background window that can take 10-30s — far longer than a fixed
+          // sleep. POLL for the reflected state instead of checking once (2026-08-04: the old
+          // single 2-4s check false-negatived and fail-closed EVERY GH submit -> todayCount 0).
+          // Live-verified: DataTransfer+change DOES attach; the chip/filename just appears late.
+          resumeOk = false;
+          for (let i = 0; i < 15 && !resumeOk; i++) {
+            await sleep(2000);
+            resumeOk = !!findResumeInput()?.files?.length || document.body.textContent.includes("resume.pdf");
+          }
+          logBackend(`${label} resume: ${resumeOk ? "attached ✓" : "NOT reflected after 30s"}`, resumeOk ? "info" : "error");
         }
         catch (e) { logBackend(`${label} resume upload FAILED: ${e.message}`, "error"); }
       } else {
@@ -3029,9 +3037,19 @@
 
     const action = classifyFormButton();
     if (action.label) log(`${label} button: "${action.label}" → ${action.submit ? "SUBMIT" : "continue?"}`, "");
-    const submitBtn = findFormButton();
+    let submitBtn = findFormButton();
     if (!submitBtn) {
-      logBackend(`⏭️ ${label}: submit button not found — skipping to next`, "warn");
+      // React/async ATS forms (Ashby, some Greenhouse) render the submit button LATE —
+      // and a throttled background window makes hydration take 30-90s. Poll before giving
+      // up so we don't declare "not found" on a form that just hadn't finished rendering
+      // (2026-08-04 root-cause: forms bailed before hydrating → todayCount stayed 0).
+      for (let i = 0; i < 8 && !submitBtn; i++) {
+        await waitForFormReady(5000);
+        submitBtn = findFormButton();
+      }
+    }
+    if (!submitBtn) {
+      logBackend(`⏭️ ${label}: submit button not found after ~40s wait — skipping to next`, "warn");
       await sendMsg({ type: "ATS_JOB_DONE" });
       return;
     }
@@ -3737,6 +3755,28 @@
               // Leave it to warmup; only skip a genuinely broken job page.
               const onHomeRoot = location.pathname === "/" || location.pathname === "";
               if (onHomeRoot) break;
+              // Async ATS forms (Ashby/Greenhouse React) render the fields LATE, especially in
+              // a throttled background window — detectPhase sees no field yet and would skip a
+              // LIVE job as "couldn't open". POLL for hydration (~20s) before giving up; if the
+              // form appears, dispatch straight to phase_ats (2026-08-04: Ashby /application
+              // forms were fine but late → every Ashby job wrongly skipped → 0 submits).
+              const _h = location.hostname;
+              if (/ashbyhq\.com|greenhouse\.io|lever\.co/.test(_h) && /\/application|\/apply/.test(location.pathname)) {
+                let _ready = false;
+                for (let i = 0; i < 8 && !_ready; i++) {
+                  await sleep(2500);
+                  if (!(await isCampaignRunning())) break;
+                  _ready = detectPhase() === "form";
+                }
+                if (_ready) {
+                  const _pp = detectPlatform();
+                  if (_pp === "greenhouse" || _pp === "lever" || _pp === "ashby") {
+                    await phase_ats(_pp);
+                    await returnToBoardAfterAts();
+                    break;
+                  }
+                }
+              }
               logBackend(`Couldn't open this job page (${location.hostname}) — skipping to your next pick`, "warn");
               await sendMsg({ type: "ATS_JOB_DONE" });
             }
