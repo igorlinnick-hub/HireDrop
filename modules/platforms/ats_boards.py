@@ -218,10 +218,14 @@ def fetch_ashby(token: str, keywords: list[str] | None = None, limit: int = 50) 
         loc = j.get("location") or ""
         if not _keyword_match(f"{title} {loc}", keywords):
             continue
-        base = j.get("applyUrl") or j.get("jobUrl")
+        base = (j.get("applyUrl") or j.get("jobUrl") or "").rstrip("/")
         if not base or not _is_fillable(base):
             continue
-        url = base.rstrip("/") + "/application"  # land on the form, not the JD page
+        # Ashby's applyUrl ALREADY ends in /application; jobUrl does not. Append once,
+        # idempotently — the old unconditional append produced /application/application,
+        # a stub page with NO form fields -> phase_ats "couldn't open" -> 0 Ashby submits
+        # (2026-08-04 root-cause). Land on the real form either way.
+        url = base if base.endswith("/application") else base + "/application"
         desc = j.get("descriptionPlain") or _strip_html(j.get("descriptionHtml", ""))
         out.append(_job(title, token, url, loc, "ashby", desc))
         if len(out) >= limit:

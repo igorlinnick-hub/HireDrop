@@ -18,8 +18,9 @@
     "https://web-production-db45.up.railway.app/*",
     "https://*.indeed.com/*",
     "https://*.ziprecruiter.com/*",
-    "https://boards.greenhouse.io/*",
-    "https://job-boards.greenhouse.io/*",
+    "https://*.greenhouse.io/*",
+    "https://job-boards.eu.greenhouse.io/*",
+    "https://boards.eu.greenhouse.io/*",
     "https://*.glassdoor.com/*",
     "https://wellfound.com/*",
     "https://*.monster.com/*",
@@ -47,8 +48,9 @@
       "matches": [
         "https://*.indeed.com/*",
         "https://*.ziprecruiter.com/*",
-        "https://boards.greenhouse.io/*",
-        "https://job-boards.greenhouse.io/*",
+        "https://*.greenhouse.io/*",
+        "https://job-boards.eu.greenhouse.io/*",
+        "https://boards.eu.greenhouse.io/*",
         "https://jobs.lever.co/*",
         "https://*.ashbyhq.com/*",
         "https://*.linkedin.com/*"
