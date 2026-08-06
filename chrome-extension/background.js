@@ -854,15 +854,30 @@ async function atsWalkWatchdog() {
 // never double-navigates a job that's actively being filled.
 async function tapPoolIdleRefill() {
   const d = await chrome.storage.local.get([
-    "campaignRunning", "atsPlatform", "atsQueue", "campaignTabId", "atsNavAt", "campaignCaps",
+    "campaignRunning", "atsPlatform", "atsQueue", "campaignTabId", "atsNavAt", "campaignCaps", "poolIdleSince",
   ]);
   if (!d.campaignRunning || d.atsPlatform !== "pool" || !d.campaignTabId) return;
   if ((Array.isArray(d.atsQueue) && d.atsQueue.length) || d.atsNavAt) return; // busy, not idle
   const cap = (d.campaignCaps && d.campaignCaps.perPlatform) || 15;
   const more = await buildApprovedAtsQueue(cap);
-  if (!more.length) return;
+  if (!more.length) {
+    // Idle with nothing approved. Keep listening for phone-remote swipes (that's the feature),
+    // but don't leave the green "running" badge on FOREVER — auto-stop after a long idle stretch
+    // (2026-08-04, Igor: "кнопка не выключилась / крутилось всю ночь"). 2h is generous: a phone
+    // user who's actively swiping tops it up well within that; a walked-away one gets a clean stop.
+    const IDLE_STOP_MS = 2 * 60 * 60 * 1000;
+    if (!d.poolIdleSince) { await chrome.storage.local.set({ poolIdleSince: Date.now() }); return; }
+    if (Date.now() - d.poolIdleSince > IDLE_STOP_MS) {
+      await chrome.storage.local.set({ campaignRunning: false });
+      await chrome.storage.local.remove(["poolIdleSince", "atsNavAt", "atsNavTries"]);
+      await addToActivityLog("Campaign auto-stopped after 2h idle (no new swipes) — start again anytime.", "ok");
+      try { await apiPost("/campaign/stop", {}); } catch {}
+      updateBadge();
+    }
+    return;
+  }
   try { await chrome.tabs.get(d.campaignTabId); } catch { return; } // automation tab gone
-  await chrome.storage.local.set({ atsQueue: more, atsNavAt: Date.now(), atsNavTries: 0 });
+  await chrome.storage.local.set({ atsQueue: more, atsNavAt: Date.now(), atsNavTries: 0, poolIdleSince: null });
   await addToActivityLog(`Applying ${more.length} more approved job${more.length > 1 ? "s" : ""} you swiped…`, "info");
   await navigatePoolNext(d.campaignTabId, more[0]);
 }
@@ -1028,6 +1043,7 @@ async function handleMessage(msg, sender) {
         captchaWaiting: null, campaignRunning: false, currentJob: null,
         reviewPending: null, reviewDecision: null,
         poolDoneUrls: [], // per-run walked-pool memory — a fresh run starts clean
+        poolIdleSince: null, // reset the 2h idle-auto-stop timer for the fresh run
       });
       await chrome.storage.local.remove(["atsQueue", "atsPlatform", "atsNavAt", "atsNavTries"]);
       await addToActivityLog("▶ Start received by the extension — preparing your campaign…", "info");
