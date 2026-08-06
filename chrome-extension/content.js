@@ -482,7 +482,9 @@
   // (Phase 3.2 — Verify submission). Without this, every Submit click was
   // counted as 'applied' even if Indeed showed a captcha, error toast,
   // or simply did nothing. Returns { verified, signal } for activity log.
-  async function waitForSubmissionConfirmation(timeoutMs = 20000) {
+  async function waitForSubmissionConfirmation(timeoutMs = 45000, opts = {}) {
+    // 45s default (was 20s): in a throttled background window the post-submit thank-you
+    // page renders LATE — the old 20s window marked real submits "unconfirmed" (2026-08-04).
     const start = Date.now();
     const startUrl = window.location.href;
     const SUCCESS_TEXTS = [
@@ -501,6 +503,15 @@
       "application has been sent",
       "has been submitted to",
       "we've sent your application",
+      // ATS thank-you wording (Greenhouse / Ashby / Lever confirmation pages)
+      "application received",
+      "thank you for your interest",
+      "thank you for applying",
+      "your application to",
+      "submission received",
+      "we'll be in touch",
+      "application complete",
+      "thanks for your application",
     ];
     // Specific path segments only — broad single words like "submitted"/"success"
     // can appear in intermediate step URLs and cause a false "verified".
@@ -523,6 +534,16 @@
         if (bodyText.includes(phrase)) {
           return { verified: true, signal: `text:${phrase.slice(0, 30)}` };
         }
+      }
+      // Robust fallback for ATS (opts.submitBtn passed only by phase_ats, single-submit):
+      // the exact button we clicked is gone AND the page navigated → the apply form was
+      // replaced by a confirmation. Survives thank-you wording differences + slow renders.
+      // Guarded to >3s so it can't fire before the submit navigation happens. NOT used for
+      // Indeed's multi-step SmartApply (its button legitimately changes between steps).
+      if (opts.submitBtn && Date.now() - start > 3000 &&
+          !opts.submitBtn.isConnected && url !== startUrl &&
+          !/error|required|please (fix|complete|correct)|invalid|try again/.test(bodyText)) {
+        return { verified: true, signal: "form-cleared" };
       }
       await sleep(500);
     }
@@ -2596,7 +2617,7 @@
           // Wait for a real signal the platform accepted the submission.
           // Without this, every Submit click was counted as 'applied' —
           // captcha, error toasts, or silent failures all looked the same.
-          const result = await waitForSubmissionConfirmation(20000);
+          const result = await waitForSubmissionConfirmation(45000);
 
           const currentPlatform = detectPlatform();
           if (result.verified) {
@@ -3129,7 +3150,7 @@
     if (shouldMisclick()) await performMisclick(submitBtn);
     await humanClick(submitBtn);
 
-    const result = await waitForSubmissionConfirmation(20000);
+    const result = await waitForSubmissionConfirmation(45000, { submitBtn });
     if (result.verified) {
       log(`Applied (verified ${result.signal}): ${jobTitle} @ ${jobCompany}`, "ok");
       logBackend(`✅ Applied: ${jobTitle} @ ${jobCompany}`, "ok");
