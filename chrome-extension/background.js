@@ -1501,6 +1501,38 @@ async function handleMessage(msg, sender) {
       return { advanced: true };
     }
 
+    // Terminal hand-back (council 2026-08-04): the filler could NOT complete this job.
+    // The invariant: every approved job ends submitted-complete-and-honest OR handed back
+    // with a REASON + link — never a silent half-death. This case: (1) tells the user
+    // loudly which job needs their hands and why, (2) merges every unfilled field label
+    // into the frequency LEDGER (the data that decides which deterministic handlers get
+    // built next), (3) durably flips the job out of `approved`, (4) advances the walk.
+    case "ATS_JOB_FAILED": {
+      const f = msg.data || {};
+      const who = [f.title, f.company].filter(Boolean).join(" @ ") || "this job";
+      await addToActivityLog(
+        `✋ Needs your hands: ${who} — ${f.reason || "couldn't complete the form"}. Finish it yourself: ${f.url || ""}`,
+        "warn"
+      );
+      try {
+        if (Array.isArray(f.unfilled) && f.unfilled.length) {
+          const s = await chrome.storage.local.get("unfilledLedger");
+          const ledger = s.unfilledLedger || {};
+          for (const lbl of f.unfilled) ledger[lbl] = (ledger[lbl] || 0) + 1;
+          // Cap ledger size: keep the 200 most-frequent labels.
+          const top = Object.entries(ledger).sort((a, b) => b[1] - a[1]).slice(0, 200);
+          await chrome.storage.local.set({ unfilledLedger: Object.fromEntries(top) });
+        }
+      } catch {}
+      try {
+        const d = await chrome.storage.local.get(["atsPlatform", "atsQueue"]);
+        const head = d.atsPlatform === "pool" && Array.isArray(d.atsQueue) ? d.atsQueue[0] : null;
+        if (head && head.id) apiPatch(`/jobs/${head.id}/status`, { status: "skipped" }).catch(() => {});
+      } catch {}
+      await advanceAtsQueue();
+      return { advanced: true, handedBack: true };
+    }
+
     // ----- Cover letter generation -----
     case "GENERATE_COVER_LETTER": {
       const job = msg.data;
