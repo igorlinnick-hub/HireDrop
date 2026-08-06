@@ -1131,6 +1131,67 @@
     return platformCounts[platform];
   }
 
+  // Inverse of recordLocalApplication — used when a submit we optimistically counted
+  // (recorded BEFORE the click, nav-safe) turns out to be BLOCKED by form validation:
+  // claiming "applied" for an application that never left the page is lying to the user
+  // (council 2026-08-04: quality above all — no silent half-deaths).
+  async function subtractLocalApplication(platform) {
+    const s = await chrome.storage.local.get(["todayCount", "platformCounts", "todayDate"]);
+    const today = new Date().toISOString().slice(0, 10);
+    if (s.todayDate !== today) return;
+    const platformCounts = s.platformCounts || {};
+    platformCounts[platform] = Math.max(0, (platformCounts[platform] || 0) - 1);
+    await chrome.storage.local.set({
+      todayCount: Math.max(0, (s.todayCount || 0) - 1),
+      platformCounts,
+    });
+  }
+
+  // Council 2026-08-04 "frequency ledger": every field the filler could NOT complete,
+  // by label — this is the instrumentation that drives which deterministic handlers to
+  // build next (EEO/location/etc). Read via HIREDROP_READ_STORAGE keys:["unfilledLedger"].
+  function collectUnfilledRequired() {
+    const labels = [];
+    const els = document.querySelectorAll(
+      'input[required], select[required], textarea[required], [aria-required="true"]'
+    );
+    for (const el of els) {
+      const tag = el.tagName;
+      if (tag !== "INPUT" && tag !== "SELECT" && tag !== "TEXTAREA") continue;
+      if (el.type === "hidden" || el.type === "file") continue; // resume tracked separately
+      const val = (el.value || "").trim();
+      const checked = el.type === "radio" || el.type === "checkbox"
+        ? !!document.querySelector(`input[name="${el.name}"]:checked`) : null;
+      if (val || checked) continue;
+      const lbl = (el.labels && el.labels[0] && el.labels[0].textContent) ||
+        el.getAttribute("aria-label") ||
+        (el.closest("label") && el.closest("label").textContent) ||
+        el.name || el.id || "(unlabeled)";
+      const clean = lbl.replace(/\s+/g, " ").replace(/\*/g, "").trim().slice(0, 80).toLowerCase();
+      if (clean && !labels.includes(clean)) labels.push(clean);
+    }
+    return labels.slice(0, 25);
+  }
+
+  // Terminal hand-back: this job can't be completed autonomously. One message does it
+  // all in background: log the reason loudly (with the link so the human can finish it),
+  // merge unfilled labels into the ledger, flip the job out of `approved` (never
+  // re-queues), and advance the walk. The invariant (council 2026-08-04): every approved
+  // job ends submitted-complete-and-honest OR handed-back-with-a-reason — never a silent
+  // half-death.
+  async function handBackJob(reason, extra = {}) {
+    await sendMsg({
+      type: "ATS_JOB_FAILED",
+      data: {
+        reason,
+        unfilled: collectUnfilledRequired(),
+        url: window.location.href,
+        title: extra.title || "", company: extra.company || "",
+        platform: extra.platform || detectPlatform(),
+      },
+    });
+  }
+
   async function goToNextPage() {
     // Build the next-page URL the same way goBackToJobList() does — never click
     // Indeed's "Next" button because it generates a URL without our search params
@@ -3070,8 +3131,7 @@
       }
     }
     if (!submitBtn) {
-      logBackend(`⏭️ ${label}: submit button not found after ~40s wait — skipping to next`, "warn");
-      await sendMsg({ type: "ATS_JOB_DONE" });
+      await handBackJob("no submit button after ~40s (form may not have finished rendering)", { title: jobTitle, company: jobCompany, platform });
       return;
     }
 
@@ -3117,8 +3177,7 @@
     // A silent resume-less submission is irreversible and reputationally harmful; skip
     // and log so it surfaces (usually a resume-upload 401 — the auth path, see P1/P2).
     if (resumeRequired && !resumeOk) {
-      logBackend(`⏭️ Skipped (no resume attached): ${jobTitle} @ ${jobCompany} — not submitting a resume-less application`, "error");
-      await sendMsg({ type: "ATS_JOB_DONE" });
+      await handBackJob("resume didn't attach (required) — not submitting a resume-less application", { title: jobTitle, company: jobCompany, platform });
       return;
     }
 
@@ -3151,6 +3210,20 @@
     await humanClick(submitBtn);
 
     const result = await waitForSubmissionConfirmation(45000, { submitBtn });
+    // VALIDATION-BLOCKED detection (council 2026-08-04, honesty fix): no confirmation AND
+    // we're still on the same page with the same submit button AND required fields remain
+    // empty / error text present → the form NEVER left the page. We optimistically counted
+    // it before the click (nav-safe) — un-count it and hand the job back with the exact
+    // unfilled fields, instead of lying "Applied (unconfirmed)".
+    if (!result.verified && submitBtn.isConnected && window.location.href === jobUrl) {
+      const leftover = collectUnfilledRequired();
+      const errText = /required|please (fix|complete|correct)|invalid|fix the errors/i.test(document.body.innerText || "");
+      if (leftover.length || errText) {
+        await subtractLocalApplication(platform);
+        await handBackJob(`submit blocked by form validation (${leftover.length} required field${leftover.length === 1 ? "" : "s"} unfilled)`, { title: jobTitle, company: jobCompany, platform });
+        return;
+      }
+    }
     if (result.verified) {
       log(`Applied (verified ${result.signal}): ${jobTitle} @ ${jobCompany}`, "ok");
       logBackend(`✅ Applied: ${jobTitle} @ ${jobCompany}`, "ok");
