@@ -3224,6 +3224,18 @@
         return;
       }
     }
+    // RECEIPT (council #3 trust primitive): freeze the confirmation-page moment —
+    // screenshot + text + signal — regardless of verified/unconfirmed, so every submit
+    // is auditable ("did it land?") without relying on employer emails.
+    await sendMsg({
+      type: "RECEIPT_CAPTURE",
+      data: {
+        job_title: jobTitle, company: jobCompany, platform,
+        job_url: jobUrl, page_url: window.location.href,
+        verified: result.verified, signal: result.signal,
+        snippet: (document.body.innerText || "").replace(/\s+/g, " ").slice(0, 600),
+      },
+    });
     if (result.verified) {
       log(`Applied (verified ${result.signal}): ${jobTitle} @ ${jobCompany}`, "ok");
       logBackend(`✅ Applied: ${jobTitle} @ ${jobCompany}`, "ok");

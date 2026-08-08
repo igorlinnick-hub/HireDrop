@@ -1488,6 +1488,40 @@ async function handleMessage(msg, sender) {
       }
     }
 
+    // Per-application RECEIPT (council #3, week-1 trust primitive): capture the
+    // confirmation-page moment — screenshot (CDP, works on hidden windows) + text
+    // snippet + verify signal — so "did it actually land?" is answerable per submit
+    // (the Mavenclinic lesson: employer emails are NOT guaranteed; the page is ours).
+    // Stored locally (chrome.storage.receipts, capped) — no backend changes/deploys.
+    case "RECEIPT_CAPTURE": {
+      const r = msg.data || {};
+      let shot = null;
+      try {
+        const tabId = sender && sender.tab && sender.tab.id;
+        if (tabId && (await ensureDebuggerAttached(tabId))) {
+          const res = await chrome.debugger.sendCommand({ tabId }, "Page.captureScreenshot", {
+            format: "jpeg", quality: 55,
+          });
+          if (res && res.data) shot = "data:image/jpeg;base64," + res.data;
+        }
+      } catch {}
+      try {
+        const s = await chrome.storage.local.get("receipts");
+        const receipts = s.receipts || [];
+        receipts.unshift({
+          at: new Date().toISOString(),
+          job_title: r.job_title || "", company: r.company || "", platform: r.platform || "",
+          job_url: r.job_url || "", page_url: r.page_url || "",
+          verified: !!r.verified, signal: r.signal || "",
+          snippet: (r.snippet || "").slice(0, 600),
+          shot,
+        });
+        // Screenshots are ~100-200KB each — cap the ledger so storage stays sane.
+        await chrome.storage.local.set({ receipts: receipts.slice(0, 10) });
+      } catch {}
+      return { stored: true, shot: !!shot };
+    }
+
     case "ATS_JOB_DONE": {
       // Pool mode: this head is being skipped (dead posting / fit-skip / no form).
       // Durably flip it out of `approved` in the DB so it never re-enters the queue
