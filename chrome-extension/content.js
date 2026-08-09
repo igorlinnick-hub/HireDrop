@@ -20,6 +20,16 @@
   // not unsafe (real applications past the rail). All the cap-check sites below read
   // this live value, so aligning the number is now a one-line change in the backend.
   let MAX_APPLICATIONS_PER_PLATFORM = 20;
+
+  // AI-answer budget per form (2026-08-09 dev-test: a max-complex form needs up to 20
+  // sequential ANSWER_QUESTION round-trips → 10+ min in the throttled window). Cap the
+  // AI answers per job; past the cap, leave remaining custom fields empty so the existing
+  // validation-block path hands the job back FAST ("too many custom questions — finish it
+  // yourself") instead of grinding. Reset at the start of each apply attempt.
+  const MAX_AI_ANSWERS_PER_FORM = 8;
+  let _aiAnswersUsed = 0;
+  let _aiBudgetNotified = false;
+
   (async () => {
     try {
       const s = await chrome.storage.local.get("campaignCaps");
@@ -2070,8 +2080,13 @@
       // so we don't burn API calls on stray short inputs.
       if (value === undefined) {
         const looksLikeQuestion = isTextarea || rawLabel.includes("?") || rawLabel.length > 20;
+        if (looksLikeQuestion && rawLabel && _aiAnswersUsed >= MAX_AI_ANSWERS_PER_FORM) {
+          if (!_aiBudgetNotified) { logBackend(`Too many custom questions (>${MAX_AI_ANSWERS_PER_FORM}) — leaving the rest for you (faster than auto-answering all)`, "warn"); _aiBudgetNotified = true; }
+          continue; // leave blank → validation-block → fast hand-back
+        }
         if (looksLikeQuestion && rawLabel) {
           log(`AI answering screener: "${rawLabel.slice(0, 60)}"`, "");
+          _aiAnswersUsed++;
           // Required fields BLOCK the whole application if left empty, so retry once
           // on an empty answer (a transient token refresh / network blip shouldn't
           // permanently stall the form). Optional fields get a single best-effort try.
@@ -2177,8 +2192,12 @@
   // for eligibility, and only falls to the first option for clearly-benign dropdowns.
   async function chooseOption(label, options, profile, jobInfo) {
     let chosen = pickOptionDeterministic(label, options, profile);
-    if (!chosen) {
+    if (!chosen && _aiAnswersUsed >= MAX_AI_ANSWERS_PER_FORM) {
+      if (!_aiBudgetNotified) { logBackend(`Too many custom questions (>${MAX_AI_ANSWERS_PER_FORM}) — leaving the rest for you (faster than auto-answering all)`, "warn"); _aiBudgetNotified = true; }
+      // fall through to the SAFE no-AI fallbacks below (neutral/eligibility/blank)
+    } else if (!chosen) {
       log(`AI picking dropdown: "${label.slice(0, 50)}"`, "");
+      _aiAnswersUsed++;
       const res = await sendMsg({
         type: "ANSWER_QUESTION",
         data: {
@@ -2485,6 +2504,7 @@
 
     // Let the step finish rendering before we fill/decide (see waitForFormReady above).
     await waitForFormReady(10000);
+    _aiAnswersUsed = 0; _aiBudgetNotified = false; // fresh AI budget per form
 
     log("Application form detected — filling fields...", "");
     logBackend(`📋 Application form detected — filling fields (${platformLabel()})`, "info");
@@ -2768,10 +2788,19 @@
     // the Storage URL doesn't need our Bearer token, the signature is the
     // capability.
     const { currentJobInfo } = await chrome.storage.local.get("currentJobInfo");
-    const signed = await sendMsg({ type: "GET_RESUME_URL", jobUrl: currentJobInfo?.url });
-    if (!signed?.url) throw new Error(signed?.error || "No resume on server");
+    // Signed-URL fetch is transiently flaky ("No resume on server" x2 then success,
+    // live 2026-08-08) — retry with backoff instead of failing the whole application
+    // on a storage/token blip. 3 tries covers the observed transient window.
+    let signed = null, lastErr = "";
+    for (let i = 0; i < 3 && !signed?.url; i++) {
+      if (i > 0) await sleep(2000 * i);
+      signed = await sendMsg({ type: "GET_RESUME_URL", jobUrl: currentJobInfo?.url });
+      if (!signed?.url) lastErr = signed?.error || "No resume on server";
+    }
+    if (!signed?.url) throw new Error(lastErr);
 
-    const res = await fetch(signed.url);
+    let res = await fetch(signed.url);
+    if (!res.ok) { await sleep(2000); res = await fetch(signed.url); } // one retry on download too
     if (!res.ok) throw new Error(`Resume download failed: ${res.status}`);
 
     const blob = await res.blob();
@@ -2980,6 +3009,7 @@
       await sendMsg({ type: "STOP_CAMPAIGN" });
       return;
     }
+    _aiAnswersUsed = 0; _aiBudgetNotified = false; // fresh AI budget per form
 
     // Job title: Greenhouse h1 = title; Lever h1 = company, title in .posting-headline h2
     let jobTitle = "";
