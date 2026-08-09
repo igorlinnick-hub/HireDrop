@@ -22,6 +22,12 @@ _DEFAULTS = {
     "ats_checked_at": None,
     "apply_mode": "standard",
     "ideal_job_description": None,
+    "linkedin_url": "",
+    "portfolio_url": "",
+    "work_authorized_us": None,
+    "needs_sponsorship": None,
+    "notice_period": "",
+    "english_level": "",
 }
 
 
@@ -50,6 +56,16 @@ def get_profile(user_id: str) -> dict:
         "apply_mode": p.get("apply_mode") or "standard",
         "ideal_job_description": p.get("ideal_job_description") or None,
         "search_radius_miles": p.get("search_radius_miles"),
+        # URL + screener-answer fields the extension's deterministic handlers read.
+        # linkedin_url was WRITTEN by update_profile but never returned here — the
+        # extension saw an empty profile.linkedin_url and handed back the single most
+        # frequent required question (unfilledLedger top-1, 2026-08-09).
+        "linkedin_url": p.get("linkedin_url") or "",
+        "portfolio_url": p.get("portfolio_url") or "",
+        "work_authorized_us": p.get("work_authorized_us"),
+        "needs_sponsorship": p.get("needs_sponsorship"),
+        "notice_period": p.get("notice_period") or "",
+        "english_level": p.get("english_level") or "",
     }
 
 
@@ -68,7 +84,8 @@ def update_profile(user_id: str, data: dict) -> dict:
     }
     # URL fields (LinkedIn / portfolio) for ATS applications — only write them when the
     # caller actually provided them, so a partial save (e.g. search-prefs) never wipes them.
-    for k in ("linkedin_url", "portfolio_url"):
+    for k in ("linkedin_url", "portfolio_url",
+              "work_authorized_us", "needs_sponsorship", "notice_period", "english_level"):
         if k in data:
             payload[k] = data[k]
     (get_supabase().table("profiles").update(payload).eq("user_id", user_id).execute())
