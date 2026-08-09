@@ -2073,6 +2073,15 @@
         if (!value) continue;
       } else if (label.includes("city") || label.includes("location")) {
         value = profile.location || "Remote";
+      } else if (/notice period|when (can|could) you start|available to start|start date/i.test(label) && !isTextarea) {
+        value = profile.notice_period || "2 weeks";
+      } else if (/(english|language).*(level|proficien|fluen)/i.test(label) && !isTextarea) {
+        value = profile.english_level || "Fluent";
+      } else if (/(sponsor|visa\b|h-?1b|immigration case)/i.test(label)) {
+        // Knockout — never guess in free text either. Explicit profile only, else AI/hand-back.
+        if (profile.needs_sponsorship === true) value = "Yes";
+        else if (profile.needs_sponsorship === false) value = "No";
+        // else: fall through to the AI branch (answers from the resume) or hand-back
       }
 
       // Open-ended screener question the keyword rules can't map → ask the AI.
@@ -2134,9 +2143,41 @@
         /(decline|prefer not|don'?t wish|do not wish|not to (answer|say|disclose|identify)|rather not)/i.test(o.text));
       if (decline) return decline;
     }
+    const yes = options.find(o => /^yes\b/i.test(o.text));
+    const no = options.find(o => /^no\b/i.test(o.text));
+    // SPONSORSHIP is NOT the same knockout as work-authorization (2026-08-09 fix: the
+    // old blanket eligibility→Yes could answer "Yes I need sponsorship" wrongly, or
+    // vice versa). Answer ONLY from an explicit profile field; otherwise punt to
+    // AI-with-resume / hand-back — never guess a knockout under the user's name.
+    if (/(sponsor|visa\b|h-?1b|immigration case)/i.test(label)) {
+      if (profile.needs_sponsorship === true && yes) return yes;
+      if (profile.needs_sponsorship === false && no) return no;
+      return null;
+    }
+    // Previously worked at THIS company / referral-conflict → No (honest default for a
+    // cold application; a real former employee reviews in TAP and can fix it).
+    if (/(previously (worked|employed)|ever worked (at|for)|former (employee|employer)|currently employed by)/i.test(label) && no) return no;
+    // English / language proficiency → the strongest fluency option present.
+    if (/(english|language).*(level|proficien|fluen)|(level|proficien).*(english|language)/i.test(label)) {
+      const fluent = options.find(o => /(native|fluent|full professional|advanced|c2|c1)/i.test(o.text));
+      if (fluent) return fluent;
+    }
+    // How did you hear about us → a neutral truthful source.
+    if (/how did you (hear|find|learn)|hear about (this|us|the)/i.test(label)) {
+      const src = options.find(o => /(job board|linkedin|company (website|careers)|online|internet|other)/i.test(o.text));
+      if (src) return src;
+    }
+    // Country / residence select → United States when the profile is US-based.
+    if (/(country|where (do|will) you (reside|live|work)|located in)/i.test(label)) {
+      const us = options.find(o => /(united states|usa|u\.s\.)/i.test(o.text));
+      if (us && /^\+?1|us|remote/i.test(String(profile.phone || profile.location || ""))) return us;
+    }
     // Yes/No eligibility (authorized to work, 18+, background check) → Yes.
-    const yes = options.find(o => /^yes$/i.test(o.text));
-    if (yes && /(authoriz|eligible|18|over 18|legally|background|consent|agree|able to)/i.test(label)) return yes;
+    // (profile.work_authorized_us === false overrides the Yes for authorization Qs.)
+    if (yes && /(authoriz|eligible|18|over 18|legally|background|consent|agree|able to)/i.test(label)) {
+      if (/(authoriz|legally|eligible)/i.test(label) && profile.work_authorized_us === false && no) return no;
+      return yes;
+    }
     // Salary range → option closest to desired salary, else the first real option.
     if (/(salary|compensation|pay range|wage|target)/i.test(label)) {
       const want = parseInt(String(profile.desired_salary || "").replace(/\D/g, ""), 10);
