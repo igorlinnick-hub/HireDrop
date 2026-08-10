@@ -2294,7 +2294,12 @@
     // data-hd-skip marks un-openable ones so we don't loop on them forever.
     for (let pass = 0; pass < 14; pass++) {
       const combo = Array.from(
-        document.querySelectorAll('[role="combobox"], button[aria-haspopup="listbox"]')
+        document.querySelectorAll(
+          // Indeed DIV combobox + native ARIA listbox buttons + react-select controls
+          // (Greenhouse/Lever new UI render multi_value_single_select as react-select,
+          //  invisible to querySelectorAll('select') — 2026-08-09 #11 detect-gap).
+          '[role="combobox"], button[aria-haspopup="listbox"], [class*="select__control"]'
+        )
       ).find(isUnfilled);
       if (!combo) break;
 
@@ -2306,7 +2311,7 @@
       // could grab a different question's still-open menu and apply its answer here.
       const menu = findComboMenu(combo);
       const optEls = menu
-        ? Array.from(menu.querySelectorAll('[role="option"], li')).filter(o => o.offsetParent !== null)
+        ? Array.from(menu.querySelectorAll('[role="option"], li, [class*="select__option"]')).filter(o => o.offsetParent !== null)
         : [];
       const options = optEls
         .map(o => ({ el: o, text: (o.textContent || "").trim(), val: (o.textContent || "").trim() }))
@@ -2342,8 +2347,10 @@
       const el = document.getElementById(id);
       if (el && el.offsetParent !== null) return el;
     }
-    // Fallback: the most-recently-opened visible listbox.
-    const lbs = Array.from(document.querySelectorAll('[role="listbox"]')).filter(l => l.offsetParent !== null);
+    // Fallback: the most-recently-opened visible listbox / react-select menu.
+    const lbs = Array.from(
+      document.querySelectorAll('[role="listbox"], [class*="select__menu"]')
+    ).filter(l => l.offsetParent !== null);
     return lbs.length ? lbs[lbs.length - 1] : null;
   }
 
