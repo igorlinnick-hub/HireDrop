@@ -3295,10 +3295,17 @@
     // unfilled fields, instead of lying "Applied (unconfirmed)".
     if (!result.verified && submitBtn.isConnected && window.location.href === jobUrl) {
       const leftover = collectUnfilledRequired();
-      const errText = /required|please (fix|complete|correct)|invalid|fix the errors/i.test(document.body.innerText || "");
-      if (leftover.length || errText) {
+      // A REAL validation error = an aria-invalid field or a non-empty alert — NOT the
+      // ubiquitous "* indicates a required field" legend (the old bare /required/ regex
+      // matched that on every form → false "0 required unfilled" hand-backs, 2026-08-09
+      // mercor). Primary signal is leftover (required fields still empty).
+      const invalidEl = document.querySelector('[aria-invalid="true"], [role="alert"]:not(:empty)');
+      if (leftover.length || invalidEl) {
         await subtractLocalApplication(platform);
-        await handBackJob(`submit blocked by form validation (${leftover.length} required field${leftover.length === 1 ? "" : "s"} unfilled)`, { title: jobTitle, company: jobCompany, platform });
+        const reason = leftover.length
+          ? `submit blocked — ${leftover.length} required field${leftover.length === 1 ? "" : "s"} still empty`
+          : "submit blocked by a form validation error — please finish it yourself";
+        await handBackJob(reason, { title: jobTitle, company: jobCompany, platform });
         return;
       }
     }
