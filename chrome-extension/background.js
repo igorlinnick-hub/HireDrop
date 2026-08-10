@@ -1429,7 +1429,22 @@ async function handleMessage(msg, sender) {
           status: appData.status || "applied",
         });
       } catch (err) {
-        addToActivityLog(`⚠️ Applied but backend save failed (${err.message}) — counted locally`, "warn");
+        // A 429 on save = a cap (per-platform / daily / free) was hit server-side. The
+        // client-side rail normally stops us BEFORE this, but if the local count drifted
+        // (e.g. storage cleared mid-day) the backend is the backstop — STOP now so we
+        // don't keep firing real submits past the ban-safety cap (2026-08-09 hardening).
+        const is429 = /\b429\b/.test(err.message || "");
+        addToActivityLog(
+          `⚠️ Applied but backend save failed (${err.message})` +
+            (is429 ? " — a daily/platform cap was hit; stopping to stay ban-safe." : " — counted locally"),
+          "warn"
+        );
+        if (is429) {
+          await chrome.storage.local.set({ campaignRunning: false });
+          try { await apiPost("/campaign/stop", {}); } catch {}
+          updateBadge();
+          return { saved: false, stopped: "limit" };
+        }
       }
 
       // Free taste: the backend returns the lifetime free counter on every save. Stop AT
