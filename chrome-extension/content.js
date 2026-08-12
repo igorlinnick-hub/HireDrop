@@ -430,7 +430,7 @@
 
   async function getPlatformCount(platform) {
     const data = await chrome.storage.local.get(["platformCounts", "todayDate"]);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date().toLocaleDateString("en-CA");
     if (data.todayDate !== today) return 0;
     const counts = data.platformCounts || {};
     return counts[platform] || 0;
@@ -1133,7 +1133,7 @@
   // state. background's APPLICATION_SAVED no longer increments (backend save only).
   async function recordLocalApplication(platform) {
     const s = await chrome.storage.local.get(["todayCount", "platformCounts", "todayDate"]);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date().toLocaleDateString("en-CA");
     const totalCount = (s.todayDate === today ? (s.todayCount || 0) : 0) + 1;
     const platformCounts = s.todayDate === today ? (s.platformCounts || {}) : {};
     platformCounts[platform] = (platformCounts[platform] || 0) + 1;
@@ -1147,7 +1147,7 @@
   // (council 2026-08-04: quality above all — no silent half-deaths).
   async function subtractLocalApplication(platform) {
     const s = await chrome.storage.local.get(["todayCount", "platformCounts", "todayDate"]);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = new Date().toLocaleDateString("en-CA");
     if (s.todayDate !== today) return;
     const platformCounts = s.platformCounts || {};
     platformCounts[platform] = Math.max(0, (platformCounts[platform] || 0) - 1);
@@ -2028,7 +2028,7 @@
     const storageData = await chrome.storage.local.get(["profile", "currentJobInfo"]);
     const profile = storageData.profile || {};
     const jobInfo = storageData.currentJobInfo || {};
-    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const today = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD
 
     const inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="number"], textarea'))
       .filter(el => {
@@ -3748,7 +3748,7 @@
     // ban risk. campaignCaps.dailyTotal comes from the backend (app/db/subscriptions.py).
     {
       const c = await chrome.storage.local.get(["campaignCaps", "todayCount", "todayDate"]);
-      const today = new Date().toISOString().slice(0, 10);
+      const today = new Date().toLocaleDateString("en-CA");
       const total = c.todayDate === today ? (c.todayCount || 0) : 0;
       const dailyTotal = (c.campaignCaps && c.campaignCaps.dailyTotal > 0) ? c.campaignCaps.dailyTotal : 30;
       if (total >= dailyTotal) {
