@@ -34,7 +34,9 @@ router = APIRouter(tags=["campaign"])
 
 
 @router.get("/campaign/status")
-def campaign_status(user=Depends(get_current_user)):
+def campaign_status(since: str | None = None, user=Depends(get_current_user)):
+    # `since` = the client's LOCAL midnight as a UTC ISO instant, so "today" counts
+    # roll over at the USER's midnight, not the server's UTC (2026-08-12 fix).
     # Effective state = flag AND fresh extension heartbeat; a zombie (laptop closed,
     # crash, offline — flag stuck true, no pings) self-heals here: reported not-running
     # and the row is lazily flipped. See ZOMBIE_FIX_PLAN.md.
@@ -42,8 +44,8 @@ def campaign_status(user=Depends(get_current_user)):
     profile = get_profile(user.id)
     enabled_platforms = profile.get("platforms", [])
 
-    today_count = apps_db.count_today(user.id)
-    platform_counts = apps_db.count_today_by_platform(user.id)
+    today_count = apps_db.count_today(user.id, since)
+    platform_counts = apps_db.count_today_by_platform(user.id, since)
     jobs_ready = jobs_db.count_new_jobs(user.id, enabled_platforms)
 
     tier = get_tier(user.id, getattr(user, "email", None))
@@ -92,6 +94,12 @@ def campaign_start(req: CampaignStartRequest, user=Depends(get_current_user)):
         "platforms": req.platforms,
         "location": req.location,
         "job_type": req.job_type,
+        # Geo-radius (miles) for non-remote searches. Sourced from the saved profile
+        # (the radius picker writes it via /profile/radius) so it always matches what
+        # the user set. Threaded here so it reaches chrome.storage campaignFilters, where
+        # the extension URL builders turn it into Indeed radius= / LinkedIn distance=.
+        # None = off (remote / no radius chosen) → builders omit the param (current behavior).
+        "search_radius_miles": profile.get("search_radius_miles"),
     }
     state = campaign_db.start(user.id, filters)
     return {"started": True, "state": state}
