@@ -520,24 +520,37 @@ async function addToActivityLog(text, cls, metadata) {
 // Indeed search URL builder
 // ---------------------------------------------------------------------------
 
-function buildIndeedUrl(keywords, location, jobType) {
+// A geo radius only makes sense around a real place — never for a remote search
+// (Indeed rewrites "l=remote" and a radius there is meaningless). Returns a positive
+// integer of miles, or null to omit the param.
+function radiusMilesFor(loc, radius) {
+  const n = Number(radius);
+  if (!loc || String(loc).toLowerCase() === "remote" || !Number.isFinite(n) || n <= 0) return null;
+  return Math.round(n);
+}
+
+function buildIndeedUrl(keywords, location, jobType, radius) {
   const params = new URLSearchParams();
   if (keywords && keywords.length) params.set("q", keywords.join(" "));
   const locMap = { usa: "United States", remote: "remote", europe: "" };
   const loc = locMap[location] !== undefined ? locMap[location] : location;
   if (loc) params.set("l", loc);
+  const rad = radiusMilesFor(loc, radius);
+  if (rad) params.set("radius", String(rad)); // Indeed radius= (miles): 0/5/10/15/25/35/50/100
   const jtMap = { "full-time": "fulltime", "part-time": "parttime", contract: "contract" };
   if (jobType && jtMap[jobType]) params.set("jt", jtMap[jobType]);
   params.set("iafilter", "1");
   return `https://www.indeed.com/jobs?${params.toString()}`;
 }
 
-function buildZipRecruiterUrl(keywords, location, jobType) {
+function buildZipRecruiterUrl(keywords, location, jobType, radius) {
   const params = new URLSearchParams();
   if (keywords && keywords.length) params.set("search", keywords.join(" "));
   const locMap = { usa: "United States", remote: "Remote", europe: "" };
   const loc = locMap[location] !== undefined ? locMap[location] : (location || "");
   if (loc) params.set("location", loc);
+  const rad = radiusMilesFor(loc, radius);
+  if (rad) params.set("radius", String(rad)); // ZipRecruiter radius= (miles)
   const jtMap = { "full-time": "full_time", "part-time": "part_time", contract: "contract" };
   if (jobType && jtMap[jobType]) params.set("employment_type[]", jtMap[jobType]);
   // /candidate/search requires login; /jobs-search works without auth
@@ -552,21 +565,26 @@ function buildZipRecruiterUrl(keywords, location, jobType) {
 // rotation when one is exhausted = v2.
 // location: use a real GEO ("United States") — the literal string "Remote" makes LinkedIn
 // rewrite the URL (location→f_WT=2) and DROP f_AL in that rewrite (live 2026-08-01).
-function buildLinkedInUrl(keywords, location, jobType) {
+function buildLinkedInUrl(keywords, location, jobType, radius) {
   const params = new URLSearchParams();
   if (keywords && keywords.length) params.set("keywords", String(keywords[0]));
   const locMap = { usa: "United States", remote: "United States", europe: "" };
   const loc = locMap[location] !== undefined ? locMap[location] : (location || "United States");
   if (loc) params.set("location", loc);
-  if (location === "remote") params.set("f_WT", "2"); // remote-work filter, the param LinkedIn itself uses
+  if (location === "remote") {
+    params.set("f_WT", "2"); // remote-work filter, the param LinkedIn itself uses
+  } else {
+    const rad = radiusMilesFor(loc, radius);
+    if (rad) params.set("distance", String(rad)); // LinkedIn uses distance= (miles), not radius=
+  }
   params.set("f_AL", "true"); // Easy Apply filter — the only jobs our handler can drive
   return `https://www.linkedin.com/jobs/search/?${params.toString()}`;
 }
 
-function buildPlatformUrl(platform, keywords, location, jobType) {
-  if (platform === "ziprecruiter") return buildZipRecruiterUrl(keywords, location, jobType);
-  if (platform === "linkedin") return buildLinkedInUrl(keywords, location, jobType);
-  return buildIndeedUrl(keywords, location, jobType);
+function buildPlatformUrl(platform, keywords, location, jobType, radius) {
+  if (platform === "ziprecruiter") return buildZipRecruiterUrl(keywords, location, jobType, radius);
+  if (platform === "linkedin") return buildLinkedInUrl(keywords, location, jobType, radius);
+  return buildIndeedUrl(keywords, location, jobType, radius);
 }
 
 function platformHomeUrl(platform) {
@@ -1230,7 +1248,7 @@ async function handleMessage(msg, sender) {
       }
 
       const targetUrl = atsQueue.length ? atsQueue[0].applyUrl
-        : buildPlatformUrl(primaryPlatform, filters.keywords, filters.location, filters.job_type);
+        : buildPlatformUrl(primaryPlatform, filters.keywords, filters.location, filters.job_type, filters.search_radius_miles);
       // Where the automation window first lands. For a pool run whose FIRST job is an
       // Indeed/ZR native posting we must NOT cold-open its deep /viewjob link — a direct
       // deep-link nav is a bot jump that Cloudflare answers with "Additional Verification
