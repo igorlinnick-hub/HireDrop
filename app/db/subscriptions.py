@@ -36,10 +36,15 @@ TIER_LIMITS = {
 # the tap-pool era where one session can touch several platforms at once.
 MAX_PER_PLATFORM = 15
 
-# Tap-mode daily cap (PLAN_VOLUME_CAPTCHA_ECONOMICS.md §3): when the user runs "tap" mode
-# they review + edit every cover letter before submit, so we generate with the ~10× cheaper
-# model (see modules/ai_cover_letter) and a higher volume stays profitable. Paid tiers only.
-TAP_DAILY_LIMIT = 100
+# Tap-mode daily cap. Tap is the QUALITY/control lane, not a volume lane: the user reviews +
+# approves every card, and we KEEP per-job resume tailoring ON (the differentiator). Council
+# 2026-08-02 (Igor): a high tap cap (was 100) was a phantom — bans cap volume per-platform
+# (MAX_PER_PLATFORM) and human review taps out well before 100 — and 100/day WITH tailoring
+# lost ~$40/mo (tailoring is tier-gated, not mode-gated, so tap tailors just like auto). Set =
+# pro's 30/day so both lanes tell one honest "30 tailored applications/day" story; tap's edge is
+# CONTROL (approve each) + a ~10× cheaper cover-letter model (modules/ai_cover_letter), not raw
+# volume. Post-launch upside (deferred): a "Pro Max" tier that re-opens 100/day. Paid tiers only.
+TAP_DAILY_LIMIT = 30
 
 # Sentinel for admin "unlimited" so the dashboard renders ∞ instead of a number.
 ADMIN_DAILY_LIMIT = 10_000_000
