@@ -2941,6 +2941,13 @@
     const locMap = { usa: "United States", remote: "remote", europe: "" };
     const loc = locMap[filters.location] !== undefined ? locMap[filters.location] : (filters.location || "");
     if (loc) params.set("l", loc);
+    // Keep the geo radius across pagination (miles) — else page 2+ silently widens the
+    // search back to the whole location. Omitted for remote / no radius. Matches
+    // background.js buildIndeedUrl's radiusMilesFor guard.
+    const radN = Number(filters.search_radius_miles);
+    if (loc && String(loc).toLowerCase() !== "remote" && Number.isFinite(radN) && radN > 0) {
+      params.set("radius", String(Math.round(radN)));
+    }
     if (filters.job_type) {
       const jtMap = { "full-time": "fulltime", "part-time": "parttime", contract: "contract" };
       if (jtMap[filters.job_type]) params.set("jt", jtMap[filters.job_type]);
