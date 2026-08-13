@@ -134,3 +134,55 @@ def summary(user_id: str, window_hours: int = 24, cap: int = 2000, since: str | 
         "last_error_at": last_error_at,
         "last_error_msg": last_error_msg,
     }
+
+
+def handback_stats(window_hours: int = 168, cap: int = 5000) -> dict:
+    """OPERATOR view (admin-only, ALL users): what the filler is failing on.
+
+    The per-user `unfilledLedger` in chrome.storage answered "which field breaks THIS
+    browser" and died on reinstall. This is the same signal aggregated across the
+    fleet — the list that decides which deterministic handler gets built next
+    (background.js ATS_JOB_FAILED writes the metadata this reads).
+
+    Deliberately NOT exposed to users: a field-frequency table is our engineering
+    backlog, not something a job seeker should ever have to look at.
+    """
+    cutoff = (datetime.now(UTC) - timedelta(hours=max(1, window_hours))).isoformat()
+    res = (
+        get_supabase()
+        .table("activity_log")
+        .select("timestamp, user_id, message, metadata_json")
+        .eq("level", "warn")
+        .gte("timestamp", cutoff)
+        .order("timestamp", desc=True)
+        .limit(cap)
+        .execute()
+    )
+    fields: dict[str, int] = {}
+    by_platform: dict[str, int] = {}
+    by_user: dict[str, int] = {}
+    total = 0
+    for r in res.data or []:
+        meta = r.get("metadata_json") or {}
+        # Only rows the extension tagged as hand-backs — every other warn line
+        # (cap hits, save failures) shares the level but not this shape.
+        if meta.get("type") != "handback":
+            continue
+        total += 1
+        uid = r.get("user_id") or "?"
+        by_user[uid] = by_user.get(uid, 0) + 1
+        plat = meta.get("platform") or "unknown"
+        by_platform[plat] = by_platform.get(plat, 0) + 1
+        for label in meta.get("unfilled") or []:
+            if isinstance(label, str) and label:
+                fields[label[:80]] = fields.get(label[:80], 0) + 1
+    top = sorted(fields.items(), key=lambda kv: kv[1], reverse=True)[:50]
+    return {
+        "window_hours": window_hours,
+        "handbacks": total,
+        "affected_users": len(by_user),
+        "by_platform": by_platform,
+        # Sorted worst-first: the users to look at before they churn quietly.
+        "by_user": dict(sorted(by_user.items(), key=lambda kv: kv[1], reverse=True)[:50]),
+        "top_fields": [{"label": k, "count": v} for k, v in top],
+    }
