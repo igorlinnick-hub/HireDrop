@@ -490,7 +490,12 @@ async function captureActiveAutomationTab() {
 // Activity log
 // ---------------------------------------------------------------------------
 
-async function addToActivityLog(text, cls) {
+// `metadata` is OUR telemetry, not the user's: structured detail (unfilled field
+// labels, platform, job) that never renders in the UI but lands in
+// activity_log.metadata_json server-side, per user. That's what turns a one-off
+// hand-back into the cross-user frequency data we fix by. Local storage keeps the
+// human-readable line only — the dashboard reads that and nothing else.
+async function addToActivityLog(text, cls, metadata) {
   const { activity_log } = await chrome.storage.local.get("activity_log");
   const logs = activity_log || [];
   logs.unshift({
@@ -505,7 +510,9 @@ async function addToActivityLog(text, cls) {
   // is logged out or the API is down, the local log still works.
   try {
     const level = cls === "err" ? "error" : (cls === "warn" ? "warn" : "info");
-    await apiPost("/activity", { message: text, level, phase: "extension" });
+    const body = { message: text, level, phase: "extension" };
+    if (metadata && typeof metadata === "object") body.metadata = metadata;
+    await apiPost("/activity", body);
   } catch {}
 }
 
@@ -1559,15 +1566,27 @@ async function handleMessage(msg, sender) {
     case "ATS_JOB_FAILED": {
       const f = msg.data || {};
       const who = [f.title, f.company].filter(Boolean).join(" @ ") || "this job";
+      const unfilled = Array.isArray(f.unfilled) ? f.unfilled.slice(0, 25) : [];
       await addToActivityLog(
         `✋ Needs your hands: ${who} — ${f.reason || "couldn't complete the form"}. Finish it yourself: ${f.url || ""}`,
-        "warn"
+        "warn",
+        // Same labels that feed the LOCAL ledger below — mirrored server-side so the
+        // ledger survives a reinstall and aggregates across users, not just this browser.
+        {
+          type: "handback",
+          reason: f.reason || "",
+          unfilled,
+          platform: f.platform || "",
+          job_title: f.title || "",
+          company: f.company || "",
+          job_url: f.url || "",
+        }
       );
       try {
-        if (Array.isArray(f.unfilled) && f.unfilled.length) {
+        if (unfilled.length) {
           const s = await chrome.storage.local.get("unfilledLedger");
           const ledger = s.unfilledLedger || {};
-          for (const lbl of f.unfilled) ledger[lbl] = (ledger[lbl] || 0) + 1;
+          for (const lbl of unfilled) ledger[lbl] = (ledger[lbl] || 0) + 1;
           // Cap ledger size: keep the 200 most-frequent labels.
           const top = Object.entries(ledger).sort((a, b) => b[1] - a[1]).slice(0, 200);
           await chrome.storage.local.set({ unfilledLedger: Object.fromEntries(top) });
