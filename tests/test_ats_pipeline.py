@@ -120,7 +120,7 @@ def test_with_captcha_empty_list():
 
 def test_daily_limit_auto_vs_tap_paid():
     assert daily_limit("pro", "auto") == TIER_LIMITS["pro"]        # 30
-    assert daily_limit("pro", "tap") == TAP_DAILY_LIMIT            # 100
+    assert daily_limit("pro", "tap") == TAP_DAILY_LIMIT            # 30 (=auto; tap is a quality lane, not a volume lift — 2026-08-02)
     assert daily_limit("premium", "tap") == TAP_DAILY_LIMIT
 
 
