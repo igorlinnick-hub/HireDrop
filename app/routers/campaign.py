@@ -157,11 +157,21 @@ def extension_ping(body: ExtensionPingBody, user=Depends(get_current_user)):
         "error": body.error,
         "version": body.version,
     }
-    # Heartbeat stamp (ZOMBIE_FIX_PLAN): this ping is the liveness signal the TTL reads.
-    # Stamp BEFORE computing should_run, so a live extension whose SW just woke from a
-    # long sleep refreshes its own heartbeat first and is never told to stop by its own
-    # staleness. DB-persisted (unlike _ext_status) → survives backend restarts.
-    campaign_db.touch_ping(user.id)
+    # Heartbeat stamp (ZOMBIE_FIX_PLAN): the TTL must measure whether the CAMPAIGN is
+    # alive, not merely whether the extension is loaded. Stamping every ping conflated the
+    # two and made zombies immortal — an idle extension pinging once a minute kept
+    # last_ping_at fresh forever, so the TTL never expired and a `running` flag from days
+    # ago still read as live (Igor hit exactly this: "Watch Live" 2 days after the run
+    # died). So: only a ping that says the campaign is running counts as its heartbeat.
+    # Stamped BEFORE should_run so a live extension whose SW just woke from a long sleep
+    # refreshes first and is never told to stop by its own staleness. DB-persisted
+    # (unlike _ext_status) → survives backend restarts.
+    if body.campaign_running:
+        campaign_db.touch_ping(user.id)
+    else:
+        # The extension is the only thing that can run a campaign; if it says it isn't,
+        # a raised flag is a zombie. Clear it now instead of waiting out the TTL.
+        campaign_db.reconcile_not_running(user.id)
     # Return the backend's authoritative campaign flag so the extension can honor a Stop
     # even if the dashboard's postMessage stop was dropped (e.g. orphaned content script).
     try:
