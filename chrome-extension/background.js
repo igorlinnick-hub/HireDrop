@@ -529,9 +529,28 @@ function radiusMilesFor(loc, radius) {
   return Math.round(n);
 }
 
-function buildIndeedUrl(keywords, location, jobType, radius) {
+// Work setting (remote / hybrid / on-site) → search refinement.
+// Indeed & ZipRecruiter have NO stable work-type URL param (their sc=attr / refine codes
+// churn and break silently), so we bias the QUERY with the literal word, which matches how
+// postings actually label themselves ("Hybrid", "Remote"). Only 'hybrid' is injected:
+// 'remote' is already handled by the location mechanism, and 'onsite' is the default for a
+// city search — injecting the word "onsite" would over-narrow (few posts use it).
+function workQueryToken(workSetting) {
+  return workSetting === "hybrid" ? "hybrid" : "";
+}
+// LinkedIn HAS a real, stable work-type filter (f_WT): 1=on-site, 2=remote, 3=hybrid.
+function workLinkedInWT(workSetting) {
+  return { remote: "2", hybrid: "3", onsite: "1" }[workSetting] || "";
+}
+function joinQuery(keywords, workSetting) {
+  const kw = keywords && keywords.length ? keywords.join(" ") : "";
+  return [kw, workQueryToken(workSetting)].filter(Boolean).join(" ");
+}
+
+function buildIndeedUrl(keywords, location, jobType, radius, workSetting) {
   const params = new URLSearchParams();
-  if (keywords && keywords.length) params.set("q", keywords.join(" "));
+  const q = joinQuery(keywords, workSetting);
+  if (q) params.set("q", q);
   const locMap = { usa: "United States", remote: "remote", europe: "" };
   const loc = locMap[location] !== undefined ? locMap[location] : location;
   if (loc) params.set("l", loc);
@@ -543,9 +562,10 @@ function buildIndeedUrl(keywords, location, jobType, radius) {
   return `https://www.indeed.com/jobs?${params.toString()}`;
 }
 
-function buildZipRecruiterUrl(keywords, location, jobType, radius) {
+function buildZipRecruiterUrl(keywords, location, jobType, radius, workSetting) {
   const params = new URLSearchParams();
-  if (keywords && keywords.length) params.set("search", keywords.join(" "));
+  const q = joinQuery(keywords, workSetting);
+  if (q) params.set("search", q);
   const locMap = { usa: "United States", remote: "Remote", europe: "" };
   const loc = locMap[location] !== undefined ? locMap[location] : (location || "");
   if (loc) params.set("location", loc);
@@ -565,15 +585,16 @@ function buildZipRecruiterUrl(keywords, location, jobType, radius) {
 // rotation when one is exhausted = v2.
 // location: use a real GEO ("United States") — the literal string "Remote" makes LinkedIn
 // rewrite the URL (location→f_WT=2) and DROP f_AL in that rewrite (live 2026-08-01).
-function buildLinkedInUrl(keywords, location, jobType, radius) {
+function buildLinkedInUrl(keywords, location, jobType, radius, workSetting) {
   const params = new URLSearchParams();
   if (keywords && keywords.length) params.set("keywords", String(keywords[0]));
   const locMap = { usa: "United States", remote: "United States", europe: "" };
   const loc = locMap[location] !== undefined ? locMap[location] : (location || "United States");
   if (loc) params.set("location", loc);
-  if (location === "remote") {
-    params.set("f_WT", "2"); // remote-work filter, the param LinkedIn itself uses
-  } else {
+  // Explicit work-setting wins; otherwise fall back to the legacy location==remote branch.
+  const wt = workLinkedInWT(workSetting) || (location === "remote" ? "2" : "");
+  if (wt) params.set("f_WT", wt); // 1=on-site, 2=remote, 3=hybrid — LinkedIn's own param
+  if (wt !== "2") {
     const rad = radiusMilesFor(loc, radius);
     if (rad) params.set("distance", String(rad)); // LinkedIn uses distance= (miles), not radius=
   }
@@ -581,10 +602,10 @@ function buildLinkedInUrl(keywords, location, jobType, radius) {
   return `https://www.linkedin.com/jobs/search/?${params.toString()}`;
 }
 
-function buildPlatformUrl(platform, keywords, location, jobType, radius) {
-  if (platform === "ziprecruiter") return buildZipRecruiterUrl(keywords, location, jobType, radius);
-  if (platform === "linkedin") return buildLinkedInUrl(keywords, location, jobType, radius);
-  return buildIndeedUrl(keywords, location, jobType, radius);
+function buildPlatformUrl(platform, keywords, location, jobType, radius, workSetting) {
+  if (platform === "ziprecruiter") return buildZipRecruiterUrl(keywords, location, jobType, radius, workSetting);
+  if (platform === "linkedin") return buildLinkedInUrl(keywords, location, jobType, radius, workSetting);
+  return buildIndeedUrl(keywords, location, jobType, radius, workSetting);
 }
 
 function platformHomeUrl(platform) {
@@ -1099,6 +1120,12 @@ async function handleMessage(msg, sender) {
         platforms: (raw.platforms && raw.platforms.length) ? raw.platforms : (profile.platforms || ["indeed"]),
         location: raw.location || profile.location || "",
         job_type: raw.job_type || profile.job_type || "",
+        // Radius was silently dropped here (present in profile + backend, never merged into
+        // the extension's campaignFilters) → every city search ran radius-less. Merge it so
+        // content.js builders (initial nav + pagination) actually see it. 2026-08-14 fix.
+        search_radius_miles: raw.search_radius_miles ?? profile.search_radius_miles ?? null,
+        // Work setting (remote/hybrid/onsite) — the "Hybrid" filter. Threaded to URL builders.
+        work_setting: raw.work_setting || profile.work_setting || "",
       };
 
       // No keywords anywhere (request OR profile) → the campaign has nothing to search
@@ -1248,7 +1275,7 @@ async function handleMessage(msg, sender) {
       }
 
       const targetUrl = atsQueue.length ? atsQueue[0].applyUrl
-        : buildPlatformUrl(primaryPlatform, filters.keywords, filters.location, filters.job_type, filters.search_radius_miles);
+        : buildPlatformUrl(primaryPlatform, filters.keywords, filters.location, filters.job_type, filters.search_radius_miles, filters.work_setting);
       // Where the automation window first lands. For a pool run whose FIRST job is an
       // Indeed/ZR native posting we must NOT cold-open its deep /viewjob link — a direct
       // deep-link nav is a bot jump that Cloudflare answers with "Additional Verification

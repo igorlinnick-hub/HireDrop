@@ -2937,7 +2937,11 @@
     const filters = data.campaignFilters || {};
 
     const params = new URLSearchParams();
-    if (filters.keywords?.length) params.set("q", filters.keywords.join(" "));
+    // Work setting: Indeed has no stable work-type param, so bias the query with "hybrid"
+    // (matches how postings label themselves). Mirrors background.js joinQuery/workQueryToken.
+    const wq = filters.work_setting === "hybrid" ? "hybrid" : "";
+    const q = [filters.keywords?.length ? filters.keywords.join(" ") : "", wq].filter(Boolean).join(" ");
+    if (q) params.set("q", q);
     const locMap = { usa: "United States", remote: "remote", europe: "" };
     const loc = locMap[filters.location] !== undefined ? locMap[filters.location] : (filters.location || "");
     if (loc) params.set("l", loc);
@@ -2983,7 +2987,9 @@
     const filters = data.campaignFilters || {};
 
     const params = new URLSearchParams();
-    if (filters.keywords?.length) params.set("search", filters.keywords.join(" "));
+    { const wq = filters.work_setting === "hybrid" ? "hybrid" : "";
+      const q = [filters.keywords?.length ? filters.keywords.join(" ") : "", wq].filter(Boolean).join(" ");
+      if (q) params.set("search", q); }
     const locMap = { usa: "United States", remote: "Remote", europe: "" };
     const loc = locMap[filters.location] !== undefined ? locMap[filters.location] : (filters.location || "");
     if (loc) params.set("location", loc);
@@ -3028,7 +3034,9 @@
     const data = await chrome.storage.local.get("campaignFilters");
     const filters = data.campaignFilters || {};
     const params = new URLSearchParams();
-    if (filters.keywords?.length) params.set("search", filters.keywords.join(" "));
+    { const wq = filters.work_setting === "hybrid" ? "hybrid" : "";
+      const q = [filters.keywords?.length ? filters.keywords.join(" ") : "", wq].filter(Boolean).join(" ");
+      if (q) params.set("search", q); }
     const locMap = { usa: "United States", remote: "Remote", europe: "" };
     const loc = locMap[filters.location] !== undefined ? locMap[filters.location] : (filters.location || "");
     if (loc) params.set("location", loc);
