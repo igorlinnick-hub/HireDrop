@@ -113,28 +113,67 @@ async function loadProfile() {
 // Activity log
 // ---------------------------------------------------------------------------
 
-async function renderActivityLog() {
-  const { activity_log } = await chrome.storage.local.get("activity_log");
-  const logs = (activity_log || []).slice(0, 10);
-  const el = $("log-list");
+// A compact stage rail (Scan → Match → Write → Submit) driven by the latest
+// activity, instead of a scrolling wall of chatty log lines. The engine still
+// writes activity_log; we just read the newest entry and map it to a stage.
+const PROC_STAGES = ["Scan", "Match", "Write", "Submit"];
 
-  if (!logs.length) {
-    el.innerHTML = '<div class="log-empty">No activity yet — start a campaign to begin</div>';
+function stageForText(text) {
+  const t = (text || "").toLowerCase();
+  if (/submit|applied|\bapply|sent|success|complete|done/.test(t)) return 3;
+  if (/cover|writ|fill|tailor|\bform|answer|screen|question/.test(t)) return 2;
+  if (/match|score|\bfit\b|rank|evaluat|analy/.test(t)) return 1;
+  return 0; // scan / search / warmup / found / resuming / opened …
+}
+
+// Strip the decorative symbols the engine prepends (⏭ ✓ ⚠ → 🎯 …) so the line
+// reads clean; typography carries the meaning.
+function cleanMsg(s) {
+  try {
+    return (s || "").replace(/[\p{Extended_Pictographic}←-⇿✀-➿]/gu, "").replace(/\s{2,}/g, " ").trim();
+  } catch {
+    return (s || "").trim();
+  }
+}
+
+function setStage(active) {
+  const fill = $("pr-fill");
+  if (fill) fill.style.width = active < 0 ? "0%" : `${(active / (PROC_STAGES.length - 1)) * 100}%`;
+  // Brand droplet fills as stages advance: empty when idle → full at Submit.
+  const drop = $("pd-fill");
+  if (drop) {
+    const level = active < 0 ? 0 : (active + 1) / PROC_STAGES.length;
+    drop.style.transform = `translateY(${Math.round((1 - level) * 100)}%)`;
+  }
+  for (let i = 0; i < PROC_STAGES.length; i++) {
+    const node = $("pn-" + i);
+    if (!node) continue;
+    node.classList.toggle("done", active >= 0 && i < active);
+    node.classList.toggle("active", active === i);
+  }
+}
+
+async function renderProcess() {
+  const section = $("proc-section");
+  if (!section) return;
+  const { activity_log, campaignRunning } = await chrome.storage.local.get(["activity_log", "campaignRunning"]);
+  const latest = (activity_log || [])[0];
+  const running = !!campaignRunning;
+
+  if (!latest) {
+    section.classList.remove("active", "attn");
+    $("proc-state").textContent = running ? "Starting" : "Idle";
+    $("proc-action").textContent = running ? "Warming up…" : "Start a campaign to begin";
+    setStage(-1);
     return;
   }
 
-  el.innerHTML = logs
-    .map(
-      (l) =>
-        '<div class="log-item"><span class="log-time">' +
-        escapeHtml(l.time) +
-        '</span><span class="log-msg ' +
-        (l.cls || "") +
-        '">' +
-        escapeHtml(l.text) +
-        "</span></div>"
-    )
-    .join("");
+  const isErr = latest.cls === "err";
+  section.classList.toggle("active", running && !isErr);
+  section.classList.toggle("attn", isErr);
+  $("proc-state").textContent = isErr ? "Needs you" : running ? "Working" : "Paused";
+  $("proc-action").textContent = cleanMsg(latest.text) || "Working…";
+  setStage(running && !isErr ? stageForText(latest.text) : -1);
 }
 
 // ---------------------------------------------------------------------------
@@ -224,7 +263,7 @@ async function loadStatus() {
     $("btn-start").disabled = !isConnected;
   }
 
-  renderActivityLog();
+  renderProcess();
 }
 
 // ---------------------------------------------------------------------------
@@ -308,7 +347,7 @@ async function addLog(text, cls) {
   });
   if (logs.length > 50) logs.length = 50;
   await chrome.storage.local.set({ activity_log: logs });
-  renderActivityLog();
+  renderProcess();
 }
 
 // ---------------------------------------------------------------------------
@@ -356,7 +395,7 @@ function startPolling() {
       if (authStatus && authStatus.authenticated) {
         _isAuthenticated = true;
         hideAuthBanner();
-        renderActivityLog();
+        renderProcess();
         const connected = await checkConnection();
         if (connected) await Promise.all([loadProfile(), loadStatus()]);
       }
@@ -380,7 +419,7 @@ function startPolling() {
 
   _isAuthenticated = true;
   hideAuthBanner();
-  renderActivityLog();
+  renderProcess();
   const connected = await checkConnection();
   if (connected) await Promise.all([loadProfile(), loadStatus()]);
   startPolling();
