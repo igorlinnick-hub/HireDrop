@@ -11,6 +11,11 @@ from app.db.client import get_supabase
 # flip the row. 150s = 2.5× the ping period: tolerates two missed pings + jitter.
 HEARTBEAT_TTL_SECS = 150
 
+# Grace after started_at during which we trust the flag without any campaign heartbeat.
+# /campaign/start flips the flag, but the extension needs a moment to pick the campaign
+# up — reaping inside this window would kill campaigns at birth. Two ping periods.
+STARTUP_GRACE_SECS = 120
+
 
 def _parse_ts(value) -> datetime | None:
     if not value:
@@ -25,16 +30,21 @@ def _parse_ts(value) -> datetime | None:
 def is_effectively_running(state: dict) -> bool:
     """The authoritative liveness check: the stored flag AND a fresh heartbeat.
 
-    last_ping_at is None for rows from before the migration (or if the column doesn't
-    exist yet) — keep the legacy behaviour then (trust the flag), so this deploys safely
-    ahead of the migration and TTL activates the moment pings start stamping.
+    last_ping_at is None means no campaign heartbeat ever landed (pre-migration row, or
+    the extension never confirmed it was running). Trusting the flag FOREVER in that case
+    made zombies immortal, so it is trusted only inside STARTUP_GRACE of started_at. With
+    no started_at either we know nothing and keep the legacy behaviour — trust the flag.
     """
     if not state.get("running"):
         return False
+    now = datetime.now(UTC)
     lp = _parse_ts(state.get("last_ping_at"))
     if lp is None:
-        return True
-    return (datetime.now(UTC) - lp).total_seconds() < HEARTBEAT_TTL_SECS
+        started = _parse_ts(state.get("started_at"))
+        if started is None:
+            return True
+        return (now - started).total_seconds() < STARTUP_GRACE_SECS
+    return (now - lp).total_seconds() < HEARTBEAT_TTL_SECS
 
 
 def build_readiness(profile: dict, running: bool, tier: str, submit_mode: str,
@@ -112,6 +122,36 @@ def get_effective_state(user_id: str) -> dict:
             pass  # cleanup is best-effort; the caller still gets running=False
         state["running"] = False
     return state
+
+
+def reconcile_not_running(user_id: str) -> bool:
+    """The extension reports it is NOT running a campaign — clear a flag that says it is.
+
+    Only the extension can actually run a campaign, so its own view is authoritative in
+    this direction (never the reverse: the dashboard must not be able to raise the flag
+    from a client claim). Skipped inside STARTUP_GRACE of started_at so a ping racing
+    /campaign/start can't reap a campaign the extension hasn't picked up yet.
+
+    Returns True if a zombie was cleared. Only the flag is touched — filters/started_at
+    stay for forensics, same as get_effective_state().
+    """
+    state = get_state(user_id)
+    if not state["running"]:
+        return False
+    started = _parse_ts(state.get("started_at"))
+    if started and (datetime.now(UTC) - started).total_seconds() < STARTUP_GRACE_SECS:
+        return False
+    try:
+        (
+            get_supabase()
+            .table("campaign_states")
+            .update({"running": False})
+            .eq("user_id", user_id)
+            .execute()
+        )
+    except Exception:
+        return False
+    return True
 
 
 def touch_ping(user_id: str) -> None:
