@@ -348,6 +348,10 @@ async function sendExtensionPing() {
     try {
       const j = await res.json();
       if (j && j.should_run === false && data.campaignRunning) {
+        // Say so out loud. This path killed a live run mid-form on 08-15 and left NOTHING
+        // in the durable log — from the outside the campaign just froze on an open
+        // application. Every stop must name itself.
+        await addToActivityLog("⏹ Stopped by the server: the backend says this campaign is no longer running.", "warn");
         await chrome.storage.local.set({ campaignRunning: false, currentJob: null });
         const { campaignTabId } = await chrome.storage.local.get("campaignTabId");
         if (campaignTabId) detachDebugger(campaignTabId).catch(() => {});
@@ -1354,6 +1358,14 @@ async function handleMessage(msg, sender) {
         kwIndex: 0, // keyword rotation cursor — content.js advances it as each keyword is exhausted
         triedPlatforms: [primaryPlatform], // platform-failover ledger — PLATFORM_EXHAUSTED never revisits these
         zrNoBtnStreak: 0, // external-apply wall guard counter
+        // Stale per-job state from the LAST run must not leak into this one: with these
+        // left over, the fresh homepage was treated as an open application form and
+        // phase3 ran against it, logging "form abandoned" for a job we never touched
+        // (live 08-15, after a Chrome restart).
+        currentJobInfo: null,
+        generatedCoverLetter: "",
+        pendingJobs: [],
+        currentJobIndex: 0,
       });
 
       updateBadge();
@@ -1424,6 +1436,15 @@ async function handleMessage(msg, sender) {
     // to be a wall of external-apply listings / hit its per-platform cap / ran out of
     // keywords. Switch to the next walkable board automatically; stop only when every
     // candidate has been tried. GH/Lever/Ashby run via the ATS queue, not this walk.
+    // "Am I the tab this campaign is driving?" Asked by every content script at init so
+    // session-restored tabs from an older run stay out of the way (see content.js init).
+    case "AM_I_CAMPAIGN_TAB": {
+      const tabId = sender && sender.tab && sender.tab.id;
+      const { campaignTabId } = await chrome.storage.local.get("campaignTabId");
+      if (!tabId || !campaignTabId) return { known: false };
+      return { known: true, isCampaignTab: tabId === campaignTabId };
+    }
+
     case "PLATFORM_EXHAUSTED": {
       const ex = await chrome.storage.local.get([
         "campaignRunning", "campaignFilters", "campaignTabId", "triedPlatforms", "platformConnections",
@@ -1469,7 +1490,10 @@ async function handleMessage(msg, sender) {
     }
 
     case "STOP_CAMPAIGN": {
-      const stopData = await chrome.storage.local.get(["campaignTabId", "campaignWindowId"]);
+      const stopData = await chrome.storage.local.get(["campaignTabId", "campaignWindowId", "campaignRunning"]);
+      if (stopData.campaignRunning) {
+        await addToActivityLog(`⏹ Campaign stopped (${msg.reason || "requested by you"}).`, "info");
+      }
 
       // Clear running state first so the onDetach listener won't auto-reattach.
       // Also drop any pending tap review + ATS queue — a stopped campaign must not
@@ -1928,6 +1952,7 @@ async function handleMessage(msg, sender) {
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const data = await chrome.storage.local.get(["campaignTabId", "campaignRunning"]);
   if (data.campaignRunning && data.campaignTabId === tabId) {
+    await addToActivityLog("⏹ Campaign stopped — its automation tab was closed.", "warn");
     await chrome.storage.local.set({
       campaignRunning: false,
       campaignTabId: null,
@@ -1944,6 +1969,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 chrome.windows.onRemoved.addListener(async (windowId) => {
   const data = await chrome.storage.local.get(["campaignWindowId", "campaignRunning"]);
   if (data.campaignRunning && data.campaignWindowId === windowId) {
+    await addToActivityLog("⏹ Campaign stopped — its automation window was closed.", "warn");
     await chrome.storage.local.set({
       campaignRunning: false,
       campaignTabId: null,

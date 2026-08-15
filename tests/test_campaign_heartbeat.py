@@ -121,3 +121,53 @@ def test_running_ping_stamps_the_heartbeat(auth_client):
     assert res.status_code == 200
     touch.assert_called_once()
     reconcile.assert_not_called()
+
+
+def test_campaign_activity_line_refreshes_the_heartbeat(auth_client):
+    """An extension activity line written DURING a running campaign is a heartbeat.
+
+    The alarm-only heartbeat is not enough: chrome.alarms is throttled when the machine
+    idles, so a live run blew the TTL and was reaped mid-application (08-15). These lines
+    are only written while a campaign runs, so they still prove the CAMPAIGN is alive —
+    the property ZOMBIE_FIX_PLAN.md requires — not merely that the extension is loaded.
+    """
+    with (
+        patch("app.routers.activity.campaign_db.get_state", return_value={"running": True}),
+        patch("app.routers.activity.campaign_db.touch_ping") as touch,
+        patch("app.routers.activity.activity_db.write", return_value="id1"),
+    ):
+        res = auth_client.post(
+            "/api/v1/activity", json={"message": "Applied: x @ y", "phase": "extension"}
+        )
+
+    assert res.status_code == 200
+    touch.assert_called_once()
+
+
+def test_activity_line_without_a_campaign_is_not_a_heartbeat(auth_client):
+    with (
+        patch("app.routers.activity.campaign_db.get_state", return_value={"running": False}),
+        patch("app.routers.activity.campaign_db.touch_ping") as touch,
+        patch("app.routers.activity.activity_db.write", return_value="id1"),
+    ):
+        res = auth_client.post(
+            "/api/v1/activity", json={"message": "hello", "phase": "extension"}
+        )
+
+    assert res.status_code == 200
+    touch.assert_not_called()
+
+
+def test_non_extension_activity_never_stamps_the_heartbeat(auth_client):
+    """Dashboard/server-written lines must not keep a dead campaign alive."""
+    with (
+        patch("app.routers.activity.campaign_db.get_state", return_value={"running": True}),
+        patch("app.routers.activity.campaign_db.touch_ping") as touch,
+        patch("app.routers.activity.activity_db.write", return_value="id1"),
+    ):
+        res = auth_client.post(
+            "/api/v1/activity", json={"message": "hello", "phase": "dashboard"}
+        )
+
+    assert res.status_code == 200
+    touch.assert_not_called()

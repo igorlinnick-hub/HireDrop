@@ -1,3 +1,4 @@
+import contextlib
 import os
 import sys
 import time
@@ -7,6 +8,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from app.db import activity as activity_db
 from app.db import applications as apps_db
 from app.db import campaign as campaign_db
 from app.db import jobs as jobs_db
@@ -171,7 +173,19 @@ def extension_ping(body: ExtensionPingBody, user=Depends(get_current_user)):
     else:
         # The extension is the only thing that can run a campaign; if it says it isn't,
         # a raised flag is a zombie. Clear it now instead of waiting out the TTL.
-        campaign_db.reconcile_not_running(user.id)
+        # Reaping is a real event with real consequences (a half-filled application gets
+        # abandoned), so it goes in the activity log. On 08-15 a run died mid-form and
+        # this path was one of the suspects we could not confirm or clear, because it
+        # left no trace at all.
+        if campaign_db.reconcile_not_running(user.id):
+            with contextlib.suppress(Exception):
+                activity_db.write(
+                    user.id,
+                    "⏹ Campaign flag cleared — the extension reported it is not running "
+                    "(browser closed, extension reloaded, or the run ended).",
+                    level="warn",
+                    phase="campaign",
+                )
     # Return the backend's authoritative campaign flag so the extension can honor a Stop
     # even if the dashboard's postMessage stop was dropped (e.g. orphaned content script).
     try:
@@ -183,14 +197,25 @@ def extension_ping(body: ExtensionPingBody, user=Depends(get_current_user)):
 
 @router.get("/extension/ping")
 def extension_status(user=Depends(get_current_user)):
+    # `_ext_status` is per-process memory: it holds whatever the extension last POSTed to
+    # THIS worker. After a restart (or on another worker) it is empty or stale, so the
+    # echoed `campaign_running` can say "false" about a campaign that is happily applying
+    # — it cost an hour of chasing a phantom stop on 08-15. Liveness of the CAMPAIGN has
+    # exactly one source of truth, the DB flag, so serve that instead of the echo.
     row = _ext_status.get(user.id)
+    try:
+        running = bool(campaign_db.get_state(user.id)["running"])
+    except Exception:
+        running = None
     if not row:
-        return {"online": False}
+        return {"online": False, "campaign_running": running}
     age = time.time() - row["ts"]
     return {
         "online": age < 60,
         "last_seen_secs_ago": round(age),
         **{k: v for k, v in row.items() if k != "ts"},
+        # Overrides the echoed value on purpose — see the comment above.
+        **({"campaign_running": running} if running is not None else {}),
     }
 
 
