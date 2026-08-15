@@ -1655,6 +1655,17 @@
       }
     }
 
+    // Already applied on the platform itself (a previous run submitted it, or the user
+    // did). ZipRecruiter flips the pane button to "Applied". Catch it BEFORE the fit
+    // judge and the cover letter — those cost money and the answer can only be "skip".
+    // (Live 08-15 this showed up as a misleading "Skip (no Quick Apply button)".)
+    if (jobLooksApplied()) {
+      logBackend(`Already applied on ZipRecruiter — skipping: ${jobTitle} @ ${jobCompany}`, "info");
+      await addAppliedJobKey(jobTitle, jobCompany);
+      await skipToNextJob();
+      return;
+    }
+
     // Fit Engine M1
     {
       // POOL SWIPE RUN: the user already approved this job by swiping — the AI fit
@@ -1761,7 +1772,7 @@
     if (!(await isCampaignRunning())) return;
     if (!formReady) {
       log(`${jobTitle} — no Quick Apply form appeared (external ATS), skipping`, "");
-      logBackend(`Skip (no ZR form after 15s): ${jobTitle} @ ${jobCompany}`, "info");
+      logBackend(`Skip (no ZR form after 15s): ${jobTitle} @ ${jobCompany} — ${dialogSnapshot()}`, "info");
       await skipToNextJob();
       return;
     }
@@ -1772,17 +1783,31 @@
     await phase3_fillForm();
   }
 
+  // A job whose application was already STARTED (a previous run filled a step and never
+  // finished) shows "Continue" instead of "Quick Apply" — live 08-15:
+  // APPLY DIAG btns=[Continue | Share this job | Report] applyLinks=[]. Treating that as
+  // "external apply, skip" permanently orphaned every job a broken run had touched.
+  const ZR_APPLY_RE = /^(quick apply|1-click apply|continue( application)?)$/;
+  function isZipRecruiterApplyBtn(el) {
+    if (!el || el.offsetParent === null) return false;
+    const label = ((el.getAttribute("aria-label") || "") || (el.textContent || "")).replace(/\s+/g, " ").trim().toLowerCase();
+    const text = (el.textContent || "").replace(/\s+/g, " ").trim().toLowerCase();
+    return ZR_APPLY_RE.test(label) || ZR_APPLY_RE.test(text);
+  }
+
   function findZipRecruiterApplyButton() {
     // Confirmed real selector: button[aria-label="Quick Apply"] inside [data-testid="right-pane"]
     const panel = document.querySelector('[data-testid="right-pane"]');
     if (panel) {
       const btn = panel.querySelector('button[aria-label="Quick Apply"]');
       if (btn && btn.offsetParent !== null) return btn;
+      for (const el of panel.querySelectorAll("button")) {
+        if (isZipRecruiterApplyBtn(el)) return el;
+      }
     }
-    // Fallback: any visible "Quick Apply" button anywhere on the page
+    // Fallback: any visible Quick-Apply/Continue button anywhere on the page
     for (const el of document.querySelectorAll('button')) {
-      if ((el.getAttribute("aria-label") || "").trim() === "Quick Apply" && el.offsetParent !== null) return el;
-      if ((el.textContent || "").trim() === "Quick Apply" && el.offsetParent !== null) return el;
+      if (isZipRecruiterApplyBtn(el)) return el;
     }
     return null;
   }
@@ -1941,7 +1966,7 @@
   // Returns count of groups filled. Picks "Yes" for Yes/No groups (covers the
   // most common positive-eligibility questions); picks the first option otherwise.
   async function fillRadioQuestions() {
-    const radios = document.querySelectorAll('input[type="radio"]');
+    const radios = formScope().querySelectorAll('input[type="radio"]');
     const seen = new Set();
     let filled = 0;
 
@@ -2015,7 +2040,7 @@
   // optional opt-ins (e.g. "email me about similar jobs") — only required boxes or
   // ones whose label clearly reads as an attestation/agreement.
   async function fillCheckboxes() {
-    const boxes = Array.from(document.querySelectorAll('input[type="checkbox"]'))
+    const boxes = Array.from(formScope().querySelectorAll('input[type="checkbox"]'))
       .filter((c) => c.offsetParent && !c.checked);
     let filled = 0;
     for (const c of boxes) {
@@ -2045,11 +2070,20 @@
     const jobInfo = storageData.currentJobInfo || {};
     const today = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD
 
-    const inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="number"], textarea'))
+    // Scope to the apply modal (see formScope) and DON'T demand a `required` marker.
+    // ZipRecruiter's screener questions carry no required/aria-required attribute at all
+    // (live 08-15: name="['573276']", required=false, label via label[for]) — so the old
+    // required-only filter answered NOTHING, the step never validated, and phase3 clicked
+    // "Continue" 20 times against an unchanged form before giving up. A visible, empty,
+    // labelled question inside the apply form is a question we must answer.
+    const scope = formScope();
+    const inputs = Array.from(scope.querySelectorAll('input[type="text"], input[type="number"], textarea'))
       .filter(el => {
         if (!el.offsetParent || el.value.trim()) return false;
-        return el.required || el.getAttribute("aria-required") === "true" ||
-          el.getAttribute("aria-invalid") === "true" || el.classList.contains("required");
+        if (el.type === "hidden" || el.readOnly || el.disabled) return false;
+        // Never touch a site-search box that happens to live inside the scope.
+        if (el.closest('form[role="search"]') || /search/i.test(el.name || "")) return false;
+        return true;
       });
 
     let filled = 0;
@@ -2217,7 +2251,7 @@
     const profile = storageData.profile || {};
     const jobInfo = storageData.currentJobInfo || {};
 
-    const selects = Array.from(document.querySelectorAll("select")).filter(s => {
+    const selects = Array.from(formScope().querySelectorAll("select")).filter(s => {
       if (!s.offsetParent) return false;
       const cur = (s.options[s.selectedIndex]?.textContent || "").trim();
       // Only fill if still on a placeholder / empty selection.
@@ -2383,7 +2417,55 @@
     return direct || "";
   }
 
+  // The visible apply modal, if the platform renders the form in one (Indeed's in-page
+  // modal, ZipRecruiter's Quick Apply). Button lookup must be scoped to it: the page
+  // BEHIND the modal keeps its own visible buttons (ZR right-pane "Quick Apply", card
+  // badges, nav) that a document-wide text match picks up first in DOM order.
+  // All visible dialogs, the ones holding form fields first. ZR keeps MORE THAN ONE
+  // visible [role=dialog] mounted while Quick Apply is open (live 08-15: the first one
+  // has buttons but no fields; the apply form is a later sibling) — "first dialog with
+  // a button" picked the wrong one and the lookup fell through to the page.
+  function visibleApplyDialogs() {
+    const all = Array.from(document.querySelectorAll('[role="dialog"]')).filter((d) => d.offsetParent !== null);
+    const withFields = all.filter((d) => d.querySelector("input, textarea, select"));
+    const rest = all.filter((d) => !withFields.includes(d) && d.querySelector("button"));
+    return withFields.concat(rest);
+  }
+  function visibleApplyDialog() { return visibleApplyDialogs()[0] || null; }
+
+  // The element that owns the current application step. When the platform renders the
+  // apply flow in a modal (Indeed, ZipRecruiter) the fillers MUST stay inside it: the
+  // page behind keeps its own inputs and buttons (ZR's header search box is the famous
+  // one) and a document-wide query reaches them first.
+  function formScope() {
+    return visibleApplyDialogs().find((d) => d.querySelector("input, textarea, select")) || document;
+  }
+
+  // Compact "what modals are on screen" string — the one fact that told us WHY a ZR
+  // apply died. Cheap enough to attach to every give-up path.
+  function dialogSnapshot() {
+    const dlgs = visibleApplyDialogs();
+    if (!dlgs.length) return "dialogs=0";
+    return `dialogs=${dlgs.length} ` + dlgs.slice(0, 3).map((d, i) => {
+      const ins = d.querySelectorAll("input, textarea, select").length;
+      const bts = Array.from(d.querySelectorAll("button")).filter((b) => b.offsetParent !== null)
+        .map((b) => (b.textContent || b.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim())
+        .filter(Boolean).slice(0, 5).join("|");
+      return `[${i}:in=${ins} btn=${bts}]`;
+    }).join(" ");
+  }
+
   function findFormButton() {
+    // Prefer the modal's own buttons (try every visible dialog); fall back to the whole
+    // document (Indeed SmartApply iframe / ATS pages have no dialog wrapper).
+    for (const dlg of visibleApplyDialogs()) {
+      const inDlg = findFormButtonIn(dlg);
+      if (inDlg) return inDlg;
+    }
+    return findFormButtonIn(document);
+  }
+
+  function findFormButtonIn(scope) {
     // Look for form navigation/submit buttons.
     // Specific data-testid selectors come first — broad type="submit" is last
     // because skip-navigation links are also type="submit" and would be matched.
@@ -2401,29 +2483,42 @@
     ];
 
     for (const sel of selectors) {
-      const el = document.querySelector(sel);
-      if (el && el.offsetParent !== null) return el;
+      const el = scope.querySelector(sel);
+      if (el && el.offsetParent !== null && !isDeniedFormButton(el)) return el;
     }
 
     // Text-based fallback
-    const buttons = document.querySelectorAll("button");
+    const buttons = scope.querySelectorAll("button");
     for (const btn of buttons) {
-      const text = btn.textContent?.trim().toLowerCase() || "";
-      if (
-        (text === "continue" ||
-          text === "next" ||
-          text.includes("submit application") ||
-          text.includes("submit your application") ||
-          text.includes("review your application") ||
-          text.includes("apply") ||
-          text === "review") &&
-        btn.offsetParent !== null
-      ) {
-        return btn;
-      }
+      if (btn.offsetParent === null || isDeniedFormButton(btn)) continue;
+      if (FORM_ADVANCE_RE.test(btnLabel(btn))) return btn;
     }
     return null;
   }
+
+  function btnLabel(b) {
+    return ((b.textContent || "") + " " + (b.getAttribute("aria-label") || ""))
+      .replace(/\s+/g, " ").trim().toLowerCase();
+  }
+
+  // Buttons that look actionable but must NEVER be clicked mid-application.
+  // - "Search": on ZipRecruiter the header search box is a `form button[type=submit]`,
+  //   so a document-wide lookup returned IT and the click reloaded the results page out
+  //   from under the open Quick Apply modal — the whole "form opened, next job 30s later"
+  //   mystery of 08-12/08-14 (live-confirmed 08-15 via STEP diag: btn="Search" (page)).
+  // - "Save & Exit" / "Close" / "Cancel": ZR's own escape hatches, sitting right next to
+  //   the real advance button ("Save & Exit | Continue Application").
+  const DENY_BTN_RE = /^(search|close|cancel|back|previous|save (&|and) exit|save for later|sign in|log in|skip)\b/;
+  function isDeniedFormButton(b) {
+    if (b.closest('form[role="search"]')) return true;
+    return DENY_BTN_RE.test(btnLabel(b));
+  }
+
+  // Advance/submit labels across platforms. Anchored at the start so "Continue
+  // Application" (ZipRecruiter's second step — the label that made the engine give up
+  // with "no Continue/Submit button", live 08-15) matches, while "Continue browsing"
+  // style decoys still don't get a free pass through the deny list above.
+  const FORM_ADVANCE_RE = /^(continue|next|submit|review|apply|send application|finish|done)\b/;
 
   function isSubmitStep() {
     // Check buttons for submit-intent text
@@ -2548,11 +2643,24 @@
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       if (!(await isCampaignRunning())) return false;
+      const dlgs = visibleApplyDialogs();
+      const scope = formScope();
+      // Modal platforms mid-transition: dialogs are on screen but none holds fields yet
+      // (ZipRecruiter briefly renders a bare [Close] shell between steps). Scanning the
+      // document here would find the page BEHIND the modal and answer "ready" instantly —
+      // which is exactly how a live 08-15 run declared "no Continue/Submit button" 11s
+      // after a successful step and abandoned a half-filled application.
+      if (dlgs.length && scope === document) {
+        const btn = findFormButton();
+        if (btn && dlgs.some((d) => d.contains(btn))) return true;
+        await sleep(400);
+        continue;
+      }
       const hasField = !!(
         findFieldBySelectorsOrLabel("firstName") ||
         findFieldBySelectorsOrLabel("email") ||
         findResumeInput() ||
-        document.querySelector(
+        scope.querySelector(
           'input[type="radio"], input[type="checkbox"], select, textarea, input[type="text"], input:not([type])'
         )
       );
@@ -2560,6 +2668,59 @@
       await sleep(400);
     }
     return false;
+  }
+
+  // ZipRecruiter's LAST step button is also labelled "Continue" — there is no "Submit".
+  // Live 08-15: the engine clicked it, the modal closed, and phase3 logged "form abandoned
+  // without submit" — while ZR's own card had already flipped to "Applied". A real
+  // application was filed and never recorded (no count, no dedup → duplicate-apply risk).
+  // So after every non-submit click, ask the PAGE whether the application went through.
+  function jobLooksApplied() {
+    const scope = document.querySelector('[data-testid="right-pane"]') || document;
+    for (const b of scope.querySelectorAll("button, [role='button']")) {
+      if (b.offsetParent === null) continue;
+      const t = ((b.textContent || "") + " " + (b.getAttribute("aria-label") || ""))
+        .replace(/\s+/g, " ").trim().toLowerCase();
+      if (/^applied\b/.test(t)) return true;
+    }
+    return /you'?ve applied|you have applied|application (submitted|sent|received)/i
+      .test((scope.textContent || "").slice(0, 5000));
+  }
+
+  async function detectSilentSubmission(timeoutMs = 9000) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      // Still a form on screen → we're mid-flow, not done.
+      if (visibleApplyDialogs().some((d) => d.querySelector("input, textarea, select"))) return null;
+      if (jobLooksApplied()) return "applied-badge";
+      const conf = await waitForSubmissionConfirmation(1200);
+      if (conf.verified) return conf.signal;
+      await sleep(500);
+    }
+    return null;
+  }
+
+  // Record a submission that the platform accepted (called from both the explicit
+  // submit step and the ZR "last Continue" path) — bookkeeping in ONE place so the two
+  // paths can never drift: dedup keys, local count, and the backend application row.
+  async function recordSubmittedApplication(jobInfo, coverLetter, signal) {
+    await addAppliedUrl(jobInfo.url || window.location.href);
+    await addAppliedJobKey(jobInfo.title, jobInfo.company);
+    await recordLocalApplication(detectPlatform());
+    logBackend(`✅ Applied: ${jobInfo.title} @ ${jobInfo.company}`, "ok");
+    await sendMsg({
+      type: "APPLICATION_SAVED",
+      data: {
+        job_title: jobInfo.title || "",
+        company: jobInfo.company || "",
+        platform: detectPlatform(),
+        job_url: jobInfo.url || window.location.href,
+        cover_letter: coverLetter,
+        status: "applied",
+        verified: true,
+        verify_signal: signal,
+      },
+    });
   }
 
   async function phase3_fillForm() {
@@ -2585,6 +2746,20 @@
 
     let formStepCount = 0;
     const maxSteps = 20; // Safety: don't loop forever (some jobs have 10+ steps)
+    // Stall guard: a step that fills nothing AND leaves the form byte-identical means
+    // "Continue" is being refused (unanswered validation) — clicking it again just
+    // repeats the refusal. Live 08-15: ZR's screener step ate 20 identical rounds and
+    // 4 minutes before the loop gave up. Two no-progress rounds is proof enough.
+    let lastSig = "";
+    let stallRounds = 0;
+    const formSignature = () => {
+      const sc = formScope();
+      const q = sc === document ? document.body : sc;
+      const fields = Array.from(q.querySelectorAll("input, textarea, select"))
+        .map((el) => `${el.name || el.id || el.type}:${el.type === "checkbox" || el.type === "radio" ? el.checked : (el.value || "").length}`)
+        .join(",");
+      return `${location.pathname}|${fields}`;
+    };
 
     while (formStepCount < maxSteps) {
       if (!(await isCampaignRunning())) {
@@ -2597,13 +2772,14 @@
 
       // Fill whatever fields are visible on this step
       let filledAny = false;
+      const filled = []; // durable step summary (popup log() is lost when the popup is closed)
 
       // First name
       const fnEl = findFieldBySelectorsOrLabel("firstName");
       if (fnEl && !fnEl.value.trim()) {
         await typeValue(fnEl, profile.name || "");
         await sleep(humanDelay(3000, 5000));
-        filledAny = true;
+        filledAny = true; filled.push("first");
       }
 
       // Last name
@@ -2611,7 +2787,7 @@
       if (lnEl && !lnEl.value.trim()) {
         await typeValue(lnEl, profile.last_name || "");
         await sleep(humanDelay(3000, 5000));
-        filledAny = true;
+        filledAny = true; filled.push("last");
       }
 
       // Email
@@ -2619,7 +2795,7 @@
       if (emEl && !emEl.value.trim()) {
         await typeValue(emEl, await resolveEmail(profile));
         await sleep(humanDelay(3000, 5000));
-        filledAny = true;
+        filledAny = true; filled.push("email");
       }
 
       // Phone
@@ -2627,7 +2803,7 @@
       if (phEl && !phEl.value.trim()) {
         await typeValue(phEl, profile.phone || "");
         await sleep(humanDelay(3000, 5000));
-        filledAny = true;
+        filledAny = true; filled.push("phone");
       }
 
       // Cover letter
@@ -2635,7 +2811,7 @@
       if (clEl && !clEl.value.trim()) {
         quickSet(clEl, coverLetter);
         await sleep(humanDelay(3000, 5000));
-        filledAny = true;
+        filledAny = true; filled.push("cover");
       }
 
       // Resume upload
@@ -2644,7 +2820,7 @@
         try {
           await uploadResume(resumeInput);
           await sleep(humanDelay(3000, 5000));
-          filledAny = true;
+          filledAny = true; filled.push("resume");
         } catch (e) {
           log("Resume upload failed: " + e.message, "err");
         }
@@ -2656,14 +2832,14 @@
       const radiosFilled = await fillRadioQuestions();
       if (radiosFilled > 0) {
         await sleep(humanDelay(500, 1000));
-        filledAny = true;
+        filledAny = true; filled.push(`radio×${radiosFilled}`);
       }
 
       // Required attestation/consent checkboxes (self-attestation, "I certify…").
       const checkboxesFilled = await fillCheckboxes();
       if (checkboxesFilled > 0) {
         await sleep(humanDelay(300, 700));
-        filledAny = true;
+        filledAny = true; filled.push(`checkbox×${checkboxesFilled}`);
       }
 
       // Dropdown screener questions (salary, "how did you hear", demographic/EEO,
@@ -2672,30 +2848,59 @@
       const selectsFilled = await fillSelectQuestions();
       if (selectsFilled > 0) {
         await sleep(humanDelay(400, 800));
-        filledAny = true;
+        filledAny = true; filled.push(`select×${selectsFilled}`);
       }
 
       // Custom (DIV-based) dropdowns — Indeed's demographic/screener comboboxes.
       const combosFilled = await fillComboboxes();
       if (combosFilled > 0) {
         await sleep(humanDelay(400, 800));
-        filledAny = true;
+        filledAny = true; filled.push(`combo×${combosFilled}`);
       }
 
       const textsFilled = await fillTextQuestions();
       if (textsFilled > 0) {
         await sleep(humanDelay(300, 700));
-        filledAny = true;
+        filledAny = true; filled.push(`text×${textsFilled}`);
       }
 
       if (filledAny) {
         log(`Form step ${formStepCount}: filled fields`, "ok");
       }
 
+      // No-progress detection (see stall guard above) — evaluated BEFORE the click so a
+      // refused step ends in an honest hand-back instead of a silent 20-round spin.
+      {
+        const sig = formSignature();
+        if (!filledAny && sig === lastSig) stallRounds++;
+        else stallRounds = 0;
+        lastSig = sig;
+        if (stallRounds >= 2) {
+          logBackend(`🖐 ${dialogSnapshot()}`, "warn");
+          // The invariant: submitted-complete-and-honest OR handed back with a reason.
+          // handBackJob is the right channel (records the reason + unfilled labels and
+          // advances the walk) — NOT DETECTION_TRIPPED, which means "a human check is
+          // blocking us" and pauses the whole campaign behind a captcha CTA.
+          await handBackJob(
+            `the form step wouldn't accept our answers — "${classifyFormButton().label || "Continue"}" refused ${stallRounds + 1}× with nothing left to fill`,
+            { title: jobInfo.title, company: jobInfo.company, platform: detectPlatform() });
+          await skipToNextJob();
+          return;
+        }
+      }
+
       // Classify the step's primary button (submit vs continue) by its own text —
       // works on ZipRecruiter's single-step Quick Apply, not just Indeed's modal.
       const action = classifyFormButton();
       if (action.label) log(`Step ${formStepCount} button: "${action.label}" → ${action.submit ? "SUBMIT" : "continue"}`, "");
+      // Durable per-step trace (backend activity log). Three ZR runs (08-12/08-14) opened the
+      // Quick Apply modal, then silently ended up on the next job ~30s later — every decision
+      // in between was popup-only log(), so nobody could tell WHY. Never again.
+      {
+        const dlgs = visibleApplyDialogs();
+        const where = !action.btn ? "none" : (dlgs.some((d) => d.contains(action.btn)) ? "dialog" : "page");
+        logBackend(`STEP ${formStepCount} [${platformLabel()}] filled=[${filled.join(",")}] btn="${action.label || "-"}" (${where}) → ${action.btn ? (action.submit ? "SUBMIT" : "continue") : "no button"} ${dialogSnapshot()}`, "info");
+      }
 
       // Check if this is the final submit step
       if (action.submit) {
@@ -2808,6 +3013,7 @@
           return;
         } else {
           log("Submit button not found on final step", "err");
+          logBackend(`⚠️ Submit button vanished on final step — giving up on ${jobInfo.title} @ ${jobInfo.company}`, "warn");
           break;
         }
       }
@@ -2822,26 +3028,49 @@
           log("Campaign stopped — aborting before next step", "");
           return;
         }
+        const sigBefore = formSignature();
         await humanClick(navBtn);
-        // Wait for next step to load
-        await sleep(humanDelay(2000, 3000));
+        // Wait for the NEXT step to actually render (signature change) rather than a flat
+        // sleep — ZipRecruiter re-mounts its modal, and acting on the old beat made phase3
+        // read an empty page and abandon the application.
+        {
+          const t0 = Date.now();
+          while (Date.now() - t0 < 12000) {
+            await sleep(500);
+            if (!(await isCampaignRunning())) return;
+            if (formSignature() !== sigBefore) break;
+          }
+        }
+        await sleep(humanDelay(800, 1500));
+
+        // That "Continue" may have BEEN the submit (ZipRecruiter has no Submit button).
+        const silent = await detectSilentSubmission();
+        if (silent) {
+          log(`Applied (verified ${silent}): ${jobInfo.title} @ ${jobInfo.company}`, "ok");
+          await recordSubmittedApplication(jobInfo, coverLetter, silent);
+          await sleep(humanDelay(2000, 4000));
+          await goBackToJobList();
+          return;
+        }
       } else {
         // No button yet — the step may still be rendering (Smart-Apply renders async, and
         // late steps race the same way the first one does). Wait once; only bail if nothing
         // actionable appears, so we don't drop a job on a mid-fill hiccup.
-        if ((await waitForFormReady(6000)) && findFormButton()) {
+        if ((await waitForFormReady(12000)) && findFormButton()) {
           continue;
         }
-        logBackend(`⚠️ Form step had no Continue/Submit button (${location.hostname}) — giving up on this job`, "warn");
+        logBackend(`⚠️ Form step had no Continue/Submit button (${location.hostname}) — giving up on this job — ${dialogSnapshot()}`, "warn");
         break;
       }
     }
 
     if (formStepCount >= maxSteps) {
       log("Too many form steps — skipping job", "err");
+      logBackend(`⚠️ Too many form steps (${maxSteps}) — giving up on ${jobInfo.title} @ ${jobInfo.company}`, "warn");
     }
 
     // If we got here without submitting, skip to next job
+    logBackend(`⏭️ Form abandoned without submit: ${jobInfo.title} @ ${jobInfo.company} (${formStepCount} step${formStepCount === 1 ? "" : "s"})`, "warn");
     await skipToNextJob();
   }
 
@@ -4166,7 +4395,10 @@
 
       const campaignOn = await isCampaignRunning();
       if (campaignOn) {
-        logBackend(`Content script alive on ${location.hostname}${location.pathname.slice(0, 40)} — resuming`, "info");
+        // Version in the line = proof of WHICH content.js is injected (store vs unpacked,
+        // pre/post reload) — the 08-15 double-install cost a whole run to "assumed 1.4.4".
+        let ver = "?"; try { ver = chrome.runtime.getManifest().version; } catch { /* context gone */ }
+        logBackend(`Content script alive on ${location.hostname}${location.pathname.slice(0, 40)} — resuming (ext ${ver})`, "info");
       }
 
       // Pull DOM selectors from backend (cached 24h) — Phase 4.1
