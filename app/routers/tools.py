@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, Response
+from pydantic import BaseModel
 
 from app.db import applications as apps_db
 from app.db import jobs as jobs_db
@@ -13,10 +14,17 @@ from app.db import usage as usage_db
 from app.db.profile import get_profile
 from app.db.subscriptions import get_usage_summary, is_admin
 from app.deps import get_current_user
-from app.schemas import AnswerQuestionRequest, AssessFitRequest, CoverLetterRequest, LetterPreviewRequest, TemplateRequest
+from app.schemas import (
+    AnswerQuestionRequest,
+    AssessFitRequest,
+    CoverLetterRequest,
+    LetterPreviewRequest,
+    TemplateRequest,
+)
 from config import RATE_LIMIT_ENFORCE, RATE_LIMIT_LETTERS_PER_DAY
 from modules.ai_cover_letter import generate_cover_letter
 from modules.ai_fit_judge import assess_fit
+from modules.ai_keyword_normalize import normalize_keywords
 from modules.ai_question_answer import answer_screener_question
 
 router = APIRouter(tags=["tools"])
@@ -254,3 +262,20 @@ def download_extension(user=Depends(get_current_user)):
         media_type="application/zip",
         headers={"Content-Disposition": "attachment; filename=hiredrop-extension.zip"},
     )
+
+
+class NormalizeKeywordsRequest(BaseModel):
+    keywords: list[str] = []
+
+
+@router.post("/tools/normalize-keywords")
+def normalize_keywords_endpoint(body: NormalizeKeywordsRequest, user=Depends(get_current_user)):
+    """Suggest typo fixes for job-search keywords (the one place a typo costs results).
+
+    Returns only the terms with an obvious misspelling as {original, suggestion} — the UI
+    shows them as an accept-with-one-click "did you mean", never a silent rewrite. Fail-open:
+    [] on any error so a hiccup never blocks a search. Rate-limited like other AI endpoints
+    so it can't be looped to burn Anthropic spend.
+    """
+    _rate_limit_check(user)
+    return {"corrections": normalize_keywords(body.keywords or [])}
