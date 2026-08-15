@@ -348,6 +348,10 @@ async function sendExtensionPing() {
     try {
       const j = await res.json();
       if (j && j.should_run === false && data.campaignRunning) {
+        // Say so out loud. This path killed a live run mid-form on 08-15 and left NOTHING
+        // in the durable log — from the outside the campaign just froze on an open
+        // application. Every stop must name itself.
+        await addToActivityLog("⏹ Stopped by the server: the backend says this campaign is no longer running.", "warn");
         await chrome.storage.local.set({ campaignRunning: false, currentJob: null });
         const { campaignTabId } = await chrome.storage.local.get("campaignTabId");
         if (campaignTabId) detachDebugger(campaignTabId).catch(() => {});
@@ -1486,7 +1490,10 @@ async function handleMessage(msg, sender) {
     }
 
     case "STOP_CAMPAIGN": {
-      const stopData = await chrome.storage.local.get(["campaignTabId", "campaignWindowId"]);
+      const stopData = await chrome.storage.local.get(["campaignTabId", "campaignWindowId", "campaignRunning"]);
+      if (stopData.campaignRunning) {
+        await addToActivityLog(`⏹ Campaign stopped (${msg.reason || "requested by you"}).`, "info");
+      }
 
       // Clear running state first so the onDetach listener won't auto-reattach.
       // Also drop any pending tap review + ATS queue — a stopped campaign must not
@@ -1945,6 +1952,7 @@ async function handleMessage(msg, sender) {
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const data = await chrome.storage.local.get(["campaignTabId", "campaignRunning"]);
   if (data.campaignRunning && data.campaignTabId === tabId) {
+    await addToActivityLog("⏹ Campaign stopped — its automation tab was closed.", "warn");
     await chrome.storage.local.set({
       campaignRunning: false,
       campaignTabId: null,
@@ -1961,6 +1969,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 chrome.windows.onRemoved.addListener(async (windowId) => {
   const data = await chrome.storage.local.get(["campaignWindowId", "campaignRunning"]);
   if (data.campaignRunning && data.campaignWindowId === windowId) {
+    await addToActivityLog("⏹ Campaign stopped — its automation window was closed.", "warn");
     await chrome.storage.local.set({
       campaignRunning: false,
       campaignTabId: null,

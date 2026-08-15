@@ -2789,6 +2789,10 @@
     while (formStepCount < maxSteps) {
       if (!(await isCampaignRunning())) {
         log("Campaign stopped — aborting form fill", "");
+        // Durable: a run that dies mid-application is the single most confusing failure
+        // (08-15: the form just sat there, half filled, with nothing in the log). Say
+        // which job and which step, so the cause can be matched to the stop line above it.
+        logBackend(`⏹ Campaign stopped mid-form (step ${formStepCount}) — ${jobInfo.title || "this job"} @ ${jobInfo.company || "?"} left unfinished`, "warn");
         return;
       }
 
