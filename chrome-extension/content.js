@@ -2366,10 +2366,38 @@
     const profile = storageData.profile || {};
     const jobInfo = storageData.currentJobInfo || {};
 
+    // "Has this widget been answered?" — by TEXT alone this is unknowable across
+    // platforms. ZipRecruiter renders its yes/no screeners as DIV[role=combobox] whose
+    // text is "Open" (the disclosure affordance), so a placeholder-text test called them
+    // answered and skipped every one — live 08-15 on Chiquita Brands: two text fields
+    // filled, three unanswered questions ("legally authorized to work in the US",
+    // "drug screen", "background check"), and "Continue" refused until we handed the job
+    // back. Ask the widget for its VALUE instead, and only fall back to text.
+    const comboValue = (c) => {
+      const active = c.getAttribute("aria-activedescendant");
+      if (active) {
+        const el = document.getElementById(active);
+        if (el && (el.textContent || "").trim()) return (el.textContent || "").trim();
+      }
+      const selected = c.querySelector('[aria-selected="true"], [class*="singleValue"], [class*="select__single-value"]');
+      if (selected && (selected.textContent || "").trim()) return (selected.textContent || "").trim();
+      // Widgets that mirror their answer into a hidden/associated input.
+      const name = c.getAttribute("name");
+      if (name) {
+        const mirror = document.querySelector(`input[name="${CSS.escape(name)}"]`);
+        if (mirror && (mirror.value || "").trim()) return mirror.value.trim();
+      }
+      if (c.tagName === "INPUT" && (c.value || "").trim()) return c.value.trim();
+      return "";
+    };
+
+    const PLACEHOLDER_RE = /^(select|choose|please|--)?\s*(an?\s+)?option?$|^\s*$|select an option|please select|^select$|^choose$|^open$/i;
+
     const isUnfilled = (c) => {
-      if (!c.offsetParent || c.dataset.hdSkip) return false;
+      if (!c.offsetParent || c.dataset.hdSkip || c.dataset.hdDone) return false;
+      if (comboValue(c)) return false; // genuinely answered
       const txt = (c.textContent || "").trim();
-      return /^(select|choose|please|--)?\s*(an?\s+)?option?$|^\s*$|select an option|please select|^select$|^choose$/i.test(txt);
+      return PLACEHOLDER_RE.test(txt) || txt.length <= 24; // short label = affordance, not an answer
     };
 
     let filled = 0;
@@ -2416,6 +2444,11 @@
       }
 
       await humanClick(chosen.el);
+      // Mark it answered ourselves. Whether the widget then SHOWS its answer in a way we
+      // can read back varies per platform, and the loop must be monotonic either way —
+      // without this, a widget that renders its answer as plain short text ("Yes") would
+      // look unanswered on the next pass and get re-opened until the pass budget ran out.
+      combo.dataset.hdDone = "1";
       filled++;
       await sleep(humanDelay(400, 800));
       // If it didn't register as filled (still a placeholder), mark skip to avoid a loop.
