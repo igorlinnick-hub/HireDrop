@@ -1511,8 +1511,11 @@
       // Quick Apply badge. ZR moved the text around: the FIRST .text-brand in a card is
       // now an EMPTY node, so first-match + text-test silently rejected real Quick Apply
       // cards (live-diagnosed 2026-08-15). Scan ALL badge candidates for the text instead.
+      // ZR ships TWO badge wordings side by side on the same results page (live 08-15:
+      // "Quick apply" AND "1-click apply"). Matching only the first made HALF the native
+      // inventory invisible — which is most of the "ZR has no jobs for us" story.
       const badgeNodes = wrapper.querySelectorAll("div[class*='bg-badge-brand'] p, .text-brand, p[class*='text-brand']");
-      const isQuickApply = Array.from(badgeNodes).some((el) => /quick\s*apply/i.test(el.textContent || ""));
+      const isQuickApply = Array.from(badgeNodes).some((el) => ZR_NATIVE_BADGE_RE.test(el.textContent || ""));
       if (!isQuickApply) continue;
 
       const article = wrapper.querySelector("article");
@@ -1666,6 +1669,50 @@
       return;
     }
 
+    // Native-apply gate FIRST — before the fit judge and the cover letter. Both cost
+    // money and neither can rescue an external-apply posting: the only possible outcome
+    // is "skip". ZR's card badge ("1-click apply" / "Quick apply") is NOT a promise —
+    // live 08-15 several badged cards opened panes with no apply button at all.
+    await sleep(humanDelay(800, 1500));
+    const applyBtn = await waitForZipRecruiterApplyButton(8000);
+    if (!applyBtn) {
+      // Diagnose WHY: is this a genuine external-apply job, or a selector miss?
+      // Report the panel's actual buttons/apply-links so we learn from our own logs.
+      try {
+        const panel = document.querySelector('[data-testid="right-pane"]') || document.body;
+        const vis = (el) => el && el.offsetParent !== null;
+        const btns = Array.from(panel.querySelectorAll("button")).filter(vis)
+          .map((b) => (b.textContent || b.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim())
+          .filter(Boolean).slice(0, 10).join(" | ");
+        const applyLinks = Array.from(panel.querySelectorAll("a")).filter(vis)
+          .map((a) => (a.textContent || "").replace(/\s+/g, " ").trim())
+          .filter((t) => /apply/i.test(t)).slice(0, 4).join(" | ");
+        const line = `APPLY DIAG [${jobTitle.slice(0, 30)}] btns=[${btns}] applyLinks=[${applyLinks}]`;
+        log(line, "");
+        logBackend(line, "info"); // durable on backend — survives osascript channel loss
+      } catch (e) { log(`APPLY DIAG error: ${e.message}`, ""); }
+      // P4: external-apply job → try to route to its ATS (Greenhouse/Lever) instead of
+      // skipping. Navigates away if a supported ATS URL is found + wiring is enabled.
+      if (await routeExternalToAts(jobTitle, jobCompany, document.querySelector('[data-testid="right-pane"]') || document.body)) return;
+      log(`${jobTitle} — no Quick Apply button found, skipping`, "");
+      logBackend(`Skip (no Quick Apply button): ${jobTitle} @ ${jobCompany}`, "info");
+      // External-apply wall guard (Igor 2026-08-15: the campaign must not grind a board
+      // that has no native supply — switch boards autonomously). N externals in a row →
+      // hand the decision to the background, which fails over or stops.
+      const exd = await chrome.storage.local.get("zrNoBtnStreak");
+      const streak = (exd.zrNoBtnStreak || 0) + 1;
+      await chrome.storage.local.set({ zrNoBtnStreak: streak });
+      if (streak >= 6) {
+        logBackend(`ZipRecruiter: ${streak} external-apply jobs in a row — switching platform`, "warn");
+        await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: "ziprecruiter", reason: "external-apply streak" });
+        return;
+      }
+      await skipToNextJob();
+      return;
+    }
+
+    await chrome.storage.local.set({ zrNoBtnStreak: 0 }); // native supply confirmed — reset the wall guard
+
     // Fit Engine M1
     {
       // POOL SWIPE RUN: the user already approved this job by swiping — the AI fit
@@ -1723,41 +1770,11 @@
     }
     await chrome.storage.local.set({ generatedCoverLetter: coverLetter });
 
-    // Find Quick Apply button in the right panel
-    await sleep(humanDelay(800, 1500));
-    const applyBtn = await waitForZipRecruiterApplyButton(8000);
-    if (!applyBtn) {
-      // Diagnose WHY: is this a genuine external-apply job, or a selector miss?
-      // Report the panel's actual buttons/apply-links so we learn from our own logs.
-      try {
-        const panel = document.querySelector('[data-testid="right-pane"]') || document.body;
-        const vis = (el) => el && el.offsetParent !== null;
-        const btns = Array.from(panel.querySelectorAll("button")).filter(vis)
-          .map((b) => (b.textContent || b.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim())
-          .filter(Boolean).slice(0, 10).join(" | ");
-        const applyLinks = Array.from(panel.querySelectorAll("a")).filter(vis)
-          .map((a) => (a.textContent || "").replace(/\s+/g, " ").trim())
-          .filter((t) => /apply/i.test(t)).slice(0, 4).join(" | ");
-        const line = `APPLY DIAG [${jobTitle.slice(0, 30)}] btns=[${btns}] applyLinks=[${applyLinks}]`;
-        log(line, "");
-        logBackend(line, "info"); // durable on backend — survives osascript channel loss
-      } catch (e) { log(`APPLY DIAG error: ${e.message}`, ""); }
-      // P4: external-apply job → try to route to its ATS (Greenhouse/Lever) instead of
-      // skipping. Navigates away if a supported ATS URL is found + wiring is enabled.
-      if (await routeExternalToAts(jobTitle, jobCompany, document.querySelector('[data-testid="right-pane"]') || document.body)) return;
-      log(`${jobTitle} — no Quick Apply button found, skipping`, "");
-      logBackend(`Skip (no Quick Apply button): ${jobTitle} @ ${jobCompany}`, "info");
-      // External-apply wall guard (Igor 2026-08-15: the campaign must not grind a board
-      // that has no native supply — switch boards autonomously). N externals in a row →
-      // hand the decision to the background, which fails over or stops.
-      const exd = await chrome.storage.local.get("zrNoBtnStreak");
-      const streak = (exd.zrNoBtnStreak || 0) + 1;
-      await chrome.storage.local.set({ zrNoBtnStreak: streak });
-      if (streak >= 6) {
-        logBackend(`ZipRecruiter: ${streak} external-apply jobs in a row — switching platform`, "warn");
-        await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: "ziprecruiter", reason: "external-apply streak" });
-        return;
-      }
+    // Re-find the button: the pane can re-render while the fit judge and the cover
+    // letter are being generated, which detaches the node we matched earlier.
+    const applyBtn2 = findZipRecruiterApplyButton() || (await waitForZipRecruiterApplyButton(8000));
+    if (!applyBtn2) {
+      logBackend(`Skip (apply button vanished mid-flow): ${jobTitle} @ ${jobCompany}`, "warn");
       await skipToNextJob();
       return;
     }
@@ -1765,7 +1782,7 @@
     await chrome.storage.local.set({ zrNoBtnStreak: 0 }); // native supply confirmed — reset the wall guard
     log("Clicking Quick Apply...", "");
     logBackend(`Clicking Quick Apply: ${jobTitle} @ ${jobCompany}`, "info");
-    await humanClick(applyBtn);
+    await humanClick(applyBtn2);
 
     // Wait for the apply modal or form to appear
     const formReady = await waitForZipRecruiterForm(15000);
@@ -1787,7 +1804,8 @@
   // finished) shows "Continue" instead of "Quick Apply" — live 08-15:
   // APPLY DIAG btns=[Continue | Share this job | Report] applyLinks=[]. Treating that as
   // "external apply, skip" permanently orphaned every job a broken run had touched.
-  const ZR_APPLY_RE = /^(quick apply|1-click apply|continue( application)?)$/;
+  const ZR_NATIVE_BADGE_RE = /quick\s*apply|1[\s-]?click\s*apply/i;
+  const ZR_APPLY_RE = /^(quick apply|1[\s-]?click apply|continue( application)?)$/;
   function isZipRecruiterApplyBtn(el) {
     if (!el || el.offsetParent === null) return false;
     const label = ((el.getAttribute("aria-label") || "") || (el.textContent || "")).replace(/\s+/g, " ").trim().toLowerCase();
