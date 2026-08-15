@@ -1,3 +1,4 @@
+import contextlib
 import os
 import sys
 
@@ -9,6 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.db import activity as activity_db
+from app.db import campaign as campaign_db
 from app.db.subscriptions import is_admin
 from app.deps import get_current_user
 
@@ -33,6 +35,18 @@ def write_activity(req: ActivityWriteRequest, user=Depends(get_current_user)):
         trace_id=req.trace_id,
         metadata=req.metadata,
     )
+    # A campaign-phase line IS a heartbeat, and a better one than the extension's alarm.
+    # The alarm is an MV3 chrome.alarms tick: Chrome throttles it hard when the machine
+    # goes idle, so a perfectly healthy run stopped refreshing last_ping_at, blew the
+    # 150s TTL, and got reaped as a zombie — mid-application, twice, live on 08-15
+    # (⏹ "Stopped by the server" arrived 8 seconds after a successful form step).
+    # These lines are written BY the content script and ONLY while a campaign is running,
+    # so they prove the CAMPAIGN is alive — the property ZOMBIE_FIX_PLAN demands — rather
+    # than merely that the extension is loaded.
+    if req.phase == "extension":
+        with contextlib.suppress(Exception):
+            if campaign_db.get_state(user.id).get("running"):
+                campaign_db.touch_ping(user.id)
     return {"id": activity_id}
 
 

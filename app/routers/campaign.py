@@ -197,14 +197,25 @@ def extension_ping(body: ExtensionPingBody, user=Depends(get_current_user)):
 
 @router.get("/extension/ping")
 def extension_status(user=Depends(get_current_user)):
+    # `_ext_status` is per-process memory: it holds whatever the extension last POSTed to
+    # THIS worker. After a restart (or on another worker) it is empty or stale, so the
+    # echoed `campaign_running` can say "false" about a campaign that is happily applying
+    # — it cost an hour of chasing a phantom stop on 08-15. Liveness of the CAMPAIGN has
+    # exactly one source of truth, the DB flag, so serve that instead of the echo.
     row = _ext_status.get(user.id)
+    try:
+        running = bool(campaign_db.get_state(user.id)["running"])
+    except Exception:
+        running = None
     if not row:
-        return {"online": False}
+        return {"online": False, "campaign_running": running}
     age = time.time() - row["ts"]
     return {
         "online": age < 60,
         "last_seen_secs_ago": round(age),
         **{k: v for k, v in row.items() if k != "ts"},
+        # Overrides the echoed value on purpose — see the comment above.
+        **({"campaign_running": running} if running is not None else {}),
     }
 
 
