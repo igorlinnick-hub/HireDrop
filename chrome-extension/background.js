@@ -1352,6 +1352,8 @@ async function handleMessage(msg, sender) {
         processedJobKeys: [],
         processedPageStarts: [0],
         kwIndex: 0, // keyword rotation cursor — content.js advances it as each keyword is exhausted
+        triedPlatforms: [primaryPlatform], // platform-failover ledger — PLATFORM_EXHAUSTED never revisits these
+        zrNoBtnStreak: 0, // external-apply wall guard counter
       });
 
       updateBadge();
@@ -1415,6 +1417,55 @@ async function handleMessage(msg, sender) {
       // Fire-and-forget: the SW restarts, so no response is delivered.
       try { chrome.runtime.reload(); } catch (e) { /* noop */ }
       return { ok: true };
+    }
+
+    // ----- Platform exhausted (from content.js) → autonomous platform failover -----
+    // Igor 2026-08-15: a campaign must not grind to a halt because one board turned out
+    // to be a wall of external-apply listings / hit its per-platform cap / ran out of
+    // keywords. Switch to the next walkable board automatically; stop only when every
+    // candidate has been tried. GH/Lever/Ashby run via the ATS queue, not this walk.
+    case "PLATFORM_EXHAUSTED": {
+      const ex = await chrome.storage.local.get([
+        "campaignRunning", "campaignFilters", "campaignTabId", "triedPlatforms", "platformConnections",
+      ]);
+      if (!ex.campaignRunning) return { ok: true, stopped: true };
+      const NAMES = { indeed: "Indeed", ziprecruiter: "ZipRecruiter", linkedin: "LinkedIn" };
+      const curPlat = msg.platform || "unknown";
+      const tried = Array.from(new Set([...(ex.triedPlatforms || []), curPlat]));
+      const conns = ex.platformConnections || {};
+      // Indeed is allowed without a stored connection record (the resume lives on the
+      // Indeed account); ZR needs a live "connected" record or the walk hits a login wall.
+      const next = ["indeed", "ziprecruiter"].find(
+        (p) => !tried.includes(p) && (p === "indeed" || conns[p]?.status === "connected"));
+      if (!next) {
+        await addToActivityLog(
+          `${NAMES[curPlat] || curPlat} exhausted (${msg.reason || "no applyable jobs"}) and no other platform left — stopping the campaign.`,
+          "warn");
+        return await handleMessage({ type: "STOP_CAMPAIGN" }, sender);
+      }
+      await addToActivityLog(
+        `${NAMES[curPlat] || curPlat} exhausted (${msg.reason || "no applyable jobs"}) — switching to ${NAMES[next]} automatically.`,
+        "info");
+      const f = ex.campaignFilters || {};
+      const targetUrl = buildPlatformUrl(next, (f.keywords || []).slice(0, 1), f.location, f.job_type, f.search_radius_miles, f.work_setting);
+      await chrome.storage.local.set({
+        triedPlatforms: tried,
+        campaignTargetUrl: targetUrl,
+        campaignWarmedUp: false, // new board → content.js re-runs its CF warmup hop
+        processedPageStarts: [0],
+        kwIndex: 0,
+        pendingJobs: [],
+        currentJobIndex: 0,
+        zrRecoveries: 0,
+        zrNoBtnStreak: 0,
+      });
+      try {
+        await chrome.tabs.update(ex.campaignTabId, { url: platformHomeUrl(next) });
+      } catch (e) {
+        await addToActivityLog(`Couldn't open ${NAMES[next]} (${e.message}) — stopping the campaign.`, "error");
+        return await handleMessage({ type: "STOP_CAMPAIGN" }, sender);
+      }
+      return { switched: true, to: next };
     }
 
     case "STOP_CAMPAIGN": {

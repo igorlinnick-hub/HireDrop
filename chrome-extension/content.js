@@ -989,8 +989,8 @@
 
     const count = await getPlatformCount("indeed");
     if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
-      log(`Indeed daily limit reached (${count}/${MAX_APPLICATIONS_PER_PLATFORM}). Stopping.`, "");
-      await sendMsg({ type: "STOP_CAMPAIGN" });
+      log(`Indeed daily limit reached (${count}/${MAX_APPLICATIONS_PER_PLATFORM}) — trying another platform.`, "ok");
+      await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: "indeed", reason: "platform daily cap" });
       return;
     }
 
@@ -1224,8 +1224,8 @@
 
     const count = await getPlatformCount("indeed");
     if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
-      log(`Indeed daily limit reached (${count}/${MAX_APPLICATIONS_PER_PLATFORM}). Stopping.`, "");
-      await sendMsg({ type: "STOP_CAMPAIGN" });
+      log(`Indeed daily limit reached (${count}/${MAX_APPLICATIONS_PER_PLATFORM}) — trying another platform.`, "ok");
+      await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: "indeed", reason: "platform daily cap" });
       return;
     }
 
@@ -1479,8 +1479,8 @@
 
     const count = await getPlatformCount("ziprecruiter");
     if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
-      log(`ZipRecruiter daily limit reached (${count}/${MAX_APPLICATIONS_PER_PLATFORM}). Stopping.`, "");
-      await sendMsg({ type: "STOP_CAMPAIGN" });
+      log(`ZipRecruiter daily limit reached (${count}/${MAX_APPLICATIONS_PER_PLATFORM}) — trying another platform.`, "ok");
+      await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: "ziprecruiter", reason: "platform daily cap" });
       return;
     }
 
@@ -1508,9 +1508,12 @@
 
     const quickApplyJobs = [];
     for (const wrapper of wrappers) {
-      // Quick Apply badge: <p class="text-brand ..."> inside <div class="...bg-badge-brand...">
-      const badge = wrapper.querySelector("div[class*='bg-badge-brand'] p, .text-brand");
-      if (!badge || !/quick\s*apply/i.test(badge.textContent || "")) continue;
+      // Quick Apply badge. ZR moved the text around: the FIRST .text-brand in a card is
+      // now an EMPTY node, so first-match + text-test silently rejected real Quick Apply
+      // cards (live-diagnosed 2026-08-15). Scan ALL badge candidates for the text instead.
+      const badgeNodes = wrapper.querySelectorAll("div[class*='bg-badge-brand'] p, .text-brand, p[class*='text-brand']");
+      const isQuickApply = Array.from(badgeNodes).some((el) => /quick\s*apply/i.test(el.textContent || ""));
+      if (!isQuickApply) continue;
 
       const article = wrapper.querySelector("article");
       if (!article) continue;
@@ -1576,8 +1579,8 @@
 
     const count = await getPlatformCount("ziprecruiter");
     if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
-      log(`ZipRecruiter daily limit reached. Stopping.`, "");
-      await sendMsg({ type: "STOP_CAMPAIGN" });
+      log(`ZipRecruiter daily limit reached — trying another platform.`, "ok");
+      await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: "ziprecruiter", reason: "platform daily cap" });
       return;
     }
 
@@ -1733,10 +1736,22 @@
       if (await routeExternalToAts(jobTitle, jobCompany, document.querySelector('[data-testid="right-pane"]') || document.body)) return;
       log(`${jobTitle} — no Quick Apply button found, skipping`, "");
       logBackend(`Skip (no Quick Apply button): ${jobTitle} @ ${jobCompany}`, "info");
+      // External-apply wall guard (Igor 2026-08-15: the campaign must not grind a board
+      // that has no native supply — switch boards autonomously). N externals in a row →
+      // hand the decision to the background, which fails over or stops.
+      const exd = await chrome.storage.local.get("zrNoBtnStreak");
+      const streak = (exd.zrNoBtnStreak || 0) + 1;
+      await chrome.storage.local.set({ zrNoBtnStreak: streak });
+      if (streak >= 6) {
+        logBackend(`ZipRecruiter: ${streak} external-apply jobs in a row — switching platform`, "warn");
+        await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: "ziprecruiter", reason: "external-apply streak" });
+        return;
+      }
       await skipToNextJob();
       return;
     }
 
+    await chrome.storage.local.set({ zrNoBtnStreak: 0 }); // native supply confirmed — reset the wall guard
     log("Clicking Quick Apply...", "");
     logBackend(`Clicking Quick Apply: ${jobTitle} @ ${jobCompany}`, "info");
     await humanClick(applyBtn);
@@ -2972,16 +2987,16 @@
   async function goBackToIndeedJobList() {
     const count = await getPlatformCount("indeed");
     if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
-      log(`Indeed daily limit reached (${count}/${MAX_APPLICATIONS_PER_PLATFORM}). Campaign complete.`, "ok");
-      await sendMsg({ type: "STOP_CAMPAIGN" });
+      log(`Indeed daily limit reached (${count}/${MAX_APPLICATIONS_PER_PLATFORM}) — trying another platform.`, "ok");
+      await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: "indeed", reason: "platform daily cap" });
       return;
     }
 
     // Same keyword's next page, next keyword's page 1, or all-done.
     const decision = await pageOrRotate();
     if (decision === "stop") {
-      log("All keywords searched — campaign complete.", "ok");
-      await sendMsg({ type: "STOP_CAMPAIGN" });
+      log("All keywords searched here — switching platform or finishing.", "ok");
+      await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: detectPlatform(), reason: "all keywords searched" });
       return;
     }
 
@@ -3032,16 +3047,16 @@
   async function goBackToZipRecruiterJobList() {
     const count = await getPlatformCount("ziprecruiter");
     if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
-      log(`ZipRecruiter daily limit reached (${count}/${MAX_APPLICATIONS_PER_PLATFORM}). Campaign complete.`, "ok");
-      await sendMsg({ type: "STOP_CAMPAIGN" });
+      log(`ZipRecruiter daily limit reached (${count}/${MAX_APPLICATIONS_PER_PLATFORM}) — trying another platform.`, "ok");
+      await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: "ziprecruiter", reason: "platform daily cap" });
       return;
     }
 
     // Same keyword's next page, next keyword's page 1, or all-done.
     const decision = await pageOrRotate();
     if (decision === "stop") {
-      log("All keywords searched — campaign complete.", "ok");
-      await sendMsg({ type: "STOP_CAMPAIGN" });
+      log("All keywords searched here — switching platform or finishing.", "ok");
+      await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: detectPlatform(), reason: "all keywords searched" });
       return;
     }
 
@@ -3087,10 +3102,10 @@
     const st = await chrome.storage.local.get("zrRecoveries");
     const n = (st.zrRecoveries || 0) + 1;
     if (n > 4) {
-      log("ZipRecruiter kept redirecting away from search — stopping campaign", "err");
-      logBackend("ZipRecruiter redirect loop — campaign stopped", "error");
+      log("ZipRecruiter kept redirecting away from search — switching platform", "err");
+      logBackend("ZipRecruiter redirect loop — switching platform", "warn");
       await chrome.storage.local.set({ zrRecoveries: 0 });
-      await sendMsg({ type: "STOP_CAMPAIGN" });
+      await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: "ziprecruiter", reason: "redirect loop" });
       return;
     }
     await chrome.storage.local.set({ zrRecoveries: n });
