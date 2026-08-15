@@ -1275,7 +1275,9 @@ async function handleMessage(msg, sender) {
       }
 
       const targetUrl = atsQueue.length ? atsQueue[0].applyUrl
-        : buildPlatformUrl(primaryPlatform, filters.keywords, filters.location, filters.job_type, filters.search_radius_miles, filters.work_setting);
+        // ONE keyword per search (index 0 to start); content.js rotates to the next
+        // keyword as each is exhausted. Cramming all keywords into one query returned junk.
+        : buildPlatformUrl(primaryPlatform, filters.keywords.slice(0, 1), filters.location, filters.job_type, filters.search_radius_miles, filters.work_setting);
       // Where the automation window first lands. For a pool run whose FIRST job is an
       // Indeed/ZR native posting we must NOT cold-open its deep /viewjob link — a direct
       // deep-link nav is a bot jump that Cloudflare answers with "Additional Verification
@@ -1349,6 +1351,7 @@ async function handleMessage(msg, sender) {
         poolWarmedNatives: POOL_NATIVE_ALL.includes(headPlatform) ? [headPlatform] : [],
         processedJobKeys: [],
         processedPageStarts: [0],
+        kwIndex: 0, // keyword rotation cursor — content.js advances it as each keyword is exhausted
       });
 
       updateBadge();

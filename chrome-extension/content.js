@@ -2912,6 +2912,44 @@
     window.location.href = targetUrl;
   }
 
+  // ── keyword rotation ──────────────────────────────────────────────────────
+  // Multiple keywords are DISTINCT searches, not one mashed query. Cramming them
+  // ("healthcare marketing social media manager project manager ai engineer") returns
+  // junk the fit-gate then skips wholesale. We search ONE phrase at a time, up to
+  // PAGES_PER_KEYWORD pages, then rotate to the next keyword (fresh page 1).
+  const PAGES_PER_KEYWORD = 3;
+
+  async function currentSearchPhrase() {
+    const d = await chrome.storage.local.get(["campaignFilters", "kwIndex"]);
+    const kws = (d.campaignFilters?.keywords || []).filter(Boolean);
+    const ws = d.campaignFilters?.work_setting === "hybrid" ? "hybrid" : "";
+    if (!kws.length) return ws;
+    const i = Math.min(Math.max(d.kwIndex || 0, 0), kws.length - 1);
+    return [kws[i], ws].filter(Boolean).join(" ");
+  }
+
+  // Move to the next keyword, resetting pagination. Returns false when all keywords
+  // are exhausted (caller stops the campaign).
+  async function advanceKeyword() {
+    const d = await chrome.storage.local.get(["campaignFilters", "kwIndex"]);
+    const kws = (d.campaignFilters?.keywords || []).filter(Boolean);
+    const next = (d.kwIndex || 0) + 1;
+    if (!kws.length || next >= kws.length) return false;
+    await chrome.storage.local.set({ kwIndex: next, processedPageStarts: [0] });
+    log(`Keyword done — switching to "${kws[next]}"`, "");
+    logBackend(`Next keyword: ${kws[next]}`, "info");
+    return true;
+  }
+
+  // Next list nav = another page of the SAME keyword, a fresh page-1 of the NEXT
+  // keyword, or "stop" when everything's searched.
+  async function pageOrRotate() {
+    const p = await chrome.storage.local.get("processedPageStarts");
+    const pagesDone = (p.processedPageStarts || [0]).length;
+    if (pagesDone < PAGES_PER_KEYWORD) return "page";
+    return (await advanceKeyword()) ? "rotated" : "stop";
+  }
+
   async function goBackToJobList() {
     if (!(await isCampaignRunning())) return;
 
@@ -2933,14 +2971,20 @@
       return;
     }
 
+    // Same keyword's next page, next keyword's page 1, or all-done.
+    const decision = await pageOrRotate();
+    if (decision === "stop") {
+      log("All keywords searched — campaign complete.", "ok");
+      await sendMsg({ type: "STOP_CAMPAIGN" });
+      return;
+    }
+
     const data = await chrome.storage.local.get("campaignFilters");
     const filters = data.campaignFilters || {};
 
     const params = new URLSearchParams();
-    // Work setting: Indeed has no stable work-type param, so bias the query with "hybrid"
-    // (matches how postings label themselves). Mirrors background.js joinQuery/workQueryToken.
-    const wq = filters.work_setting === "hybrid" ? "hybrid" : "";
-    const q = [filters.keywords?.length ? filters.keywords.join(" ") : "", wq].filter(Boolean).join(" ");
+    // ONE keyword per search (rotated), plus the hybrid query-token when set.
+    const q = await currentSearchPhrase();
     if (q) params.set("q", q);
     const locMap = { usa: "United States", remote: "remote", europe: "" };
     const loc = locMap[filters.location] !== undefined ? locMap[filters.location] : (filters.location || "");
@@ -2959,13 +3003,17 @@
     params.set("iafilter", "1");
     params.set("sort", "date");
 
-    const processed = await chrome.storage.local.get("processedPageStarts");
-    const starts = processed.processedPageStarts || [0];
-    const lastStart = starts[starts.length - 1];
-    const nextStart = lastStart + 10;
-    starts.push(nextStart);
-    if (starts.length > 200) starts.splice(0, starts.length - 200);
-    await chrome.storage.local.set({ processedPageStarts: starts });
+    // Indeed paginates via start= (10/page). On a keyword rotate, processedPageStarts was
+    // reset to [0] → start=0 (page 1 of the new search).
+    let nextStart = 0;
+    if (decision === "page") {
+      const processed = await chrome.storage.local.get("processedPageStarts");
+      const starts = processed.processedPageStarts || [0];
+      nextStart = starts[starts.length - 1] + 10;
+      starts.push(nextStart);
+      if (starts.length > 200) starts.splice(0, starts.length - 200);
+      await chrome.storage.local.set({ processedPageStarts: starts });
+    }
     params.set("start", String(nextStart));
 
     const url = `https://www.indeed.com/jobs?${params.toString()}`;
@@ -2983,13 +3031,20 @@
       return;
     }
 
+    // Same keyword's next page, next keyword's page 1, or all-done.
+    const decision = await pageOrRotate();
+    if (decision === "stop") {
+      log("All keywords searched — campaign complete.", "ok");
+      await sendMsg({ type: "STOP_CAMPAIGN" });
+      return;
+    }
+
     const data = await chrome.storage.local.get("campaignFilters");
     const filters = data.campaignFilters || {};
 
     const params = new URLSearchParams();
-    { const wq = filters.work_setting === "hybrid" ? "hybrid" : "";
-      const q = [filters.keywords?.length ? filters.keywords.join(" ") : "", wq].filter(Boolean).join(" ");
-      if (q) params.set("search", q); }
+    const q = await currentSearchPhrase();
+    if (q) params.set("search", q);
     const locMap = { usa: "United States", remote: "Remote", europe: "" };
     const loc = locMap[filters.location] !== undefined ? locMap[filters.location] : (filters.location || "");
     if (loc) params.set("location", loc);
@@ -2998,15 +3053,18 @@
       if (jtMap[filters.job_type]) params.set("employment_type[]", jtMap[filters.job_type]);
     }
 
-    // ZipRecruiter paginates via `page` param (20 jobs per page)
-    const processed = await chrome.storage.local.get("processedPageStarts");
-    const starts = processed.processedPageStarts || [0];
-    const lastStart = starts[starts.length - 1];
-    const nextStart = lastStart + 20;
-    starts.push(nextStart);
-    if (starts.length > 200) starts.splice(0, starts.length - 200);
-    await chrome.storage.local.set({ processedPageStarts: starts });
-    const page = Math.floor(nextStart / 20) + 1;
+    // ZipRecruiter paginates via `page` param (20 jobs per page). On a keyword rotate,
+    // advanceKeyword() reset processedPageStarts to [0] → page 1 of the new search.
+    let page = 1;
+    if (decision === "page") {
+      const processed = await chrome.storage.local.get("processedPageStarts");
+      const starts = processed.processedPageStarts || [0];
+      const nextStart = starts[starts.length - 1] + 20;
+      starts.push(nextStart);
+      if (starts.length > 200) starts.splice(0, starts.length - 200);
+      await chrome.storage.local.set({ processedPageStarts: starts });
+      page = Math.floor(nextStart / 20) + 1;
+    }
     if (page > 1) params.set("page", String(page));
 
     const url = `https://www.ziprecruiter.com/jobs-search?${params.toString()}`;
@@ -3034,9 +3092,9 @@
     const data = await chrome.storage.local.get("campaignFilters");
     const filters = data.campaignFilters || {};
     const params = new URLSearchParams();
-    { const wq = filters.work_setting === "hybrid" ? "hybrid" : "";
-      const q = [filters.keywords?.length ? filters.keywords.join(" ") : "", wq].filter(Boolean).join(" ");
-      if (q) params.set("search", q); }
+    // Recovery nav — keep searching the CURRENT keyword (no rotation here).
+    const q = await currentSearchPhrase();
+    if (q) params.set("search", q);
     const locMap = { usa: "United States", remote: "Remote", europe: "" };
     const loc = locMap[filters.location] !== undefined ? locMap[filters.location] : (filters.location || "");
     if (loc) params.set("location", loc);
