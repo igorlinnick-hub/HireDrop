@@ -1162,10 +1162,20 @@
   // build next (EEO/location/etc). Read via HIREDROP_READ_STORAGE keys:["unfilledLedger"].
   function collectUnfilledRequired() {
     const labels = [];
-    const els = document.querySelectorAll(
+    const scope = formScope();
+    // Prefer real required markers; where the platform ships none — ZipRecruiter marks
+    // NOTHING required, which is why every ZR hand-back arrived with `unfilled: []` and
+    // taught the ledger nothing — fall back to every visible empty field in the apply
+    // modal. Those are the candidates that blocked the step, which is the whole point of
+    // the ledger: it decides which deterministic handlers get built next.
+    let els = scope.querySelectorAll(
       'input[required], select[required], textarea[required], [aria-required="true"]'
     );
+    if (!els.length && scope !== document) {
+      els = scope.querySelectorAll("input, select, textarea");
+    }
     for (const el of els) {
+      if (el.offsetParent === null) continue;
       const tag = el.tagName;
       if (tag !== "INPUT" && tag !== "SELECT" && tag !== "TEXTAREA") continue;
       if (el.type === "hidden" || el.type === "file") continue; // resume tracked separately
