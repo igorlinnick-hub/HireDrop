@@ -693,7 +693,7 @@
 
   // Find element by label text
   function findByLabel(labelText) {
-    const labels = document.querySelectorAll("label");
+    const labels = formScope().querySelectorAll("label");
     for (const label of labels) {
       if (label.textContent.trim().toLowerCase().includes(labelText.toLowerCase())) {
         const forId = label.getAttribute("for");
@@ -1116,6 +1116,30 @@
     return new Set(data.appliedJobKeys || []);
   }
 
+  // Jobs we already handed back TODAY. A hand-back is terminal for this run, but the
+  // walk re-encounters the same postings on the next pass through the results and used
+  // to re-run the fit judge and the cover letter on each of them — live 08-15 the same
+  // two jobs were paid for three times in twenty minutes, and they crowded out the jobs
+  // further down the list that we CAN submit. Keyed by day so tomorrow is a clean slate
+  // (the blocker may be gone, e.g. after the user fills in a missing profile field).
+  async function getHandedBackKeys() {
+    const d = await chrome.storage.local.get(["handedBackKeys", "handedBackDate"]);
+    const today = new Date().toISOString().slice(0, 10);
+    if (d.handedBackDate !== today) return new Set();
+    return new Set(d.handedBackKeys || []);
+  }
+
+  async function addHandedBackKey(title, company) {
+    const key = jobDedupKey(title, company);
+    if (!key || key === "|") return;
+    const today = new Date().toISOString().slice(0, 10);
+    const d = await chrome.storage.local.get(["handedBackKeys", "handedBackDate"]);
+    const keys = d.handedBackDate === today ? (d.handedBackKeys || []) : [];
+    if (!keys.includes(key)) keys.push(key);
+    if (keys.length > 500) keys.splice(0, keys.length - 500);
+    await chrome.storage.local.set({ handedBackKeys: keys, handedBackDate: today });
+  }
+
   async function addAppliedJobKey(title, company) {
     const key = jobDedupKey(title, company);
     if (!key || key === "|") return;
@@ -1200,6 +1224,7 @@
   // job ends submitted-complete-and-honest OR handed-back-with-a-reason — never a silent
   // half-death.
   async function handBackJob(reason, extra = {}) {
+    await addHandedBackKey(extra.title, extra.company);
     await sendMsg({
       type: "ATS_JOB_FAILED",
       data: {
@@ -1636,6 +1661,11 @@
         await skipToNextJob();
         return;
       }
+      if ((await getHandedBackKeys()).has(jobDedupKey(jobTitle, jobCompany))) {
+        logBackend(`Skip (handed back earlier today): ${jobTitle} @ ${jobCompany}`, "info");
+        await skipToNextJob();
+        return;
+      }
       const seen = await chrome.storage.local.get("processedJobKeys");
       const keys = seen.processedJobKeys || [];
       if (keys.includes(dedupeKey)) {
@@ -1927,7 +1957,7 @@
   // job. Requiring a field or a real action button skips external jobs fast.
   function isZipRecruiterApplyForm(d) {
     if (!d || !d.offsetParent) return false;
-    if (d.querySelector('input[type="text"], input[type="tel"], input[type="email"], textarea, select, input[type="file"], input[name]')) {
+    if (d.querySelector('input[type="text"], input[type="tel"], input[type="email"], textarea, select, input[type="file"], input[name], [role="combobox"]')) {
       return true;
     }
     for (const b of d.querySelectorAll("button")) {
@@ -1980,19 +2010,28 @@
     coverLetter: "cover letter",
   };
 
+  // Only real form controls can be typed into. A selector or a label can easily match a
+  // DIV/SPAN/A — and then `el.value.trim()` throws, which killed the whole filler with no
+  // log line at all (live 08-15 on a one-tap ZipRecruiter apply: the modal has no fields,
+  // the search scope widened to the page, and an "email" selector matched page furniture).
+  const isFormControl = (el) =>
+    !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT");
+
   function findFieldBySelectorsOrLabel(fieldName) {
-    // Try direct selectors first (loaded from backend, falls back to constants)
+    // Scoped to the apply modal when one is open, same as every other filler.
+    const scope = formScope();
     const fields = SELECTORS.fields || FALLBACK_SELECTORS.fields;
     const selectors = fields[fieldName] || [];
     for (const sel of selectors) {
-      const el = document.querySelector(sel);
-      if (el && el.offsetParent !== null) return el;
+      let el = null;
+      try { el = scope.querySelector(sel); } catch { continue; } // a bad stored selector must not kill the run
+      if (isFormControl(el) && el.offsetParent !== null) return el;
     }
     // Try label-based fallback
     const labelText = LABEL_FALLBACKS[fieldName];
     if (labelText) {
       const el = findByLabel(labelText);
-      if (el) return el;
+      if (isFormControl(el)) return el;
     }
     return null;
   }
@@ -2238,6 +2277,12 @@
       if (profile.needs_sponsorship === false && no) return no;
       return null;
     }
+    // Marketing/SMS opt-in → No. It is the platform asking to text the user, not the
+    // employer asking anything about the candidate, and nothing about the application
+    // depends on the answer — so the least intrusive choice is the honest default.
+    // (ZipRecruiter makes this one REQUIRED on its one-tap apply: name=['sms_opt_in'],
+    // and a blank answer blocks the whole submission.)
+    if (/(text message|sms|opt.?in|receive (calls|messages|texts))/i.test(label) && no) return no;
     // Previously worked at THIS company / referral-conflict → No (honest default for a
     // cold application; a real former employee reviews in TAP and can fix it).
     if (/(previously (worked|employed)|ever worked (at|for)|former (employee|employer)|currently employed by)/i.test(label) && no) return no;
@@ -2405,8 +2450,15 @@
     // after filling one combobox can detach the others, so cached nodes would no-op.
     // data-hd-skip marks un-openable ones so we don't loop on them forever.
     for (let pass = 0; pass < 14; pass++) {
+      // Scoped to the apply modal like every other filler. Unscoped, this reached the
+      // BOARD's own controls: on a one-tap ZipRecruiter job the modal holds no fields, so
+      // the scope falls back to the document, and the page's filter chips (Remote, Date
+      // posted, Experience level, Distance) look exactly like unanswered dropdowns. Live
+      // 22:56 on Subway "Manager, Social & Activation": the engine opened the apply modal,
+      // then spent 36 seconds operating the search filters behind it, which re-rendered
+      // the results and closed the modal. No application, no log line, nothing.
       const combo = Array.from(
-        document.querySelectorAll(
+        formScope().querySelectorAll(
           // Indeed DIV combobox + native ARIA listbox buttons + react-select controls
           // (Greenhouse/Lever new UI render multi_value_single_select as react-select,
           //  invisible to querySelectorAll('select') — 2026-08-09 #11 detect-gap).
@@ -2493,9 +2545,18 @@
   // visible [role=dialog] mounted while Quick Apply is open (live 08-15: the first one
   // has buttons but no fields; the apply form is a later sibling) — "first dialog with
   // a button" picked the wrong one and the lookup fell through to the page.
+  // "Has fields" must include CUSTOM widgets, not just native controls. ZipRecruiter's
+  // required SMS opt-in is a DIV[role=combobox] — with a native-only test the consent
+  // modal counted as field-less, the scope fell to the empty wrapper dialog next to it,
+  // and the filler never saw the one control the step required. Live 08-15: "Continue"
+  // clicked twice, "This field is required" on screen, aria-invalid=true on
+  // name=['sms_opt_in'], and the application handed back.
+  const FIELDISH_SELECTOR =
+    'input, textarea, select, [role="combobox"], [role="checkbox"], [role="radio"], [role="switch"], [contenteditable="true"]';
+
   function visibleApplyDialogs() {
     const all = Array.from(document.querySelectorAll('[role="dialog"]')).filter((d) => d.offsetParent !== null);
-    const withFields = all.filter((d) => d.querySelector("input, textarea, select"));
+    const withFields = all.filter((d) => d.querySelector(FIELDISH_SELECTOR));
     const rest = all.filter((d) => !withFields.includes(d) && d.querySelector("button"));
     return withFields.concat(rest);
   }
@@ -2506,7 +2567,11 @@
   // page behind keeps its own inputs and buttons (ZR's header search box is the famous
   // one) and a document-wide query reaches them first.
   function formScope() {
-    return visibleApplyDialogs().find((d) => d.querySelector("input, textarea, select")) || document;
+    const dlgs = visibleApplyDialogs();
+    // Prefer the dialog that holds fields; otherwise ANY open apply dialog. Falling back
+    // to `document` just because the modal has no inputs is what let the fillers loose on
+    // the board's own search filters during a one-tap ZipRecruiter apply (live 08-15).
+    return dlgs.find((d) => d.querySelector(FIELDISH_SELECTOR)) || dlgs[0] || document;
   }
 
   // Compact "what modals are on screen" string — the one fact that told us WHY a ZR
@@ -2684,7 +2749,7 @@
       // by stray hidden dialogs — e.g. Greenhouse's intl-tel-input country dropdown is
       // a hidden [role=dialog] with no inputs, which used to zero out the whole DIAG.
       const dialog = Array.from(document.querySelectorAll('[role="dialog"]')).find(
-        (d) => vis(d) && d.querySelector('input, textarea, select')
+        (d) => vis(d) && d.querySelector(FIELDISH_SELECTOR)
       );
       const scope = dialog || document;
       const textInputs = Array.from(scope.querySelectorAll('input[type="text"],input[type="email"],input[type="tel"],input:not([type])')).filter(vis).length;
@@ -2792,6 +2857,19 @@
   }
 
   async function phase3_fillForm() {
+    // Any throw in here used to vanish: phase2 calls this on-stack, nothing above catches,
+    // and an unhandled rejection leaves NO log line at all. From the outside that is
+    // indistinguishable from "nothing happened" — live 08-15 a one-tap ZipRecruiter apply
+    // died exactly this way, twice, with the last line being "form detected".
+    try {
+      return await _phase3_fillForm();
+    } catch (e) {
+      logBackend(`💥 Form filler crashed: ${e && e.message} @ ${(e && e.stack || "").split("\n")[1] || "?"}`, "error");
+      await skipToNextJob();
+    }
+  }
+
+  async function _phase3_fillForm() {
     if (!(await isCampaignRunning())) return;
 
     // Let the step finish rendering before we fill/decide (see waitForFormReady above).
@@ -2848,7 +2926,7 @@
 
       // First name
       const fnEl = findFieldBySelectorsOrLabel("firstName");
-      if (fnEl && !fnEl.value.trim()) {
+      if (fnEl && !(fnEl.value || "").trim()) {
         await typeValue(fnEl, profile.name || "");
         await sleep(humanDelay(3000, 5000));
         filledAny = true; filled.push("first");
@@ -2856,7 +2934,7 @@
 
       // Last name
       const lnEl = findFieldBySelectorsOrLabel("lastName");
-      if (lnEl && !lnEl.value.trim()) {
+      if (lnEl && !(lnEl.value || "").trim()) {
         await typeValue(lnEl, profile.last_name || "");
         await sleep(humanDelay(3000, 5000));
         filledAny = true; filled.push("last");
@@ -2864,7 +2942,7 @@
 
       // Email
       const emEl = findFieldBySelectorsOrLabel("email");
-      if (emEl && !emEl.value.trim()) {
+      if (emEl && !(emEl.value || "").trim()) {
         await typeValue(emEl, await resolveEmail(profile));
         await sleep(humanDelay(3000, 5000));
         filledAny = true; filled.push("email");
@@ -2872,7 +2950,7 @@
 
       // Phone
       const phEl = findFieldBySelectorsOrLabel("phone");
-      if (phEl && !phEl.value.trim()) {
+      if (phEl && !(phEl.value || "").trim()) {
         await typeValue(phEl, profile.phone || "");
         await sleep(humanDelay(3000, 5000));
         filledAny = true; filled.push("phone");
@@ -2880,7 +2958,7 @@
 
       // Cover letter
       const clEl = findFieldBySelectorsOrLabel("coverLetter");
-      if (clEl && !clEl.value.trim()) {
+      if (clEl && !(clEl.value || "").trim()) {
         quickSet(clEl, coverLetter);
         await sleep(humanDelay(3000, 5000));
         filledAny = true; filled.push("cover");
@@ -4474,7 +4552,12 @@
       if (campaignOn) {
         try {
           const who = await sendMsg({ type: "AM_I_CAMPAIGN_TAB" });
-          if (who && who.known === true && who.isCampaignTab === false) {
+          // `known:false` means the background has no campaign tab recorded. That is NOT
+          // permission to take over: a tab the user opened themselves then starts walking
+          // the board (live 08-15 — the automation window was gone, and the human's own
+          // ZipRecruiter tab got paginated out from under them). Only a tab that IS the
+          // campaign tab may automate; when the answer is unknown, stay put.
+          if (who && (who.isCampaignTab === false || who.known === false)) {
             log("Not the campaign tab (restored from a previous session) — staying idle", "");
             campaignOn = false;
           }
