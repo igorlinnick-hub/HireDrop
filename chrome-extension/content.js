@@ -1928,7 +1928,14 @@
     return false;
   }
 
+  // Pages that are never an application form, whatever dialogs they render: the ZR
+  // homepage (warmup hop) and the account pages both carry promo/nav dialogs that look
+  // form-ish. Live 08-15: the warmup landing on /jobseeker/home was classified as "form",
+  // so phase3 ran on it and logged an abandoned application for a job we never opened.
+  const ZR_NON_JOB_PATH_RE = /^\/(jobseeker\/home|candidate\/|profile|account|settings)/;
+
   function findZipRecruiterApplyForm() {
+    if (ZR_NON_JOB_PATH_RE.test(window.location.pathname)) return null;
     for (const d of document.querySelectorAll('[role="dialog"]')) {
       if (isZipRecruiterApplyForm(d)) return d;
     }
@@ -4411,7 +4418,21 @@
       // failing backend round-trip can never block login detection. Fire-and-forget.
       reportPlatformAuth();
 
-      const campaignOn = await isCampaignRunning();
+      let campaignOn = await isCampaignRunning();
+      // Only the campaign's OWN tab may automate. Chrome restores the previous session's
+      // windows on restart, so a stopped run's job tabs come back to life, see
+      // campaignRunning=true, and all start walking at once — nine of them raced each
+      // other on 08-15, stepping on the live run's navigation. Fail OPEN: if the
+      // background can't answer, behave exactly as before.
+      if (campaignOn) {
+        try {
+          const who = await sendMsg({ type: "AM_I_CAMPAIGN_TAB" });
+          if (who && who.known === true && who.isCampaignTab === false) {
+            log("Not the campaign tab (restored from a previous session) — staying idle", "");
+            campaignOn = false;
+          }
+        } catch { /* no answer → proceed as before */ }
+      }
       if (campaignOn) {
         // Version in the line = proof of WHICH content.js is injected (store vs unpacked,
         // pre/post reload) — the 08-15 double-install cost a whole run to "assumed 1.4.4".

@@ -1354,6 +1354,14 @@ async function handleMessage(msg, sender) {
         kwIndex: 0, // keyword rotation cursor — content.js advances it as each keyword is exhausted
         triedPlatforms: [primaryPlatform], // platform-failover ledger — PLATFORM_EXHAUSTED never revisits these
         zrNoBtnStreak: 0, // external-apply wall guard counter
+        // Stale per-job state from the LAST run must not leak into this one: with these
+        // left over, the fresh homepage was treated as an open application form and
+        // phase3 ran against it, logging "form abandoned" for a job we never touched
+        // (live 08-15, after a Chrome restart).
+        currentJobInfo: null,
+        generatedCoverLetter: "",
+        pendingJobs: [],
+        currentJobIndex: 0,
       });
 
       updateBadge();
@@ -1424,6 +1432,15 @@ async function handleMessage(msg, sender) {
     // to be a wall of external-apply listings / hit its per-platform cap / ran out of
     // keywords. Switch to the next walkable board automatically; stop only when every
     // candidate has been tried. GH/Lever/Ashby run via the ATS queue, not this walk.
+    // "Am I the tab this campaign is driving?" Asked by every content script at init so
+    // session-restored tabs from an older run stay out of the way (see content.js init).
+    case "AM_I_CAMPAIGN_TAB": {
+      const tabId = sender && sender.tab && sender.tab.id;
+      const { campaignTabId } = await chrome.storage.local.get("campaignTabId");
+      if (!tabId || !campaignTabId) return { known: false };
+      return { known: true, isCampaignTab: tabId === campaignTabId };
+    }
+
     case "PLATFORM_EXHAUSTED": {
       const ex = await chrome.storage.local.get([
         "campaignRunning", "campaignFilters", "campaignTabId", "triedPlatforms", "platformConnections",
