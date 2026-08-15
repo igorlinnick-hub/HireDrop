@@ -143,6 +143,11 @@ class ExtensionPingBody(BaseModel):
     last_screenshot_age: float | None = None
     error: str | None = None
     version: str | None = None
+    # Which extension install is talking (chrome.runtime.id). Chrome runs the same
+    # unpacked folder twice happily, and each copy has its own storage — so an idle twin
+    # reports "campaign_running: false" under the same account while the real one is
+    # mid-application. Logged on the reap path so the twin is visible, not deduced.
+    instance_id: str | None = None
 
 
 _ext_status: dict = {}  # user_id -> {ts, campaign_running, ...}
@@ -158,6 +163,7 @@ def extension_ping(body: ExtensionPingBody, user=Depends(get_current_user)):
         "last_screenshot_age": body.last_screenshot_age,
         "error": body.error,
         "version": body.version,
+        "instance_id": body.instance_id,
     }
     # Heartbeat stamp (ZOMBIE_FIX_PLAN): the TTL must measure whether the CAMPAIGN is
     # alive, not merely whether the extension is loaded. Stamping every ping conflated the
@@ -181,8 +187,9 @@ def extension_ping(body: ExtensionPingBody, user=Depends(get_current_user)):
             with contextlib.suppress(Exception):
                 activity_db.write(
                     user.id,
-                    "⏹ Campaign flag cleared — the extension reported it is not running "
-                    "(browser closed, extension reloaded, or the run ended).",
+                    "⏹ Campaign flag cleared — extension "
+                    f"{body.instance_id or 'unknown'} (v{body.version or '?'}) reported it is not "
+                    "running, and the campaign had gone silent too.",
                     level="warn",
                     phase="campaign",
                 )

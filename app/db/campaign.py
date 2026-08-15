@@ -141,6 +141,17 @@ def reconcile_not_running(user_id: str) -> bool:
     started = _parse_ts(state.get("started_at"))
     if started and (datetime.now(UTC) - started).total_seconds() < STARTUP_GRACE_SECS:
         return False
+    # A "not running" claim must not beat a LIVE heartbeat. One browser can hold more
+    # than one install of the extension (an unpacked copy loaded twice, or store +
+    # unpacked), and the idle one pings "campaign_running: false" every minute under the
+    # same account — on 08-15 that reaped a campaign the other install was actively
+    # filling a form for, three runs in a row. Storage forensics proved the running
+    # instance never lowered its own flag. So: only reap when the campaign is ALSO
+    # silent. A campaign that is working refreshes last_ping_at (ping or activity line),
+    # and a genuinely dead one goes quiet and still gets reaped a TTL later.
+    lp = _parse_ts(state.get("last_ping_at"))
+    if lp and (datetime.now(UTC) - lp).total_seconds() < HEARTBEAT_TTL_SECS:
+        return False
     try:
         (
             get_supabase()

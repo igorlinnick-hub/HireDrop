@@ -340,6 +340,12 @@ async function sendExtensionPing() {
         today_count: todayCount,
         window_visible: windowVisible,
         version: chrome.runtime.getManifest().version,
+        // WHICH install is talking. Chrome happily runs the same unpacked folder twice
+        // (and store + unpacked side by side); each copy gets its own id and its own
+        // storage, so an idle twin pings "not running" under the same account while the
+        // real one is mid-application. Without this field the two are indistinguishable
+        // in the logs — it cost most of 08-15 to work out that a twin existed at all.
+        instance_id: chrome.runtime.id,
       }),
     });
     // Backend-authoritative Stop: if the dashboard stopped the campaign but our
@@ -1948,6 +1954,19 @@ async function handleMessage(msg, sender) {
 // ---------------------------------------------------------------------------
 // Tab closed — stop campaign if campaign tab is closed
 // ---------------------------------------------------------------------------
+
+// Flag forensics: whoever clears campaignRunning, the transition itself is recorded.
+// Live 08-15 the extension kept POSTing "campaign_running: false" pings during a running
+// campaign — meaning the stored flag went down without any of our stop paths logging it.
+// A storage-level watcher is the one instrument that cannot be evaded by a missing log
+// line: it fires on the WRITE, whoever made it.
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !changes.campaignRunning) return;
+  const { oldValue, newValue } = changes.campaignRunning;
+  if (oldValue === true && newValue !== true) {
+    addToActivityLog(`🔎 campaignRunning true → ${JSON.stringify(newValue)} (storage write)`, "warn").catch(() => {});
+  }
+});
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   const data = await chrome.storage.local.get(["campaignTabId", "campaignRunning"]);

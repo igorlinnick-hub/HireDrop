@@ -171,3 +171,28 @@ def test_non_extension_activity_never_stamps_the_heartbeat(auth_client):
 
     assert res.status_code == 200
     touch.assert_not_called()
+
+
+def test_false_ping_cannot_reap_a_campaign_with_a_live_heartbeat(supabase_mock):
+    """One browser can hold two installs of the extension. The idle one pings
+    "campaign_running: false" every minute under the same account, and on 08-15 that
+    reaped a campaign the OTHER install was actively filling a form for — three runs in a
+    row, storage forensics proving the running instance never lowered its own flag.
+    A claim of "not running" must therefore never outrank a live heartbeat."""
+    _state_rows(
+        supabase_mock,
+        {"running": True, "started_at": _iso(3600), "last_ping_at": _iso(10)},
+    )
+
+    assert reconcile_not_running("u1") is False
+    supabase_mock.table.return_value.update.assert_not_called()
+
+
+def test_false_ping_still_reaps_a_silent_campaign(supabase_mock):
+    """The zombie guard itself stays intact: no heartbeat, no mercy."""
+    _state_rows(
+        supabase_mock,
+        {"running": True, "started_at": _iso(3600), "last_ping_at": _iso(HEARTBEAT_TTL_SECS + 30)},
+    )
+
+    assert reconcile_not_running("u1") is True
