@@ -2916,8 +2916,14 @@
   // Multiple keywords are DISTINCT searches, not one mashed query. Cramming them
   // ("healthcare marketing social media manager project manager ai engineer") returns
   // junk the fit-gate then skips wholesale. We search ONE phrase at a time, up to
-  // PAGES_PER_KEYWORD pages, then rotate to the next keyword (fresh page 1).
-  const PAGES_PER_KEYWORD = 3;
+  // pagesPerKeyword() pages, then rotate to the next keyword (fresh page 1).
+  // The per-keyword page budget scales inversely with keyword count (total ~24 pages,
+  // min 4 each) so a SINGLE keyword still walks deep instead of stopping after 3 pages.
+  async function pagesPerKeyword() {
+    const d = await chrome.storage.local.get("campaignFilters");
+    const n = (d.campaignFilters?.keywords || []).filter(Boolean).length || 1;
+    return Math.max(4, Math.floor(24 / n));
+  }
 
   async function currentSearchPhrase() {
     const d = await chrome.storage.local.get(["campaignFilters", "kwIndex"]);
@@ -2946,7 +2952,7 @@
   async function pageOrRotate() {
     const p = await chrome.storage.local.get("processedPageStarts");
     const pagesDone = (p.processedPageStarts || [0]).length;
-    if (pagesDone < PAGES_PER_KEYWORD) return "page";
+    if (pagesDone < (await pagesPerKeyword())) return "page";
     return (await advanceKeyword()) ? "rotated" : "stop";
   }
 
