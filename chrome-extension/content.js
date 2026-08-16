@@ -26,7 +26,13 @@
   // AI answers per job; past the cap, leave remaining custom fields empty so the existing
   // validation-block path hands the job back FAST ("too many custom questions — finish it
   // yourself") instead of grinding. Reset at the start of each apply attempt.
-  const MAX_AI_ANSWERS_PER_FORM = 8;
+  // 8 was tuned for Indeed/ATS forms; ZipRecruiter routinely ships 10-14 screener
+  // questions on ONE step, so the cap fired mid-form and handed back jobs we could have
+  // finished (live 08-15, Best Buddies: "Too many custom questions (>8)" → hand-back).
+  // 15 covers the observed ZR forms at roughly +$0.01 per application. Igor approved the
+  // trade explicitly. The cap still exists so a pathological 40-question form hands back
+  // fast instead of grinding for ten minutes.
+  const MAX_AI_ANSWERS_PER_FORM = 15;
   let _aiAnswersUsed = 0;
   let _aiBudgetNotified = false;
 
@@ -2194,8 +2200,19 @@
         else if (label.includes("portfolio") || label.includes("website")) value = pf || li;
         else value = li || pf; // generic "url" / github
         if (!value) continue;
+      } else if (/\b(street|address ?line|address ?1|mailing address)\b/.test(label) || label === "address") {
+        value = profile.street_address || "";
+        if (!value) continue; // never invent an address — hand back instead
+      } else if (/\b(zip|postal)\b/.test(label)) {
+        value = profile.postal_code || "";
+        if (!value) continue;
+      } else if (/\bstate\b|\bprovince\b|\bregion\b/.test(label)) {
+        value = profile.state || "";
+        if (!value) continue;
       } else if (label.includes("city") || label.includes("location")) {
-        value = profile.location || "Remote";
+        // The user's real city if we have it; the search location is a fallback, not an
+        // address (it can read "Miami, Florida, US" or even "remote").
+        value = profile.city || profile.location || "Remote";
       } else if (/notice period|when (can|could) you start|available to start|start date/i.test(label) && !isTextarea) {
         value = profile.notice_period || "2 weeks";
       } else if (/(english|language).*(level|proficien|fluen)/i.test(label) && !isTextarea) {

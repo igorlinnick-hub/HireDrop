@@ -28,6 +28,13 @@ _DEFAULTS = {
     "needs_sponsorship": None,
     "notice_period": "",
     "english_level": "",
+    # Mailing address — ZipRecruiter's contact step won't advance without it (see
+    # migrations/add_profile_address.sql). `location` is a SEARCH preference, not an
+    # address, so it can't stand in for these.
+    "street_address": "",
+    "city": "",
+    "state": "",
+    "postal_code": "",
 }
 
 
@@ -66,6 +73,10 @@ def get_profile(user_id: str) -> dict:
         "needs_sponsorship": p.get("needs_sponsorship"),
         "notice_period": p.get("notice_period") or "",
         "english_level": p.get("english_level") or "",
+        "street_address": p.get("street_address") or "",
+        "city": p.get("city") or "",
+        "state": p.get("state") or "",
+        "postal_code": p.get("postal_code") or "",
     }
 
 
@@ -85,7 +96,8 @@ def update_profile(user_id: str, data: dict) -> dict:
     # URL fields (LinkedIn / portfolio) for ATS applications — only write them when the
     # caller actually provided them, so a partial save (e.g. search-prefs) never wipes them.
     for k in ("linkedin_url", "portfolio_url",
-              "work_authorized_us", "needs_sponsorship", "notice_period", "english_level"):
+              "work_authorized_us", "needs_sponsorship", "notice_period", "english_level",
+              "street_address", "city", "state", "postal_code"):
         if k in data:
             payload[k] = data[k]
     (get_supabase().table("profiles").update(payload).eq("user_id", user_id).execute())
