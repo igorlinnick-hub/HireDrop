@@ -17,6 +17,10 @@ class ProfileUpdate(BaseModel):
     writing_style: str = ""
     linkedin_url: str = ""
     portfolio_url: str = ""
+    street_address: str = ""
+    city: str = ""
+    state: str = ""
+    postal_code: str = ""
 
 
 class LetterPreviewRequest(BaseModel):

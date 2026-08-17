@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "HireDrop \u2014 Auto-Apply on Indeed & ZipRecruiter",
   "short_name": "HireDrop",
-  "version": "1.6.4",
+  "version": "1.6.7",
   "description": "Auto-fill Indeed applications with your resume + an AI-written cover letter. Stop, start, and limit campaigns from one dashboard.",
   "author": "HireDrop",
   "homepage_url": "https://hiredrop.io",
