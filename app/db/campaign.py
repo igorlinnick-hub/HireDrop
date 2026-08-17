@@ -1,5 +1,6 @@
 """Операции с campaign_states в Supabase."""
 
+import contextlib
 from datetime import UTC, datetime
 
 from app.db.client import get_supabase
@@ -8,8 +9,20 @@ from app.db.client import get_supabase
 # whenever it is loaded, and that ping stamps campaign_states.last_ping_at. A campaign
 # whose flag says running but whose extension hasn't pinged within the TTL is a ZOMBIE
 # (laptop closed / browser quit / crash / offline) — report it as not running and lazily
-# flip the row. 150s = 2.5× the ping period: tolerates two missed pings + jitter.
-HEARTBEAT_TTL_SECS = 150
+# flip the row.
+#
+# 150s ("2.5x the ping period") assumed the ping arrives every 60s. It does not: the ping
+# rides a chrome.alarms tick that MV3 throttles hard on an idle machine, and the other
+# heartbeat source — the run's own activity lines — falls silent for minutes at a time
+# while a form is being filled or a page is loading. Live 2026-08-17: a perfectly healthy
+# run went 4m39s between log lines (05:12:09 → 05:16:48) and the next status read reaped
+# it mid-walk. That read is `get_effective_state`, which self-heals silently, so the kill
+# left no trace beyond the extension's own "stopped by the server".
+#
+# 10 minutes is longer than any observed gap in a working run and still kills the case
+# this guard exists for by a wide margin — the zombie that motivated it had been "running"
+# for two days.
+HEARTBEAT_TTL_SECS = 600
 
 # Grace after started_at during which we trust the flag without any campaign heartbeat.
 # /campaign/start flips the flag, but the extension needs a moment to pick the campaign
@@ -120,6 +133,19 @@ def get_effective_state(user_id: str) -> dict:
             )
         except Exception:
             pass  # cleanup is best-effort; the caller still gets running=False
+        # Say it out loud. This is a LAZY reap on read — any status poll can trigger it,
+        # including the dashboard's own — and it used to leave no trace at all, so a run
+        # it killed looked like it had simply evaporated (08-17, twice).
+        with contextlib.suppress(Exception):
+            from app.db import activity as _activity
+
+            _activity.write(
+                user_id,
+                "⏹ Campaign marked not-running — no heartbeat for "
+                f"{HEARTBEAT_TTL_SECS}s (browser closed, extension asleep, or the run died).",
+                level="warn",
+                phase="campaign",
+            )
         state["running"] = False
     return state
 

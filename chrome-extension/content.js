@@ -4575,7 +4575,14 @@
           // ZipRecruiter tab got paginated out from under them). Only a tab that IS the
           // campaign tab may automate; when the answer is unknown, stay put.
           if (who && (who.isCampaignTab === false || who.known === false)) {
-            log("Not the campaign tab (restored from a previous session) — staying idle", "");
+            log("Not the campaign tab — staying idle", "");
+            // Durable: this guard silences a page completely, so when it fires by mistake
+            // the run looks like it simply stopped existing — 32 minutes of a live
+            // campaign with no log line at all (08-17). A decision that can end a run
+            // must be visible in the same place as every other stop reason.
+            logBackend(
+              `🛈 Staying idle on ${location.hostname}${location.pathname.slice(0, 30)} — not the campaign tab ` +
+              `(known=${who.known}, isCampaignTab=${who.isCampaignTab})`, "warn");
             campaignOn = false;
           }
         } catch { /* no answer → proceed as before */ }
