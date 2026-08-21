@@ -1536,11 +1536,30 @@
     // Confirmed real selector: .job_result_two_pane_v2 wraps each job card
     const wrappers = Array.from(document.querySelectorAll(".job_result_two_pane_v2"));
     if (!wrappers.length) {
+      // Results ran out. Paging on regardless burns ~25s per empty page until the
+      // per-keyword budget (up to 24 pages) is spent — live 08-21 the engine walked a
+      // 5-page result set to page 18 before giving up. Two empty pages in a row is the
+      // end of this keyword; rotate or hand the platform decision to the background.
+      const es = await chrome.storage.local.get("zrEmptyPageStreak");
+      const emptyStreak = (es.zrEmptyPageStreak || 0) + 1;
+      await chrome.storage.local.set({ zrEmptyPageStreak: emptyStreak });
       log("No job cards found on ZipRecruiter — going to next page", "");
       logBackend("No ZR cards found on this page", "warn");
+      if (emptyStreak >= 2) {
+        await chrome.storage.local.set({ zrEmptyPageStreak: 0, processedPageStarts: [0] });
+        if (await advanceKeyword()) {
+          logBackend("ZipRecruiter results exhausted for this keyword — next keyword", "info");
+          await goBackToJobList();
+          return;
+        }
+        logBackend("ZipRecruiter results exhausted — no keywords left", "warn");
+        await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: "ziprecruiter", reason: "no more results" });
+        return;
+      }
       await goBackToJobList();
       return;
     }
+    await chrome.storage.local.set({ zrEmptyPageStreak: 0 }); // real results — reset the guard
 
     // Build base search URL (without lk=) for constructing per-job URLs
     const baseUrl = new URL(window.location.href);
@@ -1831,11 +1850,14 @@
     await humanClick(applyBtn2);
 
     // Wait for the apply modal or form to appear
-    const formReady = await waitForZipRecruiterForm(15000);
+    // 40s, not 15: the apply modal renders lazily and the automation window is
+    // background-throttled (measured ~30s on 08-21). A short wait doesn't fail fast, it
+    // just abandons applications that were about to become fillable.
+    const formReady = await waitForZipRecruiterForm(40000);
     if (!(await isCampaignRunning())) return;
     if (!formReady) {
       log(`${jobTitle} — no Quick Apply form appeared (external ATS), skipping`, "");
-      logBackend(`Skip (no ZR form after 15s): ${jobTitle} @ ${jobCompany} — ${dialogSnapshot()}`, "info");
+      logBackend(`Skip (no ZR form after 40s): ${jobTitle} @ ${jobCompany} — ${dialogSnapshot()}`, "info");
       await skipToNextJob();
       return;
     }
@@ -1993,10 +2015,13 @@
     while (Date.now() - start < timeoutMs) {
       if (!(await isCampaignRunning())) return false;
       if (findZipRecruiterApplyForm()) return true;
-      // A dialog with only a Close button = external-apply job, no form to fill.
+      // A dialog that stays EMPTY is an external-apply job — but "empty" needs patience.
+      // ZipRecruiter mounts the modal shell first and fills it in later, and in a
+      // throttled background window that took ~30s twice on 08-21: we bailed at 2.5s
+      // with "no ZR form after 15s", and the form then appeared 18 seconds after we had
+      // already moved on. Give the shell real time before calling it external.
       const anyDialog = Array.from(document.querySelectorAll('[role="dialog"]')).some((d) => d.offsetParent);
-      const onlyClose = anyDialog && !findZipRecruiterApplyForm();
-      if (onlyClose && Date.now() - start > 2500) return false; // external — skip fast
+      if (anyDialog && Date.now() - start > 12000) return false;
       // Redirected away to external ATS
       if (!window.location.hostname.includes("ziprecruiter.com")) return false;
       await sleep(500);
@@ -2485,14 +2510,16 @@
       if (!combo) break;
 
       const label = getComboLabel(combo);
-      await humanClick(combo);
-      await sleep(humanDelay(400, 800));
+      await openCombobox(combo);
 
       // Read options from THIS combobox's OWN menu — a global [role=option] query
       // could grab a different question's still-open menu and apply its answer here.
       const menu = findComboMenu(combo);
       const optEls = menu
-        ? Array.from(menu.querySelectorAll('[role="option"], li, [class*="select__option"]')).filter(o => o.offsetParent !== null)
+        ? Array.from(menu.querySelectorAll('[role="option"], li, [class*="select__option"]'))
+            // Same reason as findComboMenu: a real option can report offsetParent null.
+            // Require only that it is not display:none.
+            .filter(o => o.getClientRects().length > 0 || (o.textContent || "").trim())
         : [];
       const options = optEls
         .map(o => ({ el: o, text: (o.textContent || "").trim(), val: (o.textContent || "").trim() }))
@@ -2527,11 +2554,32 @@
   }
 
   // Find the listbox menu that belongs to a specific combobox (portaled or inline).
+  // Downshift (ZipRecruiter's dropdown library) opens on ArrowDown, not on a synthetic
+  // click: dispatching mouse events left aria-expanded="false" and no menu, every time.
+  // Click first anyway for the libraries that DO listen for it, then key it open.
+  async function openCombobox(combo) {
+    await humanClick(combo);
+    await sleep(humanDelay(250, 500));
+    if (combo.getAttribute("aria-expanded") === "true") return;
+    try { combo.focus(); } catch { /* not focusable */ }
+    for (const type of ["keydown", "keyup"]) {
+      combo.dispatchEvent(new KeyboardEvent(type, {
+        key: "ArrowDown", code: "ArrowDown", keyCode: 40, which: 40,
+        bubbles: true, cancelable: true,
+      }));
+    }
+    await sleep(humanDelay(300, 600));
+  }
+
   function findComboMenu(combo) {
     const id = combo.getAttribute("aria-controls") || combo.getAttribute("aria-owns");
     if (id) {
       const el = document.getElementById(id);
-      if (el && el.offsetParent !== null) return el;
+      // NO offsetParent test here. ZipRecruiter's Downshift menus are positioned so the
+      // <ul> reports offsetParent === null while holding perfectly real, clickable
+      // <li role="option"> children — live 08-21 that made the menu invisible to us and
+      // every ZR yes/no question went unanswered.
+      if (el && el.children.length) return el;
     }
     // Fallback: the most-recently-opened visible listbox / react-select menu.
     const lbs = Array.from(
