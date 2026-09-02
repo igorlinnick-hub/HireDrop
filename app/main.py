@@ -1,6 +1,7 @@
 import asyncio
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -8,6 +9,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from app.routers import (
     activity,
@@ -65,6 +67,10 @@ async def lifespan(app_: FastAPI):
 
 app = FastAPI(title="HireDrop API", version="1.0.0", lifespan=lifespan)
 
+# Job lists ship full descriptions and were going over the wire uncompressed —
+# Railway doesn't compress for us. Small responses stay plain (gzip overhead).
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -97,6 +103,21 @@ async def security_headers(request, call_next):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    return response
+
+
+@app.middleware("http")
+async def request_timing(request, call_next):
+    """Minimal latency audit while there's no real observability: every response
+    carries its server-side time, and anything slower than a second lands in the
+    Railway log — so "which call is the bottleneck" is answerable from the log
+    instead of a guess."""
+    start = time.perf_counter()
+    response = await call_next(request)
+    elapsed_ms = int((time.perf_counter() - start) * 1000)
+    response.headers["X-Server-Time-Ms"] = str(elapsed_ms)
+    if elapsed_ms > 1000:
+        print(f"[slow-request] {request.method} {request.url.path} took {elapsed_ms}ms")
     return response
 
 
