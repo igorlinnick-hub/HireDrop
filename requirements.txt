@@ -1,15 +1,20 @@
-fastapi
-uvicorn
-requests
-httpx
-beautifulsoup4
-rich
-python-dotenv
-anthropic
-python-multipart
-pdfplumber
-supabase
-jobspy
-reportlab
-python-docx
-stripe
+# Pinned to the versions the local test suite runs green against (2026-09-02).
+# NOTE: `python-jobspy` is the job-scraper (import name `jobspy`). The bare
+# PyPI name `jobspy` is an unrelated Redis package — pinning the wrong name
+# silently broke every JobSpy-backed scraper in prod (import failed inside
+# try/except and returned []). Do not "simplify" this back to `jobspy`.
+fastapi==0.136.3
+uvicorn==0.48.0
+requests==2.34.2
+httpx==0.28.1
+beautifulsoup4==4.14.3
+rich==14.3.4
+python-dotenv==1.2.2
+anthropic==0.105.2
+python-multipart==0.0.30
+pdfplumber==0.11.9
+supabase==2.30.1
+python-jobspy==1.1.82
+reportlab==5.0.0
+python-docx==1.2.0
+stripe==15.3.0

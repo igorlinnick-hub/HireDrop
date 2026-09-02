@@ -1,0 +1,14 @@
+# Weekly dependency PRs + security alerts. Kept to a small PR budget so the
+# queue doesn't drown the repo — security updates bypass the limit anyway.
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 2
