@@ -71,6 +71,105 @@ def save_job(
     return res.data[0]["id"] if res.data else ""
 
 
+_SCORE_COLUMNS = ("score", "ai_verdict", "ai_flags", "ats_keywords", "ats_match_pct")
+
+
+def _bulk_row(user_id: str, job: dict) -> dict:
+    """Uniform column set for a bulk upsert — PostgREST rejects a batch whose rows
+    carry different keys, so score fields are always present (null when unscored)."""
+    import uuid
+
+    return {
+        "user_id": user_id,
+        "title": job.get("title", ""),
+        "company": job.get("company", ""),
+        "link": job.get("link") or f"manual:{uuid.uuid4()}",
+        "status": job.get("status", "new"),
+        "platform": job.get("platform", "unknown"),
+        "description": job.get("description", ""),
+        "location": job.get("location", ""),
+        "job_type": job.get("job_type", ""),
+        "score": job.get("score"),
+        "ai_verdict": job.get("ai_verdict", ""),
+        "ai_flags": job.get("ai_flags", []),
+        "ats_keywords": job.get("ats_keywords", []),
+        "ats_match_pct": job.get("ats_match_pct", 0),
+    }
+
+
+def save_jobs_bulk(user_id: str, jobs: list) -> int:
+    """Upsert a whole discovery/harvest batch in ONE round-trip, score fields inline —
+    instead of 2 sequential HTTP calls per row (save_job + update_job_score), which at
+    a 160-job ATS pass meant ~320 calls. Dedupes by link inside the batch (Postgres
+    can't touch the same row twice in one upsert). Degrades on failure: score-less
+    rows (pre-migration DBs), then the old per-row path, so a bad batch slows down
+    instead of losing the harvest."""
+    seen: set = set()
+    rows = []
+    for job in jobs:
+        row = _bulk_row(user_id, job)
+        if row["link"] in seen:
+            continue
+        seen.add(row["link"])
+        rows.append(row)
+    if not rows:
+        return 0
+
+    for attempt in ("scored", "core"):
+        try:
+            get_supabase().table("jobs").upsert(rows, on_conflict="user_id,link").execute()
+            return len(rows)
+        except Exception as e:
+            print(f"[jobs] bulk upsert ({attempt}) failed, downgrading: {e}")
+            rows = [{k: v for k, v in r.items() if k not in _SCORE_COLUMNS} for r in rows]
+
+    saved = 0
+    for job in jobs:
+        job_id = save_job(
+            user_id=user_id,
+            title=job.get("title", ""),
+            company=job.get("company", ""),
+            link=job.get("link", ""),
+            status=job.get("status", "new"),
+            platform=job.get("platform", "unknown"),
+            description=job.get("description", ""),
+            location=job.get("location", ""),
+            job_type=job.get("job_type", ""),
+        )
+        if job_id:
+            saved += 1
+            if job.get("score") is not None:
+                update_job_score(
+                    job_id,
+                    user_id,
+                    job["score"],
+                    job.get("ai_verdict", ""),
+                    job.get("ai_flags", []),
+                    job.get("ats_keywords", []),
+                    job.get("ats_match_pct", 0),
+                )
+    return saved
+
+
+def existing_links(user_id: str, links: list) -> set:
+    """Which of these links are already saved — chunked IN-queries (40 links each)
+    instead of one job_exists round-trip per link. Chunked because PostgREST puts
+    the IN-list into the URL and job links run long."""
+    links = [link for link in links if link]
+    out: set = set()
+    for i in range(0, len(links), 40):
+        res = (
+            get_supabase()
+            .table("jobs")
+            .select("link")
+            .eq("user_id", user_id)
+            .in_("link", links[i : i + 40])
+            .execute()
+        )
+        out.update(r["link"] for r in (res.data or []))
+    return out
+
+
 def update_job_status(user_id: str, job_id: str, status: str) -> None:
     (
         get_supabase()

@@ -84,7 +84,8 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
     # Deduplicate against already-saved jobs, then let Claude score everything.
     # Keyword pre-filter removed: JobSpy platforms already filter via search_term,
     # and Claude Haiku (Haiku cost ~$0.025/200 jobs) is a better semantic judge.
-    new_jobs = [j for j in all_jobs if not jobs_db.job_exists(user.id, j["link"])]
+    already_saved = jobs_db.existing_links(user.id, [j["link"] for j in all_jobs])
+    new_jobs = [j for j in all_jobs if j["link"] not in already_saved]
     # Salary filter runs BEFORE AI scoring (the whole point: don't spend model tokens or
     # an application slot on out-of-range pay). Unlisted salary passes unless the user
     # opted into listed-only — see modules/salary_filter.py.
@@ -105,29 +106,7 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
     # (~70% of which were never applied to). Gating (Premium + Apply-Mode threshold)
     # lives there now. See PLATFORM_AUTOMATION_PLAN.md.
 
-    saved = 0
-    for job in new_jobs:
-        job_id = jobs_db.save_job(
-            user_id=user.id,
-            title=job["title"],
-            company=job["company"],
-            link=job["link"],
-            platform=job.get("platform", "unknown"),
-            description=job.get("description", ""),
-            location=job.get("location", ""),
-            job_type=job.get("job_type", ""),
-        )
-        if job_id and job.get("score") is not None:
-            jobs_db.update_job_score(
-                job_id,
-                user.id,
-                job["score"],
-                job.get("ai_verdict", ""),
-                job.get("ai_flags", []),
-                job.get("ats_keywords", []),
-                job.get("ats_match_pct", 0),
-            )
-        saved += 1
+    saved = jobs_db.save_jobs_bulk(user.id, new_jobs)
 
     message = f"{saved} new jobs saved"
     if salary_dropped:
@@ -161,28 +140,13 @@ def _run_ats_discovery(user_id: str) -> None:
             print(f"[find-ats bg] discovery failed: {e}", file=sys.stderr)
             found = []
 
-        new_jobs = [j for j in found if not jobs_db.job_exists(user_id, j["link"])]
+        already_saved = jobs_db.existing_links(user_id, [j["link"] for j in found])
+        new_jobs = [j for j in found if j["link"] not in already_saved]
         new_jobs, _salary_dropped = filter_by_salary(new_jobs, profile)
         if new_jobs:
             new_jobs = score_jobs_batch(new_jobs, profile, resume_text)
 
-        for job in new_jobs:
-            job_id = jobs_db.save_job(
-                user_id=user_id,
-                title=job["title"],
-                company=job["company"],
-                link=job["link"],
-                platform=job.get("platform", "unknown"),
-                description=job.get("description", ""),
-                location=job.get("location", ""),
-                job_type=job.get("job_type", ""),
-            )
-            if job_id and job.get("score") is not None:
-                jobs_db.update_job_score(
-                    job_id, user_id, job["score"], job.get("ai_verdict", ""),
-                    job.get("ai_flags", []), job.get("ats_keywords", []),
-                    job.get("ats_match_pct", 0),
-                )
+        jobs_db.save_jobs_bulk(user_id, new_jobs)
 
         # Self-heal older thin-description rows using the descriptions we just fetched.
         try:
@@ -326,26 +290,30 @@ def ingest_jobs(req: IngestJobsRequest, user=Depends(get_current_user)):
     sorts them after scored jobs until a description-bearing pass rescores them.
     """
     HARVEST_PLATFORMS = {"indeed", "ziprecruiter"}
-    saved, skipped = 0, 0
-    for j in (req.jobs or [])[:30]:  # per-call cap: one search page is ~15 cards
-        if j.platform not in HARVEST_PLATFORMS or not j.link or not j.title:
-            continue
-        if jobs_db.job_exists(user.id, j.link):
-            skipped += 1
-            continue
-        jobs_db.save_job(
-            user_id=user.id,
-            title=j.title,
-            company=j.company,
-            link=j.link,
-            status="new",
-            platform=j.platform,
-            description=j.description,
-            location=j.location,
-            job_type=j.job_type,
-        )
-        saved += 1
-    return {"saved": saved, "skipped_existing": skipped}
+    candidates = [
+        j for j in (req.jobs or [])[:30]  # per-call cap: one search page is ~15 cards
+        if j.platform in HARVEST_PLATFORMS and j.link and j.title
+    ]
+    # Existing links never enter the upsert — that's what keeps this INSERT-only.
+    already_saved = jobs_db.existing_links(user.id, [j.link for j in candidates])
+    fresh = [j for j in candidates if j.link not in already_saved]
+    saved = jobs_db.save_jobs_bulk(
+        user.id,
+        [
+            {
+                "title": j.title,
+                "company": j.company,
+                "link": j.link,
+                "status": "new",
+                "platform": j.platform,
+                "description": j.description,
+                "location": j.location,
+                "job_type": j.job_type,
+            }
+            for j in fresh
+        ],
+    )
+    return {"saved": saved, "skipped_existing": len(candidates) - len(fresh)}
 
 
 @router.patch("/jobs/{job_id}/status")
