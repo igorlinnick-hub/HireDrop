@@ -13,6 +13,9 @@ import pytest
 os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
 os.environ.setdefault("SUPABASE_SERVICE_KEY", "test-service-key")
 os.environ.setdefault("ANTHROPIC_API_KEY", "test-anthropic-key")
+# The stall-watch sweep is a background loop against a mocked Supabase — tests drive
+# scan() directly instead.
+os.environ.setdefault("STALL_WATCH_ENABLED", "false")
 
 
 class FakeUser:

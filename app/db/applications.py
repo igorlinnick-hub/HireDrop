@@ -185,3 +185,22 @@ def count_today_by_platform(user_id: str, since_iso: str | None = None) -> dict:
         platform = (row.get("jobs") or {}).get("platform", "unknown")
         counts[platform] = counts.get(platform, 0) + 1
     return counts
+
+
+def last_applied_at(user_id: str) -> str | None:
+    """Timestamp of the user's most recent application, or None if they never applied.
+
+    The stall watch measures silence from here: as long as this moves, the run is
+    producing, whatever the log says.
+    """
+    res = (
+        get_supabase()
+        .table("applications")
+        .select("date_applied")
+        .eq("user_id", user_id)
+        .order("date_applied", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = res.data or []
+    return rows[0].get("date_applied") if rows else None

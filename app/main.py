@@ -25,6 +25,7 @@ from app.routers import (
     review,
     tools,
 )
+from config import STALL_WATCH_ENABLED
 
 _EMAIL_POLL_INTERVAL = int(os.getenv("EMAIL_POLL_INTERVAL_SECONDS", "1800"))  # 30 min default
 
@@ -60,9 +61,20 @@ async def lifespan(app_: FastAPI):
     task = None
     if os.getenv("EMAIL_POLL_ENABLED", "").lower() in ("1", "true", "yes"):
         task = asyncio.create_task(_email_poll_loop())
+
+    # Stall watch: "running, but applications aren't growing" — the failure the heartbeat
+    # cannot see (app/stall_watch.py). ON by default; it only reports (activity line +
+    # optional ops email), never flips a campaign flag.
+    stall_task = None
+    if STALL_WATCH_ENABLED:
+        from app.stall_watch import watch_loop
+
+        stall_task = asyncio.create_task(watch_loop())
+
     yield
-    if task:
-        task.cancel()
+    for t in (task, stall_task):
+        if t:
+            t.cancel()
 
 
 app = FastAPI(title="HireDrop API", version="1.0.0", lifespan=lifespan)

@@ -30,7 +30,7 @@ HEARTBEAT_TTL_SECS = 600
 STARTUP_GRACE_SECS = 120
 
 
-def _parse_ts(value) -> datetime | None:
+def parse_ts(value) -> datetime | None:
     if not value:
         return None
     try:
@@ -51,9 +51,9 @@ def is_effectively_running(state: dict) -> bool:
     if not state.get("running"):
         return False
     now = datetime.now(UTC)
-    lp = _parse_ts(state.get("last_ping_at"))
+    lp = parse_ts(state.get("last_ping_at"))
     if lp is None:
-        started = _parse_ts(state.get("started_at"))
+        started = parse_ts(state.get("started_at"))
         if started is None:
             return True
         return (now - started).total_seconds() < STARTUP_GRACE_SECS
@@ -191,7 +191,7 @@ def reconcile_not_running(user_id: str) -> bool:
     state = get_state(user_id)
     if not state["running"]:
         return False
-    started = _parse_ts(state.get("started_at"))
+    started = parse_ts(state.get("started_at"))
     if started and (datetime.now(UTC) - started).total_seconds() < STARTUP_GRACE_SECS:
         return False
     # A "not running" claim must not beat a LIVE heartbeat. One browser can hold more
@@ -202,7 +202,7 @@ def reconcile_not_running(user_id: str) -> bool:
     # instance never lowered its own flag. So: only reap when the campaign is ALSO
     # silent. A campaign that is working refreshes last_ping_at (ping or activity line),
     # and a genuinely dead one goes quiet and still gets reaped a TTL later.
-    lp = _parse_ts(state.get("last_ping_at"))
+    lp = parse_ts(state.get("last_ping_at"))
     if lp and (datetime.now(UTC) - lp).total_seconds() < HEARTBEAT_TTL_SECS:
         return False
     try:
@@ -269,3 +269,21 @@ def stop(user_id: str) -> None:
         )
         .execute()
     )
+
+
+def list_running(limit: int = 500) -> list[dict]:
+    """Every campaign row whose flag says running — the input for the stall sweep.
+
+    Read-only on purpose: the sweep judges liveness with is_effectively_running() but
+    never flips a flag, so the reaping decision keeps exactly one writer
+    (get_effective_state / reconcile_not_running).
+    """
+    res = (
+        get_supabase()
+        .table("campaign_states")
+        .select("user_id, running, started_at, last_ping_at")
+        .eq("running", True)
+        .limit(limit)
+        .execute()
+    )
+    return res.data or []

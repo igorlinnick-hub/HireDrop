@@ -80,6 +80,26 @@ FREE_APP_LIMIT = int(os.getenv("FREE_APP_LIMIT", "40"))
 
 
 # =============================================================================
+# OBSERVABILITY — stall watch (the "running but nothing is applied" detector)
+# =============================================================================
+# There is no Sentry/OTel yet: a campaign that keeps its heartbeat but stops
+# producing applications used to be invisible until Igor looked at the dashboard.
+# The sweep in app/stall_watch.py closes that hole — it writes a warn line into
+# the user's activity log and (if ALERT_EMAIL is set) emails ops via Resend.
+#
+# ALERT_EMAIL empty → the activity line is still written, nothing is emailed.
+ALERT_EMAIL = os.getenv("ALERT_EMAIL", "")
+STALL_WATCH_ENABLED = os.getenv("STALL_WATCH_ENABLED", "true").lower() in ("1", "true", "yes")
+STALL_WATCH_INTERVAL_SECS = int(os.getenv("STALL_WATCH_INTERVAL_SECONDS", "300"))
+# Two thresholds, because the two silences mean different things. The FIRST
+# application of a run pays for discovery + scraping + scoring + a cover letter,
+# so it is legitimately slow; every application after it should follow within
+# roughly one form-fill (5-6 min today, see STATUS.md "Троттлинг фонового окна").
+STALL_FIRST_MINUTES = int(os.getenv("STALL_FIRST_MINUTES", "45"))
+STALL_GAP_MINUTES = int(os.getenv("STALL_GAP_MINUTES", "30"))
+
+
+# =============================================================================
 # BILLING — Stripe (subscriptions)
 # =============================================================================
 # Secret key + webhook signing secret from the Stripe dashboard. Price IDs are
