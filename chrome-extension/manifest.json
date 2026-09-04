@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "HireDrop \u2014 Auto-Apply on Indeed & ZipRecruiter",
+  "name": "HireDrop \u2014 Auto-Apply on Indeed, ZipRecruiter, Greenhouse",
   "short_name": "HireDrop",
-  "version": "1.7.4",
-  "description": "Auto-fill Indeed applications with your resume + an AI-written cover letter. Stop, start, and limit campaigns from one dashboard.",
+  "version": "1.7.5",
+  "description": "Auto-apply on Indeed, ZipRecruiter, Greenhouse, Lever & Ashby with your resume and an AI-written cover letter.",
   "author": "HireDrop",
   "homepage_url": "https://hiredrop.io",
   "permissions": [
