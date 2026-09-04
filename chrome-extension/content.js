@@ -2033,6 +2033,17 @@
   // PHASE 3 — Application Form (multi-step)
   // =========================================================================
 
+  // Not every application form is in English. Measured against 320 real Greenhouse forms
+  // (data/gh_form_schemas.jsonl, scripts/form_coverage.py): Japanese, German, Dutch and
+  // French forms left FIRST NAME, LAST NAME, EMAIL and PHONE blank — the four fields every
+  // form requires — because the keyword map only spoke English. Matched on the RAW label,
+  // since lower-casing does nothing for 姓 and the accents matter.
+  const NAME_I18N_FIRST_RE = /^\s*(名|이름|vorname|voornaam|prénom|prenom|nombre|nome|imię|förnamn|fornavn|etunimi)\s*$/i;
+  const NAME_I18N_LAST_RE = /^\s*(姓|성|nachname|familienname|achternaam|nom de famille|apellidos?|sobrenome|nazwisko|efternamn|etternavn|sukunimi)\s*$/i;
+  const NAME_I18N_RE = new RegExp(`${NAME_I18N_FIRST_RE.source}|${NAME_I18N_LAST_RE.source}|^\\s*(氏名|お名前|naam|nom|nombre completo)\\s*$`, "i");
+  const EMAIL_I18N_RE = /^\s*(電子メール|メールアドレス|이메일|e-?mail(adres|adresse)?|correo( electrónico)?|courriel|endereço de e-?mail)\s*$/i;
+  const PHONE_I18N_RE = /^\s*(電話|電話番号|전화번호|telefon(nummer)?|telefoon(nummer)?|téléphone|telefone|teléfono|puhelin)\s*$/i;
+
   const LABEL_FALLBACKS = {
     firstName: "first name",
     lastName: "last name",
@@ -2200,14 +2211,18 @@
       let value;
       // Only the applicant's OWN name — not "reference name", "company name",
       // "supervisor/manager/contact name" (those must go to the AI branch).
-      if (/\b(first|last|full|your|legal|preferred)\s+name\b|^name$/i.test(label) &&
+      if ((/\b(first|last|full|your|legal|preferred)\s+name\b|^name$/i.test(label) || NAME_I18N_RE.test(rawLabel)) &&
           !/(reference|company|employer|supervisor|manager|contact|emergency|previous|prior)/i.test(label)) {
-        value = `${profile.name || "Applicant"} ${profile.last_name || ""}`.trim();
+        value = NAME_I18N_LAST_RE.test(rawLabel)
+          ? (profile.last_name || "")
+          : NAME_I18N_FIRST_RE.test(rawLabel)
+            ? (profile.name || "")
+            : `${profile.name || "Applicant"} ${profile.last_name || ""}`.trim();
       } else if (label.includes("date")) {
         value = today;
-      } else if (label.includes("email")) {
+      } else if (/e-?\s?mail/.test(label) || EMAIL_I18N_RE.test(rawLabel)) {
         value = profile.email || "";
-      } else if (label.includes("phone")) {
+      } else if (label.includes("phone") || PHONE_I18N_RE.test(rawLabel)) {
         value = profile.phone || "";
       } else if (label.includes("salary") || label.includes("compensation") || label.includes("pay") || label.includes("wage")) {
         value = profile.desired_salary || "65000";
