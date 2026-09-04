@@ -234,6 +234,27 @@ def email_check(user=Depends(get_current_user)):
     return {"configured": True, "count": len(responses), "emails": responses}
 
 
+@router.get("/tools/stall-scan")
+def stall_scan(user=Depends(get_current_user)):
+    """Admin-only, read-only: what the stall watch currently sees for every running campaign.
+
+    The background sweep (app/stall_watch.py) only speaks when something is wrong, which
+    makes "is it actually working?" unanswerable in prod. This runs the same judgement and
+    returns it — no activity lines written, no email sent.
+    """
+    if not is_admin(getattr(user, "email", None)):
+        raise HTTPException(status_code=403, detail="admin_only")
+    from app.stall_watch import STALL_FIRST_SECS, STALL_GAP_SECS, report
+
+    verdicts = report()
+    return {
+        "running_campaigns": len(verdicts),
+        "stalled": [v for v in verdicts if v["stalled"]],
+        "verdicts": verdicts,
+        "thresholds_secs": {"first_application": STALL_FIRST_SECS, "between": STALL_GAP_SECS},
+    }
+
+
 @router.get("/platform/inbox-urls")
 def platform_inbox_urls(user=Depends(get_current_user)):
     profile = get_profile(user.id)

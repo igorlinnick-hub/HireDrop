@@ -188,3 +188,23 @@ def handback_stats(window_hours: int = 168, cap: int = 5000) -> dict:
         "by_user": dict(sorted(by_user.items(), key=lambda kv: kv[1], reverse=True)[:50]),
         "top_fields": [{"label": k, "count": v} for k, v in top],
     }
+
+
+def has_since(user_id: str, phase: str, since_iso: str) -> bool:
+    """True if a line with this phase was written at/after `since_iso`.
+
+    Dedup key for recurring writers (the stall watch): one alert per stall episode
+    instead of one per sweep. The caller picks `since_iso` so the window itself
+    encodes the episode — the moment the run last produced something.
+    """
+    res = (
+        get_supabase()
+        .table("activity_log")
+        .select("id")
+        .eq("user_id", user_id)
+        .eq("phase", phase)
+        .gte("timestamp", since_iso)
+        .limit(1)
+        .execute()
+    )
+    return bool(res.data)
