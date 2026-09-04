@@ -286,11 +286,6 @@ async def ats_generate(body: dict = None, user=Depends(get_current_user)):
     (DOCX for employers/boards that don't accept PDF). The resume is structured
     once via Claude, then rendered into both formats. Returns signed preview URLs.
     """
-    if usage_db.over_daily_ai_limit(user.id, getattr(user, "email", None)):
-        return JSONResponse(
-            status_code=429, content={"error": "Daily AI limit reached — try again tomorrow."}
-        )
-
     answers = (body or {}).get("answers") or []
 
     signed_url = resume_storage.signed_download_url(user.id)
@@ -308,15 +303,21 @@ async def ats_generate(body: dict = None, user=Depends(get_current_user)):
         print(f"[profile] resume fetch failed: {e}", file=sys.stderr)
         return JSONResponse(status_code=502, content={"error": "Could not fetch resume"})
 
+    # Claim the quota slot atomically BEFORE the paid Sonnet call (the old
+    # check-then-increment flow could be raced past the cap); refund on failure.
+    if not usage_db.claim_daily_ai_slot(user.id, getattr(user, "email", None)):
+        return JSONResponse(
+            status_code=429, content={"error": "Daily AI limit reached — try again tomorrow."}
+        )
     try:
         # Structure once → render both formats (single Claude call)
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             resume_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
         data = structure_resume_data(resume_text, answers=answers)
-        usage_db.increment_today(user.id)  # count the paid Sonnet call against the daily quota
         ats_pdf_bytes = generate_ats_pdf(data=data)
         ats_docx_bytes = generate_ats_docx(data=data)
     except Exception as e:
+        usage_db.release_today(user.id)
         print(f"[profile] resume generation failed: {e}", file=sys.stderr)
         return JSONResponse(status_code=500, content={"error": "Resume generation failed"})
 
@@ -377,17 +378,18 @@ async def ats_generate_from_text(body: dict, user=Depends(get_current_user)):
     if not resume_text:
         return JSONResponse(status_code=400, content={"error": "resume_text is required"})
 
-    if usage_db.over_daily_ai_limit(user.id, getattr(user, "email", None)):
+    # Atomic claim before the paid Sonnet call; refund on failure (see above).
+    if not usage_db.claim_daily_ai_slot(user.id, getattr(user, "email", None)):
         return JSONResponse(
             status_code=429, content={"error": "Daily AI limit reached — try again tomorrow."}
         )
 
     try:
         data = structure_resume_data(resume_text)
-        usage_db.increment_today(user.id)  # count the paid Sonnet call against the daily quota
         ats_pdf_bytes = generate_ats_pdf(data=data)
         ats_docx_bytes = generate_ats_docx(data=data)
     except Exception as e:
+        usage_db.release_today(user.id)
         print(f"[profile] PDF generation failed: {e}", file=sys.stderr)
         return JSONResponse(status_code=500, content={"error": "PDF generation failed"})
 

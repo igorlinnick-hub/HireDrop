@@ -32,12 +32,32 @@ router = APIRouter(tags=["tools"])
 TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "templates")
 
 
-def _rate_limit_check(user) -> None:
-    """Raise 429 if the user is past the daily AI quota.
+def _claim_ai_slot(user) -> None:
+    """Atomically claim one slot of the daily AI quota; raise 429 when exhausted.
 
-    Admins skip the check entirely. Enforcement is ON by default (config.py) so a
-    free account / script can't loop this endpoint to burn Anthropic spend; set
-    RATE_LIMIT_ENFORCE=false only to temporarily observe usage without blocking.
+    The claim happens BEFORE the LLM call: the old check -> generate -> increment
+    flow left a seconds-wide window (the generation itself) where parallel
+    requests all passed the check and burned Anthropic spend past the cap.
+    A generation that then fails must hand its slot back via
+    usage_db.release_today. Admins and observe mode (RATE_LIMIT_ENFORCE=false)
+    still count usage but are never blocked.
+    """
+    if is_admin(getattr(user, "email", None)) or not RATE_LIMIT_ENFORCE:
+        usage_db.claim_today(user.id, usage_db.COUNT_ONLY_LIMIT)
+        return
+    if not usage_db.claim_today(user.id, RATE_LIMIT_LETTERS_PER_DAY):
+        used = usage_db.get_today_count(user.id)
+        raise HTTPException(
+            status_code=429,
+            detail=f"Daily cover letter limit reached ({used}/{RATE_LIMIT_LETTERS_PER_DAY}). Try again tomorrow.",
+        )
+
+
+def _ai_quota_gate(user) -> None:
+    """Read-only 429 gate for endpoints that DON'T consume a slot
+    (normalize-keywords is rate-limited but a correction pass shouldn't eat a
+    letter slot). Racey by design — it spends nothing, so there's nothing to
+    protect atomically.
     """
     if is_admin(getattr(user, "email", None)):
         return
@@ -101,36 +121,42 @@ def checklist(user=Depends(get_current_user)):
 
 @router.post("/tools/cover-letter")
 def cover_letter(req: CoverLetterRequest, user=Depends(get_current_user)):
-    _rate_limit_check(user)
     job = jobs_db.get_job_by_id(user.id, req.job_id)
     if not job:
         return JSONResponse(status_code=404, content={"error": "Job not found"})
     profile = get_profile(user.id)
-    letter = generate_cover_letter(
-        {
-            "title": job["title"],
-            "company": job["company"],
-            "description": job.get("description", ""),
-        },
-        profile,
-    )
-    usage_db.increment_today(user.id)
+    _claim_ai_slot(user)
+    try:
+        letter = generate_cover_letter(
+            {
+                "title": job["title"],
+                "company": job["company"],
+                "description": job.get("description", ""),
+            },
+            profile,
+        )
+    except Exception:
+        usage_db.release_today(user.id)
+        raise
     return {"letter": letter, "job_title": job["title"], "company": job["company"]}
 
 
 @router.post("/tools/cover-letter-preview")
 def cover_letter_preview(req: LetterPreviewRequest, user=Depends(get_current_user)):
-    _rate_limit_check(user)
     profile = get_profile(user.id)
-    letter = generate_cover_letter(
-        {
-            "title": req.keywords or "the position",
-            "company": "your company",
-            "description": req.job_description or f"Role related to: {req.keywords}",
-        },
-        profile,
-    )
-    usage_db.increment_today(user.id)
+    _claim_ai_slot(user)
+    try:
+        letter = generate_cover_letter(
+            {
+                "title": req.keywords or "the position",
+                "company": "your company",
+                "description": req.job_description or f"Role related to: {req.keywords}",
+            },
+            profile,
+        )
+    except Exception:
+        usage_db.release_today(user.id)
+        raise
     return {"letter": letter}
 
 
@@ -202,16 +228,20 @@ def answer_question(req: AnswerQuestionRequest, user=Depends(get_current_user)):
     solved client-side and never reach here. Counts against the same daily AI quota as
     cover letters so it can't be abused to burn Anthropic spend.
     """
-    _rate_limit_check(user)
+    _claim_ai_slot(user)
     profile = get_profile(user.id)
-    answer = answer_screener_question(
-        req.question,
-        job={"title": req.job_title, "company": req.company},
-        profile=profile,
-        options=req.options,
-    )
-    if answer:
-        usage_db.increment_today(user.id)
+    try:
+        answer = answer_screener_question(
+            req.question,
+            job={"title": req.job_title, "company": req.company},
+            profile=profile,
+            options=req.options,
+        )
+    except Exception:
+        usage_db.release_today(user.id)
+        raise
+    if not answer:
+        usage_db.release_today(user.id)
     return {"answer": answer}
 
 
@@ -232,6 +262,27 @@ def email_check(user=Depends(get_current_user)):
         return {"configured": False, "count": 0, "emails": []}
     responses = check_email_responses()
     return {"configured": True, "count": len(responses), "emails": responses}
+
+
+@router.get("/tools/stall-scan")
+def stall_scan(user=Depends(get_current_user)):
+    """Admin-only, read-only: what the stall watch currently sees for every running campaign.
+
+    The background sweep (app/stall_watch.py) only speaks when something is wrong, which
+    makes "is it actually working?" unanswerable in prod. This runs the same judgement and
+    returns it — no activity lines written, no email sent.
+    """
+    if not is_admin(getattr(user, "email", None)):
+        raise HTTPException(status_code=403, detail="admin_only")
+    from app.stall_watch import STALL_FIRST_SECS, STALL_GAP_SECS, report
+
+    verdicts = report()
+    return {
+        "running_campaigns": len(verdicts),
+        "stalled": [v for v in verdicts if v["stalled"]],
+        "verdicts": verdicts,
+        "thresholds_secs": {"first_application": STALL_FIRST_SECS, "between": STALL_GAP_SECS},
+    }
 
 
 @router.get("/platform/inbox-urls")
@@ -277,5 +328,5 @@ def normalize_keywords_endpoint(body: NormalizeKeywordsRequest, user=Depends(get
     [] on any error so a hiccup never blocks a search. Rate-limited like other AI endpoints
     so it can't be looped to burn Anthropic spend.
     """
-    _rate_limit_check(user)
+    _ai_quota_gate(user)
     return {"corrections": normalize_keywords(body.keywords or [])}
