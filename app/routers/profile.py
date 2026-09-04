@@ -26,7 +26,19 @@ from modules.ats_pdf_generator import (
 
 router = APIRouter(tags=["profile"])
 
-CONNECTABLE_PLATFORMS = ["indeed", "wellfound"]
+# Platforms a user can mark as "connected" (logged in) from our side.
+#
+# Wellfound dropped 2026-09-04 with the CWS permission sweep: its only detector was
+# chrome-extension/connect.js, deleted along with the glassdoor/wellfound/monster/
+# careerbuilder/dice host permissions (those boards left the roster; the manifest was
+# still asking Chrome for access to all five — a standard review objection).
+#
+# NOTE: /connections, /connections/connect and /connections/disconnect are called by
+# NEITHER the dashboard nor the extension today — live connection state flows through
+# chrome.storage.local -> ping.js -> postMessage. They are kept because users still run
+# extension 1.4.4 from the store, and we cannot see what that build calls. Delete once
+# 1.7.x has replaced it.
+CONNECTABLE_PLATFORMS = ["indeed"]
 
 
 @router.get("/profile")
