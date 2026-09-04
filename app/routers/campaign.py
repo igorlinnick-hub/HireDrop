@@ -112,9 +112,8 @@ def campaign_readiness(user=Depends(get_current_user)):
     """What's left before a campaign can start meaningfully — the dashboard renders the
     failed checks as a checklist with deep-links instead of a Start that silently no-ops.
     (Extension installed/connected is checked client-side via the PING bridge.)"""
-    from config import FREE_APP_LIMIT
-
     from app.db.subscriptions import get_free_apps_used
+    from config import FREE_APP_LIMIT
 
     profile = get_profile(user.id)
     state = campaign_db.get_effective_state(user.id)
@@ -129,10 +128,8 @@ def campaign_readiness(user=Depends(get_current_user)):
 @router.post("/campaign/stop")
 def campaign_stop(user=Depends(get_current_user)):
     campaign_db.stop(user.id)
-    try:
+    with contextlib.suppress(Exception):
         get_supabase().table("campaign_screenshots").delete().eq("user_id", user.id).execute()
-    except Exception:
-        pass
     return {"stopped": True}
 
 
@@ -232,20 +229,25 @@ class ScreenshotBody(BaseModel):
 
 @router.post("/campaign/screenshot")
 def upload_screenshot(body: ScreenshotBody, user=Depends(get_current_user)):
-    try:
+    # non-blocking — missed frame is fine
+    with contextlib.suppress(Exception):
         get_supabase().table("campaign_screenshots").upsert(
             {"user_id": user.id, "data": body.screenshot, "ts": time.time()},
             on_conflict="user_id",
         ).execute()
-    except Exception:
-        pass  # non-blocking — missed frame is fine
     return {"ok": True}
 
 
 @router.get("/campaign/screenshot")
 def get_screenshot(user=Depends(get_current_user)):
     try:
-        res = get_supabase().table("campaign_screenshots").select("data,ts").eq("user_id", user.id).execute()
+        res = (
+            get_supabase()
+            .table("campaign_screenshots")
+            .select("data,ts")
+            .eq("user_id", user.id)
+            .execute()
+        )
     except Exception:
         return {"data": None}
     if not res.data:

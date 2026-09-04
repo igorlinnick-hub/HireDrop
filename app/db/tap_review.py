@@ -16,14 +16,16 @@ PENDING_TTL_MIN = 30
 
 
 def upsert_pending(user_id: str, review_id: str, payload: dict) -> None:
-    get_supabase().table("tap_reviews").upsert({
-        "user_id": user_id,
-        "review_id": review_id,
-        "payload": payload,
-        "status": "pending",
-        "created_at": datetime.now(UTC).isoformat(),
-        "decided_at": None,
-    }).execute()
+    get_supabase().table("tap_reviews").upsert(
+        {
+            "user_id": user_id,
+            "review_id": review_id,
+            "payload": payload,
+            "status": "pending",
+            "created_at": datetime.now(UTC).isoformat(),
+            "decided_at": None,
+        }
+    ).execute()
 
 
 def get_current(user_id: str) -> dict | None:

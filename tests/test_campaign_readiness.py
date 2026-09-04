@@ -29,28 +29,38 @@ def test_no_keywords_blocks():
 
 
 def test_onboarding_blocks():
-    ready, checks = _ready(build_readiness(_profile(onboarding_completed=False), False, "pro", "auto", None, 40))
+    ready, checks = _ready(
+        build_readiness(_profile(onboarding_completed=False), False, "pro", "auto", None, 40)
+    )
     assert ready is False and checks["onboarding"] is False
 
 
 def test_ats_platform_requires_resume():
-    ready, checks = _ready(build_readiness(
-        _profile(platforms=["greenhouse"], resume_url=None), False, "pro", "auto", None, 40))
+    ready, checks = _ready(
+        build_readiness(
+            _profile(platforms=["greenhouse"], resume_url=None), False, "pro", "auto", None, 40
+        )
+    )
     assert ready is False and checks["resume"] is False
 
 
 def test_board_platform_needs_no_resume():
-    ready, checks = _ready(build_readiness(
-        _profile(platforms=["indeed"], resume_url=None), False, "pro", "auto", None, 40))
+    ready, checks = _ready(
+        build_readiness(
+            _profile(platforms=["indeed"], resume_url=None), False, "pro", "auto", None, 40
+        )
+    )
     assert checks["resume"] is True and ready is True
 
 
 def test_lever_requires_tap():
-    ready, checks = _ready(build_readiness(
-        _profile(platforms=["lever"]), False, "pro", "auto", None, 40))
+    ready, checks = _ready(
+        build_readiness(_profile(platforms=["lever"]), False, "pro", "auto", None, 40)
+    )
     assert ready is False and checks["lever_tap"] is False
-    ready2, checks2 = _ready(build_readiness(
-        _profile(platforms=["lever"]), False, "pro", "tap", None, 40))
+    ready2, checks2 = _ready(
+        build_readiness(_profile(platforms=["lever"]), False, "pro", "tap", None, 40)
+    )
     assert checks2["lever_tap"] is True
 
 

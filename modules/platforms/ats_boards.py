@@ -14,12 +14,17 @@ Verified live 2026-07-12:
   Lever:      GET https://api.lever.co/v0/postings/{token}?mode=json
               -> posting['applyUrl'] = https://jobs.lever.co/{token}/{uuid}/apply
 """
+
 from __future__ import annotations
 
+import contextlib
 import html as _html
 import re as _re
 
 import requests
+
+from modules.captcha_profile import TOUCH_RANK as _TOUCH_RANK
+from modules.captcha_profile import captcha_touch as _captcha_touch_pt
 
 # `?content=true` makes the Greenhouse board API include each job's full description
 # (HTML) in the LIST response — one request, all descriptions. Without it, GH jobs had
@@ -48,6 +53,7 @@ def _strip_html(s: str) -> str:
         return ""
     return _re.sub(r"\s+", " ", _TAG_RE.sub(" ", _html.unescape(s))).strip()
 
+
 _UA = {"User-Agent": "HireDrop/1.0 (+https://hiredrop.io)"}
 # Per-board HTTP timeout (connect + read). Kept tight: a single slow/hanging board or a
 # Cloudflare challenge must not stall discovery. `discover_ats` fetches boards in PARALLEL
@@ -71,6 +77,7 @@ _FILLABLE_SUFFIXES = ("greenhouse.io", "lever.co", "ashbyhq.com")
 def _is_fillable(url: str) -> bool:
     try:
         from urllib.parse import urlparse
+
         h = urlparse(url).hostname or ""
         return any(h == d or h.endswith("." + d) for d in _FILLABLE_SUFFIXES)
     except Exception:
@@ -84,15 +91,53 @@ def _is_fillable(url: str) -> bool:
 # healthcare, engineer, sales…) which is what the user actually cares about. Recall comes
 # from these words; precision comes from the AI fit-scorer, which ranks the deck best-first.
 _ROLE_STOPWORDS = {
-    "the", "a", "an", "of", "and", "or", "for", "to", "in", "at", "with", "on", "by", "new",
-    "manager", "lead", "senior", "junior", "associate", "director", "coordinator", "specialist",
-    "analyst", "staff", "principal", "head", "officer", "intern", "contract", "remote", "ii",
-    "iii", "sr", "jr", "vp", "representative", "assistant", "team", "global", "manager,",
+    "the",
+    "a",
+    "an",
+    "of",
+    "and",
+    "or",
+    "for",
+    "to",
+    "in",
+    "at",
+    "with",
+    "on",
+    "by",
+    "new",
+    "manager",
+    "lead",
+    "senior",
+    "junior",
+    "associate",
+    "director",
+    "coordinator",
+    "specialist",
+    "analyst",
+    "staff",
+    "principal",
+    "head",
+    "officer",
+    "intern",
+    "contract",
+    "remote",
+    "ii",
+    "iii",
+    "sr",
+    "jr",
+    "vp",
+    "representative",
+    "assistant",
+    "team",
+    "global",
+    "manager,",
 }
 
 
 def _distinctive_words(keyword: str) -> list[str]:
-    return [w for w in _re.split(r"\W+", keyword.lower()) if len(w) >= 3 and w not in _ROLE_STOPWORDS]
+    return [
+        w for w in _re.split(r"\W+", keyword.lower()) if len(w) >= 3 and w not in _ROLE_STOPWORDS
+    ]
 
 
 def _keyword_match(text: str, keywords: list[str] | None) -> bool:
@@ -119,8 +164,6 @@ def _keyword_match(text: str, keywords: list[str] | None) -> bool:
 # (shared with app/routers/jobs.py so the dashboard/campaign see the same touch labels).
 # Server-side static HTML can't tell v2-checkbox from v3-invisible (widget is client-
 # rendered), so we rank by the reliable PLATFORM signal, not per-company HTML guessing.
-from modules.captcha_profile import TOUCH_RANK as _TOUCH_RANK
-from modules.captcha_profile import captcha_touch as _captcha_touch_pt
 
 
 def _captcha_touch(token: str, platform: str) -> str:
@@ -133,13 +176,13 @@ def _job(title, company, apply_url, location, platform, description=""):
     return {
         "title": (title or "").strip(),
         "company": company,
-        "link": apply_url,          # the direct apply URL — what phase_ats navigates to
+        "link": apply_url,  # the direct apply URL — what phase_ats navigates to
         "apply_url": apply_url,
         "location": (location or "").strip(),
-        "platform": platform,       # "greenhouse" | "lever" (matches detectPlatform)
+        "platform": platform,  # "greenhouse" | "lever" (matches detectPlatform)
         "description": (description or "")[:1500],
         "source": "ats_board",
-        "captcha_touch": touch,        # "low" | "medium" | "high" — expected human-solve burden
+        "captcha_touch": touch,  # "low" | "medium" | "high" — expected human-solve burden
         "zero_touch": touch == "low",  # true = usually submits with no captcha action needed
     }
 
@@ -187,7 +230,9 @@ def fetch_lever(token: str, keywords: list[str] | None = None, limit: int = 50) 
         if not _keyword_match(f"{title} {loc}", keywords):
             continue
         # applyUrl is the /apply form (what phase_ats fills); hostedUrl is the JD page.
-        url = p.get("applyUrl") or (p.get("hostedUrl", "") + "/apply" if p.get("hostedUrl") else None)
+        url = p.get("applyUrl") or (
+            p.get("hostedUrl", "") + "/apply" if p.get("hostedUrl") else None
+        )
         if not url or not _is_fillable(url):
             continue
         lever_desc = p.get("descriptionPlain") or _strip_html(p.get("description", ""))
@@ -257,7 +302,8 @@ def fetch_workday(token: str, keywords: list[str] | None = None, limit: int = 50
     for q in queries[:4]:
         try:
             r = requests.post(
-                url, headers=hdr,
+                url,
+                headers=hdr,
                 json={"appliedFacets": {}, "limit": 20, "offset": 0, "searchText": q},
                 timeout=_TIMEOUT,
             )
@@ -267,7 +313,7 @@ def fetch_workday(token: str, keywords: list[str] | None = None, limit: int = 50
                 path = p.get("externalPath")
                 if path and path not in posts:
                     posts[path] = p
-        except Exception:
+        except Exception:  # noqa: S112 — expected: probing DC/tenant combos that don't exist
             continue
     base = f"https://{tenant}.{dc}.myworkdayjobs.com/{site}"
     out = []
@@ -292,8 +338,9 @@ _FETCHERS = {
 }
 
 
-def discover_ats(companies: list[tuple[str, str]], keywords: list[str] | None = None,
-                 cap: int = 100) -> list[dict]:
+def discover_ats(
+    companies: list[tuple[str, str]], keywords: list[str] | None = None, cap: int = 100
+) -> list[dict]:
     """Pull live jobs across a watchlist of (token, platform) companies, keyword-filtered.
 
     Boards are fetched in PARALLEL with a hard overall deadline (_DISCOVER_DEADLINE): one
@@ -333,16 +380,18 @@ def discover_ats(companies: list[tuple[str, str]], keywords: list[str] | None = 
         futs = [ex.submit(_one, t, p) for t, p in fetch_targets]
         done, _pending = concurrent.futures.wait(futs, timeout=_DISCOVER_DEADLINE)
         for fut in done:
-            try:
+            with contextlib.suppress(Exception):
                 collected.extend(fut.result())
-            except Exception:
-                pass
     finally:
         # Never block on stragglers — their per-board requests time out at _TIMEOUT anyway.
         ex.shutdown(wait=False)
 
     # Zero-touch first (the concurrent gather loses the input ordering), then dedup + cap.
-    collected.sort(key=lambda j: _TOUCH_RANK.get(_captcha_touch(j.get("company", ""), j.get("platform", "")), 1))
+    collected.sort(
+        key=lambda j: _TOUCH_RANK.get(
+            _captcha_touch(j.get("company", ""), j.get("platform", "")), 1
+        )
+    )
     # PER-PLATFORM QUOTA so an abundant platform can't starve a scarce one. With ~185 GH
     # postings and a global cap of 120, pure zero-touch-first ordering filled every slot
     # with Greenhouse and Lever NEVER entered the pool (live 2026-07-29: lever stayed 0

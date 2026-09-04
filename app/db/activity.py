@@ -77,7 +77,9 @@ def _categorize(msg: str) -> str | None:
     return None
 
 
-def summary(user_id: str, window_hours: int = 24, cap: int = 2000, since: str | None = None) -> dict:
+def summary(
+    user_id: str, window_hours: int = 24, cap: int = 2000, since: str | None = None
+) -> dict:
     """Health snapshot for the dashboard (ROADMAP_E2E.md P3): turns the raw activity feed
     into at-a-glance counts so a silent failure (auth 401, resume fail, everything skipped)
     becomes visible instead of buried in the log.

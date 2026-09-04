@@ -6,7 +6,8 @@ runs on the backend with the service_role key. A user can never set their own
 tier — they can only submit a code that this module validates against the DB.
 """
 
-from datetime import datetime, timedelta, timezone
+import contextlib
+from datetime import UTC, datetime, timedelta
 
 from app.db.client import get_supabase
 
@@ -36,7 +37,7 @@ def redeem_code(user_id: str, code: str) -> dict:
     code_exp = row.get("code_expires_at")
     if code_exp:
         try:
-            if datetime.fromisoformat(code_exp.replace("Z", "+00:00")) < datetime.now(timezone.utc):
+            if datetime.fromisoformat(code_exp.replace("Z", "+00:00")) < datetime.now(UTC):
                 return {"ok": False, "error": "This code has expired."}
         except ValueError:
             pass
@@ -70,7 +71,7 @@ def redeem_code(user_id: str, code: str) -> dict:
     expires_at = None
     duration = row.get("duration_days")
     if duration:
-        expires_at = (datetime.now(timezone.utc) + timedelta(days=int(duration))).isoformat()
+        expires_at = (datetime.now(UTC) + timedelta(days=int(duration))).isoformat()
 
     # Grant the tier (server-authoritative).
     sb.table("profiles").update(
@@ -78,12 +79,11 @@ def redeem_code(user_id: str, code: str) -> dict:
     ).eq("user_id", user_id).execute()
 
     # Audit log (unique(user_id, code) hard-stops a double redeem).
-    try:
+    # Insert may fail when the redemption row already exists from a concurrent
+    # call — tier is set either way, fine.
+    with contextlib.suppress(Exception):
         sb.table("promo_redemptions").insert(
             {"user_id": user_id, "code": code, "tier_granted": tier, "expires_at": expires_at}
         ).execute()
-    except Exception:
-        # Redemption row already exists from a concurrent call — tier is set, fine.
-        pass
 
     return {"ok": True, "tier": tier, "expires_at": expires_at}

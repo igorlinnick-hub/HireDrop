@@ -11,6 +11,7 @@ from app.db import jobs as jobs_db
 from app.deps import get_current_user
 from app.schemas import FindJobsRequest, IngestJobsRequest, JobStatusUpdate
 from modules.captcha_profile import TOUCH_RANK, captcha_touch, is_zero_touch
+
 router = APIRouter(tags=["jobs"])
 
 # Per-user cooldown for the heavy ATS discovery sweep (see find_ats_jobs) — repeated
@@ -53,11 +54,12 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
     # Indeed is NOT scraped server-side: it's discovered in-browser by the extension
     # during a campaign (per-user home IP), so the "compliant by design" claim holds —
     # our server never scrapes Indeed. Other platforms' listings are still fetched here.
-    SERVER_SCRAPE_SKIP = {"indeed"}
+    server_scrape_skip = {"indeed"}
     indeed_requested = "indeed" in requested
     scrapeable = [
-        p for p in requested
-        if p in PLATFORMS and not PLATFORMS[p].requires_credentials and p not in SERVER_SCRAPE_SKIP
+        p
+        for p in requested
+        if p in PLATFORMS and not PLATFORMS[p].requires_credentials and p not in server_scrape_skip
     ]
 
     platforms = [PLATFORMS[p]() for p in scrapeable]
@@ -90,6 +92,7 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
     # an application slot on out-of-range pay). Unlisted salary passes unless the user
     # opted into listed-only — see modules/salary_filter.py.
     from modules.salary_filter import filter_by_salary
+
     new_jobs, salary_dropped = filter_by_salary(new_jobs, profile)
     resume_text = None
     if new_jobs:
@@ -113,8 +116,13 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
         message = f"{message} ({salary_dropped} outside your salary range)"
     if indeed_note:
         message = f"{message}. {indeed_note}"
-    return {"count": saved, "message": message, "platforms": searched, "indeed_note": indeed_note,
-            "salary_filtered": salary_dropped}
+    return {
+        "count": saved,
+        "message": message,
+        "platforms": searched,
+        "indeed_note": indeed_note,
+        "salary_filtered": salary_dropped,
+    }
 
 
 def _run_ats_discovery(user_id: str) -> None:
@@ -150,7 +158,9 @@ def _run_ats_discovery(user_id: str) -> None:
 
         # Self-heal older thin-description rows using the descriptions we just fetched.
         try:
-            fresh_desc = {f["link"]: f["description"] for f in found if f.get("description") and f.get("link")}
+            fresh_desc = {
+                f["link"]: f["description"] for f in found if f.get("description") and f.get("link")
+            }
             _backfill_thin_ats_scores(user_id, profile, resume_text, cap=40, desc_source=fresh_desc)
         except Exception as e:
             print(f"[find-ats bg] backfill skipped: {e}", file=sys.stderr)
@@ -189,7 +199,10 @@ def find_ats_jobs(user=Depends(get_current_user)):
 
 
 def _backfill_thin_ats_scores(
-    user_id: str, profile: dict, resume_text: str, cap: int = 80,
+    user_id: str,
+    profile: dict,
+    resume_text: str,
+    cap: int = 80,
     desc_source: dict[str, str] | None = None,
 ) -> int:
     """Re-fetch real descriptions for pooled GH/Lever jobs saved with an EMPTY description
@@ -203,7 +216,8 @@ def _backfill_thin_ats_scores(
     from modules.ai_job_scorer import score_job
 
     pooled = [
-        j for j in jobs_db.get_jobs(user_id)
+        j
+        for j in jobs_db.get_jobs(user_id)
         if j.get("platform") in ("greenhouse", "lever")
         and j.get("status") != "applied"  # dedup/applied is the other lane — never touch it
         and len(j.get("description") or "") < 200  # only the thin/empty ones
@@ -225,6 +239,7 @@ def _backfill_thin_ats_scores(
     else:
         # Fetch fresh descriptions ONCE per (platform, token), then map by apply URL.
         from modules.platforms.ats_boards import fetch_greenhouse, fetch_lever
+
         desc_by_link = {}
         fetched: set[tuple[str, str]] = set()
         for j in pooled:
@@ -233,7 +248,11 @@ def _backfill_thin_ats_scores(
                 continue
             fetched.add((platform, token))
             try:
-                fresh = fetch_greenhouse(token, None, 200) if platform == "greenhouse" else fetch_lever(token, None, 200)
+                fresh = (
+                    fetch_greenhouse(token, None, 200)
+                    if platform == "greenhouse"
+                    else fetch_lever(token, None, 200)
+                )
             except Exception:
                 fresh = []
             for f in fresh:
@@ -249,8 +268,13 @@ def _backfill_thin_ats_scores(
             jobs_db.update_job_description(j["id"], user_id, desc)
             scored = score_job({**j, "description": desc}, profile, resume_text)
             jobs_db.update_job_score(
-                j["id"], user_id, scored["score"], scored.get("verdict", ""),
-                scored.get("flags", []), scored.get("ats_keywords", []), scored.get("ats_match_pct", 0),
+                j["id"],
+                user_id,
+                scored["score"],
+                scored.get("verdict", ""),
+                scored.get("flags", []),
+                scored.get("ats_keywords", []),
+                scored.get("ats_match_pct", 0),
             )
             rescored += 1
         except Exception as e:
@@ -272,7 +296,8 @@ def backfill_ats_scores(user=Depends(get_current_user)):
     return {
         "rescored": rescored,
         "message": f"Re-scored {rescored} GH/Lever jobs with real descriptions — the deck now ranks best-fit-first."
-        if rescored else "No thin-description GH/Lever jobs to backfill.",
+        if rescored
+        else "No thin-description GH/Lever jobs to backfill.",
     }
 
 
@@ -289,10 +314,11 @@ def ingest_jobs(req: IngestJobsRequest, user=Depends(get_current_user)):
     exact ~6%-noise trap the GH backfill just fixed. score stays null → the deck
     sorts them after scored jobs until a description-bearing pass rescores them.
     """
-    HARVEST_PLATFORMS = {"indeed", "ziprecruiter"}
+    harvest_platforms = {"indeed", "ziprecruiter"}
     candidates = [
-        j for j in (req.jobs or [])[:30]  # per-call cap: one search page is ~15 cards
-        if j.platform in HARVEST_PLATFORMS and j.link and j.title
+        j
+        for j in (req.jobs or [])[:30]  # per-call cap: one search page is ~15 cards
+        if j.platform in harvest_platforms and j.link and j.title
     ]
     # Existing links never enter the upsert — that's what keeps this INSERT-only.
     already_saved = jobs_db.existing_links(user.id, [j.link for j in candidates])
@@ -340,5 +366,11 @@ def tailor_job(job_id: str, user=Depends(get_current_user)):
     _lazy_tailor_for_job(user, job)
     job = jobs_db.get_job_by_id(user.id, job_id)
     if job and job.get("tailored_resume_pdf_url"):
-        return {"tailored": True, "url": resume_storage.signed_url_from_path(job["tailored_resume_pdf_url"], user.id)}
-    return {"tailored": False, "reason": "Not eligible — Premium + strong match required, or no resume uploaded."}
+        return {
+            "tailored": True,
+            "url": resume_storage.signed_url_from_path(job["tailored_resume_pdf_url"], user.id),
+        }
+    return {
+        "tailored": False,
+        "reason": "Not eligible — Premium + strong match required, or no resume uploaded.",
+    }

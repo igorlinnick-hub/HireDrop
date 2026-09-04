@@ -78,7 +78,7 @@ Terms:
     # Strip accidental code fences, then parse.
     if raw.startswith("```"):
         raw = raw.strip("`")
-        raw = raw[raw.find("["):] if "[" in raw else raw
+        raw = raw[raw.find("[") :] if "[" in raw else raw
     try:
         parsed = json.loads(raw)
     except Exception:

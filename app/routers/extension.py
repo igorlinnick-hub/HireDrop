@@ -44,13 +44,17 @@ def get_selectors(platform: str, user=Depends(get_current_user)):
 
 
 @router.patch("/extension/selectors/{platform}/{section}")
-def patch_selectors_section(platform: str, section: str, payload: dict, user=Depends(get_current_user)):
+def patch_selectors_section(
+    platform: str, section: str, payload: dict, user=Depends(get_current_user)
+):
     """Admin-only: patch any top-level section of platform selectors_json."""
     if not is_admin(getattr(user, "email", None)):
         return JSONResponse(status_code=403, content={"error": "Admin only"})
     row = selectors_db.get(platform)
     if not row:
-        return JSONResponse(status_code=404, content={"error": f"No selectors for platform: {platform}"})
+        return JSONResponse(
+            status_code=404, content={"error": f"No selectors for platform: {platform}"}
+        )
     selectors_json = row["selectors_json"]
     selectors_json[section] = payload
     selectors_db.upsert(platform, row["version"], selectors_json)

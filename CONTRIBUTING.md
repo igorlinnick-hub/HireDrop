@@ -23,9 +23,11 @@ First line ≤ 72 chars, imperative. Body explains *why*, not *what*. Reference 
    ```python
    import os, requests
    from pathlib import Path
+
    for line in Path(".env").read_text().splitlines():
        if "=" in line and not line.startswith("#"):
-           k, v = line.split("=", 1); os.environ[k] = v
+           k, v = line.split("=", 1)
+           os.environ[k] = v
    r = requests.post(
        f"https://api.supabase.com/v1/projects/{os.environ['SUPABASE_PROJECT_REF']}/database/query",
        headers={"Authorization": f"Bearer {os.environ['SUPABASE_PAT']}"},

@@ -24,7 +24,8 @@ def email_status_updates(user=Depends(get_current_user)):
     """Return recent applications that have a non-applied status (interview/rejected/received)."""
     history = apps_db.get_history(user.id, limit=50)
     updates = [
-        app for app in history
+        app
+        for app in history
         if app["status"] in ("interview", "rejected", "received", "interview_invite")
     ]
     return updates

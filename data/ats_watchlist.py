@@ -19,45 +19,44 @@ SEED_WATCHLIST: list[tuple[str, str]] = [
     ("benchling", "greenhouse"),
     ("whoop", "greenhouse"),
     ("hims", "greenhouse"),
-    ("cityblock", "greenhouse"),      # healthcare
-    ("devoted", "greenhouse"),        # healthcare
-    ("oura", "greenhouse"),           # wellness
-    ("calm", "greenhouse"),           # wellness
-    ("noom", "greenhouse"),           # wellness
+    ("cityblock", "greenhouse"),  # healthcare
+    ("devoted", "greenhouse"),  # healthcare
+    ("oura", "greenhouse"),  # wellness
+    ("calm", "greenhouse"),  # wellness
+    ("noom", "greenhouse"),  # wellness
     # --- Greenhouse (added 2026-07-13; token-validated live, all zero-touch reCAPTCHA v3) ---
-    ("anthropic", "greenhouse"),      # 405 open roles
-    ("cloudflare", "greenhouse"),     # 260
-    ("reddit", "greenhouse"),         # 191
-    ("scaleai", "greenhouse"),        # 183
-    ("affirm", "greenhouse"),         # fintech, 179
-    ("twilio", "greenhouse"),         # 153
-    ("gusto", "greenhouse"),          # fintech/HR
-    ("chime", "greenhouse"),          # fintech
-    ("marqeta", "greenhouse"),        # fintech
+    ("anthropic", "greenhouse"),  # 405 open roles
+    ("cloudflare", "greenhouse"),  # 260
+    ("reddit", "greenhouse"),  # 191
+    ("scaleai", "greenhouse"),  # 183
+    ("affirm", "greenhouse"),  # fintech, 179
+    ("twilio", "greenhouse"),  # 153
+    ("gusto", "greenhouse"),  # fintech/HR
+    ("chime", "greenhouse"),  # fintech
+    ("marqeta", "greenhouse"),  # fintech
     ("webflow", "greenhouse"),
-    ("mavenclinic", "greenhouse"),    # health/wellness
-    ("modernhealth", "greenhouse"),   # mental health
+    ("mavenclinic", "greenhouse"),  # health/wellness
+    ("modernhealth", "greenhouse"),  # mental health
     # --- Greenhouse (added 2026-07-13 batch 2; diversified niches, token-validated) ---
-    ("postman", "greenhouse"),        # dev tools, 119
-    ("faire", "greenhouse"),          # marketplace, 75
-    ("carta", "greenhouse"),          # fintech, 59
-    ("mercury", "greenhouse"),        # fintech, 58
-    ("tanium", "greenhouse"),         # security, 44
-    ("amplitude", "greenhouse"),      # analytics, 41
-    ("omadahealth", "greenhouse"),    # health/wellness, 24
-    ("glossier", "greenhouse"),       # consumer/beauty marketing, 19
-    ("papa", "greenhouse"),           # health/care
+    ("postman", "greenhouse"),  # dev tools, 119
+    ("faire", "greenhouse"),  # marketplace, 75
+    ("carta", "greenhouse"),  # fintech, 59
+    ("mercury", "greenhouse"),  # fintech, 58
+    ("tanium", "greenhouse"),  # security, 44
+    ("amplitude", "greenhouse"),  # analytics, 41
+    ("omadahealth", "greenhouse"),  # health/wellness, 24
+    ("glossier", "greenhouse"),  # consumer/beauty marketing, 19
+    ("papa", "greenhouse"),  # health/care
     # --- Lever ---
-    ("spotify", "lever"),             # media/consumer, 111
-
+    ("spotify", "lever"),  # media/consumer, 111
     ("shieldai", "lever"),
     ("matchgroup", "lever"),
     ("Huckleberrylabs", "lever"),
-    ("ro", "lever"),                  # telehealth
+    ("ro", "lever"),  # telehealth
     ("plaid", "lever"),
     ("brex", "lever"),
-    ("sesame", "lever"),              # telehealth
-    ("cerebral", "lever"),            # mental health
+    ("sesame", "lever"),  # telehealth
+    ("cerebral", "lever"),  # mental health
     # --- added 2026-07-29: token-validated live against public board APIs
     #     (script-verified 200 + >0 postings; job counts at verification time) ---
     ("datadog", "greenhouse"),  # 424
@@ -158,40 +157,66 @@ SEED_WATCHLIST: list[tuple[str, str]] = [
     # --- Lever MARKETING/consumer/media (added 2026-07-29; script-verified live: board 200
     # AND has marketing/social roles — the old lever set was tech/fintech-only, so Igor's
     # marketing keywords yielded 0 Lever inventory. These give Lever real supply to test). ---
-    ("wpromote", "lever"),        # performance-marketing agency, 15 mktg roles
-    ("superside", "lever"),       # creative/design-as-a-service, 11
-    ("theathletic", "lever"),     # sports media, 5
-    ("rover", "lever"),           # consumer marketplace, 5
-    ("gopuff", "lever"),          # delivery/consumer, 4
-    ("morningbrew", "lever"),     # media/newsletter, 3
+    ("wpromote", "lever"),  # performance-marketing agency, 15 mktg roles
+    ("superside", "lever"),  # creative/design-as-a-service, 11
+    ("theathletic", "lever"),  # sports media, 5
+    ("rover", "lever"),  # consumer marketplace, 5
+    ("gopuff", "lever"),  # delivery/consumer, 4
+    ("morningbrew", "lever"),  # media/newsletter, 3
     # --- Ashby (added 2026-07-31; 5th platform, script-verified live: board 200 AND has
     # marketing/social roles. Ashby = guest-apply ATS like GH, api.ashbyhq.com posting-api.
     # 40 orgs, 427 marketing roles total; ordered by marketing yield). ---
     ("elevenlabs", "ashby"),  # 35 mktg
-    ("supabase", "ashby"),    # 29
-    ("suno", "ashby"),        # 21
+    ("supabase", "ashby"),  # 29
+    ("suno", "ashby"),  # 21
     ("eightsleep", "ashby"),  # 12
-    ("gamma", "ashby"),       # 11
-    ("harvey", "ashby"), ("perplexity", "ashby"), ("sierra", "ashby"), ("vanta", "ashby"),
-    ("notion", "ashby"), ("cursor", "ashby"), ("ramp", "ashby"), ("cohere", "ashby"),
-    ("column", "ashby"), ("mercor", "ashby"), ("decagon", "ashby"), ("baseten", "ashby"),
-    ("temporal", "ashby"), ("render", "ashby"), ("zip", "ashby"), ("warp", "ashby"),
-    ("photoroom", "ashby"), ("writer", "ashby"), ("found", "ashby"), ("workos", "ashby"),
-    ("linear", "ashby"), ("posthog", "ashby"), ("modal", "ashby"), ("neon", "ashby"),
-    ("pika", "ashby"), ("krea", "ashby"), ("hedra", "ashby"), ("semgrep", "ashby"),
-    ("infisical", "ashby"), ("watershed", "ashby"), ("runway", "ashby"), ("resend", "ashby"),
-    ("unit", "ashby"), ("persona", "ashby"), ("ideogram", "ashby"),
+    ("gamma", "ashby"),  # 11
+    ("harvey", "ashby"),
+    ("perplexity", "ashby"),
+    ("sierra", "ashby"),
+    ("vanta", "ashby"),
+    ("notion", "ashby"),
+    ("cursor", "ashby"),
+    ("ramp", "ashby"),
+    ("cohere", "ashby"),
+    ("column", "ashby"),
+    ("mercor", "ashby"),
+    ("decagon", "ashby"),
+    ("baseten", "ashby"),
+    ("temporal", "ashby"),
+    ("render", "ashby"),
+    ("zip", "ashby"),
+    ("warp", "ashby"),
+    ("photoroom", "ashby"),
+    ("writer", "ashby"),
+    ("found", "ashby"),
+    ("workos", "ashby"),
+    ("linear", "ashby"),
+    ("posthog", "ashby"),
+    ("modal", "ashby"),
+    ("neon", "ashby"),
+    ("pika", "ashby"),
+    ("krea", "ashby"),
+    ("hedra", "ashby"),
+    ("semgrep", "ashby"),
+    ("infisical", "ashby"),
+    ("watershed", "ashby"),
+    ("runway", "ashby"),
+    ("resend", "ashby"),
+    ("unit", "ashby"),
+    ("persona", "ashby"),
+    ("ideogram", "ashby"),
     # --- Workday (added 2026-07-31; DISCOVERY-ONLY, big US enterprise. Token = tenant|dc|site;
     # apply is account-gated multi-step (not yet auto-filled) so these feed the pool for
     # "scrapeable" coverage but the extension never walks them. Script-verified live: cxs API
     # 200 + marketing>0. Ordered by marketing yield). ---
-    ("nvidia|wd5|NVIDIAExternalCareerSite", "workday"),   # 780 mktg
-    ("adobe|wd5|external_experienced", "workday"),         # 701
-    ("salesforce|wd12|External_Career_Site", "workday"),   # 458
-    ("mastercard|wd1|CorporateCareers", "workday"),        # 307
-    ("hp|wd5|ExternalCareerSite", "workday"),              # 227
-    ("paypal|wd1|jobs", "workday"),                        # 112
-    ("target|wd5|targetcareers", "workday"),               # 91
-    ("workday|wd5|Workday", "workday"),                    # 90
-    ("cvshealth|wd1|CVS_Health_Careers", "workday"),       # 79
+    ("nvidia|wd5|NVIDIAExternalCareerSite", "workday"),  # 780 mktg
+    ("adobe|wd5|external_experienced", "workday"),  # 701
+    ("salesforce|wd12|External_Career_Site", "workday"),  # 458
+    ("mastercard|wd1|CorporateCareers", "workday"),  # 307
+    ("hp|wd5|ExternalCareerSite", "workday"),  # 227
+    ("paypal|wd1|jobs", "workday"),  # 112
+    ("target|wd5|targetcareers", "workday"),  # 91
+    ("workday|wd5|Workday", "workday"),  # 90
+    ("cvshealth|wd1|CVS_Health_Careers", "workday"),  # 79
 ]

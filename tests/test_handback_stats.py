@@ -12,9 +12,7 @@ from app.db import activity as activity_db
 
 def _rows_chain(supabase_mock):
     """The fluent chain handback_stats() builds: select→eq→gte→order→limit→execute."""
-    return (
-        supabase_mock.table.return_value.select.return_value.eq.return_value.gte.return_value.order.return_value.limit.return_value.execute.return_value
-    )
+    return supabase_mock.table.return_value.select.return_value.eq.return_value.gte.return_value.order.return_value.limit.return_value.execute.return_value
 
 
 def test_handback_stats_aggregates_only_tagged_rows(supabase_mock):
@@ -60,7 +58,12 @@ def test_handback_stats_aggregates_only_tagged_rows(supabase_mock):
 def test_handback_stats_survives_missing_metadata(supabase_mock):
     """Legacy rows predate the metadata write; they must not crash the aggregation."""
     _rows_chain(supabase_mock).data = [
-        {"timestamp": "2026-08-11T10:00:00Z", "user_id": "u1", "message": "x", "metadata_json": None},
+        {
+            "timestamp": "2026-08-11T10:00:00Z",
+            "user_id": "u1",
+            "message": "x",
+            "metadata_json": None,
+        },
     ]
 
     out = activity_db.handback_stats()

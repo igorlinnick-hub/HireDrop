@@ -37,6 +37,7 @@ def _rate_limited(key: str, limit: int) -> bool:
     _reset_attempts[key] = recent
     return False
 
+
 # All logs from this module use stderr so they are visible in Railway's log
 # stream (Railway aggregates stderr alongside stdout but stderr is preferred
 # for failure paths).
@@ -67,7 +68,9 @@ def forgot_password(req: ForgotPasswordRequest, request: Request):
     if _rate_limited(f"email:{email}", _RESET_MAX_PER_EMAIL) or _rate_limited(
         f"ip:{client_ip}", _RESET_MAX_PER_IP
     ):
-        print(f"[auth] forgot-password throttled for redacted email / ip {client_ip}", file=sys.stderr)
+        print(
+            f"[auth] forgot-password throttled for redacted email / ip {client_ip}", file=sys.stderr
+        )
         return {"sent": True}
 
     try:
@@ -95,19 +98,31 @@ def forgot_password(req: ForgotPasswordRequest, request: Request):
         # in Railway logs distinct from user-not-found.
         body = resp.text[:200].replace("\n", " ")
         if resp.status_code in (404, 422):
-            print(f"[auth] generate_link no-user for redacted email: {resp.status_code}", file=sys.stderr)
+            print(
+                f"[auth] generate_link no-user for redacted email: {resp.status_code}",
+                file=sys.stderr,
+            )
         else:
-            print(f"[CRITICAL auth] generate_link returned {resp.status_code}: {body}", file=sys.stderr)
+            print(
+                f"[CRITICAL auth] generate_link returned {resp.status_code}: {body}",
+                file=sys.stderr,
+            )
         return {"sent": True}
 
     action_link = resp.json().get("action_link")
     if not action_link:
-        print("[CRITICAL auth] generate_link succeeded but no action_link in response", file=sys.stderr)
+        print(
+            "[CRITICAL auth] generate_link succeeded but no action_link in response",
+            file=sys.stderr,
+        )
         return {"sent": True}
 
     sent = send_email(email, "Reset your HireDrop password", password_reset_html(action_link))
     if not sent:
         # send_email already printed [CRITICAL email] with the underlying cause.
         # Add a second line so it's clear which flow triggered it.
-        print(f"[CRITICAL auth] password reset email send FAILED (see [CRITICAL email] above)", file=sys.stderr)
+        print(
+            "[CRITICAL auth] password reset email send FAILED (see [CRITICAL email] above)",
+            file=sys.stderr,
+        )
     return {"sent": True}

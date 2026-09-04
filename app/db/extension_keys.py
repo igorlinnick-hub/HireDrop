@@ -6,9 +6,11 @@ token. We store only sha256(raw) + a prefix — never the raw key. Owner of the
 `extension_keys` table.
 """
 
+import contextlib
 import hashlib
 import hmac
 import secrets
+import sys
 
 from app.db.client import get_supabase
 
@@ -25,12 +27,14 @@ def issue(user_id: str, email: str | None = None) -> str:
     # Single active key per user: revoking old ones on re-issue keeps the blast radius small.
     revoke_all(user_id)
     raw = "hd_" + secrets.token_urlsafe(32)
-    sb.table("extension_keys").insert({
-        "user_id": user_id,
-        "email": email,
-        "key_hash": _hash(raw),
-        "prefix": raw[:_PREFIX_LEN],
-    }).execute()
+    sb.table("extension_keys").insert(
+        {
+            "user_id": user_id,
+            "email": email,
+            "key_hash": _hash(raw),
+            "prefix": raw[:_PREFIX_LEN],
+        }
+    ).execute()
     return raw
 
 
@@ -46,15 +50,15 @@ def verify(raw: str) -> dict | None:
         .execute()
     )
     want = _hash(raw)
-    for row in (res.data or []):
+    for row in res.data or []:
         if row.get("revoked_at"):
             continue
         if hmac.compare_digest(row.get("key_hash", ""), want):
             # best-effort last_used stamp; never block auth on it
-            try:
-                sb.table("extension_keys").update({"last_used_at": "now()"}).eq("id", row["id"]).execute()
-            except Exception:
-                pass
+            with contextlib.suppress(Exception):
+                sb.table("extension_keys").update({"last_used_at": "now()"}).eq(
+                    "id", row["id"]
+                ).execute()
             return {"user_id": row["user_id"], "email": row.get("email")}
     return None
 
@@ -69,5 +73,7 @@ def revoke_all(user_id: str) -> None:
             .is_("revoked_at", "null")
             .execute()
         )
-    except Exception:
-        pass
+    except Exception as e:
+        # A silent failure here would leave keys ACTIVE after the user asked to
+        # revoke them — that must be visible in the logs.
+        print(f"[extension_keys] revoke_all FAILED for {user_id}: {e}", file=sys.stderr)

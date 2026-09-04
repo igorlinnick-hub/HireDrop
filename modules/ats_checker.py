@@ -17,7 +17,6 @@ import unicodedata
 
 import pdfplumber
 
-
 _ISSUE_LABELS = {
     "columns": "Multi-column layout detected — ATS systems read left-to-right and may jumble columns",
     "tables": "Tables detected — ATS often can't parse table cells correctly",
@@ -42,7 +41,7 @@ _DEDUCTIONS = {
 STRUCTURAL_ISSUES = {"columns", "tables", "images", "text_boxes"}
 
 _SAFE_UNICODE_CATEGORIES = {"L", "N", "P", "Z", "M"}
-_ALLOWED_SYMBOLS = set("•–—…""''")
+_ALLOWED_SYMBOLS = set("•–—…''")
 
 
 def _detect_columns(page) -> bool:
