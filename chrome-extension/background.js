@@ -250,7 +250,7 @@ chrome.runtime.onInstalled.addListener(async () => {
     campaignTabId: null,
     todayCount: 0,
     platformCounts: {},
-    todayDate: new Date().toISOString().slice(0, 10),
+    todayDate: localDay(),
     currentJob: null,
     captchaWaiting: null,
   });
@@ -274,9 +274,21 @@ chrome.runtime.onInstalled.addListener(async () => {
   updateBadge();
 });
 
+// The application counters are keyed by DAY, and "day" has to mean the same thing to
+// everyone who touches the key. content.js writes `todayDate` in the user's LOCAL day;
+// this file used to compare it against the UTC day. In Hawaii (UTC-10) those disagree for
+// ten hours out of every twenty-four — and onStartup, seeing a "different day", RESET
+// todayCount and platformCounts to zero. The daily and per-platform caps are the
+// ban-safety rails, so that quietly handed the engine a fresh budget on every Chrome
+// restart during those hours. Live 09-04: two real applications recorded, ping reported
+// today_count: 0.
+function localDay() {
+  return new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD in the user's timezone
+}
+
 chrome.runtime.onStartup.addListener(async () => {
   const data = await chrome.storage.local.get("todayDate");
-  const today = new Date().toISOString().slice(0, 10);
+  const today = localDay();
   if (data.todayDate !== today) {
     await chrome.storage.local.set({ todayCount: 0, platformCounts: {}, todayDate: today });
   }
@@ -321,7 +333,7 @@ async function sendExtensionPing() {
     const data = await chrome.storage.local.get([
       "campaignRunning", "todayCount", "campaignWindowId", "todayDate",
     ]);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localDay();
     const todayCount = data.todayDate === today ? (data.todayCount || 0) : 0;
 
     let windowVisible = false;
@@ -1911,7 +1923,7 @@ async function handleMessage(msg, sender) {
         "campaignCaps",
       ]);
 
-      const today = new Date().toISOString().slice(0, 10);
+      const today = localDay();
       let todayCount = data.todayCount || 0;
       let platformCounts = data.platformCounts || {};
       if (data.todayDate !== today) {
