@@ -38,6 +38,44 @@ def _with_captcha(jobs: list) -> list:
     return jobs
 
 
+# Platforms we deliberately do NOT fetch from our server, each with the reason the user
+# sees. Both are discovered IN-BROWSER by the extension during a campaign (per-user home
+# IP), so the "compliant by design" claim holds — our server never scrapes them.
+# ZipRecruiter is here for a second reason too: its API answers our server with a hard
+# Cloudflare 403 ("forbidden aa") for every query and location (measured 2026-09-03), so the
+# server-side path could only ever return zero. Its native search-walk in the extension is
+# unaffected — ZipRecruiter apply stays VERIFIED.
+SERVER_SCRAPE_SKIP = {
+    "indeed": "Indeed jobs appear once you start a campaign.",
+    "ziprecruiter": "ZipRecruiter jobs appear once you start a campaign.",
+}
+
+
+def select_scrapeable(requested: list[str]) -> tuple[list[str], list[str]]:
+    """Split the requested platforms into the ones we actually fetch here, plus the honest
+    notes for every one we skip.
+
+    Every skip carries a reason — a source that silently contributes zero jobs is
+    indistinguishable from a broken one, which is how both the `jobspy`/`python-jobspy`
+    package mix-up (#113) and the dead Google Jobs source stayed invisible in prod.
+    """
+    from modules.platforms.registry import PLATFORMS
+
+    scrapeable: list[str] = []
+    notes: list[str] = []
+    for p in requested:
+        cls = PLATFORMS.get(p)
+        if cls is None or cls.requires_credentials:
+            continue
+        if p in SERVER_SCRAPE_SKIP:
+            notes.append(SERVER_SCRAPE_SKIP[p])
+        elif cls.unavailable_reason:
+            notes.append(cls.unavailable_reason)
+        else:
+            scrapeable.append(p)
+    return scrapeable, notes
+
+
 @router.get("/jobs")
 def get_jobs(user=Depends(get_current_user)):
     return _with_captcha(jobs_db.get_jobs(user.id))
@@ -51,17 +89,7 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
     profile = get_profile(user.id)
     requested = req.platforms if (req and req.platforms) else profile.get("platforms", ["remoteok"])
 
-    # Indeed is NOT scraped server-side: it's discovered in-browser by the extension
-    # during a campaign (per-user home IP), so the "compliant by design" claim holds —
-    # our server never scrapes Indeed. Other platforms' listings are still fetched here.
-    server_scrape_skip = {"indeed"}
-    indeed_requested = "indeed" in requested
-    scrapeable = [
-        p
-        for p in requested
-        if p in PLATFORMS and not PLATFORMS[p].requires_credentials and p not in server_scrape_skip
-    ]
-
+    scrapeable, skip_notes = select_scrapeable(requested)
     platforms = [PLATFORMS[p]() for p in scrapeable]
     all_jobs, searched = [], []
 
@@ -74,14 +102,20 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
         all_jobs.extend(found)
         searched.append(platform.display_name)
 
-    # Helpful note so "Find Jobs" isn't silently empty when only Indeed was requested.
-    indeed_note = "Indeed jobs appear once you start a campaign." if indeed_requested else ""
+    # So "Find Jobs" is never silently empty: say which sources were skipped and why.
+    indeed_note = " ".join(skip_notes)
 
     if not all_jobs:
         msg = f"No jobs found from {', '.join(searched)}" if searched else "No jobs found"
         if indeed_note:
             msg = indeed_note if not searched else f"{msg}. {indeed_note}"
-        return {"count": 0, "message": msg, "platforms": searched, "indeed_note": indeed_note}
+        return {
+            "count": 0,
+            "message": msg,
+            "platforms": searched,
+            "indeed_note": indeed_note,
+            "notes": skip_notes,
+        }
 
     # Deduplicate against already-saved jobs, then let Claude score everything.
     # Keyword pre-filter removed: JobSpy platforms already filter via search_term,
@@ -121,6 +155,7 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
         "message": message,
         "platforms": searched,
         "indeed_note": indeed_note,
+        "notes": skip_notes,
         "salary_filtered": salary_dropped,
     }
 
