@@ -5,7 +5,6 @@ verdict + reasons + flags, and extract ATS keywords from the job description.
 """
 
 import json
-import re
 
 from config import ANTHROPIC_API_KEY
 
@@ -30,6 +29,7 @@ def score_job(job: dict, profile: dict, resume_text: str = "") -> dict:
 
     try:
         import anthropic
+
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
         job_text = _format_job(job)

@@ -52,7 +52,9 @@ def post_decision(body: dict, user=Depends(get_current_user)):
     review_id = str(body.get("id") or "").strip()
     decision = body.get("decision")
     if decision not in ("approved", "skipped"):
-        return JSONResponse(status_code=400, content={"error": "decision must be approved | skipped"})
+        return JSONResponse(
+            status_code=400, content={"error": "decision must be approved | skipped"}
+        )
     if not review_id:
         return JSONResponse(status_code=400, content={"error": "id is required"})
     ok = tap_db.set_decision(user.id, review_id, decision)

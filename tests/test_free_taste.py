@@ -14,6 +14,7 @@ from app.disposable_email import is_disposable_email
 # check_can_apply — lifetime gate
 # ---------------------------------------------------------------------------
 
+
 def _check(free_used, used_today=0, tier="free"):
     from app.db import subscriptions
 
@@ -68,8 +69,14 @@ _SAVE_BODY = {"job_title": "Dev", "company": "Acme", "platform": "indeed"}
 
 def test_save_increments_free_counter(auth_client):
     check = {
-        "allowed": True, "reason": "", "tier": "free", "used_today": 3,
-        "daily_limit": 20, "platform_used": 1, "free_used": 12, "free_limit": 40,
+        "allowed": True,
+        "reason": "",
+        "tier": "free",
+        "used_today": 3,
+        "daily_limit": 20,
+        "platform_used": 1,
+        "free_used": 12,
+        "free_limit": 40,
     }
     with (
         patch("app.routers.applications.check_can_apply", return_value=check),
@@ -87,8 +94,14 @@ def test_save_increments_free_counter(auth_client):
 
 def test_save_does_not_increment_for_paid(auth_client):
     check = {
-        "allowed": True, "reason": "", "tier": "pro", "used_today": 3,
-        "daily_limit": 30, "platform_used": 1, "free_used": None, "free_limit": None,
+        "allowed": True,
+        "reason": "",
+        "tier": "pro",
+        "used_today": 3,
+        "daily_limit": 30,
+        "platform_used": 1,
+        "free_used": None,
+        "free_limit": None,
     }
     with (
         patch("app.routers.applications.check_can_apply", return_value=check),
@@ -103,9 +116,14 @@ def test_save_does_not_increment_for_paid(auth_client):
 
 def test_save_denied_no_increment(auth_client):
     check = {
-        "allowed": False, "reason": "You've used all 40 free applications — subscribe to keep applying.",
-        "tier": "free", "used_today": 0, "daily_limit": 20, "platform_used": 0,
-        "free_used": 40, "free_limit": 40,
+        "allowed": False,
+        "reason": "You've used all 40 free applications — subscribe to keep applying.",
+        "tier": "free",
+        "used_today": 0,
+        "daily_limit": 20,
+        "platform_used": 0,
+        "free_used": 40,
+        "free_limit": 40,
     }
     with (
         patch("app.routers.applications.check_can_apply", return_value=check),
@@ -125,6 +143,7 @@ def test_save_denied_no_increment(auth_client):
 # ---------------------------------------------------------------------------
 # Disposable-email guard at campaign start
 # ---------------------------------------------------------------------------
+
 
 def test_disposable_domains_detected():
     assert is_disposable_email("x@mailinator.com")

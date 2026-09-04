@@ -51,7 +51,14 @@ def test_patch_selectors_non_admin_forbidden(auth_client):
 
 def test_checklist_returns_keys(auth_client):
     with (
-        patch("app.routers.tools.get_profile", return_value={"keywords": ["python"], "platforms": ["indeed"], "resume_url": "https://example.com/r.pdf"}),
+        patch(
+            "app.routers.tools.get_profile",
+            return_value={
+                "keywords": ["python"],
+                "platforms": ["indeed"],
+                "resume_url": "https://example.com/r.pdf",
+            },
+        ),
         patch("app.routers.tools.jobs_db.count_jobs", return_value=5),
     ):
         res = auth_client.get("/api/v1/checklist")
@@ -90,6 +97,7 @@ def test_profile_returns_fields(auth_client):
 
 def test_cover_letter_template_saves(auth_client):
     from unittest.mock import mock_open
+
     m = mock_open()
     with (
         patch("app.routers.tools.os.makedirs"),
@@ -139,23 +147,42 @@ def test_post_profile_saves(auth_client):
     with patch("app.routers.profile.profile_db.update_profile", return_value={"name": "Igor"}):
         res = auth_client.post(
             "/api/v1/profile",
-            json={"name": "Igor", "last_name": "L", "email": "i@test.com",
-                  "phone": "", "keywords": [], "location": "remote",
-                  "job_type": "full-time", "platforms": [], "writing_style": ""},
+            json={
+                "name": "Igor",
+                "last_name": "L",
+                "email": "i@test.com",
+                "phone": "",
+                "keywords": [],
+                "location": "remote",
+                "job_type": "full-time",
+                "platforms": [],
+                "writing_style": "",
+            },
         )
     assert res.status_code == 200
     assert res.json()["message"] == "Profile saved"
 
 
 def test_post_profile_prefs(auth_client):
-    fake_profile = {"name": "Igor", "last_name": "L", "phone": "", "writing_style": "", "resume_url": None}
+    fake_profile = {
+        "name": "Igor",
+        "last_name": "L",
+        "phone": "",
+        "writing_style": "",
+        "resume_url": None,
+    }
     with (
         patch("app.routers.profile.profile_db.get_profile", return_value=fake_profile),
         patch("app.routers.profile.profile_db.update_profile", return_value={}),
     ):
         res = auth_client.post(
             "/api/v1/profile/prefs",
-            json={"keywords": ["python"], "location": "remote", "job_type": "full-time", "platforms": ["indeed"]},
+            json={
+                "keywords": ["python"],
+                "location": "remote",
+                "job_type": "full-time",
+                "platforms": ["indeed"],
+            },
         )
     assert res.status_code == 200
     assert res.json()["saved"] is True
@@ -168,7 +195,10 @@ def test_resume_url_not_found(auth_client):
 
 
 def test_resume_url_found(auth_client):
-    with patch("app.routers.profile.resume_storage.signed_download_url", return_value="https://example.com/resume.pdf"):
+    with patch(
+        "app.routers.profile.resume_storage.signed_download_url",
+        return_value="https://example.com/resume.pdf",
+    ):
         with patch("app.routers.profile.resume_storage.SIGNED_URL_TTL_SECONDS", 3600):
             res = auth_client.get("/api/v1/profile/resume/url")
     assert res.status_code == 200
@@ -184,9 +214,14 @@ def test_resume_status(auth_client):
 
 def test_email_status_updates(auth_client):
     interview_app = {
-        "id": "a1", "title": "Dev", "company": "Acme", "platform": "indeed",
-        "link": "https://indeed.com/1", "date_applied": "2026-06-16",
-        "status": "interview", "cover_letter": "",
+        "id": "a1",
+        "title": "Dev",
+        "company": "Acme",
+        "platform": "indeed",
+        "link": "https://indeed.com/1",
+        "date_applied": "2026-06-16",
+        "status": "interview",
+        "cover_letter": "",
     }
     with patch("app.routers.email_processor.apps_db.get_history", return_value=[interview_app]):
         res = auth_client.get("/api/v1/email/status-updates")

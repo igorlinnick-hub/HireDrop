@@ -11,19 +11,19 @@ hitting Supabase.
 Mirrors the cover-letter rate limit in app/db/usage.py — same pattern,
 different counter table (`applications` instead of `cover_letter_usage`).
 """
-from datetime import datetime, timezone
-from typing import Optional
 
-from config import ADMIN_EMAILS, FREE_APP_LIMIT
+import contextlib
+from datetime import UTC, datetime
 
 from app.db import applications as apps_db
 from app.db.client import get_supabase
+from config import ADMIN_EMAILS, FREE_APP_LIMIT
 
 TIER_LIMITS = {
-    "free": 20,     # daily pace of the 40-app lifetime taste (FREE_TASTE_PLAN.md) — ~2 days of wow
-    "pro": 30,      # paid daily cap — 30/day × $0.03 ≈ $27/mo keeps a maxed user profitable at $29/mo
+    "free": 20,  # daily pace of the 40-app lifetime taste (FREE_TASTE_PLAN.md) — ~2 days of wow
+    "pro": 30,  # paid daily cap — 30/day × $0.03 ≈ $27/mo keeps a maxed user profitable at $29/mo
     "premium": 30,  # same volume as pro; premium's differentiator is ATS resume tailoring, not quota
-    "elite": 200,   # legacy tier, not sold
+    "elite": 200,  # legacy tier, not sold
 }
 
 # Ban-safety cap: bans are counted PER platform, so 20/day/platform keeps each
@@ -52,31 +52,35 @@ ADMIN_DAILY_LIMIT = 10_000_000
 
 def get_submit_mode(user_id: str) -> str:
     """'auto' (default) | 'tap'. Absent/error → 'auto' (backward-compatible)."""
-    try:
-        res = get_supabase().table("profiles").select("submit_mode").eq("user_id", user_id).execute()
+    with contextlib.suppress(Exception):
+        res = (
+            get_supabase().table("profiles").select("submit_mode").eq("user_id", user_id).execute()
+        )
         if res.data:
             return (res.data[0].get("submit_mode") or "auto").lower()
-    except Exception:
-        pass
     return "auto"
 
 
-def is_admin(email: Optional[str]) -> bool:
+def is_admin(email: str | None) -> bool:
     return bool(email) and email.lower() in ADMIN_EMAILS
 
 
 def get_free_apps_used(user_id: str) -> int:
     """Lifetime count of applications made on the free tier. Missing row/column → 0."""
-    try:
-        res = get_supabase().table("profiles").select("free_apps_used").eq("user_id", user_id).execute()
+    with contextlib.suppress(Exception):
+        res = (
+            get_supabase()
+            .table("profiles")
+            .select("free_apps_used")
+            .eq("user_id", user_id)
+            .execute()
+        )
         if res.data:
             return int(res.data[0].get("free_apps_used") or 0)
-    except Exception:
-        pass
     return 0
 
 
-def increment_free_apps(user_id: str) -> Optional[int]:
+def increment_free_apps(user_id: str) -> int | None:
     """Atomic +1 via the increment_free_apps RPC (migrations/2026-07-free-apps.sql).
 
     RPC, not read-then-write: concurrent saves at 39 used must land on exactly 40,
@@ -91,7 +95,7 @@ def increment_free_apps(user_id: str) -> Optional[int]:
         return None
 
 
-def get_tier(user_id: str, email: Optional[str] = None) -> str:
+def get_tier(user_id: str, email: str | None = None) -> str:
     """Returns the user's active tier.
 
     Admin emails win first (env-only, no DB lookup needed).
@@ -123,7 +127,7 @@ def get_tier(user_id: str, email: Optional[str] = None) -> str:
             exp_dt = datetime.fromisoformat(expires.replace("Z", "+00:00"))
         except Exception:
             return "free"
-        if exp_dt < datetime.now(timezone.utc):
+        if exp_dt < datetime.now(UTC):
             return "free"
 
     return tier if tier in TIER_LIMITS else "free"
@@ -139,7 +143,7 @@ def daily_limit(tier: str, submit_mode: str = "auto") -> int:
     return base
 
 
-def check_can_apply(user_id: str, platform: str, email: Optional[str] = None) -> dict:
+def check_can_apply(user_id: str, platform: str, email: str | None = None) -> dict:
     tier = get_tier(user_id, email)
 
     if tier == "admin":
@@ -162,8 +166,7 @@ def check_can_apply(user_id: str, platform: str, email: Optional[str] = None) ->
         return {
             "allowed": False,
             "reason": (
-                f"You've used all {FREE_APP_LIMIT} free applications — "
-                "subscribe to keep applying."
+                f"You've used all {FREE_APP_LIMIT} free applications — subscribe to keep applying."
             ),
             "tier": "free",
             "used_today": apps_db.count_today(user_id),
@@ -215,7 +218,7 @@ def check_can_apply(user_id: str, platform: str, email: Optional[str] = None) ->
     }
 
 
-def get_usage_summary(user_id: str, email: Optional[str] = None) -> dict:
+def get_usage_summary(user_id: str, email: str | None = None) -> dict:
     tier = get_tier(user_id, email)
     used_today = apps_db.count_today(user_id)
     platform_counts = apps_db.count_today_by_platform(user_id)

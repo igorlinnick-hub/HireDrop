@@ -60,11 +60,7 @@ FRONTEND_URL = os.getenv("FRONTEND_URL", "https://hiredrop.io")
 # =============================================================================
 # Comma-separated emails in ADMIN_EMAILS bypass tier limits + cover-letter
 # rate limit. Lowercased on read so checks are case-insensitive.
-ADMIN_EMAILS = {
-    e.strip().lower()
-    for e in os.getenv("ADMIN_EMAILS", "").split(",")
-    if e.strip()
-}
+ADMIN_EMAILS = {e.strip().lower() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()}
 
 # Daily AI quota — cover letters, screener answers, AND ATS resume generation all
 # draw from this one budget. ENFORCED by default (a 429 is returned once the daily

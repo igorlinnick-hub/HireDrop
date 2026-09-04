@@ -19,11 +19,17 @@ def test_not_running_is_never_effective():
 def test_running_with_fresh_ping_is_effective():
     assert is_effectively_running({"running": True, "last_ping_at": _iso(5)}) is True
     # Just inside the TTL
-    assert is_effectively_running({"running": True, "last_ping_at": _iso(HEARTBEAT_TTL_SECS - 5)}) is True
+    assert (
+        is_effectively_running({"running": True, "last_ping_at": _iso(HEARTBEAT_TTL_SECS - 5)})
+        is True
+    )
 
 
 def test_running_with_stale_ping_is_a_zombie():
-    assert is_effectively_running({"running": True, "last_ping_at": _iso(HEARTBEAT_TTL_SECS + 5)}) is False
+    assert (
+        is_effectively_running({"running": True, "last_ping_at": _iso(HEARTBEAT_TTL_SECS + 5)})
+        is False
+    )
     assert is_effectively_running({"running": True, "last_ping_at": _iso(3600)}) is False
 
 
@@ -54,24 +60,31 @@ from app.db.campaign import STARTUP_GRACE_SECS, reconcile_not_running  # noqa: E
 
 
 def _state_rows(supabase_mock, row):
-    supabase_mock.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [row]
+    supabase_mock.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
+        row
+    ]
 
 
 def test_never_heartbeated_campaign_is_not_immortal():
     """No ping ever landed and the campaign started long ago — it cannot still be live."""
-    assert is_effectively_running(
-        {"running": True, "last_ping_at": None, "started_at": _iso(3600)}
-    ) is False
+    assert (
+        is_effectively_running({"running": True, "last_ping_at": None, "started_at": _iso(3600)})
+        is False
+    )
 
 
 def test_never_heartbeated_campaign_is_trusted_inside_startup_grace():
     """The extension can be up to a ping period away from confirming — don't reap at birth."""
-    assert is_effectively_running(
-        {"running": True, "last_ping_at": None, "started_at": _iso(10)}
-    ) is True
-    assert is_effectively_running(
-        {"running": True, "last_ping_at": None, "started_at": _iso(STARTUP_GRACE_SECS + 5)}
-    ) is False
+    assert (
+        is_effectively_running({"running": True, "last_ping_at": None, "started_at": _iso(10)})
+        is True
+    )
+    assert (
+        is_effectively_running(
+            {"running": True, "last_ping_at": None, "started_at": _iso(STARTUP_GRACE_SECS + 5)}
+        )
+        is False
+    )
 
 
 def test_reconcile_clears_the_flag_when_the_extension_says_it_is_idle(supabase_mock):
@@ -150,9 +163,7 @@ def test_activity_line_without_a_campaign_is_not_a_heartbeat(auth_client):
         patch("app.routers.activity.campaign_db.touch_ping") as touch,
         patch("app.routers.activity.activity_db.write", return_value="id1"),
     ):
-        res = auth_client.post(
-            "/api/v1/activity", json={"message": "hello", "phase": "extension"}
-        )
+        res = auth_client.post("/api/v1/activity", json={"message": "hello", "phase": "extension"})
 
     assert res.status_code == 200
     touch.assert_not_called()
@@ -165,9 +176,7 @@ def test_non_extension_activity_never_stamps_the_heartbeat(auth_client):
         patch("app.routers.activity.campaign_db.touch_ping") as touch,
         patch("app.routers.activity.activity_db.write", return_value="id1"),
     ):
-        res = auth_client.post(
-            "/api/v1/activity", json={"message": "hello", "phase": "dashboard"}
-        )
+        res = auth_client.post("/api/v1/activity", json={"message": "hello", "phase": "dashboard"})
 
     assert res.status_code == 200
     touch.assert_not_called()

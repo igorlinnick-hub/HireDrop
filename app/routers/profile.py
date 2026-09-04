@@ -39,7 +39,12 @@ def get_profile(user=Depends(get_current_user)):
 # preferences card, say — silently blank the address or the LinkedIn URL the user entered
 # on another card. Drop the ones the client never sent.
 _OPTIONAL_PROFILE_FIELDS = (
-    "linkedin_url", "portfolio_url", "street_address", "city", "state", "postal_code",
+    "linkedin_url",
+    "portfolio_url",
+    "street_address",
+    "city",
+    "state",
+    "postal_code",
 )
 
 
@@ -59,7 +64,9 @@ def update_apply_mode(body: dict, user=Depends(get_current_user)):
     """Switch apply mode without touching the rest of the profile."""
     mode = body.get("apply_mode", "standard")
     if mode not in ("broad", "standard", "precise"):
-        return JSONResponse(status_code=400, content={"error": "Invalid mode. Use: broad | standard | precise"})
+        return JSONResponse(
+            status_code=400, content={"error": "Invalid mode. Use: broad | standard | precise"}
+        )
     ideal = (body.get("ideal_job_description") or "").strip() or None
     profile_db.update_apply_mode(user.id, mode, ideal)
     return {"saved": True, "apply_mode": mode}
@@ -72,6 +79,7 @@ def update_salary_range(body: dict, user=Depends(get_current_user)):
     Forgiving by design: it's an optional filter, so junk never blocks a campaign
     start — a non-numeric/absurd bound clears to NULL, inverted bounds are swapped.
     """
+
     def _bound(v) -> int | None:
         try:
             n = int(v)
@@ -135,7 +143,9 @@ def send_desktop_link(user=Depends(get_current_user)):
     </div>"""
     ok = send_email(email, "One step left — finish HireDrop setup on your computer", html)
     if not ok:
-        return JSONResponse(status_code=502, content={"error": "Couldn't send the email — try again shortly"})
+        return JSONResponse(
+            status_code=502, content={"error": "Couldn't send the email — try again shortly"}
+        )
     return {"sent": True, "to": email}
 
 
@@ -144,7 +154,10 @@ def update_search_prefs(prefs: SearchPrefsUpdate, user=Depends(get_current_user)
     """Partial update — only search preferences, does not touch name/phone/etc."""
     current = profile_db.get_profile(user.id)
     payload = {
-        **{k: current.get(k, "") for k in ("name", "last_name", "phone", "writing_style", "resume_url")},
+        **{
+            k: current.get(k, "")
+            for k in ("name", "last_name", "phone", "writing_style", "resume_url")
+        },
         "keywords": prefs.keywords,
         "location": prefs.location,
         "job_type": prefs.job_type,
@@ -207,6 +220,7 @@ async def ats_check(user=Depends(get_current_user)):
         return JSONResponse(status_code=404, content={"error": "No resume uploaded"})
 
     import httpx
+
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:
             resp = await client.get(signed_url, timeout=30)
@@ -224,11 +238,14 @@ async def ats_check(user=Depends(get_current_user)):
     result["passes"] = (not result["has_structural"]) and result["score"] >= ATS_PASS_THRESHOLD
     result["threshold"] = ATS_PASS_THRESHOLD
 
-    profile_db.update_ats(user.id, {
-        "ats_score": result["score"],
-        "ats_issues": result["issues"],
-        "ats_checked_at": datetime.now(UTC).isoformat(),
-    })
+    profile_db.update_ats(
+        user.id,
+        {
+            "ats_score": result["score"],
+            "ats_issues": result["issues"],
+            "ats_checked_at": datetime.now(UTC).isoformat(),
+        },
+    )
 
     return result
 
@@ -241,6 +258,7 @@ async def ats_questions(user=Depends(get_current_user)):
         return JSONResponse(status_code=404, content={"error": "No resume uploaded"})
 
     import httpx
+
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:
             resp = await client.get(signed_url, timeout=30)
@@ -269,7 +287,9 @@ async def ats_generate(body: dict = None, user=Depends(get_current_user)):
     once via Claude, then rendered into both formats. Returns signed preview URLs.
     """
     if usage_db.over_daily_ai_limit(user.id, getattr(user, "email", None)):
-        return JSONResponse(status_code=429, content={"error": "Daily AI limit reached — try again tomorrow."})
+        return JSONResponse(
+            status_code=429, content={"error": "Daily AI limit reached — try again tomorrow."}
+        )
 
     answers = (body or {}).get("answers") or []
 
@@ -278,6 +298,7 @@ async def ats_generate(body: dict = None, user=Depends(get_current_user)):
         return JSONResponse(status_code=404, content={"error": "No resume uploaded"})
 
     import httpx
+
     try:
         async with httpx.AsyncClient(follow_redirects=True) as client:
             resp = await client.get(signed_url, timeout=30)
@@ -357,7 +378,9 @@ async def ats_generate_from_text(body: dict, user=Depends(get_current_user)):
         return JSONResponse(status_code=400, content={"error": "resume_text is required"})
 
     if usage_db.over_daily_ai_limit(user.id, getattr(user, "email", None)):
-        return JSONResponse(status_code=429, content={"error": "Daily AI limit reached — try again tomorrow."})
+        return JSONResponse(
+            status_code=429, content={"error": "Daily AI limit reached — try again tomorrow."}
+        )
 
     try:
         data = structure_resume_data(resume_text)
@@ -418,6 +441,7 @@ def _store_tailored_pdf(user_id: str, job_id: str, tailored_text: str) -> None:
     """
     from app.db import jobs as jobs_db
     from modules.ats_pdf_generator import generate_ats_pdf
+
     pdf_bytes = generate_ats_pdf(resume_text=tailored_text)
     pdf_path = resume_storage.upload_job_tailored(user_id, job_id, pdf_bytes)
     jobs_db.update_tailored_resume_pdf(job_id, pdf_path, user_id)
@@ -431,6 +455,7 @@ def _lazy_tailor_for_job(user, job) -> None:
     """
     try:
         from app.db import jobs as jobs_db
+
         job_id = job.get("id")
         if not job_id:
             return
@@ -449,6 +474,7 @@ def _lazy_tailor_for_job(user, job) -> None:
                 print(f"[profile] tailored PDF rebuild failed: {pdf_err}", file=sys.stderr)
             return
         from app.db.subscriptions import get_tier
+
         # Paid = the full product (everything, incl. ATS tailoring). "pro" is what
         # both the weekly and monthly plans grant; premium kept for legacy grants.
         if get_tier(user.id, getattr(user, "email", None)) not in ("pro", "premium", "admin"):
@@ -459,10 +485,12 @@ def _lazy_tailor_for_job(user, job) -> None:
         if (fresh.get("score") or 0) < threshold:
             return
         from modules.ai_cover_letter import load_resume_text
+
         resume_text = load_resume_text(prof.get("resume_url"))
         if not resume_text:
             return
         from modules.ai_resume_tailor import tailor_resume
+
         tailored = tailor_resume(fresh, prof, resume_text)
         if not tailored:
             return
@@ -471,7 +499,10 @@ def _lazy_tailor_for_job(user, job) -> None:
         try:
             _store_tailored_pdf(user.id, job_id, tailored)
         except Exception as pdf_err:
-            print(f"[profile] tailored PDF step failed (text saved, won't re-tailor): {pdf_err}", file=sys.stderr)
+            print(
+                f"[profile] tailored PDF step failed (text saved, won't re-tailor): {pdf_err}",
+                file=sys.stderr,
+            )
     except Exception as e:
         print(f"[profile] lazy tailor skipped: {e}", file=sys.stderr)
 
@@ -488,6 +519,7 @@ def resume_best_url(job_url: str = None, user=Depends(get_current_user)):
     — so tailoring cost is paid only on jobs that reach a real submission.
     """
     from app.db import jobs as jobs_db
+
     if job_url:
         job = jobs_db.get_by_link(user.id, job_url)
         if job and not job.get("tailored_resume_pdf_url"):

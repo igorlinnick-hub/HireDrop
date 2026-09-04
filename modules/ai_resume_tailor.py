@@ -23,6 +23,7 @@ def tailor_resume(job: dict, profile: dict, resume_text: str) -> str:
 
     try:
         import anthropic
+
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
         job_desc = (job.get("description") or "")[:1500]

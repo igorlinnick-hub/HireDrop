@@ -24,17 +24,19 @@ def _normalize_df(df, platform_name: str) -> list[dict]:
         if not title or not link:
             continue
 
-        jobs.append({
-            "title": title,
-            "company": company,
-            "link": link,
-            "date": date,
-            "platform": platform_name,
-            "location": location,
-            "job_type": job_type,
-            "tags": [],
-            "description": description,
-        })
+        jobs.append(
+            {
+                "title": title,
+                "company": company,
+                "link": link,
+                "date": date,
+                "platform": platform_name,
+                "location": location,
+                "job_type": job_type,
+                "tags": [],
+                "description": description,
+            }
+        )
     return jobs
 
 
@@ -46,6 +48,7 @@ class LinkedInPlatform(JobPlatform):
     def scrape(self, keywords=None, location="remote", max_results=25):
         try:
             from jobspy import scrape_jobs
+
             df = scrape_jobs(
                 site_name=["linkedin"],
                 search_term=" ".join(keywords or []),
@@ -67,6 +70,7 @@ class GlassdoorPlatform(JobPlatform):
     def scrape(self, keywords=None, location="remote", max_results=25):
         try:
             from jobspy import scrape_jobs
+
             df = scrape_jobs(
                 site_name=["glassdoor"],
                 search_term=" ".join(keywords or []),
@@ -87,6 +91,7 @@ class ZipRecruiterPlatform(JobPlatform):
     def scrape(self, keywords=None, location="remote", max_results=25):
         try:
             from jobspy import scrape_jobs
+
             df = scrape_jobs(
                 site_name=["zip_recruiter"],
                 search_term=" ".join(keywords or []),
@@ -107,6 +112,7 @@ class GoogleJobsPlatform(JobPlatform):
     def scrape(self, keywords=None, location="remote", max_results=25):
         try:
             from jobspy import scrape_jobs
+
             df = scrape_jobs(
                 site_name=["google"],
                 search_term=" ".join(keywords or []),

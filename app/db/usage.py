@@ -47,9 +47,8 @@ def over_daily_ai_limit(user_id: str, email: str | None) -> bool:
     generation) so they all draw from one daily budget. Admins are never limited.
     Imports are local to avoid an import cycle with subscriptions/config.
     """
-    from config import RATE_LIMIT_ENFORCE, RATE_LIMIT_LETTERS_PER_DAY
-
     from app.db.subscriptions import is_admin
+    from config import RATE_LIMIT_ENFORCE, RATE_LIMIT_LETTERS_PER_DAY
 
     if is_admin(email):
         return False

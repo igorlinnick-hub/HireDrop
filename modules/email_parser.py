@@ -6,8 +6,18 @@ from email.header import decode_header
 from config import EMAIL_ADDRESS, EMAIL_IMAP_SERVER, EMAIL_PASSWORD
 
 INTERVIEW_KEYWORDS = ["interview", "next step", "schedule a call", "speaking with you"]
-REJECTION_KEYWORDS = ["unfortunately", "not moving forward", "decided to pursue", "not selected", "other candidates"]
-RECEIVED_KEYWORDS = ["application received", "thank you for applying", "we received your application"]
+REJECTION_KEYWORDS = [
+    "unfortunately",
+    "not moving forward",
+    "decided to pursue",
+    "not selected",
+    "other candidates",
+]
+RECEIVED_KEYWORDS = [
+    "application received",
+    "thank you for applying",
+    "we received your application",
+]
 
 _COMPANY_PATTERNS = [
     re.compile(r"from ([A-Z][A-Za-z0-9& ]+?) regarding", re.I),
@@ -36,7 +46,15 @@ def _extract_company(subject: str, sender: str) -> str:
     domain_match = re.search(r"@([^.>]+)\.", sender)
     if domain_match:
         raw = domain_match.group(1)
-        if raw.lower() not in ("gmail", "yahoo", "outlook", "hotmail", "indeed", "lever", "greenhouse"):
+        if raw.lower() not in (
+            "gmail",
+            "yahoo",
+            "outlook",
+            "hotmail",
+            "indeed",
+            "lever",
+            "greenhouse",
+        ):
             return raw.capitalize()
     return ""
 

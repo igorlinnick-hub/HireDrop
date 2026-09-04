@@ -2,8 +2,8 @@
 
 from modules.salary_filter import filter_by_salary, parse_salary, passes_salary
 
-
 # ── parser ────────────────────────────────────────────────────────────────────
+
 
 def test_parses_k_range():
     assert parse_salary("Base pay: $120k - $150k plus equity") == (120_000, 150_000)
@@ -37,6 +37,7 @@ def test_no_salary_text():
 
 
 # ── pass/drop rules ───────────────────────────────────────────────────────────
+
 
 def _job(desc=""):
     return {"title": "Engineer", "description": desc}

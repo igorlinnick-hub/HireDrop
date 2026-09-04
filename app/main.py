@@ -33,14 +33,14 @@ async def _email_poll_loop() -> None:
     from app.db import applications as apps_db
     from modules.email_parser import check_email_responses
 
-    STATUS_MAP = {"interview_invite": "interview", "rejected": "rejected", "received": "received"}
+    status_map = {"interview_invite": "interview", "rejected": "rejected", "received": "received"}
 
     while True:
         await asyncio.sleep(_EMAIL_POLL_INTERVAL)
         try:
             for item in check_email_responses():
                 company = item.get("company", "")
-                new_status = STATUS_MAP.get(item["email_status"])
+                new_status = status_map.get(item["email_status"])
                 if not company or not new_status:
                     continue
                 for app in apps_db.find_by_company_all_users(company):

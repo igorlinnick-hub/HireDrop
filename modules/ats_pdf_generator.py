@@ -21,22 +21,17 @@ import json
 import re
 
 import pdfplumber
+from reportlab.lib import colors
+from reportlab.lib.enums import TA_LEFT
 from reportlab.lib.pagesizes import letter
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfgen import canvas
 from reportlab.platypus import (
     HRFlowable,
-    ListFlowable,
-    ListItem,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
 )
-from reportlab.lib.styles import ParagraphStyle
-from reportlab.lib.enums import TA_LEFT
-from reportlab.lib import colors
 
 from config import ANTHROPIC_API_KEY
 
@@ -46,13 +41,15 @@ _MARGIN = 0.75 * inch
 _PAGE_WIDTH, _PAGE_HEIGHT = letter
 
 
-def _DOCX_PT(points: float):
+def _docx_pt(points: float):
     from docx.shared import Pt
+
     return Pt(points)
 
 
-def _DOCX_INCH(inches: float):
+def _docx_inch(inches: float):
     from docx.shared import Inches
+
     return Inches(inches)
 
 
@@ -112,6 +109,7 @@ def get_ats_questions(resume_text: str) -> list[str]:
 
     try:
         import anthropic
+
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
         prompt = f"""You are an ATS (Applicant Tracking System) optimization specialist.
@@ -177,13 +175,15 @@ def _structure_resume(resume_text: str, answers: list[dict] | None = None) -> di
 
     try:
         import anthropic
+
         client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
         answers_block = ""
         if answers:
             qa_lines = "\n".join(
                 f"Q: {a.get('question', '')}\nA: {a.get('answer', '')}"
-                for a in answers if a.get("answer", "").strip()
+                for a in answers
+                if a.get("answer", "").strip()
             )
             if qa_lines:
                 answers_block = f"""
@@ -263,7 +263,7 @@ def structure_resume_data(resume_text: str, answers: list[dict] | None = None) -
     """
     data = _structure_resume(resume_text, answers=answers or [])
     if not data.get("name"):
-        lines = [l.strip() for l in (resume_text or "").split("\n") if l.strip()]
+        lines = [ln.strip() for ln in (resume_text or "").split("\n") if ln.strip()]
         data["name"] = lines[0] if lines else "CANDIDATE"
     return data
 
@@ -280,7 +280,8 @@ def _make_styles() -> dict:
     )
     return {
         "name": ParagraphStyle(
-            "name", parent=base,
+            "name",
+            parent=base,
             fontName="Helvetica-Bold",
             fontSize=16,
             leading=19,
@@ -288,19 +289,22 @@ def _make_styles() -> dict:
             textTransform="uppercase",
         ),
         "title_line": ParagraphStyle(
-            "title_line", parent=base,
+            "title_line",
+            parent=base,
             fontSize=10.5,
             leading=13,
             spaceAfter=1,
         ),
         "contact": ParagraphStyle(
-            "contact", parent=base,
+            "contact",
+            parent=base,
             fontSize=10.5,
             leading=13,
             spaceAfter=0,
         ),
         "section_header": ParagraphStyle(
-            "section_header", parent=base,
+            "section_header",
+            parent=base,
             fontName="Helvetica-Bold",
             fontSize=12,
             leading=14,
@@ -308,7 +312,8 @@ def _make_styles() -> dict:
             spaceAfter=2,
         ),
         "job_title": ParagraphStyle(
-            "job_title", parent=base,
+            "job_title",
+            parent=base,
             fontName="Helvetica-Bold",
             fontSize=11,
             leading=13,
@@ -316,26 +321,30 @@ def _make_styles() -> dict:
             spaceAfter=0,
         ),
         "job_meta": ParagraphStyle(
-            "job_meta", parent=base,
+            "job_meta",
+            parent=base,
             fontSize=10.5,
             leading=12.6,
             spaceAfter=1,
         ),
         "bullet": ParagraphStyle(
-            "bullet", parent=base,
+            "bullet",
+            parent=base,
             fontSize=10.5,
             leading=12.6,
             leftIndent=12,
             spaceAfter=0,
         ),
         "body": ParagraphStyle(
-            "body", parent=base,
+            "body",
+            parent=base,
             fontSize=10.5,
             leading=12.6,
             spaceAfter=2,
         ),
         "competency_row": ParagraphStyle(
-            "competency_row", parent=base,
+            "competency_row",
+            parent=base,
             fontSize=10.5,
             leading=13,
             spaceAfter=0,
@@ -364,9 +373,9 @@ def _build_story(data: dict, styles: dict) -> list:
 
     # Contact line
     c = data.get("contact") or {}
-    contact_parts = [p for p in [
-        c.get("phone"), c.get("email"), c.get("location"), c.get("linkedin")
-    ] if p]
+    contact_parts = [
+        p for p in [c.get("phone"), c.get("email"), c.get("location"), c.get("linkedin")] if p
+    ]
     if contact_parts:
         story.append(Paragraph(" | ".join(contact_parts), styles["contact"]))
 
@@ -383,7 +392,7 @@ def _build_story(data: dict, styles: dict) -> list:
         story.extend(_section_block("Core Competencies", styles))
         # Render as pipe-separated rows, max ~4 per row
         chunk_size = 4
-        chunks = [comps[i:i + chunk_size] for i in range(0, len(comps), chunk_size)]
+        chunks = [comps[i : i + chunk_size] for i in range(0, len(comps), chunk_size)]
         for chunk in chunks:
             story.append(Paragraph(" | ".join(chunk), styles["competency_row"]))
 
@@ -430,7 +439,7 @@ def _build_story(data: dict, styles: dict) -> list:
     if tech:
         story.extend(_section_block("Technical Skills", styles))
         chunk_size = 4
-        chunks = [tech[i:i + chunk_size] for i in range(0, len(tech), chunk_size)]
+        chunks = [tech[i : i + chunk_size] for i in range(0, len(tech), chunk_size)]
         for chunk in chunks:
             story.append(Paragraph(" | ".join(chunk), styles["competency_row"]))
 
@@ -497,18 +506,18 @@ def generate_ats_pdf(
 
 def _docx_section_header(doc, title: str) -> None:
     """Add a 12pt bold uppercase section header with a bottom rule."""
-    from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
 
     p = doc.add_paragraph()
-    p.paragraph_format.space_before = _DOCX_PT(8)
-    p.paragraph_format.space_after = _DOCX_PT(2)
+    p.paragraph_format.space_before = _docx_pt(8)
+    p.paragraph_format.space_after = _docx_pt(2)
     run = p.add_run(title.upper())
     run.bold = True
-    run.font.size = _DOCX_PT(12)
+    run.font.size = _docx_pt(12)
     run.font.name = "Arial"
     # Bottom border (horizontal rule)
-    pPr = p._p.get_or_add_pPr()
+    pPr = p._p.get_or_add_pPr()  # noqa: N806 — OOXML element name, keep the spec spelling
     borders = OxmlElement("w:pBdr")
     bottom = OxmlElement("w:bottom")
     bottom.set(qn("w:val"), "single")
@@ -532,8 +541,8 @@ def generate_ats_docx(
     (Arial, hyphen bullets, no tables/columns/images).
     """
     from docx import Document
-    from docx.shared import Pt
     from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.shared import Pt
 
     data = _resolve_data(pdf_bytes, resume_text, answers, data)
 
@@ -543,8 +552,8 @@ def generate_ats_docx(
     style.font.name = "Arial"
     style.font.size = Pt(10.5)
     for section in doc.sections:
-        section.top_margin = section.bottom_margin = _DOCX_INCH(0.75)
-        section.left_margin = section.right_margin = _DOCX_INCH(0.75)
+        section.top_margin = section.bottom_margin = _docx_inch(0.75)
+        section.left_margin = section.right_margin = _docx_inch(0.75)
 
     def add_line(text, *, size=10.5, bold=False, space_after=0, space_before=0):
         p = doc.add_paragraph()
@@ -562,7 +571,9 @@ def generate_ats_docx(
     if data.get("title"):
         add_line(data["title"], size=10.5, space_after=1)
     c = data.get("contact") or {}
-    contact_parts = [p for p in [c.get("phone"), c.get("email"), c.get("location"), c.get("linkedin")] if p]
+    contact_parts = [
+        p for p in [c.get("phone"), c.get("email"), c.get("location"), c.get("linkedin")] if p
+    ]
     if contact_parts:
         add_line(" | ".join(contact_parts), size=10.5)
 
@@ -576,7 +587,7 @@ def generate_ats_docx(
     if comps:
         _docx_section_header(doc, "Core Competencies")
         for i in range(0, len(comps), 4):
-            add_line(" | ".join(comps[i:i + 4]))
+            add_line(" | ".join(comps[i : i + 4]))
 
     # Professional Experience
     exp = data.get("experience") or []
@@ -599,7 +610,7 @@ def generate_ats_docx(
             for bullet in job.get("bullets") or []:
                 bt = bullet.lstrip("-•– ").strip()
                 bp = add_line(f"- {bt}")
-                bp.paragraph_format.left_indent = _DOCX_PT(12)
+                bp.paragraph_format.left_indent = _docx_pt(12)
 
     # Education & Certifications
     edu = data.get("education") or []
@@ -620,7 +631,7 @@ def generate_ats_docx(
     if tech:
         _docx_section_header(doc, "Technical Skills")
         for i in range(0, len(tech), 4):
-            add_line(" | ".join(tech[i:i + 4]))
+            add_line(" | ".join(tech[i : i + 4]))
 
     # Languages
     langs = data.get("languages") or []

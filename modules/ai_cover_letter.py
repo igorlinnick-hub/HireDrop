@@ -1,5 +1,5 @@
+import contextlib
 import io
-import json
 import os
 
 import anthropic
@@ -32,8 +32,9 @@ def load_resume_text(resume_url: str | None = None, max_chars: int = 3000) -> st
     """Load resume text from Supabase storage (preferred) or local fallback."""
     if resume_url:
         try:
-            from app.db.client import get_supabase
             import pdfplumber
+
+            from app.db.client import get_supabase
 
             data = get_supabase().storage.from_("resumes").download(resume_url)
             with pdfplumber.open(io.BytesIO(data)) as pdf:
@@ -45,13 +46,12 @@ def load_resume_text(resume_url: str | None = None, max_chars: int = 3000) -> st
     # Local fallback (legacy / dev)
     local_path = os.path.join(os.path.dirname(__file__), "..", "data", "resume.pdf")
     if os.path.exists(local_path):
-        try:
+        with contextlib.suppress(Exception):
             import pdfplumber
+
             with pdfplumber.open(local_path) as pdf:
                 text = "\n".join(page.extract_text() or "" for page in pdf.pages)
                 return text[:max_chars]
-        except Exception:
-            pass
     return ""
 
 

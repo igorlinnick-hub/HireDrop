@@ -55,23 +55,24 @@ def parse_salary(text: str) -> tuple[int, int] | None:
 
     m = _RANGE_RE.search(text)
     if m:
-        lo = _annualize(_to_number(m.group(1), m.group(2)), text[m.end():m.end() + 12])
-        hi = _annualize(_to_number(m.group(3), m.group(4)), text[m.end():m.end() + 12])
+        lo = _annualize(_to_number(m.group(1), m.group(2)), text[m.end() : m.end() + 12])
+        hi = _annualize(_to_number(m.group(3), m.group(4)), text[m.end() : m.end() + 12])
         if lo > hi:
             lo, hi = hi, lo
-        if _MIN_PLAUSIBLE <= lo and hi <= _MAX_PLAUSIBLE:
+        if lo >= _MIN_PLAUSIBLE and hi <= _MAX_PLAUSIBLE:
             return int(lo), int(hi)
 
     for m in _SINGLE_RE.finditer(text):
-        val = _annualize(_to_number(m.group(1), m.group(2)), text[m.end():m.end() + 12])
+        val = _annualize(_to_number(m.group(1), m.group(2)), text[m.end() : m.end() + 12])
         if _MIN_PLAUSIBLE <= val <= _MAX_PLAUSIBLE:
             return int(val), int(val)
 
     return None
 
 
-def passes_salary(job: dict, salary_min: int | None, salary_max: int | None,
-                  listed_only: bool = False) -> bool:
+def passes_salary(
+    job: dict, salary_min: int | None, salary_max: int | None, listed_only: bool = False
+) -> bool:
     """True if the job survives the user's salary filter.
 
     Rules (settled in GLOBAL_PLAN):
@@ -92,9 +93,7 @@ def passes_salary(job: dict, salary_min: int | None, salary_max: int | None,
     lo, hi = parsed
     if salary_min and hi < salary_min:
         return False
-    if salary_max and lo > salary_max:
-        return False
-    return True
+    return not (salary_max and lo > salary_max)
 
 
 def filter_by_salary(jobs: list[dict], profile: dict) -> tuple[list[dict], int]:

@@ -51,8 +51,7 @@ def send_email(to: str, subject: str, html_body: str) -> bool:
         )
     except requests.RequestException as e:
         print(
-            f"[CRITICAL email] Resend request to {to} failed: "
-            f"{type(e).__name__}: {e}",
+            f"[CRITICAL email] Resend request to {to} failed: {type(e).__name__}: {e}",
             file=sys.stderr,
         )
         return False
@@ -61,8 +60,7 @@ def send_email(to: str, subject: str, html_body: str) -> bool:
         # Resend returns JSON like {"name":"validation_error","message":"..."}.
         body = resp.text[:300].replace("\n", " ")
         print(
-            f"[CRITICAL email] Resend rejected send to {to} "
-            f"(HTTP {resp.status_code}): {body}",
+            f"[CRITICAL email] Resend rejected send to {to} (HTTP {resp.status_code}): {body}",
             file=sys.stderr,
         )
         return False

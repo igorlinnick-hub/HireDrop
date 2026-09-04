@@ -95,9 +95,18 @@ def update_profile(user_id: str, data: dict) -> dict:
     }
     # URL fields (LinkedIn / portfolio) for ATS applications — only write them when the
     # caller actually provided them, so a partial save (e.g. search-prefs) never wipes them.
-    for k in ("linkedin_url", "portfolio_url",
-              "work_authorized_us", "needs_sponsorship", "notice_period", "english_level",
-              "street_address", "city", "state", "postal_code"):
+    for k in (
+        "linkedin_url",
+        "portfolio_url",
+        "work_authorized_us",
+        "needs_sponsorship",
+        "notice_period",
+        "english_level",
+        "street_address",
+        "city",
+        "state",
+        "postal_code",
+    ):
         if k in data:
             payload[k] = data[k]
     (get_supabase().table("profiles").update(payload).eq("user_id", user_id).execute())
@@ -114,29 +123,37 @@ def update_apply_mode(user_id: str, mode: str, ideal_job_description: str | None
     get_supabase().table("profiles").update(payload).eq("user_id", user_id).execute()
 
 
-def update_salary(user_id: str, salary_min: int | None, salary_max: int | None, listed_only: bool) -> None:
+def update_salary(
+    user_id: str, salary_min: int | None, salary_max: int | None, listed_only: bool
+) -> None:
     """Optional salary-range filter (annual USD). None clears a bound — an empty
     filter means "don't filter by salary". Does not touch other profile columns."""
-    get_supabase().table("profiles").update({
-        "salary_min": salary_min,
-        "salary_max": salary_max,
-        "salary_listed_only": bool(listed_only),
-    }).eq("user_id", user_id).execute()
+    get_supabase().table("profiles").update(
+        {
+            "salary_min": salary_min,
+            "salary_max": salary_max,
+            "salary_listed_only": bool(listed_only),
+        }
+    ).eq("user_id", user_id).execute()
 
 
 def update_radius(user_id: str, miles: int | None) -> None:
     """Optional non-remote search radius (miles). None clears it. Does not touch
     other profile columns."""
-    get_supabase().table("profiles").update({
-        "search_radius_miles": miles,
-    }).eq("user_id", user_id).execute()
+    get_supabase().table("profiles").update(
+        {
+            "search_radius_miles": miles,
+        }
+    ).eq("user_id", user_id).execute()
 
 
 def update_ats(user_id: str, data: dict) -> None:
     """Partial update — only ATS fields. Does not touch other profile columns."""
-    payload = {k: v for k, v in data.items() if k in (
-        "ats_score", "ats_issues", "ats_resume_url", "ats_approved", "ats_checked_at"
-    )}
+    payload = {
+        k: v
+        for k, v in data.items()
+        if k in ("ats_score", "ats_issues", "ats_resume_url", "ats_approved", "ats_checked_at")
+    }
     if payload:
         get_supabase().table("profiles").update(payload).eq("user_id", user_id).execute()
 

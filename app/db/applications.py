@@ -73,7 +73,9 @@ def get_history(user_id: str, limit: int = 50) -> list:
                 "status": row["status"],
                 "cover_letter": row.get("cover_letter", ""),
                 "tailored_resume": job.get("tailored_resume") or "",
-                "resume_pdf_url": resume_storage.signed_url_from_path(pdf_path, user_id) if pdf_path else "",
+                "resume_pdf_url": resume_storage.signed_url_from_path(pdf_path, user_id)
+                if pdf_path
+                else "",
             }
         )
     return rows

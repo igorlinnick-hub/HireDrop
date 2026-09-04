@@ -14,6 +14,7 @@ or a tier. Tier is only ever set from a signed Stripe event or the portal.
 """
 
 import sys
+from datetime import UTC
 
 from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import JSONResponse
@@ -105,12 +106,12 @@ def create_portal(user=Depends(get_current_user)):
 
 def _period_end_iso(subscription: dict) -> str | None:
     """current_period_end (unix) → ISO8601 UTC, matching subscription_expires_at."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     ts = subscription.get("current_period_end")
     if not ts:
         return None
-    return datetime.fromtimestamp(int(ts), tz=timezone.utc).isoformat()
+    return datetime.fromtimestamp(int(ts), tz=UTC).isoformat()
 
 
 def _grant_from_subscription(stripe, user_id: str, subscription: dict) -> None:
@@ -119,9 +120,14 @@ def _grant_from_subscription(stripe, user_id: str, subscription: dict) -> None:
     price_id = items[0]["price"]["id"] if items else None
     tier = tier_for_price(price_id)
     if not tier:
-        print(f"[billing] subscription {subscription.get('id')} has unknown price {price_id}", file=sys.stderr)
+        print(
+            f"[billing] subscription {subscription.get('id')} has unknown price {price_id}",
+            file=sys.stderr,
+        )
         return
-    billing_db.grant(user_id, tier, _period_end_iso(subscription), subscription_id=subscription.get("id"))
+    billing_db.grant(
+        user_id, tier, _period_end_iso(subscription), subscription_id=subscription.get("id")
+    )
 
 
 def _resolve_subscription(stripe, invoice_obj: dict, customer_id: str):
@@ -189,7 +195,11 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
             user_id = billing_db.find_user_by_customer(customer_id) if customer_id else None
             if not user_id:
                 return {"received": True}
-            sub_obj = obj if etype == "customer.subscription.updated" else _resolve_subscription(stripe, obj, customer_id)
+            sub_obj = (
+                obj
+                if etype == "customer.subscription.updated"
+                else _resolve_subscription(stripe, obj, customer_id)
+            )
             if sub_obj is not None:
                 status = sub_obj.get("status")
                 if status in ("active", "trialing", "past_due"):

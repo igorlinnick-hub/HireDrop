@@ -60,8 +60,14 @@ def is_effectively_running(state: dict) -> bool:
     return (now - lp).total_seconds() < HEARTBEAT_TTL_SECS
 
 
-def build_readiness(profile: dict, running: bool, tier: str, submit_mode: str,
-                    free_used: int | None, free_limit: int) -> dict:
+def build_readiness(
+    profile: dict,
+    running: bool,
+    tier: str,
+    submit_mode: str,
+    free_used: int | None,
+    free_limit: int,
+) -> dict:
     """Single source of truth for "can a campaign start MEANINGFULLY?" (pure — testable).
 
     Born from live confusion (2026-07-16): a fresh user with the extension connected but
@@ -76,24 +82,46 @@ def build_readiness(profile: dict, running: bool, tier: str, submit_mode: str,
     checks: list[dict] = []
 
     def add(check_id: str, ok, reason: str, fix: str) -> None:
-        checks.append({
-            "id": check_id,
-            "ok": bool(ok),
-            "reason": None if ok else reason,
-            "fix": None if ok else fix,
-        })
+        checks.append(
+            {
+                "id": check_id,
+                "ok": bool(ok),
+                "reason": None if ok else reason,
+                "fix": None if ok else fix,
+            }
+        )
 
-    add("onboarding", profile.get("onboarding_completed") is True,
-        "Finish your profile setup first", "onboarding")
-    add("keywords", bool(profile.get("keywords")),
-        "Add at least one keyword — the campaign needs something to search for", "keywords")
-    add("resume", (not ats_selected) or bool(profile.get("resume_url")),
-        "Upload a resume — company-site (Greenhouse/Lever) applications require one", "settings")
-    add("lever_tap", not ("lever" in platforms and submit_mode != "tap"),
-        "Lever needs Tap mode (its captcha requires a human) — switch to Tap or unselect Lever", "tap")
+    add(
+        "onboarding",
+        profile.get("onboarding_completed") is True,
+        "Finish your profile setup first",
+        "onboarding",
+    )
+    add(
+        "keywords",
+        bool(profile.get("keywords")),
+        "Add at least one keyword — the campaign needs something to search for",
+        "keywords",
+    )
+    add(
+        "resume",
+        (not ats_selected) or bool(profile.get("resume_url")),
+        "Upload a resume — company-site (Greenhouse/Lever) applications require one",
+        "settings",
+    )
+    add(
+        "lever_tap",
+        not ("lever" in platforms and submit_mode != "tap"),
+        "Lever needs Tap mode (its captcha requires a human) — switch to Tap or unselect Lever",
+        "tap",
+    )
     if tier == "free":
-        add("free_quota", (free_used or 0) < free_limit,
-            f"You've used all {free_limit} free applications — subscribe to keep applying", "upgrade")
+        add(
+            "free_quota",
+            (free_used or 0) < free_limit,
+            f"You've used all {free_limit} free applications — subscribe to keep applying",
+            "upgrade",
+        )
     add("not_running", not running, "A campaign is already running", "campaign")
 
     return {
@@ -123,7 +151,8 @@ def get_effective_state(user_id: str) -> dict:
     filters/started_at intact for forensics — only the flag is corrected."""
     state = get_state(user_id)
     if state["running"] and not is_effectively_running(state):
-        try:
+        # cleanup is best-effort; the caller still gets running=False
+        with contextlib.suppress(Exception):
             (
                 get_supabase()
                 .table("campaign_states")
@@ -131,8 +160,6 @@ def get_effective_state(user_id: str) -> dict:
                 .eq("user_id", user_id)
                 .execute()
             )
-        except Exception:
-            pass  # cleanup is best-effort; the caller still gets running=False
         # Say it out loud. This is a LAZY reap on read — any status poll can trigger it,
         # including the dashboard's own — and it used to leave no trace at all, so a run
         # it killed looked like it had simply evaporated (08-17, twice).
@@ -194,7 +221,7 @@ def reconcile_not_running(user_id: str) -> bool:
 def touch_ping(user_id: str) -> None:
     """Stamp the extension heartbeat. Best-effort + update-only (never creates a row):
     safe to call before the last_ping_at migration has been applied."""
-    try:
+    with contextlib.suppress(Exception):
         (
             get_supabase()
             .table("campaign_states")
@@ -202,8 +229,6 @@ def touch_ping(user_id: str) -> None:
             .eq("user_id", user_id)
             .execute()
         )
-    except Exception:
-        pass
 
 
 def start(user_id: str, filters: dict) -> dict:

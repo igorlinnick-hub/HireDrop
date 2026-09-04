@@ -105,7 +105,14 @@ def _fallback(job: dict) -> dict:
     # SKIP rather than apply. Applying to an un-vetted job under the user's identity is the
     # irreversible harm; a skipped job is recoverable. judged=False + fail_closed flag let
     # telemetry tell a safety-skip apart from a real poor-fit skip.
-    return {"fit_score": 0, "decision": "skip", "reason": "Fit judge unavailable — skipped for safety.", "concerns": [], "judged": False, "fail_closed": True}
+    return {
+        "fit_score": 0,
+        "decision": "skip",
+        "reason": "Fit judge unavailable — skipped for safety.",
+        "concerns": [],
+        "judged": False,
+        "fail_closed": True,
+    }
 
 
 def assess_fit(job=None, profile=None, screener_questions=None):
@@ -124,7 +131,11 @@ def assess_fit(job=None, profile=None, screener_questions=None):
 
     resume_text = load_resume_text(profile.get("resume_url"))
     description = (job.get("description") or "")[:_MAX_DESC_CHARS]
-    q_block = ("\nScreener questions the employer asks:\n" + "\n".join(f"- {q}" for q in questions)) if questions else ""
+    q_block = (
+        ("\nScreener questions the employer asks:\n" + "\n".join(f"- {q}" for q in questions))
+        if questions
+        else ""
+    )
 
     ideal_block = ""
     if mode == "precise" and profile.get("ideal_job_description"):
@@ -157,7 +168,7 @@ Decide: should this candidate apply? Return the JSON object only."""
         )
         raw = (message.content[0].text or "").strip()
         start, end = raw.find("{"), raw.rfind("}")
-        data = json.loads(raw[start:end + 1]) if start != -1 and end != -1 else {}
+        data = json.loads(raw[start : end + 1]) if start != -1 and end != -1 else {}
     except Exception as e:
         print(f"[fit_judge] failed: {e}")
         return _fallback(job)
@@ -177,4 +188,11 @@ Decide: should this candidate apply? Return the JSON object only."""
         decision = "apply" if score >= threshold else "skip"
     reason = str(data.get("reason") or "").strip()[:300]
     concerns = [str(c).strip()[:120] for c in (data.get("concerns") or []) if str(c).strip()][:5]
-    return {"fit_score": score, "decision": decision, "reason": reason, "concerns": concerns, "judged": True, "apply_mode": mode}
+    return {
+        "fit_score": score,
+        "decision": decision,
+        "reason": reason,
+        "concerns": concerns,
+        "judged": True,
+        "apply_mode": mode,
+    }
