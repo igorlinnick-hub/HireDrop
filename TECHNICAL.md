@@ -333,10 +333,11 @@ class ProfileUpdate:
     email: str = ""
     phone: str = ""
     keywords: List[str] = []
-    location: str = "remote"         # "remote", "usa", "europe", or custom
-    job_type: str = "full-time"      # "full-time", "part-time", "contract"
+    location: str = "remote"  # "remote", "usa", "europe", or custom
+    job_type: str = "full-time"  # "full-time", "part-time", "contract"
     platforms: List[str] = ["remoteok"]
-    writing_style: str = ""          # Free text: user's writing sample for AI to match
+    writing_style: str = ""  # Free text: user's writing sample for AI to match
+
 
 class ApplicationSaveRequest:
     job_title: str
@@ -346,23 +347,29 @@ class ApplicationSaveRequest:
     cover_letter: str = ""
     status: str = "applied"
 
+
 class CampaignStartRequest:
     keywords: List[str] = []
     platforms: List[str] = []
     location: str = ""
     job_type: str = ""
 
+
 class CoverLetterRequest:
     job_id: int
+
 
 class LetterPreviewRequest:
     keywords: str
 
+
 class TemplateRequest:
     template: str
 
+
 class FindJobsRequest:
     platforms: List[str] = []
+
 
 class ConnectPlatformRequest:
     platform: str
@@ -379,8 +386,8 @@ All platform scrapers follow a plugin pattern:
 ```python
 # base.py — Abstract interface
 class JobPlatform(ABC):
-    name = ""           # Internal ID: "remoteok", "indeed", etc.
-    display_name = ""   # Human-readable: "RemoteOK", "Indeed", etc.
+    name = ""  # Internal ID: "remoteok", "indeed", etc.
+    display_name = ""  # Human-readable: "RemoteOK", "Indeed", etc.
 
     @abstractmethod
     def scrape(self, keywords=None, location="remote", max_results=25):
@@ -392,14 +399,14 @@ class JobPlatform(ABC):
 
 ```python
 {
-    "title": str,        # Job title
-    "company": str,      # Company name
-    "link": str,         # Full URL to job posting
-    "date": str,         # Date posted (if available)
-    "platform": str,     # Platform name (e.g., "indeed")
-    "location": str,     # Location text
-    "job_type": str,     # "full-time", "part-time", "contract"
-    "tags": list[str],   # Skill/technology tags
+    "title": str,  # Job title
+    "company": str,  # Company name
+    "link": str,  # Full URL to job posting
+    "date": str,  # Date posted (if available)
+    "platform": str,  # Platform name (e.g., "indeed")
+    "location": str,  # Location text
+    "job_type": str,  # "full-time", "part-time", "contract"
+    "tags": list[str],  # Skill/technology tags
     "description": str,  # Job description text
 }
 ```
@@ -411,10 +418,11 @@ PLATFORMS = {
     "remoteok": RemoteOKPlatform,
     "indeed": IndeedPlatform,
     "wellfound": WellfoundPlatform,
-    "glassdoor": GlassdoorPlatform,   # stub
-    "ziprecruiter": ZipRecruiterPlatform, # stub
+    "glassdoor": GlassdoorPlatform,  # stub
+    "ziprecruiter": ZipRecruiterPlatform,  # stub
     # ... etc
 }
+
 
 def get_enabled_platforms(profile):
     enabled = profile.get("platforms", ["remoteok"])
@@ -447,6 +455,7 @@ def get_enabled_platforms(profile):
 ```python
 from modules.platforms.base import JobPlatform
 
+
 class NewPlatform(JobPlatform):
     name = "newplatform"
     display_name = "New Platform"
@@ -460,6 +469,7 @@ class NewPlatform(JobPlatform):
 2. Register in `modules/platforms/registry.py`:
 ```python
 from modules.platforms.newplatform import NewPlatform
+
 PLATFORMS["newplatform"] = NewPlatform
 ```
 
@@ -880,8 +890,8 @@ The frontend consists of two HTML pages embedded directly as Python string templ
 @app.get("/")
 def dashboard():
     if not os.path.exists(PROFILE_PATH):
-        return ONBOARDING_HTML    # First-time setup wizard
-    return DASHBOARD_HTML          # Main dashboard
+        return ONBOARDING_HTML  # First-time setup wizard
+    return DASHBOARD_HTML  # Main dashboard
 ```
 
 ### Onboarding Wizard (`ONBOARDING_HTML`)
