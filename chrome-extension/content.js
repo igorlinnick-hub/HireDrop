@@ -436,7 +436,7 @@
 
   async function getPlatformCount(platform) {
     const data = await chrome.storage.local.get(["platformCounts", "todayDate"]);
-    const today = new Date().toLocaleDateString("en-CA");
+    const today = localDay();
     if (data.todayDate !== today) return 0;
     const counts = data.platformCounts || {};
     return counts[platform] || 0;
@@ -1128,9 +1128,15 @@
   // two jobs were paid for three times in twenty minutes, and they crowded out the jobs
   // further down the list that we CAN submit. Keyed by day so tomorrow is a clean slate
   // (the blocker may be gone, e.g. after the user fills in a missing profile field).
+  // Same day, same clock as recordLocalApplication / getPlatformCount — see the note in
+  // background.js. Mixing local and UTC on one storage key silently reset the caps.
+  function localDay() {
+    return new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD in the user's timezone
+  }
+
   async function getHandedBackKeys() {
     const d = await chrome.storage.local.get(["handedBackKeys", "handedBackDate"]);
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localDay();
     if (d.handedBackDate !== today) return new Set();
     return new Set(d.handedBackKeys || []);
   }
@@ -1138,7 +1144,7 @@
   async function addHandedBackKey(title, company) {
     const key = jobDedupKey(title, company);
     if (!key || key === "|") return;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = localDay();
     const d = await chrome.storage.local.get(["handedBackKeys", "handedBackDate"]);
     const keys = d.handedBackDate === today ? (d.handedBackKeys || []) : [];
     if (!keys.includes(key)) keys.push(key);
@@ -1163,7 +1169,7 @@
   // state. background's APPLICATION_SAVED no longer increments (backend save only).
   async function recordLocalApplication(platform) {
     const s = await chrome.storage.local.get(["todayCount", "platformCounts", "todayDate"]);
-    const today = new Date().toLocaleDateString("en-CA");
+    const today = localDay();
     const totalCount = (s.todayDate === today ? (s.todayCount || 0) : 0) + 1;
     const platformCounts = s.todayDate === today ? (s.platformCounts || {}) : {};
     platformCounts[platform] = (platformCounts[platform] || 0) + 1;
@@ -1177,7 +1183,7 @@
   // (council 2026-08-04: quality above all — no silent half-deaths).
   async function subtractLocalApplication(platform) {
     const s = await chrome.storage.local.get(["todayCount", "platformCounts", "todayDate"]);
-    const today = new Date().toLocaleDateString("en-CA");
+    const today = localDay();
     if (s.todayDate !== today) return;
     const platformCounts = s.platformCounts || {};
     platformCounts[platform] = Math.max(0, (platformCounts[platform] || 0) - 1);
@@ -2184,7 +2190,7 @@
     const storageData = await chrome.storage.local.get(["profile", "currentJobInfo"]);
     const profile = storageData.profile || {};
     const jobInfo = storageData.currentJobInfo || {};
-    const today = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD
+    const today = localDay();
 
     // Scope to the apply modal (see formScope) and DON'T demand a `required` marker.
     // ZipRecruiter's screener questions carry no required/aria-required attribute at all
@@ -4301,7 +4307,7 @@
     // ban risk. campaignCaps.dailyTotal comes from the backend (app/db/subscriptions.py).
     {
       const c = await chrome.storage.local.get(["campaignCaps", "todayCount", "todayDate"]);
-      const today = new Date().toLocaleDateString("en-CA");
+      const today = localDay();
       const total = c.todayDate === today ? (c.todayCount || 0) : 0;
       const dailyTotal = (c.campaignCaps && c.campaignCaps.dailyTotal > 0) ? c.campaignCaps.dailyTotal : 30;
       if (total >= dailyTotal) {
