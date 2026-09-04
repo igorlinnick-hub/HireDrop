@@ -5,10 +5,23 @@ from modules.platforms.base import JobPlatform
 
 
 class WellfoundPlatform(JobPlatform):
+    """Dead: the endpoint this scraper is built on returns 404, and the class selectors below
+    belong to a page that no longer exists (Wellfound is a React SPA now). Removed from the
+    website roster on 2026-08-01; kept registered only for profiles that still list it.
+    Re-check: scripts/audit_discovery_sources.py.
+    """
+
     name = "wellfound"
     display_name = "Wellfound"
+    unavailable_reason = (
+        "Wellfound search is unavailable — the listing page we read no longer exists. "
+        "Startup roles there usually run on Greenhouse/Lever/Ashby, which we do apply to."
+    )
 
     def scrape(self, keywords=None, location="remote", max_results=25):
+        if self.unavailable_reason:
+            print(f"[wellfound] skipped — {self.unavailable_reason}")
+            return []
         query = "-".join(keywords) if keywords else "developer"
         url = f"https://wellfound.com/role/r/{query}"
 

@@ -63,11 +63,27 @@ class LinkedInPlatform(JobPlatform):
 
 
 class GlassdoorPlatform(JobPlatform):
+    """Dead server-side since at least 2026-09-03, and already off the website roster.
+
+    Every request answers HTTP 400 + "Glassdoor: location not parsed" — for `remote`,
+    `United States` and `New York, NY` alike, so it is not a location-format problem we
+    could patch. Kept registered (some profiles still carry "glassdoor" in profile.platforms)
+    but marked, so those users get a reason instead of a silent zero.
+    Re-check: scripts/audit_discovery_sources.py.
+    """
+
     name = "glassdoor"
     display_name = "Glassdoor"
     requires_credentials = False
+    unavailable_reason = (
+        "Glassdoor search is unavailable — its API rejects our requests. Its jobs mostly "
+        "duplicate Indeed, which we do search."
+    )
 
     def scrape(self, keywords=None, location="remote", max_results=25):
+        if self.unavailable_reason:
+            print(f"[glassdoor] skipped — {self.unavailable_reason}")
+            return []
         try:
             from jobspy import scrape_jobs
 

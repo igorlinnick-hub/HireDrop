@@ -40,6 +40,72 @@ def test_unknown_platform_is_dropped_quietly():
     assert notes == []
 
 
+def test_dead_scrapers_are_marked_rather_than_returning_a_silent_zero():
+    # Measured live 2026-09-03 (scripts/audit_discovery_sources.py): Glassdoor answers
+    # HTTP 400 "location not parsed" for every location, Wellfound's listing URL is a 404.
+    for name in ("glassdoor", "wellfound"):
+        assert PLATFORMS[name].unavailable_reason, f"{name} scraper is dead — say so"
+        assert PLATFORMS[name]().scrape(keywords=["marketing"]) == []
+        scrapeable, notes = select_scrapeable([name])
+        assert scrapeable == [] and notes
+
+
+def test_ziprecruiter_is_browser_side_discovery_not_a_server_scrape():
+    # Its API 403s our server; the extension's native search-walk is what finds ZR jobs.
+    scrapeable, notes = select_scrapeable(["ziprecruiter"])
+    assert scrapeable == []
+    assert notes == [SERVER_SCRAPE_SKIP["ziprecruiter"]]
+
+
+def test_remoteok_keyword_phrase_matches_word_by_word():
+    """The default platform used to return zero for any multi-word keyword.
+
+    ?tags= hyphenated "marketing manager" into a tag RemoteOK does not have, so the feed came
+    back empty and nobody saw an error. Now we filter locally: every word of a phrase must
+    appear, in any order.
+    """
+    from modules.platforms.remoteok import RemoteOKPlatform
+
+    feed = [
+        {"legal": "header row"},
+        {
+            "position": "Senior Manager, Growth Marketing",
+            "company": "Acme",
+            "url": "https://remoteok.com/l/1",
+            "description": "own the funnel",
+            "tags": ["marketing"],
+        },
+        {
+            "position": "Backend Engineer",
+            "company": "Beta",
+            "url": "https://remoteok.com/l/2",
+            "description": "go and postgres",
+            "tags": ["engineering"],
+        },
+    ]
+
+    class FakeResponse:
+        encoding = "utf-8"
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return feed
+
+    import modules.platforms.remoteok as mod
+
+    original = mod.requests.get
+    mod.requests.get = lambda *a, **kw: FakeResponse()
+    try:
+        jobs = RemoteOKPlatform().scrape(keywords=["marketing manager"])
+        titles = [j["title"] for j in jobs]
+    finally:
+        mod.requests.get = original
+
+    assert titles == ["Senior Manager, Growth Marketing"], titles
+
+
 def test_every_registered_platform_either_scrapes_or_explains_itself():
     for name, cls in PLATFORMS.items():
         if cls.requires_credentials or name in SERVER_SCRAPE_SKIP:

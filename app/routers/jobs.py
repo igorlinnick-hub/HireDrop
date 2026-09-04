@@ -39,10 +39,15 @@ def _with_captcha(jobs: list) -> list:
 
 
 # Platforms we deliberately do NOT fetch from our server, each with the reason the user
-# sees. Indeed is discovered in-browser by the extension during a campaign (per-user home
-# IP), so the "compliant by design" claim holds — our server never scrapes Indeed.
+# sees. Both are discovered IN-BROWSER by the extension during a campaign (per-user home
+# IP), so the "compliant by design" claim holds — our server never scrapes them.
+# ZipRecruiter is here for a second reason too: its API answers our server with a hard
+# Cloudflare 403 ("forbidden aa") for every query and location (measured 2026-09-03), so the
+# server-side path could only ever return zero. Its native search-walk in the extension is
+# unaffected — ZipRecruiter apply stays VERIFIED.
 SERVER_SCRAPE_SKIP = {
     "indeed": "Indeed jobs appear once you start a campaign.",
+    "ziprecruiter": "ZipRecruiter jobs appear once you start a campaign.",
 }
 
 
