@@ -105,11 +105,36 @@ class ZipRecruiterPlatform(JobPlatform):
 
 
 class GoogleJobsPlatform(JobPlatform):
+    """Google Jobs (Google for Jobs) — DISCOVERY ONLY, and currently unreachable server-side.
+
+    Two separate facts, both re-checked live 2026-09-03 (docs/handoff/google-jobs.md):
+
+    1. Google for Jobs never receives an application. Every card links OUT to the source
+       (LinkedIn / Indeed / ZipRecruiter / Greenhouse / Lever / Ashby / Workday / a company
+       career page), so it can only ever feed the pool — it can never be an apply platform.
+    2. Google Search no longer answers a non-JS HTTP client. `GET /search?udm=8` returns the
+       "enablejs" redirect interstitial — 200 OK, ~93 KB, no job payload, no captcha — for
+       every variant tried (plain, consent cookie, gl/hl, TLS-fingerprinted client) on the
+       LATEST python-jobspy (1.1.82). So JobSpy's google module yields [] every single time.
+
+    Kept rather than deleted: the scrape path below is correct the moment the gate lifts, and
+    `scripts/probe_google_jobs.py` exits 0 on the day it does. Deleting it is also how
+    "let's add Google Jobs" comes back as a fresh idea next quarter.
+    """
+
     name = "google"
     display_name = "Google Jobs"
     requires_credentials = False
+    unavailable_reason = (
+        "Google Jobs is paused: Google now serves job results only to a real browser, "
+        "so we can't search it from our server."
+    )
 
     def scrape(self, keywords=None, location="remote", max_results=25):
+        if self.unavailable_reason:
+            # Never spend a request on a known-dead source; never return a silent zero.
+            print(f"[google] skipped — {self.unavailable_reason}")
+            return []
         try:
             from jobspy import scrape_jobs
 
