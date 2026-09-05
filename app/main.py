@@ -123,13 +123,23 @@ async def request_timing(request, call_next):
     """Minimal latency audit while there's no real observability: every response
     carries its server-side time, and anything slower than a second lands in the
     Railway log — so "which call is the bottleneck" is answerable from the log
-    instead of a guess."""
+    instead of a guess. Also feeds the 5xx burst watch (app/ops_watch.py): both
+    explicit 5xx responses and unhandled exceptions (which FastAPI turns into a
+    500 above this middleware) are recorded."""
+    from app.ops_watch import record_5xx
+
     start = time.perf_counter()
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except Exception:
+        record_5xx(request.url.path, 500)
+        raise
     elapsed_ms = int((time.perf_counter() - start) * 1000)
     response.headers["X-Server-Time-Ms"] = str(elapsed_ms)
     if elapsed_ms > 1000:
         print(f"[slow-request] {request.method} {request.url.path} took {elapsed_ms}ms")
+    if response.status_code >= 500:
+        record_5xx(request.url.path, response.status_code)
     return response
 
 

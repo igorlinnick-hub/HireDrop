@@ -291,6 +291,18 @@ def stall_scan(user=Depends(get_current_user)):
     }
 
 
+@router.get("/tools/ops-scan")
+def ops_scan(user=Depends(get_current_user)):
+    """Admin-only, read-only: what the ops watch sees — recent 5xx and per-platform
+    scrape zero-streaks (app/ops_watch.py). Per-worker view: Railway runs 2 uvicorn
+    workers, each counts its own traffic, so hit it twice to see both."""
+    if not is_admin(getattr(user, "email", None)):
+        raise HTTPException(status_code=403, detail="admin_only")
+    from app.ops_watch import report
+
+    return report()
+
+
 @router.get("/platform/inbox-urls")
 def platform_inbox_urls(user=Depends(get_current_user)):
     profile = get_profile(user.id)
