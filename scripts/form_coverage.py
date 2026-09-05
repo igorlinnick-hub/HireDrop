@@ -92,7 +92,8 @@ RULES = [
         "how did you hear",
         lambda lb: bool(
             re.search(
-                r"how did you (hear|find|learn)|hear about (this|us|the)|where did you hear", lb
+                r"how did you (first )?(hear|find|learn)|hear about (this|us|the)|where did you hear",
+                lb,
             )
         ),
     ),
@@ -128,10 +129,13 @@ RULES = [
         lambda lb: bool(re.search(r"\byears?\b|experience|how many|how long", lb)),
     ),
     (
+        # "(ever|previously) been employed" requires by/at/with/for: a question about
+        # THIS company gets an honest No; "employed in the <industry>" is about the
+        # candidate's history and must reach the LLM (mirrors content.js).
         "former employee",
         lambda lb: bool(
             re.search(
-                r"(previously (worked|employed)|ever worked (at|for)|former (employee|employer)|currently employed by)",
+                r"(previously (worked|employed)|ever worked (at|for)|(ever|previously) been employed (by|at|with|for)|former (employee|employer)|currently employed by)",
                 lb,
             )
         ),
