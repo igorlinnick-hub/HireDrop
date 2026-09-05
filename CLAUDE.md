@@ -21,7 +21,7 @@ modules/            ИИ-слой + скрейперы
 └── platforms/      скрейперы (indeed, ats_boards, jobspy_platform, registry, …)
 chrome-extension/   MV3 — background.js (SW, шлюз к API) + content.js (машина
                     состояний подачи) + ping.js (мост к дашборду) + popup
-migrations/         SQL, применяется руками через Supabase SQL Editor
+migrations/         SQL; применяет сессия — `supabase db query --linked -f <файл>`
 ```
 
 ⚠️ `README.md` частично протух: описанных там `chrome-extension/anti_detect/` и
@@ -75,4 +75,9 @@ Service worker падает со статусом 15, и это выглядит
 
 - Отвечать Игорю по-русски, код и комментарии — по-английски.
 - Коммитить только по просьбе. На `main` — сначала ветка.
-- Миграции Supabase Игорь применяет руками; в PR это должно быть написано явным шагом.
+- **Миграции Supabase применяет сессия сама** (09-05): `supabase link --project-ref
+  msxjcjzmfruizbgkssxo --yes` во временной папке → `supabase db query --linked -f
+  migrations/<файл>.sql` → `notify pgrst, 'reload schema'` → проверить колонку через REST.
+  Игоря просить не нужно. **Порядок обязателен**: миграция ПЕРЕД мержем website-PR —
+  карточка Settings пишет напрямую в PostgREST, и неизвестная колонка (PGRST204) валит
+  весь сейв профиля, а не только новое поле.
