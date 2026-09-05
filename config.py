@@ -73,6 +73,17 @@ ADMIN_EMAILS = {e.strip().lower() for e in os.getenv("ADMIN_EMAILS", "").split("
 RATE_LIMIT_LETTERS_PER_DAY = int(os.getenv("RATE_LIMIT_LETTERS_PER_DAY", "120"))
 RATE_LIMIT_ENFORCE = os.getenv("RATE_LIMIT_ENFORCE", "true").lower() in ("1", "true", "yes")
 
+# Hard ceiling for accounts that bypass every other limit — ADMIN_EMAILS (Igor + devs) and
+# observe mode. They were the ONLY accounts in the system with no cap at all: the tier cap,
+# the per-platform cap and the 120/day AI cap all short-circuit for them. Promo accounts are
+# bounded (a grant without a valid future expiry fails closed to free), so the one way to burn
+# Anthropic spend unattended was a forgotten campaign or a test loop on an internal account.
+#
+# Deliberately NOT the same number as the user cap: the point is to keep testing comfortable
+# while making runaway spend impossible. 300/day is ~10x a real user's day and ~$2 at
+# $0.007/call. Set ADMIN_AI_DAILY_MAX=0 to restore the old unlimited behaviour.
+ADMIN_AI_DAILY_MAX = int(os.getenv("ADMIN_AI_DAILY_MAX", "300"))
+
 # Free taste: lifetime cap on the free tier (FREE_TASTE_PLAN.md). The first N
 # applications are the product demo (~$0.02/app AI cost, no ATS tailoring);
 # after that the free tier is paywalled — subscribe to keep applying.

@@ -60,6 +60,22 @@ def release_today(user_id: str) -> None:
         get_supabase().rpc("release_ai_use", {"p_user_id": user_id}).execute()
 
 
+def admin_ceiling() -> int:
+    """Daily AI-call ceiling for accounts that bypass every other limit.
+
+    ADMIN_EMAILS and observe mode skip the tier cap, the per-platform cap and the
+    120/day AI cap, which left internal accounts as the only ones that could burn
+    Anthropic spend without bound — a forgotten campaign or a test loop ran until
+    someone noticed. This is a backstop, not a quota: it sits ~10x above a real
+    user's day so testing stays comfortable, and only bites runaway usage.
+
+    ADMIN_AI_DAILY_MAX=0 restores the old unlimited behaviour.
+    """
+    from config import ADMIN_AI_DAILY_MAX
+
+    return COUNT_ONLY_LIMIT if ADMIN_AI_DAILY_MAX <= 0 else ADMIN_AI_DAILY_MAX
+
+
 def claim_daily_ai_slot(user_id: str, email: str | None) -> bool:
     """Policy-aware claim shared by paid-AI endpoints outside tools.py.
 
@@ -71,8 +87,7 @@ def claim_daily_ai_slot(user_id: str, email: str | None) -> bool:
     from config import RATE_LIMIT_ENFORCE, RATE_LIMIT_LETTERS_PER_DAY
 
     if is_admin(email) or not RATE_LIMIT_ENFORCE:
-        claim_today(user_id, COUNT_ONLY_LIMIT)
-        return True
+        return claim_today(user_id, admin_ceiling())
     return claim_today(user_id, RATE_LIMIT_LETTERS_PER_DAY)
 
 
