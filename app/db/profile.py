@@ -35,6 +35,11 @@ _DEFAULTS = {
     "city": "",
     "state": "",
     "postal_code": "",
+    # Current employment — "current company / employer / job title" is the single
+    # biggest hand-back cause on ATS forms (12 of 21 blanks on the 320-form measure,
+    # see migrations/add_current_employment.sql).
+    "current_employer": "",
+    "current_title": "",
 }
 
 
@@ -77,6 +82,8 @@ def get_profile(user_id: str) -> dict:
         "city": p.get("city") or "",
         "state": p.get("state") or "",
         "postal_code": p.get("postal_code") or "",
+        "current_employer": p.get("current_employer") or "",
+        "current_title": p.get("current_title") or "",
     }
 
 
@@ -106,6 +113,8 @@ def update_profile(user_id: str, data: dict) -> dict:
         "city",
         "state",
         "postal_code",
+        "current_employer",
+        "current_title",
     ):
         if k in data:
             payload[k] = data[k]

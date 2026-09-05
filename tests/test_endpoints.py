@@ -163,6 +163,30 @@ def test_post_profile_saves(auth_client):
     assert res.json()["message"] == "Profile saved"
 
 
+def test_post_profile_partial_save_keeps_current_employment(auth_client):
+    """A save that doesn't send current_employer/current_title must not write them —
+    the _OPTIONAL_PROFILE_FIELDS rule: a partial save (another Settings card) must
+    never blank what the user entered elsewhere."""
+    with patch("app.routers.profile.profile_db.update_profile", return_value={}) as upd:
+        res = auth_client.post("/api/v1/profile", json={"name": "Igor"})
+    assert res.status_code == 200
+    payload = upd.call_args.args[1]
+    assert "current_employer" not in payload
+    assert "current_title" not in payload
+
+
+def test_post_profile_saves_current_employment_when_sent(auth_client):
+    with patch("app.routers.profile.profile_db.update_profile", return_value={}) as upd:
+        res = auth_client.post(
+            "/api/v1/profile",
+            json={"name": "Igor", "current_employer": "Acme Corp", "current_title": "Engineer"},
+        )
+    assert res.status_code == 200
+    payload = upd.call_args.args[1]
+    assert payload["current_employer"] == "Acme Corp"
+    assert payload["current_title"] == "Engineer"
+
+
 def test_post_profile_prefs(auth_client):
     fake_profile = {
         "name": "Igor",

@@ -21,6 +21,8 @@ class ProfileUpdate(BaseModel):
     city: str = ""
     state: str = ""
     postal_code: str = ""
+    current_employer: str = ""
+    current_title: str = ""
 
 
 class LetterPreviewRequest(BaseModel):

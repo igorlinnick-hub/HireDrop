@@ -131,6 +131,26 @@ RULES = [
             )
         ),
     ),
+    # Current employment — answered from profile.current_employer / current_title
+    # (migrations/add_current_employment.sql). Placed after "former employee" so
+    # were-you-ever-employed-here phrasings keep their rule. \bcurrent\b deliberately
+    # does not match "currently" (relocation/relationship questions stay with the LLM),
+    # and the guard drops questions ABOUT the employer that aren't its name/title
+    # ("may we contact your current employer?", "how are you using AI in your role?").
+    (
+        "current employer/title",
+        lambda lb: (
+            bool(
+                re.search(
+                    r"\b(current|most recent|present)\b.*\b(employer|company|job title|title|position|role)\b",
+                    lb,
+                )
+            )
+            and not re.search(
+                r"may we|contact|how (are|do|did)|using|why|describe|reflect|scope", lb
+            )
+        ),
+    ),
     ("age/18", lambda lb: bool(re.search(r"\b18\b|over 18|age\b", lb))),
 ]
 # Free-text questions the LLM answers (a real question, no keyword rule fits).

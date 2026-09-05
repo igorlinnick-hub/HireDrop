@@ -57,6 +57,8 @@ _OPTIONAL_PROFILE_FIELDS = (
     "city",
     "state",
     "postal_code",
+    "current_employer",
+    "current_title",
 )
 
 
