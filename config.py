@@ -108,6 +108,13 @@ STALL_WATCH_INTERVAL_SECS = int(os.getenv("STALL_WATCH_INTERVAL_SECONDS", "300")
 # roughly one form-fill (5-6 min today, see STATUS.md "Троттлинг фонового окна").
 STALL_FIRST_MINUTES = int(os.getenv("STALL_FIRST_MINUTES", "45"))
 STALL_GAP_MINUTES = int(os.getenv("STALL_GAP_MINUTES", "30"))
+# app/ops_watch.py — the two remaining blind spots: 5xx bursts and scrapers that
+# start returning zero on every call without declaring unavailable_reason.
+# Same alert channel as the stall watch: stderr always, ALERT_EMAIL when set.
+OPS_5XX_THRESHOLD = int(os.getenv("OPS_5XX_THRESHOLD", "5"))
+OPS_5XX_WINDOW_MINUTES = int(os.getenv("OPS_5XX_WINDOW_MINUTES", "10"))
+OPS_ZERO_STREAK_THRESHOLD = int(os.getenv("OPS_ZERO_STREAK_THRESHOLD", "5"))
+OPS_ALERT_COOLDOWN_MINUTES = int(os.getenv("OPS_ALERT_COOLDOWN_MINUTES", "30"))
 
 
 # =============================================================================

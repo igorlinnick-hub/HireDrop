@@ -93,12 +93,17 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
     platforms = [PLATFORMS[p]() for p in scrapeable]
     all_jobs, searched = [], []
 
+    from app.ops_watch import record_scrape
+
     for platform in platforms:
         found = platform.scrape(
             keywords=profile.get("keywords", []),
             location=profile.get("location", "remote"),
             max_results=25,
         )
+        # Feed the silent-zero watch: a live platform whose every scrape returns 0
+        # is the #113 signature and must not stay invisible (see app/ops_watch.py).
+        record_scrape(platform.name, len(found))
         all_jobs.extend(found)
         searched.append(platform.display_name)
 
@@ -182,6 +187,9 @@ def _run_ats_discovery(user_id: str) -> None:
         except Exception as e:
             print(f"[find-ats bg] discovery failed: {e}", file=sys.stderr)
             found = []
+        from app.ops_watch import record_scrape
+
+        record_scrape("ats_boards", len(found))
 
         already_saved = jobs_db.existing_links(user_id, [j["link"] for j in found])
         new_jobs = [j for j in found if j["link"] not in already_saved]
