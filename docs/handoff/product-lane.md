@@ -17,7 +17,11 @@
 - **Миграции применяет сессия сама**: `supabase link --project-ref msxjcjzmfruizbgkssxo
   --yes` (во временной папке) → `supabase db query --linked -f migrations/<файл>.sql` →
   `notify pgrst, 'reload schema'` → REST-проверка колонки. Игорь не нужен.
-- 182 теста (19 новых на биллинг, #141), ruff чист, CI настоящий. Ext синкнут на Рабочий стол.
+- 192 теста (+19 биллинг #141, +10 ops-watch #142), ruff чист, CI настоящий. Ext синкнут
+  на Рабочий стол.
+- **Observability закрыта на первый круг (#142)**: `app/ops_watch.py` — 5xx-burst
+  (≥5/10мин) и молчаливый ноль скрейпера (0 подряд ≥5 раз, сигнатура #113); stderr всегда,
+  email при `ALERT_EMAIL`; смотреть `GET /tools/ops-scan` (admin). Вид per-worker.
 
 ## Последний заход (09-05)
 
@@ -41,7 +45,8 @@
 - PR #53 (промо elite→pro, 2 строки) mergeable с 25.07 — ждёт слова Игоря.
 - `elite` мёртв, но промо раздаёт его по умолчанию (до решения по #53).
 - Троттлинг фонового окна 5-6 мин/форма (цель <90с) — только с ре-верификацией живьём.
-- Observability = один детектор (#125); `ALERT_EMAIL` ждёт `railway login`.
+- `ALERT_EMAIL` ждёт `railway login` — до этого алерты ops-watch/#125 видны только в
+  Railway-логе.
 
 ## Следующий шаг
 
