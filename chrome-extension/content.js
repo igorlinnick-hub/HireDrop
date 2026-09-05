@@ -2370,14 +2370,19 @@
     if (/(text message|sms|opt.?in|receive (calls|messages|texts))/i.test(label) && no) return no;
     // Previously worked at THIS company / referral-conflict → No (honest default for a
     // cold application; a real former employee reviews in TAP and can fix it).
-    if (/(previously (worked|employed)|ever worked (at|for)|former (employee|employer)|currently employed by)/i.test(label) && no) return no;
+    // "(ever|previously) been employed" requires a following by/at/with/for on purpose:
+    // "have you ever been employed by Stripe?" is about THIS company (No is honest),
+    // while "have you ever been employed in the securities industry?" is about the
+    // candidate's own history — guessing No there could be a lie on a regulated form.
+    if (/(previously (worked|employed)|ever worked (at|for)|(ever|previously) been employed (by|at|with|for)|former (employee|employer)|currently employed by)/i.test(label) && no) return no;
     // English / language proficiency → the strongest fluency option present.
     if (/(english|language).*(level|proficien|fluen)|(level|proficien).*(english|language)/i.test(label)) {
       const fluent = options.find(o => /(native|fluent|full professional|advanced|c2|c1)/i.test(o.text));
       if (fluent) return fluent;
     }
-    // How did you hear about us → a neutral truthful source.
-    if (/how did you (hear|find|learn)|hear about (this|us|the)/i.test(label)) {
+    // How did you hear about us → a neutral truthful source. "(first )?" covers the
+    // "how did you first learn about X as an employer?" phrasing (4× in the 320 schemas).
+    if (/how did you (first )?(hear|find|learn)|hear about (this|us|the)/i.test(label)) {
       const src = options.find(o => /(job board|linkedin|company (website|careers)|online|internet|other)/i.test(o.text));
       if (src) return src;
     }
