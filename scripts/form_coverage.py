@@ -63,8 +63,13 @@ RULES = [
         ),
     ),
     (
+        # Word boundaries, not a bare "location" substring: "capaCITY" / "reLOCATION"
+        # are not city questions (content.js had the same bug and answered "are you open
+        # to relocation to Qatar?" with the user's city).
         "city/state",
-        lambda lb: bool(re.search(r"\bcity\b|\bstate\b|\bprovince\b|\bregion\b|location", lb)),
+        lambda lb: bool(
+            re.search(r"\bcity\b|\bstate\b|\bprovince\b|\bregion\b|\blocations?\b", lb)
+        ),
     ),
     (
         "country/where",
@@ -134,9 +139,11 @@ RULES = [
     # Current employment — answered from profile.current_employer / current_title
     # (migrations/add_current_employment.sql). Placed after "former employee" so
     # were-you-ever-employed-here phrasings keep their rule. \bcurrent\b deliberately
-    # does not match "currently" (relocation/relationship questions stay with the LLM),
-    # and the guard drops questions ABOUT the employer that aren't its name/title
-    # ("may we contact your current employer?", "how are you using AI in your role?").
+    # does not match "currently" (relocation/relationship questions stay with the LLM).
+    # A yes/no-shaped label is never a "name your employer" FIELD — it's a question
+    # ABOUT employment ("are you subject to any agreements with your current employer?",
+    # "may we contact your current employer?") and must reach the LLM, not get answered
+    # with a company name. Same guard as the content.js branch — keep them in sync.
     (
         "current employer/title",
         lambda lb: (
@@ -146,9 +153,10 @@ RULES = [
                     lb,
                 )
             )
-            and not re.search(
-                r"may we|contact|how (are|do|did)|using|why|describe|reflect|scope", lb
+            and not re.match(
+                r"(are|do|does|did|have|has|is|was|were|would|will|may|can|should)\b", lb
             )
+            and not re.search(r"how (are|do|did)|using|why|describe|reflect|scope", lb)
         ),
     ),
     ("age/18", lambda lb: bool(re.search(r"\b18\b|over 18|age\b", lb))),

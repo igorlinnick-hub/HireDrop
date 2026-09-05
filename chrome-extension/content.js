@@ -2255,10 +2255,32 @@
       } else if (/\bstate\b|\bprovince\b|\bregion\b/.test(label)) {
         value = profile.state || "";
         if (!value) continue;
-      } else if (label.includes("city") || label.includes("location")) {
+      } else if (/\bcity\b|\blocations?\b/.test(label)) {
         // The user's real city if we have it; the search location is a fallback, not an
         // address (it can read "Miami, Florida, US" or even "remote").
+        //
+        // Word boundaries, not includes(): "capaCITY" and "reLOCATION" are not city
+        // questions. The substring test was answering "are you open to relocation to
+        // Qatar?" with "Miami" (6 required text questions across the 320 schemas; the
+        // other 43 substring hits are selects, which never reach this chain).
         value = profile.city || profile.location || "Remote";
+      } else if (/\b(current|most recent|present)\b.*\b(employer|company|job title|title|position|role)\b/i.test(label)
+                 && !/^(are|do|does|did|have|has|is|was|were|would|will|may|can|should)\b/i.test(label)
+                 && !/how (are|do|did)|using|why|describe|reflect|scope/i.test(label)) {
+        // Current employment. The single biggest hand-back cause on real forms: 12 of the
+        // 21 required questions we left blank across 320 Greenhouse schemas were "current
+        // company / employer / job title" (scripts/form_coverage.py), plus ~9 more that
+        // each burned an AI call.
+        //
+        // The guards matter as much as the match. A yes/no-shaped label is never a
+        // "name your employer" FIELD, it's a question ABOUT employment — "are you subject
+        // to any employment agreements with your current employer?", "may we contact your
+        // current employer?" — and would otherwise be answered with a company name. Same
+        // for "how are you using AI in your current role?". Those belong to the AI branch.
+        value = /\b(job title|title|position|role)\b/i.test(label)
+          ? (profile.current_title || "")
+          : (profile.current_employer || "");
+        if (!value) continue; // never invent an employer — hand back instead
       } else if (/notice period|when (can|could) you start|available to start|start date/i.test(label) && !isTextarea) {
         value = profile.notice_period || "2 weeks";
       } else if (/(english|language).*(level|proficien|fluen)/i.test(label) && !isTextarea) {
