@@ -122,6 +122,28 @@ def update_profile(user_id: str, data: dict) -> dict:
     return get_profile(user_id)
 
 
+def fill_current_employment_if_blank(user_id: str, employer: str, title: str) -> dict:
+    """Seed current_employer / current_title from the resume the user uploaded.
+
+    Only fills what is EMPTY — a value the user typed in Settings always wins, and a
+    re-generated resume never overwrites their correction. Returns what was written.
+
+    Why this exists: a profile field nobody fills is worth nothing. The mailing address
+    shipped 2026-08-15 and three weeks later exactly 1 of 28 profiles had one, while
+    'current employer/title' is the biggest hand-back cause on real forms. The resume
+    already names both — experience[0] — so we take them from there instead of asking.
+    """
+    filled = {}
+    current = get_profile(user_id)
+    if employer and employer.strip() and not current.get("current_employer"):
+        filled["current_employer"] = employer.strip()[:200]
+    if title and title.strip() and not current.get("current_title"):
+        filled["current_title"] = title.strip()[:200]
+    if filled:
+        get_supabase().table("profiles").update(filled).eq("user_id", user_id).execute()
+    return filled
+
+
 def update_apply_mode(user_id: str, mode: str, ideal_job_description: str | None = None) -> None:
     """Switch apply mode. Clears ideal_job_description when switching away from precise."""
     payload: dict = {"apply_mode": mode}

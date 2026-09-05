@@ -328,6 +328,7 @@ async def ats_generate(body: dict = None, user=Depends(get_current_user)):
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             resume_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
         data = structure_resume_data(resume_text, answers=answers)
+        _seed_employment_from_resume(user.id, data)
         ats_pdf_bytes = generate_ats_pdf(data=data)
         ats_docx_bytes = generate_ats_docx(data=data)
     except Exception as e:
@@ -400,6 +401,7 @@ async def ats_generate_from_text(body: dict, user=Depends(get_current_user)):
 
     try:
         data = structure_resume_data(resume_text)
+        _seed_employment_from_resume(user.id, data)
         ats_pdf_bytes = generate_ats_pdf(data=data)
         ats_docx_bytes = generate_ats_docx(data=data)
     except Exception as e:
@@ -448,6 +450,24 @@ def ats_decline(user=Depends(get_current_user)):
     """User chose to keep original resume. Mark ats_approved = False."""
     profile_db.update_ats(user.id, {"ats_approved": False})
     return {"approved": False}
+
+
+def _seed_employment_from_resume(user_id: str, data: dict) -> None:
+    """Take current employer/title from the structured resume we just paid to parse.
+
+    experience[0] is the most recent job — the same two answers forms ask for as
+    "current company" / "current job title". Free: the Claude call already happened
+    for the ATS resume. Best-effort — a profile write must never fail a resume build.
+    """
+    try:
+        latest = (data.get("experience") or [{}])[0] or {}
+        filled = profile_db.fill_current_employment_if_blank(
+            user_id, str(latest.get("company") or ""), str(latest.get("title") or "")
+        )
+        if filled:
+            print(f"[profile] seeded from resume: {sorted(filled)}", file=sys.stderr)
+    except Exception as e:
+        print(f"[profile] employment seed skipped: {e}", file=sys.stderr)
 
 
 def _store_tailored_pdf(user_id: str, job_id: str, tailored_text: str) -> None:
