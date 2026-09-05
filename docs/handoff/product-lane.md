@@ -17,7 +17,7 @@
 - **Миграции применяет сессия сама**: `supabase link --project-ref msxjcjzmfruizbgkssxo
   --yes` (во временной папке) → `supabase db query --linked -f migrations/<файл>.sql` →
   `notify pgrst, 'reload schema'` → REST-проверка колонки. Игорь не нужен.
-- 163 теста, ruff чист, CI настоящий. Ext синкнут на Рабочий стол.
+- 182 теста (19 новых на биллинг, #141), ruff чист, CI настоящий. Ext синкнут на Рабочий стол.
 
 ## Последний заход (09-05)
 
@@ -45,8 +45,9 @@
 
 ## Следующий шаг
 
-Как только `STRIPE_SECRET_KEY` лежит в `jobflow/.env` и `railway login` сделан — поднять
-кассу одним заходом: создать через Stripe API оба Price ($9/нед, $29/мес из
-billing_config.py) и webhook на `<railway>/api/v1/billing/webhook` (забрать signing
-secret из ответа), залить 4 переменные `STRIPE_*` в Railway, проверить что
-`POST /billing/checkout` отдаёт url вместо 503 — и jay\*\*\* упирается в кассу, а не в тупик.
+Как только `STRIPE_SECRET_KEY` лежит в `jobflow/.env` — **одна команда**:
+`python scripts/stripe_bootstrap.py ship` (#141). Она сама: Prices по lookup_key →
+webhook + signing secret → upsert `.env` → `railway variables --set` (если CLI
+разлогинен — печатает команды) → verify (prod webhook 400 = касса поднята, 503 = нет).
+Read-only проверка в любой момент: `python scripts/stripe_bootstrap.py status`.
+Денежный путь покрыт тестами (`tests/test_billing.py`, 19 шт).
