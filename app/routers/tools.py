@@ -43,7 +43,13 @@ def _claim_ai_slot(user) -> None:
     still count usage but are never blocked.
     """
     if is_admin(getattr(user, "email", None)) or not RATE_LIMIT_ENFORCE:
-        usage_db.claim_today(user.id, usage_db.COUNT_ONLY_LIMIT)
+        # Still effectively unlimited for normal use, but not literally unbounded:
+        # internal accounts were the only ones that could burn spend forever.
+        if not usage_db.claim_today(user.id, usage_db.admin_ceiling()):
+            raise HTTPException(
+                status_code=429,
+                detail="Internal daily AI ceiling reached. Raise ADMIN_AI_DAILY_MAX or wait for tomorrow.",
+            )
         return
     if not usage_db.claim_today(user.id, RATE_LIMIT_LETTERS_PER_DAY):
         used = usage_db.get_today_count(user.id)

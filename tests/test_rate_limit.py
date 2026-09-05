@@ -99,3 +99,42 @@ def test_claim_today_falls_back_before_migration():
         assert usage.claim_today("u1", limit=3) is True
         inc.assert_called_once_with("u1")
         assert usage.claim_today("u1", limit=2) is False
+
+
+# --- internal accounts are bounded too (fix/admin-spend-ceiling) -------------
+
+
+def test_admin_ceiling_defaults_to_a_real_number(monkeypatch):
+    """Admins bypass every other cap; the backstop must be finite by default."""
+    from app.db import usage as usage_db
+
+    monkeypatch.setattr("config.ADMIN_AI_DAILY_MAX", 300, raising=False)
+    assert usage_db.admin_ceiling() == 300
+    assert usage_db.admin_ceiling() < usage_db.COUNT_ONLY_LIMIT
+
+
+def test_admin_ceiling_zero_restores_unlimited(monkeypatch):
+    """Escape hatch: ADMIN_AI_DAILY_MAX=0 means the old unbounded behaviour."""
+    from app.db import usage as usage_db
+
+    monkeypatch.setattr("config.ADMIN_AI_DAILY_MAX", 0, raising=False)
+    assert usage_db.admin_ceiling() == usage_db.COUNT_ONLY_LIMIT
+
+
+def test_admin_claim_uses_the_ceiling_not_the_sentinel(monkeypatch):
+    """The claim for an admin must pass the ceiling, not COUNT_ONLY_LIMIT."""
+    from app.db import usage as usage_db
+
+    seen = {}
+
+    monkeypatch.setattr("config.ADMIN_AI_DAILY_MAX", 42, raising=False)
+
+    def _record(uid, limit):
+        seen["limit"] = limit
+        return True
+
+    monkeypatch.setattr(usage_db, "claim_today", _record)
+    monkeypatch.setattr("app.db.subscriptions.is_admin", lambda email: True)
+
+    assert usage_db.claim_daily_ai_slot("u1", "admin@example.com") is True
+    assert seen["limit"] == 42
