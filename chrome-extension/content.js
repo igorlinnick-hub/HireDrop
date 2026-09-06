@@ -2255,7 +2255,23 @@
       } else if (/\bstate\b|\bprovince\b|\bregion\b/.test(label)) {
         value = profile.state || "";
         if (!value) continue;
-      } else if (/\bcity\b|\blocations?\b/.test(label)) {
+      } else if (/\bcommute\b/.test(label) && /^(are|will|can|do|would)\b/.test(label) && !isTextarea) {
+        // "Will you be able to regularly commute and work in an office in job posting
+        // location?" — a yes/no question whose label contains "location", so the city
+        // rule below was answering it with "Miami, Florida, US" (live Braze form,
+        // 2026-09-06). Jobs come from the user's own search location, so Yes is the
+        // honest default. RELOCATION stays with the AI — "willing to relocate to
+        // Qatar?" answered Yes deterministically could be a lie.
+        value = "Yes";
+      } else if (/(talent (community|network|pool)|newsletter|marketing (emails|communication)|future (job )?(opportunit|opening))/.test(label) && !isTextarea) {
+        // Talent-community / newsletter opt-in — the platform marketing to the user,
+        // not the employer asking about the candidate (same class as the SMS rule in
+        // pickOptionDeterministic). Never subscribe the user without their consent.
+        // Live Braze form 2026-09-06: this REQUIRED dropdown went blank and its
+        // validation error silently blocked the whole submission.
+        value = "No";
+      } else if ((/\bcity\b|\blocations?\b/.test(label))
+                 && !/^(are|do|does|did|have|has|is|was|were|would|will|may|can|should)\b/.test(label)) {
         // The user's real city if we have it; the search location is a fallback, not an
         // address (it can read "Miami, Florida, US" or even "remote").
         //
@@ -2367,7 +2383,7 @@
     // depends on the answer — so the least intrusive choice is the honest default.
     // (ZipRecruiter makes this one REQUIRED on its one-tap apply: name=['sms_opt_in'],
     // and a blank answer blocks the whole submission.)
-    if (/(text message|sms|opt.?in|receive (calls|messages|texts))/i.test(label) && no) return no;
+    if (/(text message|sms|opt.?in|receive (calls|messages|texts)|talent (community|network|pool)|newsletter)/i.test(label) && no) return no;
     // Previously worked at THIS company / referral-conflict → No (honest default for a
     // cold application; a real former employee reviews in TAP and can fix it).
     // "(ever|previously) been employed" requires a following by/at/with/for on purpose:
