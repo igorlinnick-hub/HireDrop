@@ -1260,8 +1260,31 @@
   // PHASE 2 — Job Detail / View Job
   // =========================================================================
 
+  // A dead link — a stale seed row, an expired posting, a job the board pulled — renders a
+  // "Not Found" page: no title, no Apply button, nothing for the walk to act on. Every
+  // guard downstream keys on things such a page simply doesn't have, so the walk just sat
+  // there: live 09-06, two Indeed 404s held Igor's automation windows for 31 and 15
+  // minutes until the server-side stall watch noticed. Expired postings are ORDINARY, not
+  // an incident — name the page for what it is and advance (skipToNextJob knows whether
+  // this is a pool head, which the background then flips out of `approved`, or a native
+  // walk step).
+  function pageLooksNotFound() {
+    const title = (document.title || "").toLowerCase();
+    // Indeed serves "Not Found | Indeed"; ZipRecruiter "Page Not Found".
+    if (/\bnot found\b|\b404\b/.test(title)) return true;
+    const body = (document.body?.innerText || "").slice(0, 1200).toLowerCase();
+    return /this job has expired|job (posting )?(you were looking for )?(was |is )?(no longer available|not found)|page (you requested |)(was |is |)not found/
+      .test(body);
+  }
+
   async function phase2_jobDetail() {
     const platform = detectPlatform();
+    if (pageLooksNotFound()) {
+      const jk = (window.location.href.match(/[?&](?:vjk|jk|lk)=([a-z0-9]+)/i) || [])[1] || "";
+      logBackend(`🚫 Dead link — ${platformLabel()} says this posting is gone${jk ? ` (${jk})` : ""}; moving to the next job`, "info");
+      await skipToNextJob();
+      return;
+    }
     if (platform === "ziprecruiter") return await phase2_ziprecruiter();
     return await phase2_indeed();
   }
@@ -1301,7 +1324,10 @@
     const jobUrl = window.location.href;
 
     if (!jobTitle) {
+      // Durable, not popup-only: a page with no title is exactly the shape that used to
+      // end the walk in silence — nothing in the activity log to tell it from a freeze.
       log("Could not find job title — skipping", "err");
+      logBackend(`⏭️ No job title on this page (${location.pathname}) — skipping to the next job`, "warn");
       await skipToNextJob();
       return;
     }
