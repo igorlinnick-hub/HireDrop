@@ -144,6 +144,27 @@ def fill_current_employment_if_blank(user_id: str, employer: str, title: str) ->
     return filled
 
 
+def fill_address_if_blank(user_id: str, city: str, state: str, postal_code: str) -> dict:
+    """Seed city/state/zip from the resume's contact block — same contract as
+    fill_current_employment_if_blank: only EMPTY fields, user input always wins.
+
+    Resumes almost never carry a street address, so street stays user-supplied and is
+    asked for only when a form actually requires it (honest hand-back) — but the
+    "City, ST ZIP" most resumes DO carry covers the usual contact step (ZR included)
+    without the user ever visiting Settings.
+    """
+    candidate = {"city": city, "state": state, "postal_code": postal_code}
+    filled = {}
+    current = get_profile(user_id)
+    for col, val in candidate.items():
+        v = (val or "").strip()
+        if v and not current.get(col):
+            filled[col] = v[:100]
+    if filled:
+        get_supabase().table("profiles").update(filled).eq("user_id", user_id).execute()
+    return filled
+
+
 def update_apply_mode(user_id: str, mode: str, ideal_job_description: str | None = None) -> None:
     """Switch apply mode. Clears ideal_job_description when switching away from precise."""
     payload: dict = {"apply_mode": mode}
