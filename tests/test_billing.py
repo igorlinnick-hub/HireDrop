@@ -170,6 +170,32 @@ def test_webhook_checkout_completed_links_and_grants(
     assert kwargs["subscription_id"] == "sub_1"
 
 
+def test_webhook_grant_period_end_falls_back_to_item(
+    client, stripe_mock, billing_db_mock, monkeypatch
+):
+    # stripe-python v15 pins an API version with no top-level current_period_end —
+    # it lives on the item. Live bug 2026-09-06: expiry stored NULL, get_tier
+    # fail-closed the paying user back to free.
+    monkeypatch.setitem(PLANS["weekly"], "price_id", "price_w")
+    sub = {
+        "id": "sub_1",
+        "status": "active",
+        "items": {"data": [{"price": {"id": "price_w"}, "current_period_end": 1800000000}]},
+    }
+    stripe_mock.Webhook.construct_event.return_value = make_event(
+        "checkout.session.completed",
+        {"client_reference_id": "u1", "customer": "cus_1", "subscription": "sub_1"},
+    )
+    stripe_mock.Subscription.retrieve.return_value = sub
+
+    r = client.post(f"{API}/billing/webhook", content=b"{}")
+
+    assert r.status_code == 200
+    args, _kwargs = billing_db_mock.grant.call_args
+    assert args[1] == "pro"
+    assert args[2] is not None and args[2].startswith("2027-")
+
+
 def test_webhook_unknown_price_grants_nothing(client, stripe_mock, billing_db_mock, monkeypatch):
     monkeypatch.setitem(PLANS["weekly"], "price_id", "price_w")
     monkeypatch.setitem(PLANS["monthly"], "price_id", "price_m")

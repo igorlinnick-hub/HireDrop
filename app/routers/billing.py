@@ -105,10 +105,18 @@ def create_portal(user=Depends(get_current_user)):
 
 
 def _period_end_iso(subscription: dict) -> str | None:
-    """current_period_end (unix) → ISO8601 UTC, matching subscription_expires_at."""
+    """current_period_end (unix) → ISO8601 UTC, matching subscription_expires_at.
+
+    stripe-python v15 pins an API version where current_period_end is gone from the
+    subscription's top level and lives on each item instead (live NULL expiry on the
+    first real payment, 2026-09-06 — get_tier fail-closed the paid user back to free).
+    """
     from datetime import datetime
 
     ts = subscription.get("current_period_end")
+    if not ts:
+        items = (subscription.get("items") or {}).get("data") or []
+        ts = items[0].get("current_period_end") if items else None
     if not ts:
         return None
     return datetime.fromtimestamp(int(ts), tz=UTC).isoformat()
