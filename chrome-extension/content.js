@@ -3027,6 +3027,10 @@
     // 4 minutes before the loop gave up. Two no-progress rounds is proof enough.
     let lastSig = "";
     let stallRounds = 0;
+    // Per-step wall clock, printed on the STEP line. Form time is a product metric now
+    // (target: a form under 90s), and the only honest place to measure it is the live
+    // run — reading it out of the activity log beats re-deriving it from timestamps.
+    let prevStepAt = Date.now();
     const formSignature = () => {
       const sc = formScope();
       const q = sc === document ? document.body : sc;
@@ -3047,7 +3051,11 @@
       }
 
       formStepCount++;
-      await sleep(humanDelay(1500, 2500));
+      // Between-step pauses are the cheapest seconds in the whole engine to give back:
+      // the human-plausible part of a step is the typing and the mouse path (both kept
+      // intact below), not a flat think-pause on top of them. Measured 09-06 on Igor's
+      // live run: 17-31s per Indeed step, 160s for an 8-step form — target is <90s.
+      await sleep(humanDelay(700, 1400));
 
       // Fill whatever fields are visible on this step
       let filledAny = false;
@@ -3057,7 +3065,7 @@
       const fnEl = findFieldBySelectorsOrLabel("firstName");
       if (fnEl && !(fnEl.value || "").trim()) {
         await typeValue(fnEl, profile.name || "");
-        await sleep(humanDelay(3000, 5000));
+        await sleep(humanDelay(1200, 2200));
         filledAny = true; filled.push("first");
       }
 
@@ -3065,7 +3073,7 @@
       const lnEl = findFieldBySelectorsOrLabel("lastName");
       if (lnEl && !(lnEl.value || "").trim()) {
         await typeValue(lnEl, profile.last_name || "");
-        await sleep(humanDelay(3000, 5000));
+        await sleep(humanDelay(1200, 2200));
         filledAny = true; filled.push("last");
       }
 
@@ -3073,7 +3081,7 @@
       const emEl = findFieldBySelectorsOrLabel("email");
       if (emEl && !(emEl.value || "").trim()) {
         await typeValue(emEl, await resolveEmail(profile));
-        await sleep(humanDelay(3000, 5000));
+        await sleep(humanDelay(1200, 2200));
         filledAny = true; filled.push("email");
       }
 
@@ -3081,7 +3089,7 @@
       const phEl = findFieldBySelectorsOrLabel("phone");
       if (phEl && !(phEl.value || "").trim()) {
         await typeValue(phEl, profile.phone || "");
-        await sleep(humanDelay(3000, 5000));
+        await sleep(humanDelay(1200, 2200));
         filledAny = true; filled.push("phone");
       }
 
@@ -3089,7 +3097,7 @@
       const clEl = findFieldBySelectorsOrLabel("coverLetter");
       if (clEl && !(clEl.value || "").trim()) {
         quickSet(clEl, coverLetter);
-        await sleep(humanDelay(3000, 5000));
+        await sleep(humanDelay(1200, 2200));
         filledAny = true; filled.push("cover");
       }
 
@@ -3098,7 +3106,7 @@
       if (resumeInput && !resumeInput.files?.length) {
         try {
           await uploadResume(resumeInput);
-          await sleep(humanDelay(3000, 5000));
+          await sleep(humanDelay(1200, 2200));
           filledAny = true; filled.push("resume");
         } catch (e) {
           log("Resume upload failed: " + e.message, "err");
@@ -3178,7 +3186,9 @@
       {
         const dlgs = visibleApplyDialogs();
         const where = !action.btn ? "none" : (dlgs.some((d) => d.contains(action.btn)) ? "dialog" : "page");
-        logBackend(`STEP ${formStepCount} [${platformLabel()}] filled=[${filled.join(",")}] btn="${action.label || "-"}" (${where}) → ${action.btn ? (action.submit ? "SUBMIT" : "continue") : "no button"} ${dialogSnapshot()}`, "info");
+        const dt = ((Date.now() - prevStepAt) / 1000).toFixed(1);
+        prevStepAt = Date.now();
+        logBackend(`STEP ${formStepCount} [${platformLabel()}] Δ${dt}s filled=[${filled.join(",")}] btn="${action.label || "-"}" (${where}) → ${action.btn ? (action.submit ? "SUBMIT" : "continue") : "no button"} ${dialogSnapshot()}`, "info");
       }
 
       // Check if this is the final submit step
@@ -3301,7 +3311,7 @@
       const navBtn = action.btn || findFormButton();
       if (navBtn) {
         log(`Clicking "${(navBtn.textContent || "").trim()}"...`, "");
-        await sleep(humanDelay(2000, 4000));
+        await sleep(humanDelay(1000, 2000));
         // Re-check after the pause so a Stop mid-step halts before advancing.
         if (!(await isCampaignRunning())) {
           log("Campaign stopped — aborting before next step", "");
@@ -3323,7 +3333,17 @@
         await sleep(humanDelay(800, 1500));
 
         // That "Continue" may have BEEN the submit (ZipRecruiter has no Submit button).
-        const silent = await detectSilentSubmission();
+        // Sizing this window is the single biggest lever on form time: it is PURE waiting.
+        // On modal platforms detectSilentSubmission bails on its first beat (a dialog with
+        // fields = mid-flow), but Indeed's SmartApply renders steps as PAGES — no dialog —
+        // so every mid-form Continue sat out the full window. Measured 09-06 on the live
+        // run: ~9s of a 17-31s step, eight steps deep (160s for one form).
+        // When the next step is already showing its own advance button we are mid-flow, so
+        // a short window is enough to still catch the one shape that looks the same — a
+        // post-apply page that also carries a "Continue…" button. With no button on screen
+        // (the shape a real silent submit leaves behind) we keep the full window.
+        const nextStepShowing = !!classifyFormButton().btn;
+        const silent = await detectSilentSubmission(nextStepShowing ? 2500 : 9000);
         if (silent) {
           log(`Applied (verified ${silent}): ${jobInfo.title} @ ${jobInfo.company}`, "ok");
           await recordSubmittedApplication(jobInfo, coverLetter, silent);
