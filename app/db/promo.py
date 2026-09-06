@@ -42,7 +42,9 @@ def redeem_code(user_id: str, code: str) -> dict:
         except ValueError:
             pass
 
-    tier = row.get("grants_tier") or "pro"  # the single paid tier (Weekly/Monthly); legacy elite → pro in get_tier
+    tier = (
+        row.get("grants_tier") or "pro"
+    )  # the single paid tier (Weekly/Monthly); legacy elite → pro in get_tier
 
     # Already redeemed by this user? Idempotent — don't spend another use, but
     # RE-APPLY the tier: a first attempt at signup may have logged the redemption
