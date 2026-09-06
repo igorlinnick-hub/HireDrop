@@ -37,22 +37,32 @@
   с печатью списка пойманных лейблов (так нашли capaCITY/reLOCATION и юр-yes/no).
 - Разбор 28 профилей: 15 тестовых + 13 органики; jay\*\*\* — первый настоящий юзер.
 
+## Закрыто 09-05 ночью (не переделывать!)
+
+- **КАССА LIVE**: Stripe активирован (Hello Systems LLC), `stripe_bootstrap.py ship`
+  создал Prices+webhook, 5 переменных в Railway, prod probe = 400. Проверка:
+  `python scripts/stripe_bootstrap.py status`. Кассой владеет Stripe-сессия Игоря —
+  продукт-лейн её НЕ трогает.
+- **PR #53 смержен** (Игорь сказал «мержим»): промо grant'ит `pro`; легаси premium/elite
+  схлопываются в `pro` внутри `get_tier`. Дыра «elite бесплатно 75/день» закрыта.
+- **`ALERT_EMAIL` стоит в Railway** — stall-watch #125 и ops-watch #142 шлют почту.
+- **Ветки почищены 49 → 5**: остались `main` + 4 с потенциально живой работой:
+  `feat/cold-email-outreach` (Phase 1, ждёт Gmail OAuth), `platform/google-jobs` (09-03),
+  `feat/gh-test-bundle` и `feat/tap-all-platforms` (июльский tap/pool — в main НЕТ
+  `poolDoneUrls`; судить ext-сессии, не удалять вслепую).
+- Тест-фикс #143: биллинг-тесты больше не зависят от того, поднята ли касса в `.env`.
+
 ## Сломано / не доделано
 
-- **КАССА (текущая стадия)**: jay\*\*\* в ~9 заявках от free-лимита (40 lifetime), за
-  пейволлом 503. Ждём 3 действий Игоря: Stripe Activate (Individual + личный банк),
-  `STRIPE_SECRET_KEY` → `jobflow/.env`, `railway login`.
-- PR #53 (промо elite→pro, 2 строки) mergeable с 25.07 — ждёт слова Игоря.
-- `elite` мёртв, но промо раздаёт его по умолчанию (до решения по #53).
-- Троттлинг фонового окна 5-6 мин/форма (цель <90с) — только с ре-верификацией живьём.
-- `ALERT_EMAIL` ждёт `railway login` — до этого алерты ops-watch/#125 видны только в
-  Railway-логе.
+- **Checkout не прогнан живьём**: prod отвечает 400 (configured), но саму ссылку
+  checkout → оплата → webhook → тир никто e2e не проходил. Пейволл-UI у jobflow-b1.
+- Троттлинг фонового окна 5-6 мин/форма (цель <90с) — замер у ext-сессии
+  (`ext/zr-live-verify`), фиксы только с ре-верификацией живьём.
+- Sentry нет (SAAS_PLAYBOOK §4) — единственная открытая строка наблюдаемости.
 
 ## Следующий шаг
 
-Как только `STRIPE_SECRET_KEY` лежит в `jobflow/.env` — **одна команда**:
-`python scripts/stripe_bootstrap.py ship` (#141). Она сама: Prices по lookup_key →
-webhook + signing secret → upsert `.env` → `railway variables --set` (если CLI
-разлогинен — печатает команды) → verify (prod webhook 400 = касса поднята, 503 = нет).
-Read-only проверка в любой момент: `python scripts/stripe_bootstrap.py status`.
-Денежный путь покрыт тестами (`tests/test_billing.py`, 19 шт).
+По плану лейна: **e2e-чек кассы со стороны бэкенда** — тестовым юзером получить
+`/billing/checkout` url, пройти оплату тестовой картой (или дождаться первого живого
+платежа jay\*\*\*) и убедиться, что webhook выставил `subscription_tier=pro` в profiles.
+Дальше — по верху STATUS «Следующий шаг».
