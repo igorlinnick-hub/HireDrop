@@ -86,3 +86,56 @@ def test_router_seed_survives_a_resume_with_no_experience():
 def test_router_seed_swallows_db_errors():
     with patch.object(profile_db, "fill_current_employment_if_blank", side_effect=RuntimeError):
         _seed_employment_from_resume("u1", {"experience": [{"company": "X", "title": "Y"}]})
+
+
+# ── address seeding (same paid parse, same only-fill-blank contract) ─────────
+
+
+def _seed_addr(existing: dict, city: str, state: str, postal: str) -> dict:
+    written = {}
+
+    class _Chain:
+        def update(self, payload):
+            written.update(payload)
+            return self
+
+        def eq(self, *_a, **_k):
+            return self
+
+        def execute(self):
+            return None
+
+    class _Client:
+        def table(self, _name):
+            return _Chain()
+
+    with (
+        patch.object(profile_db, "get_profile", return_value=existing),
+        patch.object(profile_db, "get_supabase", return_value=_Client()),
+    ):
+        profile_db.fill_address_if_blank("u1", city, state, postal)
+    return written
+
+
+def test_address_seeds_blank_fields_only():
+    written = _seed_addr({"city": "", "state": "", "postal_code": ""}, "Miami", "FL", "33101")
+    assert written == {"city": "Miami", "state": "FL", "postal_code": "33101"}
+
+
+def test_address_never_overwrites_user_input():
+    written = _seed_addr(
+        {"city": "Tampa", "state": "FL", "postal_code": "33601"}, "Miami", "FL", "33101"
+    )
+    assert written == {}
+
+
+def test_split_location_variants():
+    from app.routers.profile import _split_location
+
+    assert _split_location("Miami, FL 33101") == ("Miami", "FL", "33101")
+    assert _split_location("Miami, Florida, USA") == ("Miami", "Florida", "")
+    assert _split_location("Miami FL") == ("Miami", "FL", "")
+    assert _split_location("Remote") == ("", "", "")
+    assert _split_location("") == ("", "", "")
+    # ZIP+4 collapses to the 5-digit form the profile stores.
+    assert _split_location("Brooklyn, NY 11201-1234") == ("Brooklyn", "NY", "11201")

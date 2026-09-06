@@ -464,10 +464,47 @@ def _seed_employment_from_resume(user_id: str, data: dict) -> None:
         filled = profile_db.fill_current_employment_if_blank(
             user_id, str(latest.get("company") or ""), str(latest.get("title") or "")
         )
+        # Address too (same paid parse): "City, ST 33101"-style contact.location →
+        # city/state/zip. Covers the ZR contact step without the user visiting
+        # Settings — the field nobody fills (1 of 28 in three weeks) now has a source.
+        loc = str((data.get("contact") or {}).get("location") or "")
+        city, state, postal = _split_location(loc)
+        filled.update(profile_db.fill_address_if_blank(user_id, city, state, postal))
         if filled:
             print(f"[profile] seeded from resume: {sorted(filled)}", file=sys.stderr)
     except Exception as e:
         print(f"[profile] employment seed skipped: {e}", file=sys.stderr)
+
+
+def _split_location(loc: str) -> tuple[str, str, str]:
+    """'Miami, FL 33101' / 'Miami, Florida, USA' / 'Miami FL' → (city, state, zip).
+
+    Deliberately conservative: no guessing beyond comma-splitting and a 5-digit zip.
+    Anything that doesn't look like City[, State][ ZIP] returns empty strings — a
+    wrong seeded address on a real application is worse than an empty field.
+    """
+    import re
+
+    loc = (loc or "").strip()
+    if not loc or "remote" in loc.lower():
+        return "", "", ""
+    postal_m = re.search(r"\b(\d{5})(?:-\d{4})?\b", loc)
+    postal = postal_m.group(1) if postal_m else ""
+    loc_wo_zip = re.sub(r"\b\d{5}(?:-\d{4})?\b", "", loc).strip(" ,")
+    parts = [p.strip() for p in loc_wo_zip.split(",") if p.strip()]
+    # Drop a trailing country token so 'Miami, FL, USA' doesn't put 'USA' in state.
+    if parts and re.fullmatch(r"(usa|us|u\.s\.a?\.?|united states)", parts[-1], re.I):
+        parts = parts[:-1]
+    if not parts:
+        return "", "", postal
+    city = parts[0]
+    state = parts[1] if len(parts) > 1 else ""
+    # 'Miami FL' single-segment form: trailing 2-letter state code.
+    if not state:
+        m = re.fullmatch(r"(.+?)\s+([A-Z]{2})", city)
+        if m:
+            city, state = m.group(1), m.group(2)
+    return city[:100], state[:100], postal
 
 
 def _store_tailored_pdf(user_id: str, job_id: str, tailored_text: str) -> None:
