@@ -115,6 +115,9 @@ OPS_5XX_THRESHOLD = int(os.getenv("OPS_5XX_THRESHOLD", "5"))
 OPS_5XX_WINDOW_MINUTES = int(os.getenv("OPS_5XX_WINDOW_MINUTES", "10"))
 OPS_ZERO_STREAK_THRESHOLD = int(os.getenv("OPS_ZERO_STREAK_THRESHOLD", "5"))
 OPS_ALERT_COOLDOWN_MINUTES = int(os.getenv("OPS_ALERT_COOLDOWN_MINUTES", "30"))
+# Sentry (SAAS_PLAYBOOK §4, the last open observability row). Empty DSN = the SDK is
+# never initialized — zero overhead, zero network. One Railway env var turns it on.
+SENTRY_DSN = os.getenv("SENTRY_DSN", "")
 
 
 # =============================================================================
