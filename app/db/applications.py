@@ -81,6 +81,38 @@ def get_history(user_id: str, limit: int = 50) -> list:
     return rows
 
 
+def get_for_interview_kit(user_id: str, application_id: str) -> dict | None:
+    """One application plus the job text needed to prepare for its interview.
+
+    Returns the snapshot fields merged with the joined jobs row (the join is the only
+    source of `description`, which the kit cannot be written without). Scoped by user_id —
+    service_role bypasses RLS, so the filter is the IDOR defense.
+    """
+    res = (
+        get_supabase()
+        .table("applications")
+        .select("*, jobs(title, company, platform, link, description, location)")
+        .eq("user_id", user_id)
+        .eq("id", application_id)
+        .limit(1)
+        .execute()
+    )
+    if not res.data:
+        return None
+    row = res.data[0]
+    job = row.get("jobs") or {}
+    return {
+        "id": row["id"],
+        "status": row["status"],
+        "title": row.get("job_title") or job.get("title", ""),
+        "company": row.get("company") or job.get("company", ""),
+        "platform": row.get("platform") or job.get("platform", ""),
+        "link": row.get("job_url") or job.get("link", ""),
+        "description": job.get("description") or "",
+        "location": job.get("location") or "",
+    }
+
+
 def count_applications(user_id: str) -> int:
     res = (
         get_supabase()
