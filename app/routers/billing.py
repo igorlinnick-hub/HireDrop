@@ -141,11 +141,14 @@ def _resolve_subscription(stripe, invoice_obj: dict, customer_id: str):
         sub_id = lines[0].get("subscription") if lines else None
     if sub_id:
         try:
-            return stripe.Subscription.retrieve(sub_id)
+            sub = stripe.Subscription.retrieve(sub_id)
+            return sub.to_dict() if hasattr(sub, "to_dict") else sub
         except Exception as e:
             print(f"[billing] subscription retrieve failed: {e}", file=sys.stderr)
     try:
         subs = stripe.Subscription.list(customer=customer_id, status="all", limit=1)
+        if hasattr(subs, "to_dict"):
+            subs = subs.to_dict()
         data = subs.get("data") or []
         return data[0] if data else None
     except Exception as e:
@@ -167,6 +170,10 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
         # Bad signature / malformed — reject without leaking detail.
         print(f"[billing] webhook signature verify failed: {e}", file=sys.stderr)
         return JSONResponse(status_code=400, content={"error": "Invalid signature"})
+    # stripe-python v15 StripeObject is NOT a dict — .get() raises (live 500 on the very
+    # first real payment, 2026-09-06). Flatten once; everything below is plain dicts.
+    if hasattr(event, "to_dict"):
+        event = event.to_dict()
 
     etype = event["type"]
     obj = event["data"]["object"]
@@ -187,6 +194,8 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
                 billing_db.link_customer(user_id, customer_id)
             if user_id and sub_id:
                 subscription = stripe.Subscription.retrieve(sub_id)
+                if hasattr(subscription, "to_dict"):
+                    subscription = subscription.to_dict()
                 _grant_from_subscription(stripe, user_id, subscription)
 
         elif etype in ("customer.subscription.updated", "invoice.paid"):

@@ -242,6 +242,44 @@ def test_webhook_unknown_customer_is_acked(client, stripe_mock, billing_db_mock)
     billing_db_mock.downgrade.assert_not_called()
 
 
+def test_webhook_survives_real_stripe_sdk_objects(client, billing_db_mock, monkeypatch):
+    """Regression for the live 500 on the FIRST real payment (2026-09-06): stripe-python
+    v15 StripeObject is not a dict — event.get('id') raised KeyError('get') before the
+    handler try. Drive the route with REAL SDK objects so the .to_dict() flattening and
+    every downstream .get() is exercised against the true types."""
+    import stripe as real_stripe
+
+    monkeypatch.setitem(PLANS["weekly"], "price_id", "price_w")
+    ev = real_stripe.Event.construct_from(
+        {
+            "id": "evt_real_1",
+            "type": "checkout.session.completed",
+            "data": {
+                "object": {
+                    "client_reference_id": "u1",
+                    "customer": "cus_1",
+                    "subscription": "sub_1",
+                }
+            },
+        },
+        "sk_test_x",
+    )
+    sub = real_stripe.Subscription.construct_from({**SUB_ACTIVE, "customer": "cus_1"}, "sk_test_x")
+
+    fake = MagicMock()
+    fake.Webhook.construct_event.return_value = ev
+    fake.Subscription.retrieve.return_value = sub
+    with (
+        patch("app.routers.billing._stripe", return_value=fake),
+        patch("app.routers.billing.STRIPE_WEBHOOK_SECRET", "whsec_test"),
+    ):
+        r = client.post(f"{API}/billing/webhook", content=b"{}")
+
+    assert r.status_code == 200
+    billing_db_mock.link_customer.assert_called_once_with("u1", "cus_1")
+    assert billing_db_mock.grant.call_args.args[1] == "pro"
+
+
 def test_webhook_handler_error_still_acks(client, stripe_mock, billing_db_mock):
     # Never 500 a webhook on our own logic error — Stripe would hammer retries.
     stripe_mock.Webhook.construct_event.return_value = make_event(
