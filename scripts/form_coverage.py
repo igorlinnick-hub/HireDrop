@@ -68,8 +68,9 @@ RULES = [
         # location?" with the user's city (live Braze form 2026-09-06). commute → Yes;
         # RELOCATION stays with the LLM (a deterministic Yes could be a lie).
         "commute",
-        lambda lb: bool(re.search(r"\bcommute\b", lb))
-        and bool(re.match(r"(are|will|can|do|would)\b", lb)),
+        lambda lb: (
+            bool(re.search(r"\bcommute\b", lb)) and bool(re.match(r"(are|will|can|do|would)\b", lb))
+        ),
     ),
     (
         # Platform marketing to the user, not the employer asking about the candidate —
@@ -90,10 +91,12 @@ RULES = [
         # to relocation to Qatar?" with the user's city). Question-shaped labels
         # (are/will/do/…) are ABOUT location, not location fields — LLM's lane.
         "city/state",
-        lambda lb: bool(
-            re.search(r"\bcity\b|\bstate\b|\bprovince\b|\bregion\b|\blocations?\b", lb)
-        )
-        and not re.match(r"(are|do|does|did|have|has|is|was|were|would|will|may|can|should)\b", lb),
+        lambda lb: (
+            bool(re.search(r"\bcity\b|\bstate\b|\bprovince\b|\bregion\b|\blocations?\b", lb))
+            and not re.match(
+                r"(are|do|does|did|have|has|is|was|were|would|will|may|can|should)\b", lb
+            )
+        ),
     ),
     (
         "country/where",
