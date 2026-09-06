@@ -116,6 +116,10 @@ def get_tier(user_id: str, email: str | None = None) -> str:
 
     row = res.data[0]
     tier = row.get("subscription_tier") or "free"
+    # Legacy premium/elite grants (older promos defaulted to elite=200/day) collapse to
+    # the single paid tier "pro". Keeps a stale grant from handing out 200 apps/day.
+    if tier in ("premium", "elite"):
+        tier = "pro"
     expires = row.get("subscription_expires_at")
 
     if tier != "free":
