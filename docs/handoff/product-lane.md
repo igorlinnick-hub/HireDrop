@@ -54,6 +54,11 @@
 
 ## Сломано / не доделано
 
+- **`GET /jobs` иногда 500**: `httpx.ReadError [Errno 11]` — протухшее keepalive/HTTP2
+  соединение пула supabase-клиента (`app/db/client.py`, singleton). Поймано ops-мониторингом
+  09-06 ночью, 1 случай. Фикс: короткий `keepalive_expiry`/HTTP1.1 для postgrest-сессии или
+  ретрай на ReadError; НЕ деплоить под живым платёжным тестом.
+
 - **Checkout не прогнан живьём**: prod отвечает 400 (configured), но саму ссылку
   checkout → оплата → webhook → тир никто e2e не проходил. Пейволл-UI у jobflow-b1.
 - Троттлинг фонового окна 5-6 мин/форма (цель <90с) — замер у ext-сессии
