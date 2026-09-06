@@ -49,25 +49,31 @@ def save_job(
 
         link = f"manual:{uuid.uuid4()}"
 
-    res = (
-        get_supabase()
-        .table("jobs")
-        .upsert(
-            {
-                "user_id": user_id,
-                "title": title,
-                "company": company,
-                "link": link,
-                "status": status,
-                "platform": platform,
-                "description": description,
-                "location": location,
-                "job_type": job_type,
-            },
-            on_conflict="user_id,link",
-        )
-        .execute()
-    )
+    payload = {
+        "user_id": user_id,
+        "title": title,
+        "company": company,
+        "link": link,
+        "status": status,
+        "platform": platform,
+    }
+    # Only send the scraped fields when we actually have them. PostgREST builds the
+    # ON CONFLICT DO UPDATE clause from the keys present in the payload, so sending an
+    # empty description here overwrites the text discovery scraped earlier.
+    #
+    # That is exactly what happened on every apply: /applications/save calls save_job
+    # without a description, so submitting wiped the posting of the job just applied to —
+    # and cover letters, ai_job_scorer and ai_fit_judge all read that column, so each
+    # submit quietly degraded the quality of the applications that came after it.
+    for key, value in (
+        ("description", description),
+        ("location", location),
+        ("job_type", job_type),
+    ):
+        if value:
+            payload[key] = value
+
+    res = get_supabase().table("jobs").upsert(payload, on_conflict="user_id,link").execute()
     return res.data[0]["id"] if res.data else ""
 
 
