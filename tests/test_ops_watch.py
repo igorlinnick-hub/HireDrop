@@ -104,11 +104,15 @@ def test_scrape_snapshot_shape():
 
 def test_middleware_records_explicit_5xx(auth_client):
     """A 5xx response must land in the ops watch via the timing middleware.
-    /billing/checkout with Stripe unconfigured is a stable in-app 503 source."""
+    _stripe is patched to None so /billing/checkout 503s regardless of whether
+    the developer's .env carries real Stripe keys (it does since 09-05)."""
+    from unittest.mock import patch
+
     from app.ops_watch import five_xx
 
     before = len(five_xx.events)
-    r = auth_client.post("/api/v1/billing/checkout", json={"plan": "weekly"})
+    with patch("app.routers.billing._stripe", return_value=None):
+        r = auth_client.post("/api/v1/billing/checkout", json={"plan": "weekly"})
     assert r.status_code == 503
     assert len(five_xx.events) == before + 1
     assert five_xx.events[-1][1] == "/api/v1/billing/checkout"
