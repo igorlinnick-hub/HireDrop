@@ -219,4 +219,222 @@ SEED_WATCHLIST: list[tuple[str, str]] = [
     ("target|wd5|targetcareers", "workday"),  # 91
     ("workday|wd5|Workday", "workday"),  # 90
     ("cvshealth|wd1|CVS_Health_Careers", "workday"),  # 79
+    # --- added 2026-09-06: NON-TECH VERTICALS. The list above is SaaS/fintech/AI almost
+    #     end to end, so a healthcare-marketing profile drew 3 Greenhouse candidates for a
+    #     whole sweep — the boards simply had no such work on them. These were validated the
+    #     same way as the earlier batches (board API 200 + counted live postings) and picked
+    #     for INVENTORY IN THE VERTICAL, not for name recognition. Counts at verification:
+    #     h=healthcare/clinical, m=marketing/comms, o=front-office ops, s=hospitality/food.
+    ("doordashusa", "greenhouse"),  # 456 · m30 s30 o16 — delivery/ops at scale
+    ("toast", "greenhouse"),  # 315 · restaurant tech, m9
+    ("oscar", "greenhouse"),  # 283 · h39 m9 o15 — health insurer
+    ("flexport", "greenhouse"),  # 174 · o23 — logistics ops
+    ("opentable", "greenhouse"),  # 101 · m8 — restaurants
+    ("vaynermedia", "greenhouse"),  # 84 · m16 — marketing agency, the densest mktg board here
+    ("sweetgreen", "greenhouse"),  # 58 · s35 — restaurant field + support roles
+    ("strivehealth", "greenhouse"),  # 58 · h36 — kidney care
+    ("instawork", "greenhouse"),  # 58 · hourly-staffing marketplace
+    ("zocdoc", "greenhouse"),  # 52 · h3 m5 o2
+    ("attentive", "greenhouse"),  # 37 · m3 — retention marketing
+    ("movableink", "greenhouse"),  # 34 · m1
+    ("komodohealth", "greenhouse"),  # 34 · h1
+    ("flatironhealth", "greenhouse"),  # 32 · h1 m4 — oncology
+    ("khanacademy", "greenhouse"),  # 23 · o5 m2 — education
+    ("voxmedia", "greenhouse"),  # 17 · m3 — media/editorial
+    ("honor", "greenhouse"),  # 15 · h1 — home care
+    ("kasa", "greenhouse"),  # 15 · s2 — hospitality operator
+    ("parsleyhealth", "greenhouse"),  # 10 · h7 — primary care
+    ("folxhealth", "greenhouse"),  # 7 · h5 — telehealth
+    ("buzzfeed", "greenhouse"),  # 6 · m1 — media
+    ("commure", "ashby"),  # 76 · h3 m5 o2 — health systems software
+    ("abridge", "ashby"),  # 40 · h2 — clinical AI
+    ("tennr", "ashby"),  # 21 · h2 — healthcare referrals
+    ("newsela", "greenhouse"),  # 16 · education
+    ("outschool", "greenhouse"),  # 4 · education
 ]
+
+
+# --- Vertical tags -----------------------------------------------------------------
+# A sweep collects far more postings than its cap can return, so the ORDER boards are
+# fetched in decides what a user actually sees — and the order was "whatever position the
+# board holds in the list above". That made the tail dead weight: the 24 non-tech boards
+# added 2026-09-06 landed 0 of 160 results on Igor's own keywords, because 100+ SaaS
+# boards ahead of them had already filled the cap with marketing roles at AI companies.
+#
+# So tag the boards whose inventory is concentrated in a vertical, and let discover_ats
+# put the matching ones FIRST when the user's keywords point that way. Untagged boards
+# keep their existing order, so a tech search behaves exactly as before.
+BOARD_VERTICALS: dict[str, tuple[str, ...]] = {
+    # healthcare / clinical / wellness
+    "oscar": ("health",),
+    "strivehealth": ("health",),
+    "zocdoc": ("health",),
+    "parsleyhealth": ("health",),
+    "folxhealth": ("health",),
+    "komodohealth": ("health",),
+    "flatironhealth": ("health",),
+    "honor": ("health",),
+    "commure": ("health",),
+    "abridge": ("health",),
+    "tennr": ("health",),
+    "mavenclinic": ("health",),
+    "modernhealth": ("health",),
+    "charliehealth": ("health",),
+    "betterhelp": ("health",),
+    "talkspace": ("health",),
+    "onemedical": ("health",),
+    "omadahealth": ("health",),
+    "cityblock": ("health",),
+    "devoted": ("health",),
+    "amwell": ("health",),
+    "wellthy": ("health",),
+    "hazel": ("health",),
+    "tia": ("health",),
+    "daybreakhealth": ("health",),
+    "papa": ("health",),
+    "hims": ("health",),
+    "ro": ("health",),
+    "sesame": ("health",),
+    "cerebral": ("health",),
+    "galileo": ("health",),
+    "forward": ("health",),
+    # hospitality / food service / physical operations
+    "sweetgreen": ("hospitality",),
+    "kasa": ("hospitality",),
+    "toast": ("hospitality",),
+    "opentable": ("hospitality",),
+    "doordashusa": ("hospitality", "ops"),
+    "instawork": ("hospitality", "ops"),
+    "classpass": ("hospitality", "health"),
+    "mindbody": ("hospitality", "health"),
+    "hellofresh": ("hospitality",),
+    "homechef": ("hospitality",),
+    "hungryroot": ("hospitality",),
+    "thrivemarket": ("hospitality",),
+    "misfitsmarket": ("hospitality",),
+    # marketing agencies, media, comms
+    "vaynermedia": ("agency",),
+    "wpromote": ("agency",),
+    "superside": ("agency",),
+    "attentive": ("agency",),
+    "movableink": ("agency",),
+    "sproutsocial": ("agency",),
+    "hootsuite": ("agency",),
+    "later": ("agency",),
+    "brandwatch": ("agency",),
+    "emplifi": ("agency",),
+    "muckrack": ("agency",),
+    "cision": ("agency",),
+    "voxmedia": ("media",),
+    "buzzfeed": ("media",),
+    "theathletic": ("media",),
+    "morningbrew": ("media",),
+    "medium": ("media",),
+    # education
+    "khanacademy": ("education",),
+    "coursera": ("education",),
+    "udemy": ("education",),
+    "duolingo": ("education",),
+    "masterclass": ("education",),
+    "outschool": ("education",),
+    "newsela": ("education",),
+    # logistics / field & back-office operations
+    "flexport": ("ops",),
+    "taskrabbit": ("ops",),
+    "rover": ("ops",),
+    "gopuff": ("ops",),
+    "instacart": ("ops",),
+}
+
+# What a user's keywords have to look like for a vertical's boards to jump the queue.
+# Matched as substrings against the lowercased keyword phrases.
+VERTICAL_HINTS: dict[str, tuple[str, ...]] = {
+    "health": (
+        "health",
+        "clinic",
+        "nurse",
+        "rn",
+        "patient",
+        "medical",
+        "care",
+        "therap",
+        "behavioral",
+        "dental",
+        "pharma",
+        "wellness",
+        "hospital",
+    ),
+    "hospitality": (
+        "hotel",
+        "restaurant",
+        "hospitality",
+        "guest",
+        "food",
+        "barista",
+        "server",
+        "culinary",
+        "resort",
+        "housekeep",
+        "kitchen",
+        "cafe",
+        "fitness",
+        "gym",
+        "spa",
+        "salon",
+    ),
+    "agency": (
+        "marketing",
+        "brand",
+        "advertis",
+        "agency",
+        "social media",
+        "seo",
+        "copywrit",
+        "public relations",
+        "communications",
+        "content",
+    ),
+    "media": ("media", "editorial", "journalis", "writer", "content", "publish", "video"),
+    "education": (
+        "teacher",
+        "education",
+        "curriculum",
+        "instructional",
+        "tutor",
+        "school",
+        "learning",
+    ),
+    "ops": (
+        "operations",
+        "logistics",
+        "warehouse",
+        "dispatch",
+        "supply chain",
+        "administrative",
+        "front desk",
+        "receptionist",
+        "coordinator",
+        "driver",
+    ),
+}
+
+
+def prioritized_boards(
+    companies: list[tuple[str, str]], keywords: list[str] | None
+) -> list[tuple[str, str]]:
+    """Boards whose vertical matches the keywords first; everything else in list order.
+
+    Stable: within each half the original order is preserved, so this only ever promotes
+    relevant boards — it never reshuffles the curated list.
+    """
+    if not keywords:
+        return list(companies)
+    text = " ".join(k.lower() for k in keywords if k)
+    wanted = {v for v, hints in VERTICAL_HINTS.items() if any(h in text for h in hints)}
+    if not wanted:
+        return list(companies)
+    front, back = [], []
+    for token, platform in companies:
+        tags = BOARD_VERTICALS.get(token.lower(), ())
+        (front if any(t in wanted for t in tags) else back).append((token, platform))
+    return front + back
