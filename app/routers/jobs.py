@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends
 
 from app.db import jobs as jobs_db
 from app.deps import get_current_user
-from app.schemas import FindJobsRequest, IngestJobsRequest, JobStatusUpdate
+from app.schemas import DeadLinkReport, FindJobsRequest, IngestJobsRequest, JobStatusUpdate
 from modules.captcha_profile import TOUCH_RANK, captcha_touch, is_zero_touch
 
 router = APIRouter(tags=["jobs"])
@@ -389,6 +389,19 @@ def ingest_jobs(req: IngestJobsRequest, user=Depends(get_current_user)):
 def patch_job_status(job_id: str, req: JobStatusUpdate, user=Depends(get_current_user)):
     jobs_db.update_job_status(user.id, job_id, req.status)
     return {"updated": True, "job_id": job_id, "status": req.status}
+
+
+@router.post("/jobs/dead-link")
+def report_dead_link(req: DeadLinkReport, user=Depends(get_current_user)):
+    """The walk opened this posting and the board answered "Not Found" — retire it.
+
+    Without this a dead row stays `new` and comes back on every run: the extension's own
+    guard (content.js pageLooksNotFound) keeps the walk moving, but the posting is still
+    re-opened, re-loaded and re-skipped forever. Reported by the extension, scoped to the
+    caller's own rows, and it only touches postings still waiting in the pool.
+    """
+    n = jobs_db.mark_dead_link(user.id, req.url)
+    return {"retired": n}
 
 
 @router.post("/jobs/{job_id}/tailor")

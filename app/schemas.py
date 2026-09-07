@@ -86,6 +86,10 @@ class JobStatusUpdate(BaseModel):
     status: str
 
 
+class DeadLinkReport(BaseModel):
+    url: str = Field(..., max_length=2000)
+
+
 class IngestJob(BaseModel):
     """One job card harvested in-browser by the extension during a campaign walk."""
 

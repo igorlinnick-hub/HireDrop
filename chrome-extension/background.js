@@ -1894,6 +1894,18 @@ async function handleMessage(msg, sender) {
       return { ok: true };
 
     // ----- Backend log (key events from content.js → Campaign Live feed) -----
+    // The walk hit a "Not Found" page. Retire the posting server-side so it stops coming
+    // back: content.js keeps the walk moving on its own, but a dead row left at `new` is
+    // re-opened and re-skipped on every run, forever. Best-effort — never blocks the walk.
+    case "REPORT_DEAD_LINK": {
+      try {
+        const r = await apiPost("/jobs/dead-link", { url: msg.url || "" });
+        return { retired: (r && r.retired) || 0 };
+      } catch (e) {
+        return { retired: 0, error: String((e && e.message) || e) };
+      }
+    }
+
     case "LOG_BACKEND": {
       const level = msg.level || "info";
       await addToActivityLog(msg.text, level === "error" ? "err" : level === "ok" ? "ok" : "");
