@@ -1282,6 +1282,8 @@
     if (!pageLooksNotFound()) return false;
     const jk = (window.location.href.match(/[?&](?:vjk|jk|lk)=([a-z0-9]+)/i) || [])[1] || "";
     logBackend(`🚫 Dead link — ${platformLabel()} says this posting is gone${jk ? ` (${jk})` : ""}; moving to the next job`, "info");
+    // Retire it in the pool too, or the same corpse is re-opened on every future run.
+    sendMsg({ type: "REPORT_DEAD_LINK", url: window.location.href }).catch(() => {});
     await skipToNextJob();
     return true;
   }

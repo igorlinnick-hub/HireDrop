@@ -281,6 +281,51 @@ def get_by_link(user_id: str, link: str) -> dict | None:
     return None
 
 
+def mark_dead_link(user_id: str, link: str) -> int:
+    """Flip every row for this posting out of the pool — the board says it's gone.
+
+    A dead posting (expired, pulled, or a stale seed row) otherwise stays `new` forever and
+    the walk re-opens it on every run: before 2026-09-06 that cost 31 minutes of frozen
+    campaign per hit, and even with the extension's dead-link guard it still burns a page
+    load each time. Matching mirrors get_by_link — exact URL, then the Indeed jk key, which
+    is what actually identifies the posting (the same job arrives with different query
+    strings from jobspy and from the browser). Returns how many rows moved.
+    """
+    import re
+
+    ids: list[str] = []
+    res = (
+        get_supabase().table("jobs").select("id").eq("user_id", user_id).eq("link", link).execute()
+    )
+    ids += [r["id"] for r in (res.data or [])]
+    m = re.search(r"[?&](?:vjk|jk)=([a-z0-9]+)", link, re.IGNORECASE)
+    if m:
+        res = (
+            get_supabase()
+            .table("jobs")
+            .select("id")
+            .eq("user_id", user_id)
+            .ilike("link", f"%jk={m.group(1)}%")
+            .execute()
+        )
+        ids += [r["id"] for r in (res.data or [])]
+    ids = list(dict.fromkeys(ids))
+    if not ids:
+        return 0
+    # Never resurrect an applied row into `skipped` — the count and the dedup key hang off
+    # it. Only postings still waiting in the pool are cleared.
+    (
+        get_supabase()
+        .table("jobs")
+        .update({"status": "skipped"})
+        .eq("user_id", user_id)
+        .in_("id", ids)
+        .in_("status", ["new", "approved", "queued"])
+        .execute()
+    )
+    return len(ids)
+
+
 def count_jobs(user_id: str) -> int:
     res = get_supabase().table("jobs").select("id", count="exact").eq("user_id", user_id).execute()
     return res.count or 0

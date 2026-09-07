@@ -61,3 +61,40 @@ def test_existing_links_chunks_the_in_query():
     assert chain.in_.call_count == 3  # 40 + 40 + 5
     first_chunk = chain.in_.call_args_list[0].args[1]
     assert len(first_chunk) == 40
+
+
+# ---------- dead links: a posting the board says is gone must leave the pool ----------
+
+
+def _chain(fake):
+    """The fluent select/eq/ilike chain returns the same mock at every hop."""
+    return fake.table.return_value.select.return_value.eq.return_value
+
+
+def test_dead_link_retires_every_row_for_the_same_indeed_key():
+    # The same posting arrives with different query strings (jobspy vs the browser), so the
+    # jk key — not the URL — is what identifies it. All copies have to go, or the walk
+    # re-opens a corpse on the next run.
+    fake = MagicMock()
+    by_url = _chain(fake).execute.return_value
+    by_url.data = [{"id": "a"}]
+    by_jk = _chain(fake).ilike.return_value.execute.return_value
+    by_jk.data = [{"id": "a"}, {"id": "b"}]
+
+    with patch("app.db.jobs.get_supabase", return_value=fake):
+        n = jobs_db.mark_dead_link("u1", "https://www.indeed.com/viewjob?jk=abcdef0123456789")
+
+    assert n == 2  # deduped across the two lookups
+    update = fake.table.return_value.update
+    assert update.call_args.args[0] == {"status": "skipped"}
+
+
+def test_dead_link_writes_nothing_when_the_posting_is_not_ours():
+    fake = MagicMock()
+    _chain(fake).execute.return_value.data = []
+    _chain(fake).ilike.return_value.execute.return_value.data = []
+
+    with patch("app.db.jobs.get_supabase", return_value=fake):
+        assert jobs_db.mark_dead_link("u1", "https://www.indeed.com/viewjob?jk=zzz") == 0
+
+    fake.table.return_value.update.assert_not_called()
