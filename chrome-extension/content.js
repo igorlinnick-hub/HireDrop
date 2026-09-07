@@ -1277,14 +1277,18 @@
       .test(body);
   }
 
+  // Returns true when it handled a dead posting (logged + walk advanced).
+  async function bailIfDeadPosting() {
+    if (!pageLooksNotFound()) return false;
+    const jk = (window.location.href.match(/[?&](?:vjk|jk|lk)=([a-z0-9]+)/i) || [])[1] || "";
+    logBackend(`🚫 Dead link — ${platformLabel()} says this posting is gone${jk ? ` (${jk})` : ""}; moving to the next job`, "info");
+    await skipToNextJob();
+    return true;
+  }
+
   async function phase2_jobDetail() {
     const platform = detectPlatform();
-    if (pageLooksNotFound()) {
-      const jk = (window.location.href.match(/[?&](?:vjk|jk|lk)=([a-z0-9]+)/i) || [])[1] || "";
-      logBackend(`🚫 Dead link — ${platformLabel()} says this posting is gone${jk ? ` (${jk})` : ""}; moving to the next job`, "info");
-      await skipToNextJob();
-      return;
-    }
+    if (await bailIfDeadPosting()) return;
     if (platform === "ziprecruiter") return await phase2_ziprecruiter();
     return await phase2_indeed();
   }
@@ -4405,6 +4409,13 @@
         return;
       }
     }
+
+    // A dead posting is neither a challenge nor a logout — but both probes below read it
+    // as one, so it has to be settled FIRST. Live 09-06: an Indeed 404 has no signed-in
+    // markers, so the auth probe recorded indeed=logged_out at 22:23:24 and the dashboard
+    // then refused to start a campaign on a platform Igor was perfectly signed into — a
+    // dead link poisoning the platform's connection state hours later.
+    if (detectPhase() === "detail" && (await bailIfDeadPosting())) return;
 
     // Anti-detect: a CAPTCHA / security challenge is HANDED TO THE USER — we no longer
     // auto-solve it (CapSolver dropped for compliance). The only thing we auto-handle is
