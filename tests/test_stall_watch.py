@@ -273,3 +273,29 @@ def test_death_email_states_it_will_not_restart():
     assert "not pick up again on its own" in body
     assert "<b>4</b> application" in body
     assert "No applications had gone out" in stall_watch.death_html(0)
+
+
+def test_anchorless_corpse_stays_silent_instead_of_looping():
+    # A legacy row can carry running=True with no started_at (stop() clears it). With no
+    # anchor there is nothing to dedup against, and notifying would repeat every sweep —
+    # an email loop is worse than a missed notice, so fail closed. Here last_ping_at is
+    # also absent, which is the only truly anchorless shape.
+    corpse = {"user_id": "u1", "running": True, "started_at": None, "last_ping_at": None}
+    with (
+        patch.object(stall_watch.campaign_db, "list_running", return_value=[corpse]),
+        patch.object(stall_watch, "is_dead", return_value=True),
+        patch.object(stall_watch, "notify_death") as notify,
+    ):
+        assert stall_watch.scan_deaths(send=False) == []
+        notify.assert_not_called()
+
+
+def test_missing_started_at_falls_back_to_the_ping_as_anchor():
+    corpse = {"user_id": "u1", "running": True, "started_at": None, "last_ping_at": _iso(7000)}
+    with (
+        patch.object(stall_watch.campaign_db, "list_running", return_value=[corpse]),
+        patch.object(stall_watch.activity_db, "has_since", return_value=False) as has_since,
+        patch.object(stall_watch, "notify_death"),
+    ):
+        assert stall_watch.scan_deaths(send=False) == ["u1"]
+        assert has_since.call_args[0][2] == corpse["last_ping_at"]

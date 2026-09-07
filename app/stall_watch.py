@@ -327,8 +327,14 @@ def scan_deaths(*, send: bool = True) -> list[str]:
         if not user_id or not is_dead(state):
             continue
         try:
-            anchor = state.get("started_at")
-            if anchor and activity_db.has_since(user_id, DEATH_PHASE, anchor):
+            # Dedup anchor, in order of how well it identifies THIS run. started_at is
+            # cleared by stop(), so a legacy row can carry running=True with no start
+            # stamp — and a missing anchor must mean SILENCE, not "notify every sweep".
+            # An email loop every STALL_WATCH_INTERVAL is worse than a missed notice.
+            anchor = state.get("started_at") or state.get("last_ping_at")
+            if not anchor:
+                continue
+            if activity_db.has_since(user_id, DEATH_PHASE, anchor):
                 continue
             notify_death(user_id, state, send=send)
         except Exception as exc:  # noqa: BLE001 — one failed notice must not skip the rest
