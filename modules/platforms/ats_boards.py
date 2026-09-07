@@ -352,6 +352,17 @@ def discover_ats(
     from collections import deque
 
     fetch_targets = [(t, p) for t, p in companies if p in _FETCHERS]
+    # Relevance before position. A sweep collects far more postings than `cap` returns, so
+    # the fetch order decides what the user actually sees — and it used to be nothing but
+    # each board's position in the watchlist. Measured 09-06: the 24 non-tech boards added
+    # that day landed 0 of 160 results on Igor's healthcare-marketing keywords, because
+    # 100+ SaaS boards ahead of them had already filled the cap with marketing roles at AI
+    # companies. Boards tagged with a vertical the keywords point at now go first; the rest
+    # keep their curated order, so a tech search is byte-for-byte unchanged.
+    with contextlib.suppress(Exception):
+        from data.ats_watchlist import prioritized_boards
+
+        fetch_targets = prioritized_boards(fetch_targets, keywords)
     # Interleave by platform so a platform listed LAST in the watchlist (e.g. Workday, 9
     # boards after 187 others) isn't starved when _DISCOVER_DEADLINE cuts off stragglers:
     # spreading each platform's boards through the submission order makes the deadline trim

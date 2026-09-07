@@ -164,3 +164,40 @@ def test_daily_limit_defaults_to_auto():
 def test_per_platform_rail_is_ban_safety_value():
     # 15/day per platform (Igor 2026-07-16, tap-pool era; was 20)
     assert MAX_PER_PLATFORM == 15
+
+
+# ---------- watchlist ordering: relevance decides what survives the cap ----------
+
+
+def test_vertical_boards_jump_the_queue_for_matching_keywords():
+    # A sweep returns far fewer jobs than it collects, so a board's position decides
+    # whether its inventory reaches the user at all. Non-tech boards sit at the end of the
+    # curated list and never made the cut (measured 2026-09-06: 0 of 160 on Igor's own
+    # keywords) until keyword-matched verticals started going first.
+    from data.ats_watchlist import prioritized_boards
+
+    boards = [("stripe", "greenhouse"), ("oscar", "greenhouse"), ("figma", "greenhouse")]
+    assert prioritized_boards(boards, ["healthcare marketing"])[0] == ("oscar", "greenhouse")
+    assert prioritized_boards(boards, ["restaurant server"]) == boards  # no hospitality board here
+
+
+def test_untagged_search_keeps_the_curated_order():
+    # The promotion must never reshuffle the list for everyone else: a tech search has to
+    # behave exactly as it did before verticals existed.
+    from data.ats_watchlist import prioritized_boards
+
+    boards = [("stripe", "greenhouse"), ("oscar", "greenhouse"), ("figma", "greenhouse")]
+    assert prioritized_boards(boards, ["senior software engineer"]) == boards
+    assert prioritized_boards(boards, []) == boards
+    assert prioritized_boards(boards, None) == boards
+
+
+def test_every_tagged_board_is_actually_on_the_watchlist():
+    # A tag on a board we don't sweep is dead config — it silently promotes nothing.
+    from data.ats_watchlist import BOARD_VERTICALS, SEED_WATCHLIST, VERTICAL_HINTS
+
+    tokens = {t.lower() for t, _ in SEED_WATCHLIST}
+    assert not set(BOARD_VERTICALS) - tokens
+    # …and every vertical a board claims must be one the keyword matcher can reach.
+    claimed = {v for tags in BOARD_VERTICALS.values() for v in tags}
+    assert not claimed - set(VERTICAL_HINTS)

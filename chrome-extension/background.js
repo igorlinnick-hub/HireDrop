@@ -384,6 +384,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "ext-ping") {
     sendExtensionPing();
     atsWalkWatchdog().catch(() => {});
+    nativeWalkWatchdog().catch(() => {});
     tapPoolIdleRefill().catch(() => {});
   }
   // sw-keepalive: no-op — waking the SW is enough
@@ -526,7 +527,9 @@ async function addToActivityLog(text, cls, metadata) {
     cls: cls || "",
   });
   if (logs.length > 50) logs.length = 50;
-  await chrome.storage.local.set({ activity_log: logs });
+  // Every durable line is also a sign of life for the native walk — nativeWalkWatchdog
+  // reads this stamp. Piggy-backing on the write we already do keeps it free.
+  await chrome.storage.local.set({ activity_log: logs, walkAliveAt: Date.now() });
 
   // Best-effort mirror to backend (Phase 4.2). Never blocks; if the user
   // is logged out or the API is down, the local log still works.
@@ -912,6 +915,60 @@ async function atsWalkWatchdog() {
     await chrome.storage.local.set({ atsNavTries: 0 });
     await advanceAtsQueue();
   }
+}
+
+// The NATIVE walk (Indeed / ZipRecruiter search → job → form) had no watchdog at all:
+// atsWalkWatchdog only guards a pool/ATS queue, and its guard is the queue head, which a
+// native run doesn't have. So any page that gives the walk nothing to act on froze the
+// whole campaign with `running` still on — live 09-06, two Indeed "Not Found" pages held
+// Igor's automation window for 31 and 15 minutes, and only the SERVER-side stall watch
+// noticed. content.js now names a dead link and advances (pageLooksNotFound); this is the
+// backstop for every other shape of silence: an injection miss, a wall, a page that never
+// fires an event.
+//
+// It must never fire while the walk is legitimately parked WAITING FOR THE HUMAN — a
+// captcha hand-off, a login wall, a tap review. Reloading the tab under a human solving a
+// captcha would throw their work away, so each of those states is checked first.
+const NATIVE_WATCHDOG_SILENT_MS = 10 * 60 * 1000;
+
+async function nativeWalkWatchdog() {
+  const d = await chrome.storage.local.get([
+    "campaignRunning", "atsPlatform", "campaignTabId", "walkAliveAt", "walkNudges",
+    "captchaWaiting", "reviewPending", "platformConnections",
+  ]);
+  if (!d.campaignRunning || d.atsPlatform || !d.campaignTabId || !d.walkAliveAt) return;
+  const age = Date.now() - d.walkAliveAt;
+  if (age < NATIVE_WATCHDOG_SILENT_MS) {
+    if (d.walkNudges) await chrome.storage.local.set({ walkNudges: 0 }); // it recovered
+    return;
+  }
+  // Parked on purpose, waiting for Igor's hands — silence here is the FEATURE.
+  if (d.captchaWaiting || d.reviewPending) return;
+  const conns = d.platformConnections || {};
+  const loggedOutRecently = Object.values(conns).some(
+    (c) => c && c.status === "logged_out" && c.checkedAt &&
+      Date.now() - new Date(c.checkedAt).getTime() < 2 * 60 * 60 * 1000
+  );
+  if (loggedOutRecently) return;
+  try { await chrome.tabs.get(d.campaignTabId); } catch { return; } // window closed by hand
+
+  const mins = Math.round(age / 60000);
+  const nudges = d.walkNudges || 0;
+  if (nudges < 2) {
+    await chrome.storage.local.set({ walkAliveAt: Date.now(), walkNudges: nudges + 1 });
+    await addToActivityLog(`⏱ Watchdog: the job page has been silent for ${mins} min — reloading it`, "warn");
+    chrome.tabs.reload(d.campaignTabId).catch(() => {});
+    return;
+  }
+  // Two reloads and still nothing. Stop honestly instead of leaving a green "running"
+  // badge over a dead walk (the zombie shape of #98, from the other end).
+  await chrome.storage.local.set({ campaignRunning: false, walkNudges: 0 });
+  await addToActivityLog(
+    `⏹ Watchdog: the walk stayed silent through two reloads (${mins} min) — stopping the campaign so it isn't "running" while nothing happens. Start it again anytime.`,
+    "warn"
+  );
+  try { await apiPost("/campaign/stop", {}); } catch {}
+  updateBadge();
 }
 
 // Tap swipe-pool idle refill (Igor 2026-07-25 instant rebuild): while a tap run is live
