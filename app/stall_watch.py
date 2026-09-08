@@ -14,7 +14,9 @@ So this measures the only output that matters — the timestamp of the last appl
 and shouts when it stops moving:
 
   * a warn line in the user's own activity log (visible in the dashboard feed), and
-  * an email to ALERT_EMAIL via Resend (ops), if configured.
+  * an email to ALERT_EMAIL via Resend (ops), if configured — stall path only. The death
+    path writes the log line and nothing else: users are never mailed (decision 09-07),
+    the dashboard shows the offline run instead.
 
 Deliberately NOT a reaper: it never flips `running`. Killing campaigns from a second place
 is exactly how the heartbeat got broken three times (#98/#107/#111) — one writer, one
@@ -31,7 +33,6 @@ from app.db import activity as activity_db
 from app.db import applications as apps_db
 from app.db import campaign as campaign_db
 from app.db.campaign import HEARTBEAT_TTL_SECS
-from app.db.client import get_supabase
 from app.db.subscriptions import (
     daily_limit,
     get_free_apps_used,
@@ -233,59 +234,17 @@ def is_dead(state: dict) -> bool:
     return bool(state.get("running")) and not campaign_db.is_effectively_running(state)
 
 
-def _user_email(user_id: str) -> str | None:
-    """The address to notify. Emails live in auth.users, not profiles."""
-    try:
-        res = get_supabase().auth.admin.get_user_by_id(user_id)
-        return getattr(getattr(res, "user", None), "email", None)
-    except Exception as exc:  # noqa: BLE001 — no address is not a reason to kill the sweep
-        print(
-            f"[death-watch] email lookup failed for {user_id}: {type(exc).__name__}",
-            file=sys.stderr,
-        )
-        return None
+def notify_death(user_id: str, state: dict) -> None:
+    """Write the death line into the user's own activity log. No email, by decision.
 
+    The product — not the inbox — has to carry this: the dashboard already shows an
+    offline campaign with one "Stop & start again" button (website #127/#128), and
+    Igor's rule from 09-07 is that a failure must be VISIBLE and fixable where the
+    user already is. Mail here would have been a second, worse channel for the same
+    fact. Ops mail (ALERT_EMAIL) is untouched — that is the stall path above.
 
-def death_html(applied: int) -> str:
-    """User-facing, not ops: what happened, what survived, what to press."""
-    count = (
-        f"<b>{applied}</b> application{'' if applied == 1 else 's'} went out before it stopped."
-        if applied
-        else "No applications had gone out yet when it stopped."
-    )
-    return f"""\
-<!DOCTYPE html>
-<html>
-<body style="margin:0;padding:0;background:#f5f3ff;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
-  <div style="max-width:560px;margin:32px auto;background:#fff;border-radius:14px;border:1px solid #e9e6f5;padding:28px;">
-    <h1 style="font-size:19px;color:#1a1a2e;margin:0 0 10px;">Your campaign stopped</h1>
-    <p style="font-size:15px;color:#4a4a68;line-height:1.65;margin:0 0 14px;">
-      HireDrop applies from your Chrome window, so the run ends when that window does —
-      closing your laptop, quitting Chrome, or putting the machine to sleep. {count}
-    </p>
-    <p style="font-size:15px;color:#4a4a68;line-height:1.65;margin:0 0 22px;">
-      It will not pick up again on its own. Open the dashboard and press Start when you're
-      back at your computer.
-    </p>
-    <a href="{FRONTEND_URL}/dashboard"
-       style="display:inline-block;background:#6c5ce7;color:#fff;text-decoration:none;
-              font-size:15px;font-weight:600;padding:12px 22px;border-radius:10px;">
-      Start applying again
-    </a>
-    <p style="font-size:12px;color:#9b9bb0;margin:24px 0 0;line-height:1.6;">
-      Everything already applied is saved in your history — nothing was lost.
-    </p>
-  </div>
-</body>
-</html>
-"""
-
-
-def notify_death(user_id: str, state: dict, *, send: bool = True) -> None:
-    """Activity line first (it is also the dedup marker), then the user's email.
-
-    Same ordering rule as raise_alert: a broken mail key must cost one missed email,
-    never an alert every sweep for as long as the corpse sits there.
+    The line is also the dedup marker for scan_deaths(), so writing it is the whole
+    job: one line per run, and the sweep stays quiet over the same corpse.
     """
     applied = 0
     with contextlib.suppress(Exception):
@@ -299,18 +258,10 @@ def notify_death(user_id: str, state: dict, *, send: bool = True) -> None:
         phase=DEATH_PHASE,
     )
     print(f"[death-watch] user={user_id} applied_this_run={applied}", file=sys.stderr)
-    if not send:
-        return
-    to = _user_email(user_id)
-    if not to:
-        return
-    from modules.email_sender import send_email
-
-    send_email(to, "Your HireDrop campaign stopped", death_html(applied))
 
 
-def scan_deaths(*, send: bool = True) -> list[str]:
-    """One sweep for runs that died quietly. Returns the user ids notified.
+def scan_deaths() -> list[str]:
+    """One sweep for runs that died quietly. Returns the user ids flagged.
 
     Dedup is anchored on started_at, so one notice per RUN: a corpse that keeps its
     stale flag stays silent, while the next campaign that dies alerts again.
@@ -330,13 +281,13 @@ def scan_deaths(*, send: bool = True) -> list[str]:
             # Dedup anchor, in order of how well it identifies THIS run. started_at is
             # cleared by stop(), so a legacy row can carry running=True with no start
             # stamp — and a missing anchor must mean SILENCE, not "notify every sweep".
-            # An email loop every STALL_WATCH_INTERVAL is worse than a missed notice.
+            # A log line every STALL_WATCH_INTERVAL is worse than a missed notice.
             anchor = state.get("started_at") or state.get("last_ping_at")
             if not anchor:
                 continue
             if activity_db.has_since(user_id, DEATH_PHASE, anchor):
                 continue
-            notify_death(user_id, state, send=send)
+            notify_death(user_id, state)
         except Exception as exc:  # noqa: BLE001 — one failed notice must not skip the rest
             print(
                 f"[death-watch] user={user_id} notify failed: {type(exc).__name__}: {exc}",
