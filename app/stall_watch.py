@@ -33,7 +33,6 @@ from app.db import activity as activity_db
 from app.db import applications as apps_db
 from app.db import campaign as campaign_db
 from app.db.campaign import HEARTBEAT_TTL_SECS
-from app.db.client import get_supabase
 from app.db.subscriptions import (
     daily_limit,
     get_free_apps_used,
