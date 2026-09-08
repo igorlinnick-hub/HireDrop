@@ -176,8 +176,13 @@ def existing_links(user_id: str, links: list) -> set:
     return out
 
 
-def update_job_status(user_id: str, job_id: str, status: str) -> None:
-    (
+def update_job_status(user_id: str, job_id: str, status: str) -> int:
+    """Set the row's status; returns how many rows changed (0 = nothing matched).
+
+    The count is the point: a swipe that writes nothing looks exactly like a swipe that
+    worked, and the card is already gone from the deck. Callers must be able to tell.
+    """
+    res = (
         get_supabase()
         .table("jobs")
         .update({"status": status})
@@ -185,6 +190,7 @@ def update_job_status(user_id: str, job_id: str, status: str) -> None:
         .eq("user_id", user_id)
         .execute()
     )
+    return len(res.data or [])
 
 
 def update_job_score(

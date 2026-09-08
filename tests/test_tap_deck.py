@@ -93,3 +93,46 @@ def test_the_deck_filters_with_the_same_rule_the_harvest_fills_with():
 
     assert [c["title"] for c in out["cards"]] == ["Social Media Coordinator"]
     assert keyword_match("Social Media Coordinator Miami, FL", ["social media manager"]) is True
+
+
+# --- the swipe write: a lost approve must be loud ------------------------------------
+
+
+def test_a_swipe_that_changes_nothing_is_a_404_not_a_success():
+    # The old endpoint answered {"updated": True} unconditionally. A swipe that wrote
+    # nothing then looked identical to one that worked — while the card was already gone
+    # from the deck and no run would ever queue that job (Igor 09-08: "до них никогда не
+    # доходит очередь"). The deck can only put the card back if the write says it failed.
+    from fastapi import HTTPException
+
+    from app.schemas import JobStatusUpdate
+
+    with patch.object(jobs_router.jobs_db, "update_job_status", return_value=0):
+        try:
+            jobs_router.patch_job_status(
+                "missing", JobStatusUpdate(status="approved"), user=_User()
+            )
+        except HTTPException as exc:
+            assert exc.status_code == 404
+        else:
+            raise AssertionError("a write that changed nothing must not report success")
+
+    with patch.object(jobs_router.jobs_db, "update_job_status", return_value=1):
+        out = jobs_router.patch_job_status("j1", JobStatusUpdate(status="approved"), user=_User())
+    assert out["updated"] is True
+
+
+def test_update_job_status_reports_rows_changed():
+    from unittest.mock import MagicMock
+
+    from app.db import jobs as jobs_db
+
+    fake = MagicMock()
+    chain = fake.table.return_value.update.return_value.eq.return_value.eq.return_value
+    chain.execute.return_value.data = [{"id": "j1"}]
+    with patch("app.db.jobs.get_supabase", return_value=fake):
+        assert jobs_db.update_job_status("u1", "j1", "approved") == 1
+
+    chain.execute.return_value.data = []
+    with patch("app.db.jobs.get_supabase", return_value=fake):
+        assert jobs_db.update_job_status("u1", "nope", "approved") == 0
