@@ -5,7 +5,7 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.db import jobs as jobs_db
 from app.deps import get_current_user
@@ -443,7 +443,16 @@ def ingest_jobs(req: IngestJobsRequest, user=Depends(get_current_user)):
 
 @router.patch("/jobs/{job_id}/status")
 def patch_job_status(job_id: str, req: JobStatusUpdate, user=Depends(get_current_user)):
-    jobs_db.update_job_status(user.id, job_id, req.status)
+    """Record a decision on one pool row — the write behind every Tap swipe.
+
+    404 when nothing matched, instead of the old unconditional {"updated": True}. An
+    approve that silently wrote nothing is the worst shape this bug takes: the card flew
+    off the deck, the user counts it as queued, and no run will ever pick it up because
+    the row never became `approved`. Say so, so the deck can put the card back.
+    """
+    changed = jobs_db.update_job_status(user.id, job_id, req.status)
+    if not changed:
+        raise HTTPException(status_code=404, detail="No such job in your pool")
     return {"updated": True, "job_id": job_id, "status": req.status}
 
 
