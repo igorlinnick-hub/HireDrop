@@ -336,19 +336,45 @@ async function sendExtensionPing() {
     const today = localDay();
     const todayCount = data.todayDate === today ? (data.todayCount || 0) : 0;
 
+    // Does the campaign still EXIST? The flag alone cannot answer that: it lives in
+    // chrome.storage and survives a closed laptop, so a woken service worker used to
+    // report "running" over a run whose window died with the lid — the heartbeat never
+    // expired and the campaign was immortal on paper (Igor: "активна, а заявок не
+    // прибавляется"). #98 fixed the previous shape of this (ping stamped a pulse
+    // unconditionally) and did NOT catch this one, because the ping does say true.
+    //
+    // The rule both bugs teach: A SIGNAL THAT CAN BE PRODUCED FROM SAVED STATE IS NOT A
+    // SIGN OF LIFE. So the pulse is the window's existence.
+    //
+    // Existence, not visibility: a MINIMIZED window is alive and still applying, so
+    // window_visible must stay a separate field and must never gate the heartbeat.
     let windowVisible = false;
+    let windowAlive = false;
     if (data.campaignWindowId) {
       try {
         const win = await chrome.windows.get(data.campaignWindowId);
+        windowAlive = true;
         windowVisible = win.state === "normal" || win.state === "maximized";
       } catch {}
+    }
+    const campaignAlive = !!data.campaignRunning && windowAlive;
+    // Nobody home: stop claiming a pulse, and put our own flag down so the next Start is
+    // a clean start rather than a resume of a corpse. One writer for the backend flag
+    // stays the backend's TTL (#98/#107/#111) — this only clears OUR local copy.
+    if (data.campaignRunning && !windowAlive) {
+      await chrome.storage.local.set({ campaignRunning: false });
+      await addToActivityLog(
+        "⏹ Campaign window is gone (laptop closed or Chrome quit) — the run ended. Press Start when you're back.",
+        "warn"
+      );
+      updateBadge();
     }
 
     const res = await fetch(`${CONFIG.API_BASE}${CONFIG.API_V1}/extension/ping`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({
-        campaign_running: !!data.campaignRunning,
+        campaign_running: campaignAlive,
         today_count: todayCount,
         window_visible: windowVisible,
         version: chrome.runtime.getManifest().version,
@@ -761,43 +787,55 @@ function normalizePoolApplyUrl(platform, url) {
 }
 
 async function buildApprovedAtsQueue(perPlatformCap) {
-  let jobs = [];
-  try { jobs = await apiGet("/jobs"); } catch (e) { return []; }
-  const cap = perPlatformCap > 0 ? perPlatformCap : 15;
-  const dd = await chrome.storage.local.get(["appliedUrls", "appliedJobKeys", "tapNativePool", "poolDoneUrls"]);
-  const appliedUrls = new Set(dd.appliedUrls || []);
-  const appliedKeys = new Set(dd.appliedJobKeys || []);
-  // URLs already walked THIS run (applied or skipped) — without this, a dead posting
-  // that skips stays `approved` in the DB and the rebuild re-queues it forever
-  // (live-test finding: oura?error=true looped every 4s).
+  // The SERVER decides this list now (GET /campaign/queue, jobflow #162). It applies the
+  // same four rules this function used to apply locally — approved swipes only, platforms
+  // an approve can really be submitted to, nothing already applied, then the per-platform
+  // ban cap and today's tier budget — with one difference that matters: "already applied"
+  // is matched by POSTING IDENTITY (#161), not by URL text, and it is read from the
+  // applications table instead of chrome.storage.
+  //
+  // That local set was the bug. appliedUrls/appliedJobKeys live in ONE Chrome profile: on
+  // a fresh profile they are empty, so a pool row still marked `approved` (because the
+  // apply had been written under another spelling of the same URL) would be walked again
+  // and the employer would get a SECOND application. It also meant nothing outside that
+  // profile could say what was left — no progress on the dashboard, nothing for the phone.
+  //
+  // poolDoneUrls stays: it is the IN-RUN guard (a posting that skips is not applied, so
+  // the server would keep offering it) and it is reset at every campaign start.
+  let payload = null;
+  try {
+    payload = await apiGet("/campaign/queue");
+  } catch (e) {
+    await addToActivityLog("Couldn't reach the server for your approved list — will retry shortly.", "warn");
+    return [];
+  }
+  const dd = await chrome.storage.local.get(["poolDoneUrls", "tapNativePool"]);
   const doneUrls = new Set(dd.poolDoneUrls || []);
-  // Default tap pool = ATS only (greenhouse/lever/ashby — proven guest-submit). Native
-  // by-link (Indeed verified, ZR pending) ONLY under the tapNativePool flag: Indeed's
-  // SmartApply last-step doesn't complete in the throttled background window, so leaving
-  // it in the default pool made the walk burn every run on non-completing Indeed jobs and
-  // never reach the ATS submitters (2026-08-04 root-cause: todayCount stayed 0 all night).
+  // Native by-link (Indeed verified, ZR pending) only under the tapNativePool flag:
+  // Indeed's SmartApply last step doesn't complete in the throttled background window, so
+  // leaving it in the default pool burned every run on non-completing Indeed jobs and
+  // never reached the ATS submitters (2026-08-04: todayCount stayed 0 all night).
   const poolPlatforms = dd.tapNativePool === true
     ? ATS_PLATFORMS.concat(POOL_NATIVE_VERIFIED, POOL_NATIVE_PENDING)
     : ATS_PLATFORMS;
-  const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
-  const perCount = {};
+
   const out = [];
-  for (const j of (jobs || [])) {
+  for (const j of (payload && payload.queue) || []) {
     if (!poolPlatforms.includes(j.platform)) continue;
-    if ((j.status || "") !== "approved") continue;
-    const url = normalizePoolApplyUrl(j.platform, j.link || j.apply_url);
-    if (!url) continue;
-    // Dedup: query-stripped base for path-unique ATS URLs, full URL for /viewjob?jk=
-    // (whose identity IS the query), plus the title|company key.
-    if (doneUrls.has(url) || appliedUrls.has(url.split("?")[0]) || appliedUrls.has(url) ||
-        appliedKeys.has(`${norm(j.title)}|${norm(j.company)}`)) continue;
-    const c = perCount[j.platform] || 0;
-    if (c >= cap) continue;
-    perCount[j.platform] = c + 1;
+    const url = normalizePoolApplyUrl(j.platform, j.apply_url);
+    if (!url || doneUrls.has(url)) continue;
     out.push({ id: j.id, applyUrl: url, title: j.title || "", company: j.company || "", platform: j.platform });
   }
-  // GET /jobs already orders zero-touch first (PR #32) — preserved by the linear walk.
-  return out;
+  // perPlatformCap is the server's now (payload.cap_per_platform) — kept as an argument so
+  // callers don't change, and honoured here only as a belt in case an old build calls in.
+  const cap = perPlatformCap > 0 ? perPlatformCap : 15;
+  const per = {};
+  return out.filter((j) => {
+    const n = per[j.platform] || 0;
+    if (n >= cap) return false;
+    per[j.platform] = n + 1;
+    return true;
+  });
 }
 
 // Navigate the automation tab to the next pool job — CF-safely.
