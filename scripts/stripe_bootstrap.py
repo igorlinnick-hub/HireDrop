@@ -104,10 +104,26 @@ def ensure_prices(secret: str) -> dict:
     by_lookup = {p["lookup_key"]: p for p in existing}
     out, product_id = {}, None
     for plan_key, lookup in LOOKUP_KEYS.items():
+        transfer = False
         if lookup in by_lookup:
-            out[plan_key] = by_lookup[lookup]["id"]
-            print(f"  price {plan_key}: exists -> {out[plan_key]}")
-            continue
+            found = by_lookup[lookup]
+            want = PLANS[plan_key]["price_usd"] * 100
+            have = int(found.get("unit_amount") or 0)
+            if have == want:
+                out[plan_key] = found["id"]
+                print(f"  price {plan_key}: exists -> {out[plan_key]}")
+                continue
+            # Stripe Prices are IMMUTABLE: you cannot edit unit_amount. Reusing the found
+            # price on an amount change is how the storefront ends up quoting $39 while
+            # Stripe keeps charging $29 — silently, because nothing errors. Create a new
+            # Price and move the lookup key onto it; the old Price stays alive and keeps
+            # serving existing subscriptions, so current subscribers are grandfathered.
+            print(
+                f"  price {plan_key}: amount changed ${have / 100:.0f} -> ${want / 100:.0f}"
+                " — creating a new Price and transferring the lookup key"
+            )
+            product_id = found["product"]
+            transfer = True
         if product_id is None:
             product_id = next((p["product"] for p in by_lookup.values()), None)
         if product_id is None:
@@ -131,7 +147,8 @@ def ensure_prices(secret: str) -> dict:
                 ("recurring[interval]", plan["interval"]),
                 ("lookup_key", lookup),
                 ("nickname", f"HireDrop Pro {plan['name']}"),
-            ],
+            ]
+            + ([("transfer_lookup_key", "true")] if transfer else []),
         )
         out[plan_key] = price["id"]
         print(f"  price {plan_key}: created -> {price['id']}")

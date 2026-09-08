@@ -14,14 +14,14 @@ PLANS = {
     "weekly": {
         "tier": "pro",
         "name": "Weekly",
-        "price_usd": 9,
+        "price_usd": 12,
         "interval": "week",
         "price_id": STRIPE_PRICE_WEEKLY,
     },
     "monthly": {
         "tier": "pro",
         "name": "Monthly",
-        "price_usd": 29,
+        "price_usd": 39,
         "interval": "month",
         "price_id": STRIPE_PRICE_MONTHLY,
     },

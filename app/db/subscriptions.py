@@ -21,10 +21,15 @@ from config import ADMIN_EMAILS, FREE_APP_LIMIT
 
 TIER_LIMITS = {
     "free": 20,  # daily pace of the 40-app lifetime taste (FREE_TASTE_PLAN.md) — ~2 days of wow
-    "pro": 30,  # paid daily cap — 30/day × $0.03 ≈ $27/mo keeps a maxed user profitable at $29/mo
-    "premium": 30,  # same volume as pro; premium's differentiator is ATS resume tailoring, not quota
-    "elite": 200,  # legacy tier, not sold
+    # Paid daily cap. A user who maxes it costs ~30/day x $0.03 ~= $27/mo, so at the old
+    # $29/mo price the margin was $2 — not a business. Raised to $39/mo on 2026-09-06.
+    "pro": 30,
 }
+# NOTE: "premium" and "elite" used to live here (elite = 200/day, never sold). They were
+# unreachable through checkout — only a legacy promo default granted elite — so they were
+# pure dead weight, and dead weight is where the promo hole came from. get_tier() collapses
+# any stale premium/elite grant to "pro" BEFORE the lookup below, so removing the keys
+# cannot widen anyone's cap; an unknown tier now falls back to free (down, never up).
 
 # Ban-safety cap: bans are counted PER platform, so 20/day/platform keeps each
 # account looking human. Volume scales by breadth (more platforms), not depth on one.
@@ -142,7 +147,8 @@ def daily_limit(tier: str, submit_mode: str = "auto") -> int:
         return ADMIN_DAILY_LIMIT
     base = TIER_LIMITS.get(tier, TIER_LIMITS["free"])
     # Tap mode lifts the cap for PAID tiers only (free stays free-tier limited even in tap).
-    if submit_mode == "tap" and tier in ("pro", "premium", "elite"):
+    # Legacy premium/elite are collapsed to "pro" by get_tier() before they reach here.
+    if submit_mode == "tap" and tier == "pro":
         return max(TAP_DAILY_LIMIT, base)
     return base
 
