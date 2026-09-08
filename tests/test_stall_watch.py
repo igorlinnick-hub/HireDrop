@@ -223,7 +223,7 @@ def test_scan_deaths_notifies_once_per_run():
         patch.object(stall_watch.activity_db, "has_since", return_value=False) as has_since,
         patch.object(stall_watch, "notify_death") as notify,
     ):
-        assert stall_watch.scan_deaths(send=False) == ["u1"]
+        assert stall_watch.scan_deaths() == ["u1"]
         assert notify.call_count == 1
         # Dedup is anchored on the RUN, not on "some line exists somewhere".
         assert has_since.call_args[0][2] == dead["started_at"]
@@ -234,7 +234,7 @@ def test_scan_deaths_notifies_once_per_run():
         patch.object(stall_watch.activity_db, "has_since", return_value=True),
         patch.object(stall_watch, "notify_death") as notify,
     ):
-        assert stall_watch.scan_deaths(send=False) == []
+        assert stall_watch.scan_deaths() == []
         notify.assert_not_called()
 
 
@@ -245,7 +245,7 @@ def test_scan_deaths_leaves_healthy_runs_alone():
         ),
         patch.object(stall_watch, "notify_death") as notify,
     ):
-        assert stall_watch.scan_deaths(send=False) == []
+        assert stall_watch.scan_deaths() == []
         notify.assert_not_called()
 
 
@@ -264,15 +264,25 @@ def test_one_bad_user_does_not_skip_the_rest():
             stall_watch, "notify_death", side_effect=[RuntimeError("supabase down"), None]
         ),
     ):
-        assert stall_watch.scan_deaths(send=False) == ["good"]
+        assert stall_watch.scan_deaths() == ["good"]
 
 
-def test_death_email_states_it_will_not_restart():
-    # The one thing the user must learn from the mail: pressing nothing changes nothing.
-    body = stall_watch.death_html(4)
-    assert "not pick up again on its own" in body
-    assert "<b>4</b> application" in body
-    assert "No applications had gone out" in stall_watch.death_html(0)
+def test_death_is_reported_in_the_product_never_by_email():
+    # Decision 09-07: no mail to users — a dead run has to be visible where they already
+    # are (the dashboard reads this line). The line is also the dedup marker, so it must
+    # be written even though nothing is sent.
+    dead = {"user_id": "u1", "running": True, "started_at": _iso(7200), "last_ping_at": _iso(7000)}
+    with (
+        patch.object(stall_watch.activity_db, "write") as write,
+        patch.object(stall_watch.apps_db, "count_today", return_value=4),
+        patch("modules.email_sender.send_email") as send_email,
+    ):
+        stall_watch.notify_death("u1", dead)
+
+    send_email.assert_not_called()
+    assert write.call_args.kwargs["phase"] == stall_watch.DEATH_PHASE
+    assert "will not restart by itself" in write.call_args.args[1]
+    assert not hasattr(stall_watch, "death_html")
 
 
 def test_anchorless_corpse_stays_silent_instead_of_looping():
@@ -286,7 +296,7 @@ def test_anchorless_corpse_stays_silent_instead_of_looping():
         patch.object(stall_watch, "is_dead", return_value=True),
         patch.object(stall_watch, "notify_death") as notify,
     ):
-        assert stall_watch.scan_deaths(send=False) == []
+        assert stall_watch.scan_deaths() == []
         notify.assert_not_called()
 
 
@@ -297,5 +307,5 @@ def test_missing_started_at_falls_back_to_the_ping_as_anchor():
         patch.object(stall_watch.activity_db, "has_since", return_value=False) as has_since,
         patch.object(stall_watch, "notify_death"),
     ):
-        assert stall_watch.scan_deaths(send=False) == ["u1"]
+        assert stall_watch.scan_deaths() == ["u1"]
         assert has_since.call_args[0][2] == corpse["last_ping_at"]
