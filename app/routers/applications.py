@@ -44,6 +44,12 @@ def save_application(req: ApplicationSaveRequest, user=Depends(get_current_user)
         status=req.status,
         platform=req.platform,
     )
+    # Same posting, other spelling: close out the pool rows this apply just satisfied.
+    # Without it the swiped row stays `approved` forever — re-queued every run, and on a
+    # browser profile with an empty local dedup set, applied a SECOND time (live pair in
+    # Igor's pool 09-08: boards.greenhouse.io/...?gh_jid=8095311 approved, while
+    # job-boards.greenhouse.io/...8095311 was already applied).
+    jobs_db.mark_applied_by_link(user.id, req.job_url, req.status)
     apps_db.save_application(
         user_id=user.id,
         job_id=job_id,

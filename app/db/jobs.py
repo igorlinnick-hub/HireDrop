@@ -1,5 +1,6 @@
 """Все операции с таблицей jobs в Supabase."""
 
+import contextlib
 from datetime import date
 
 from app.db.client import get_supabase
@@ -191,6 +192,50 @@ def update_job_status(user_id: str, job_id: str, status: str) -> int:
         .execute()
     )
     return len(res.data or [])
+
+
+def mark_applied_by_link(user_id: str, url: str, status: str = "applied") -> int:
+    """Close out every OTHER pool row naming the same posting. Returns rows healed.
+
+    The upsert in save_job keys on the exact link, so applying via a different spelling of
+    the same URL (job-boards vs boards, ?gh_jid, /application) writes a second row and
+    leaves the swiped one `approved` forever — re-queued every run, and double-applied on
+    a browser profile whose local dedup set is empty. Identity comes from the board's
+    posting id (modules.job_identity), never from the URL string.
+    """
+    from modules.job_identity import job_identity
+
+    token = job_identity(url)
+    if not token:
+        return 0
+    # The id itself narrows the read; job_identity then confirms each candidate, so a
+    # substring collision (an id that happens to appear inside another URL) can't match.
+    needle = token.split(":", 1)[1]
+    try:
+        res = (
+            get_supabase()
+            .table("jobs")
+            .select("id, link, status")
+            .eq("user_id", user_id)
+            .ilike("link", f"%{needle}%")
+            .execute()
+        )
+    except Exception:  # noqa: BLE001 — healing is best-effort; never break an apply
+        return 0
+
+    ids = [
+        r["id"]
+        for r in (res.data or [])
+        if r.get("status") in ("new", "approved") and job_identity(r.get("link")) == token
+    ]
+    if not ids:
+        return 0
+    with contextlib.suppress(Exception):
+        get_supabase().table("jobs").update({"status": status}).in_("id", ids).eq(
+            "user_id", user_id
+        ).execute()
+        return len(ids)
+    return 0
 
 
 def update_job_score(
