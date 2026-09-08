@@ -140,8 +140,13 @@ def _distinctive_words(keyword: str) -> list[str]:
     ]
 
 
-def _keyword_match(text: str, keywords: list[str] | None) -> bool:
-    """No keywords -> match everything. Otherwise match on either the FULL keyword phrase
+def keyword_match(text: str, keywords: list[str] | None) -> bool:
+    """Public on purpose: the Tap deck filters the POOL with the exact same rule the
+    harvest used to fill it (app/routers/jobs.py::get_deck). Two different notions of
+    "matches my search" between fill and show is how a marketing role from a 09-06
+    vertical test ended up on top of a deck searched for "ai engineer".
+
+    No keywords -> match everything. Otherwise match on either the FULL keyword phrase
     OR any DISTINCTIVE word of a keyword (generic role words like "manager" are ignored,
     so "social media manager" matches "Social Media Coordinator" etc.). Measured live:
     lifts Igor's yield from 2 → ~207 relevant postings across the 46-board watchlist."""
@@ -200,7 +205,7 @@ def fetch_greenhouse(token: str, keywords: list[str] | None = None, limit: int =
     for j in jobs:
         title = j.get("title", "")
         loc = (j.get("location") or {}).get("name", "")
-        if not _keyword_match(f"{title} {loc}", keywords):
+        if not keyword_match(f"{title} {loc}", keywords):
             continue
         url = j.get("absolute_url")
         if not url or not _is_fillable(url):
@@ -227,7 +232,7 @@ def fetch_lever(token: str, keywords: list[str] | None = None, limit: int = 50) 
     for p in data:
         title = p.get("text", "")
         loc = ((p.get("categories") or {}).get("location")) or ""
-        if not _keyword_match(f"{title} {loc}", keywords):
+        if not keyword_match(f"{title} {loc}", keywords):
             continue
         # applyUrl is the /apply form (what phase_ats fills); hostedUrl is the JD page.
         url = p.get("applyUrl") or (
@@ -261,7 +266,7 @@ def fetch_ashby(token: str, keywords: list[str] | None = None, limit: int = 50) 
             continue
         title = (j.get("title") or "").strip()
         loc = j.get("location") or ""
-        if not _keyword_match(f"{title} {loc}", keywords):
+        if not keyword_match(f"{title} {loc}", keywords):
             continue
         base = (j.get("applyUrl") or j.get("jobUrl") or "").rstrip("/")
         if not base or not _is_fillable(base):
@@ -295,7 +300,7 @@ def fetch_workday(token: str, keywords: list[str] | None = None, limit: int = 50
     # query returns nothing (live 2026-07-31: "healthcare marketing social media manager" → 0,
     # but "healthcare marketing" → 29 and "social media manager" → 13). Query each keyword
     # phrase separately and merge, deduping by externalPath. searchText="" (no keywords) just
-    # returns the most-recent jobs, which _keyword_match then can't narrow — so keep it as a
+    # returns the most-recent jobs, which keyword_match then can't narrow — so keep it as a
     # last resort only.
     queries = [k for k in (keywords or []) if k and k.strip()] or [""]
     posts: dict[str, dict] = {}
@@ -320,7 +325,7 @@ def fetch_workday(token: str, keywords: list[str] | None = None, limit: int = 50
     for path, p in posts.items():
         title = (p.get("title") or "").strip()
         loc = p.get("locationsText") or ""
-        if not _keyword_match(f"{title} {loc}", keywords):
+        if not keyword_match(f"{title} {loc}", keywords):
             continue
         # No description in the list response (a per-job detail call is a separate endpoint);
         # the thin-description backfill / title-based scoring handles it (min_score=0 keeps them).

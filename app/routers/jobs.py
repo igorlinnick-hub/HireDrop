@@ -81,6 +81,62 @@ def get_jobs(user=Depends(get_current_user)):
     return _with_captcha(jobs_db.get_jobs(user.id))
 
 
+# Platforms an approved swipe can actually be APPLIED to today. Mirrors TapView's
+# TAP_APPLY_PLATFORMS and the extension's buildApprovedAtsQueue() — a card you can swipe
+# but nothing can submit is a dead swipe.
+TAP_APPLY_PLATFORMS = ("greenhouse", "lever", "indeed", "ashby")
+
+
+@router.get("/jobs/deck")
+def get_deck(user=Depends(get_current_user)):
+    """The Tap deck: the pool rows that match the CURRENT search, not the pool's history.
+
+    The pool is INSERT-only and never expires, so `GET /jobs` is an archive: every job
+    ever harvested under every keyword set the user has tried. The deck used to read that
+    archive and filter only on status/link/platform — so changing your keywords on the
+    dashboard did nothing to what you swipe. Measured on Igor's account 09-08: 535 rows
+    qualified for the deck, 341 of them off-search leftovers from other days' keywords,
+    the oldest six weeks old.
+
+    Relevance is decided with the SAME rule that filled the pool (ats_boards.keyword_match),
+    so "what we collect for you" and "what we show you" cannot drift apart. No keywords on
+    the profile = no filter, exactly as at harvest.
+
+    Returns the cards plus the counts behind them, because a deck that silently shrank is
+    indistinguishable from a broken one (#113's lesson): the UI states how many were held
+    back and why.
+    """
+    from app.db.profile import get_profile
+    from modules.platforms.ats_boards import keyword_match
+
+    profile = get_profile(user.id)
+    keywords = [k for k in (profile.get("keywords") or []) if (k or "").strip()]
+
+    swipeable = [
+        j
+        for j in jobs_db.get_jobs(user.id)
+        if (j.get("status") or "new") == "new"
+        and (j.get("link") or j.get("apply_url"))
+        and j.get("platform") in TAP_APPLY_PLATFORMS
+    ]
+    on_search = [
+        j
+        for j in swipeable
+        if keyword_match(f"{j.get('title', '')} {j.get('location', '')}", keywords)
+    ]
+    # Best fit first, freshest as the tie-break: `score` is a coarse 0-10 from the Haiku
+    # scorer, so whole bands of cards tie and date is what separates a live posting from a
+    # six-week-old one. The client interleaves platforms on top of this order.
+    on_search.sort(key=lambda j: j.get("date_found") or "", reverse=True)
+    on_search.sort(key=lambda j: j.get("score") or 0, reverse=True)  # stable: date breaks ties
+    return {
+        "cards": _with_captcha(on_search),
+        "pool": len(swipeable),
+        "off_search": len(swipeable) - len(on_search),
+        "keywords": keywords,
+    }
+
+
 @router.post("/jobs/find")
 def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
     from app.db.profile import get_profile
