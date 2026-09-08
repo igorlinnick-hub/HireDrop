@@ -25,6 +25,7 @@ import requests
 
 from modules.captcha_profile import TOUCH_RANK as _TOUCH_RANK
 from modules.captcha_profile import captcha_touch as _captcha_touch_pt
+from modules.job_type import detect_job_type
 
 # `?content=true` makes the Greenhouse board API include each job's full description
 # (HTML) in the LIST response — one request, all descriptions. Without it, GH jobs had
@@ -187,6 +188,11 @@ def _job(title, company, apply_url, location, platform, description=""):
         "platform": platform,  # "greenhouse" | "lever" (matches detectPlatform)
         "description": (description or "")[:1500],
         "source": "ats_board",
+        # Employment type, read off the posting. Nothing wrote this column for ATS boards
+        # before 2026-09-08, so the dashboard's Full-time/Part-time/Contract picker filtered
+        # against an empty column (0 of 558 rows in Igor's pool carried a type) — a control
+        # with no source behind it. None stays None: silence is not "full-time".
+        "job_type": detect_job_type(title, description) or "",
         "captcha_touch": touch,  # "low" | "medium" | "high" — expected human-solve burden
         "zero_touch": touch == "low",  # true = usually submits with no captcha action needed
     }
