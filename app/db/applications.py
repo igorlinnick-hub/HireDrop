@@ -136,6 +136,27 @@ def _valid_since(since_iso: str | None) -> str | None:
         return None
 
 
+def applied_job_urls(user_id: str, limit: int = 2000) -> list[str]:
+    """Every URL this user has actually applied to. The server's own answer to "already
+    done", independent of the extension's browser-local appliedUrls set — which is empty
+    on a fresh Chrome profile and was the only thing standing between a stuck pool row and
+    a second application to the same employer.
+    """
+    try:
+        res = (
+            get_supabase()
+            .table("applications")
+            .select("job_url")
+            .eq("user_id", user_id)
+            .order("date_applied", desc=True)
+            .limit(limit)
+            .execute()
+        )
+    except Exception:  # noqa: BLE001 — the queue must still build without this guard
+        return []
+    return [r["job_url"] for r in (res.data or []) if r.get("job_url")]
+
+
 def count_today(user_id: str, since_iso: str | None = None) -> int:
     # "Today" boundary: the client may pass its LOCAL midnight as a UTC ISO instant
     # (since_iso) so a user's day rolls over at THEIR midnight, not the server's UTC

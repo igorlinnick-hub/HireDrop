@@ -35,6 +35,83 @@ router = APIRouter(tags=["campaign"])
 # the irreversible application) instead of discovering the 429 after the fact.
 
 
+@router.get("/campaign/queue")
+def campaign_queue(since: str | None = None, user=Depends(get_current_user)):
+    """The work list for a Tap run — owned by the server, not by chrome.storage.
+
+    Step 1 of moving campaign state server-side (decision 2026-09-08). Until now the
+    extension built this itself from GET /jobs plus browser-local dedup sets, so nothing
+    outside that one Chrome profile could answer "what is left" — no progress on the
+    dashboard, no way for the phone to know, and a wiped profile re-applied to jobs
+    already sent (the appliedUrls set was the only guard).
+
+    Same rules the extension applies, decided here instead:
+      * only rows the user actually approved by swiping,
+      * only platforms an approved swipe can really be submitted to,
+      * nothing already applied — matched by POSTING IDENTITY (#161), not URL text,
+      * the per-platform ban-safety cap, then today's remaining tier budget.
+
+    Read-only. It reports what is left and what was already spent; it never writes state.
+    """
+    from app.routers.jobs import TAP_APPLY_PLATFORMS
+    from modules.job_identity import job_identity
+
+    done_today = apps_db.count_today(user.id, since)
+    tier = get_tier(user.id, getattr(user, "email", None))
+    budget = daily_limit(tier, get_submit_mode(user.id))
+    budget_left = max(0, budget - done_today) if budget > 0 else 0
+
+    applied_ids = {job_identity(u) for u in apps_db.applied_job_urls(user.id)}
+    applied_ids.discard(None)
+
+    approved = [
+        j
+        for j in jobs_db.get_jobs(user.id)
+        if (j.get("status") or "") == "approved"
+        and (j.get("link") or j.get("apply_url"))
+        and j.get("platform") in TAP_APPLY_PLATFORMS
+    ]
+    waiting = [
+        j for j in approved if job_identity(j.get("link") or j.get("apply_url")) not in applied_ids
+    ]
+
+    # Per-platform ceiling first (ban safety is not negotiable), then the daily budget.
+    per: dict[str, int] = {}
+    capped: list[dict] = []
+    for job in waiting:
+        platform = job.get("platform")
+        if per.get(platform, 0) >= MAX_PER_PLATFORM:
+            continue
+        per[platform] = per.get(platform, 0) + 1
+        capped.append(job)
+
+    queue = [
+        {
+            "id": j.get("id"),
+            "title": j.get("title") or "",
+            "company": j.get("company") or "",
+            "platform": j.get("platform"),
+            "apply_url": j.get("link") or j.get("apply_url"),
+            "score": j.get("score"),
+        }
+        for j in capped[:budget_left]
+    ]
+    return {
+        "queue": queue,
+        "ready": len(queue),
+        # Everything the user swiped that is still undone — before caps trim it. The
+        # difference between this and `ready` is exactly what the caps are holding back,
+        # and a queue that shrank silently is indistinguishable from a broken one.
+        "waiting": len(waiting),
+        "held_by_caps": len(waiting) - len(queue),
+        "done_today": done_today,
+        "daily_limit": budget,
+        "cap_per_platform": MAX_PER_PLATFORM,
+        # Rows the user approved that were already applied under another URL spelling.
+        "already_applied": len(approved) - len(waiting),
+    }
+
+
 @router.get("/campaign/status")
 def campaign_status(since: str | None = None, user=Depends(get_current_user)):
     # `since` = the client's LOCAL midnight as a UTC ISO instant, so "today" counts
