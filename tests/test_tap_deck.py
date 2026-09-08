@@ -109,7 +109,9 @@ def test_a_swipe_that_changes_nothing_is_a_404_not_a_success():
 
     with patch.object(jobs_router.jobs_db, "update_job_status", return_value=0):
         try:
-            jobs_router.patch_job_status("missing", JobStatusUpdate(status="approved"), user=_User())
+            jobs_router.patch_job_status(
+                "missing", JobStatusUpdate(status="approved"), user=_User()
+            )
         except HTTPException as exc:
             assert exc.status_code == 404
         else:
