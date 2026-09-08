@@ -144,11 +144,15 @@ def test_daily_limit_auto_vs_tap_paid():
     assert (
         daily_limit("pro", "tap") == TAP_DAILY_LIMIT
     )  # 30 (=auto; tap is a quality lane, not a volume lift — 2026-08-02)
-    assert daily_limit("premium", "tap") == TAP_DAILY_LIMIT
+    # "premium"/"elite" are no longer tiers (removed 2026-09-06 as dead weight — the promo
+    # hole grew out of them). get_tier() collapses a stale grant to "pro" before daily_limit()
+    # can see it; if one arrives raw anyway it must fall back to FREE — down, never up.
+    assert daily_limit("premium", "tap") == TIER_LIMITS["free"]
+    assert daily_limit("elite", "tap") == TIER_LIMITS["free"]
 
 
 def test_daily_limit_free_stays_free_even_in_tap():
-    assert daily_limit("free", "auto") == TIER_LIMITS["free"]  # 10
+    assert daily_limit("free", "auto") == TIER_LIMITS["free"]
     assert daily_limit("free", "tap") == TIER_LIMITS["free"]  # tap does NOT lift free
 
 
