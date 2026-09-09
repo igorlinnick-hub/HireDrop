@@ -8,10 +8,12 @@ One-time fee: **$5 USD** (paid by Igor at https://chrome.google.com/webstore/dev
 ## Listing fields
 
 ### Name (max 75 chars)
-HireDrop — Auto-Apply on Indeed
+HireDrop — Auto-Apply on Indeed, ZipRecruiter, Greenhouse
+(57 chars; taken from manifest.json `name` — the store shows the manifest name, so keep them identical)
 
 ### Short description / summary (max 132 chars)
-Auto-fill Indeed applications with your resume + AI-written cover letters. Run, stop, and rate-limit campaigns from one dashboard.
+Applies to jobs for you on Indeed, ZipRecruiter, Greenhouse, Lever and Ashby — a cover letter per role, all from one dashboard.
+(127 chars)
 
 ### Category
 Productivity
@@ -20,32 +22,49 @@ Productivity
 English
 
 ### Detailed description
-HireDrop turns a six-step manual job application into a single button click on Indeed.
+> Paste-ready copy of everything below lives in `store-assets/listing-copy.txt`.
+> Every number here is checked against code: `FREE_APP_LIMIT`=40, `TIER_LIMITS["pro"]`=30,
+> `MAX_PER_PLATFORM`=15, `billing_config.PLANS` = $12/week, $39/month. Re-check on any price change.
 
-**How it works**
-1. Sign up at hiredrop.io, upload your PDF resume, set your search keywords and writing style.
-2. Install this extension and click "Connect Account" — your dashboard session is paired with the extension in one click.
-3. Click "Start Campaign" in the popup. HireDrop opens an Indeed search matching your preferences and begins applying to listings one at a time.
-4. Each application: extension reads the job title and company, asks the HireDrop backend for an AI-generated cover letter (Claude API), uploads your stored resume, fills the form, and submits.
-5. The dashboard tracks every application, with daily and per-platform limits enforced server-side.
+HireDrop applies to jobs for you. You set what you are looking for; it does the typing.
 
-**Built-in safeguards**
-• Log-normal randomized delays + occasional misclick + Bezier-path mouse emulation so behavior looks human.
-• Per-platform daily cap of 50 applications + tiered global daily limits (Free 10, Pro 50, Elite 200).
-• Stops the campaign automatically if Indeed shows a captcha and notifies you in the popup.
-• A brief warm-up phase before the first action, mimicking how a person settles onto a page.
+A job application is the same six steps every time — open the posting, retype your details, upload the resume, write a cover letter, answer the screening questions, submit. HireDrop does those six steps on the boards you already use, in your own browser, under your own account.
 
-**Privacy-friendly**
-• Auth uses Supabase session tokens stored in chrome.storage.local; nothing leaves your browser except API calls to the HireDrop backend.
-• No data is sold to or shared with advertisers.
-• Single purpose: automating job applications on Indeed.
+WHERE IT APPLIES
+Indeed, ZipRecruiter, and company career pages running Greenhouse, Lever or Ashby.
 
-**You stay in control**
-• Start and stop campaigns manually — the extension never applies in the background unattended.
-• Edit your resume, keywords, or writing style at any time on the dashboard.
-• Disconnect Indeed in one click from your dashboard settings.
+HOW IT WORKS
+1. Sign up at hiredrop.io, upload your resume, set your keywords, location and writing style.
+2. Install this extension and open your dashboard — it pairs in one click.
+3. Press Start. A visible browser window opens and works through matching jobs one at a time.
+4. For each job, HireDrop reads the posting, writes a cover letter for that specific role, fills the form from your profile, answers the screening questions and submits.
+5. Every application lands in your dashboard — what was sent, where, and when.
 
-HireDrop is not affiliated with Indeed. You are responsible for ensuring your use of automation complies with Indeed's terms of service.
+TWO WAYS TO RUN IT
+• Auto — it applies to the matches that clear the fit threshold you choose.
+• Tap — each job arrives as a card and nothing is sent until you approve it.
+
+LIMITS, ON PURPOSE
+• 15 applications per board per day. Volume comes from applying across several boards, not from hammering one.
+• 30 applications a day on the paid plan.
+• A steady, human pace between actions — HireDrop is never faster than a person doing the same thing by hand.
+• If a board shows a captcha, the campaign stops and tells you why instead of pretending it is still working.
+
+WHAT IT COSTS
+Your first 40 applications are free, with no card. After that it is $12 per week or $39 per month — the same full product on either plan, cancel any time in one click.
+
+YOU STAY IN CONTROL
+• Nothing runs hidden. The browser window is visible, and you start and stop it yourself.
+• Change your resume, keywords or writing style whenever you like.
+• In Tap mode nothing is ever sent that you did not approve.
+• Your application history is yours to read and export.
+
+PRIVACY
+• Signing in uses a session token stored in chrome.storage.local on your machine.
+• Data goes to the HireDrop backend and nowhere else. Nothing is sold to or shared with advertisers.
+• Single purpose: applying to jobs on your behalf.
+
+HireDrop is not affiliated with Indeed, ZipRecruiter, Greenhouse, Lever or Ashby. You are responsible for making sure your use of automation complies with each site's terms of service.
 
 ---
 
