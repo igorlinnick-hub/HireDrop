@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "HireDrop \u2014 Auto-Apply on Indeed, ZipRecruiter, Greenhouse",
+  "name": "HireDrop — Auto-Apply on Indeed, ZipRecruiter, Greenhouse",
   "short_name": "HireDrop",
-  "version": "1.7.7",
+  "version": "1.7.8",
   "description": "Auto-apply on Indeed, ZipRecruiter, Greenhouse, Lever & Ashby with your resume and an AI-written cover letter.",
   "author": "HireDrop",
   "homepage_url": "https://hiredrop.io",
@@ -24,8 +24,7 @@
     "https://hiredrop.io/*",
     "https://msxjcjzmfruizbgkssxo.supabase.co/*",
     "https://jobs.lever.co/*",
-    "https://*.ashbyhq.com/*",
-    "https://*.linkedin.com/*"
+    "https://*.ashbyhq.com/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -47,8 +46,7 @@
         "https://job-boards.eu.greenhouse.io/*",
         "https://boards.eu.greenhouse.io/*",
         "https://jobs.lever.co/*",
-        "https://*.ashbyhq.com/*",
-        "https://*.linkedin.com/*"
+        "https://*.ashbyhq.com/*"
       ],
       "js": [
         "content.js"
