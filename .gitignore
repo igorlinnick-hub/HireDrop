@@ -16,3 +16,4 @@ data/campaign_state.json
 
 # Build artifacts
 hiredrop-extension.zip
+store-assets/*.zip
