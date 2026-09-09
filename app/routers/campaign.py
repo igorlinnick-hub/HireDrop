@@ -21,6 +21,7 @@ from app.db.subscriptions import (
     get_free_apps_used,
     get_submit_mode,
     get_tier,
+    read_submit_mode,
 )
 from app.deps import get_current_user
 from app.disposable_email import is_disposable_email
@@ -128,7 +129,12 @@ def campaign_status(since: str | None = None, user=Depends(get_current_user)):
     jobs_ready = jobs_db.count_new_jobs(user.id, enabled_platforms)
 
     tier = get_tier(user.id, getattr(user, "email", None))
-    submit_mode = get_submit_mode(user.id)
+    # Say whether the mode is KNOWN, don't just hand over a fallback. The extension reads
+    # this to decide auto-vs-tap, and a guessed "auto" there means applications a human
+    # never approved (third layer of the #98 class: a value producible without evidence
+    # is not evidence). Cap math keeps the conservative "auto" fallback either way.
+    known_mode = read_submit_mode(user.id)
+    submit_mode = known_mode or "auto"
     free = tier == "free"
 
     return {
@@ -143,6 +149,7 @@ def campaign_status(since: str | None = None, user=Depends(get_current_user)):
         "daily_limit": daily_limit(tier, submit_mode),
         "tier": tier,
         "submit_mode": submit_mode,
+        "submit_mode_known": known_mode is not None,
         "jobs_ready": jobs_ready,
         # Third cap, free tier only: the lifetime 40-app taste (FREE_TASTE_PLAN.md).
         # The extension stops the campaign when free_used hits free_limit; the

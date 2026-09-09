@@ -86,14 +86,36 @@
   //             logged in:  a[href*="/authn/logout"] / a[href*="/candidate/"]
   //
   // Returns "connected" | "logged_out" | "unknown".
+  //
+  // WHERE a negative was read matters (2026-09-09). Indeed runs its SEARCH host and its
+  // APPLY host as separate session surfaces: www.indeed.com's gnav renders SignIn for
+  // sessions that apply perfectly well, so a "logged out" read there is a guess — and an
+  // expensive one, because BOTH pre-flight gates (dashboard QuickActions and the
+  // START_CAMPAIGN gate below) refuse to launch on the strength of it. Live 09-06: the
+  // header stamped indeed=logged_out while a campaign that hopped to Indeed from
+  // ZipRecruiter submitted a real application at 05:11 UTC — Igor had to start every run
+  // on ZR to get around it.
+  // So: a POSITIVE is trusted anywhere (nothing renders an account menu without a
+  // session), a NEGATIVE only on the domains where applying actually happens.
+  // Mirrored in background.js (INDEED_APPLY_HOSTS) — content scripts don't see config.js.
   // =========================================================================
+
+  const INDEED_APPLY_HOSTS = ["smartapply.indeed.com", "secure.indeed.com"];
+  function onIndeedApplyHost() {
+    const host = window.location.hostname;
+    return INDEED_APPLY_HOSTS.some((h) => host === h || host.endsWith("." + h));
+  }
 
   function detectPlatformAuth(platform) {
     const p = platform || detectPlatform();
     if (p === "indeed") {
-      if (document.querySelector(
-        '[data-gnav-element-name="SignIn"], a[href*="secure.indeed.com/auth"], a[href*="/account/login"]'
-      )) return "logged_out";
+      // secure.indeed.com IS the login wall — you only land there when a session is needed.
+      const negative =
+        window.location.hostname === "secure.indeed.com" ||
+        !!document.querySelector(
+          '[data-gnav-element-name="SignIn"], a[href*="secure.indeed.com/auth"], a[href*="/account/login"]'
+        );
+      if (negative) return onIndeedApplyHost() ? "logged_out" : "unknown";
       if (document.querySelector(
         '[data-gnav-element-name="AccountMenu"], [data-gnav-element-name="SignOut"], [data-gnav-element-name="Resume"]'
       )) return "connected";
@@ -128,9 +150,11 @@
     try {
       const store = await chrome.storage.local.get("platformConnections");
       const conns = store.platformConnections || {};
-      conns[platform] = { status, checkedAt: new Date().toISOString() };
+      // `host` is the record's provenance: background.js drops a logged_out that wasn't
+      // read where applying happens, so a search-page guess can never gate a launch.
+      conns[platform] = { status, checkedAt: new Date().toISOString(), host: window.location.hostname };
       await chrome.storage.local.set({ platformConnections: conns });
-      chrome.runtime.sendMessage({ type: "PLATFORM_AUTH", platform, status }).catch(() => {});
+      chrome.runtime.sendMessage({ type: "PLATFORM_AUTH", platform, status, host: window.location.hostname }).catch(() => {});
     } catch { /* storage/runtime unavailable — ignore */ }
     return status;
   }
@@ -4535,7 +4559,7 @@
         await reportPlatformAuth();
         const name = platformLabel();
         log(`⚠️ Not signed into ${name}. Log in (or create an account) in this window — the campaign resumes automatically once you're in.`, "err");
-        await sendMsg({ type: "PLATFORM_LOGIN_REQUIRED", platform: authPlatform, url: window.location.href });
+        await sendMsg({ type: "PLATFORM_LOGIN_REQUIRED", platform: authPlatform, url: window.location.href, host: window.location.hostname });
         const _loginPauseStart = Date.now();
         while (Date.now() - _loginPauseStart < 2 * 60 * 60 * 1000) {
           await sleep(8000);

@@ -55,15 +55,32 @@ TAP_DAILY_LIMIT = 30
 ADMIN_DAILY_LIMIT = 10_000_000
 
 
-def get_submit_mode(user_id: str) -> str:
-    """'auto' (default) | 'tap'. Absent/error → 'auto' (backward-compatible)."""
+def read_submit_mode(user_id: str) -> str | None:
+    """'auto' | 'tap', or None when the profile could not be read.
+
+    There is no single safe default for "I don't know", which is why this says so out
+    loud instead of guessing. For SUBMITTING, unknown must mean 'tap' — auto sends
+    applications the human never approved, and that cannot be taken back. For the DAILY
+    CAP, unknown must mean 'auto' — tap's cap is several times higher, so guessing 'tap'
+    would raise a ban-safety rail on a guess. Callers pick their own direction.
+    """
     with contextlib.suppress(Exception):
         res = (
             get_supabase().table("profiles").select("submit_mode").eq("user_id", user_id).execute()
         )
         if res.data:
             return (res.data[0].get("submit_mode") or "auto").lower()
-    return "auto"
+        return "auto"  # no row = never chose = the default, not an unknown
+    return None
+
+
+def get_submit_mode(user_id: str) -> str:
+    """'auto' (default) | 'tap'. Absent/error → 'auto'.
+
+    Cap-side callers want this: the lower ceiling on an unreadable profile. Anything
+    deciding whether to SUBMIT must use read_submit_mode() and treat None as 'tap'.
+    """
+    return read_submit_mode(user_id) or "auto"
 
 
 def is_admin(email: str | None) -> bool:

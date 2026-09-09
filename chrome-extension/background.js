@@ -267,6 +267,14 @@ chrome.runtime.onInstalled.addListener(async () => {
     for (const p of ["ziprecruiter", "glassdoor", "wellfound", "monster", "careerbuilder", "dice"]) {
       if (conns[p] && conns[p].status === "connected") { delete conns[p]; changed = true; }
     }
+    // 2026-09-09: same move from the other end. A logged_out that wasn't read on the
+    // domain where applying happens is a guess (see logoutIsTrustworthy) — and a sticky
+    // one: the dashboard reads this record straight out of storage via ping.js, so its
+    // gate would keep refusing to launch and never give the service worker a chance to
+    // clean up. Dropping it on update un-sticks browsers already poisoned by the old rule.
+    for (const [p, rec] of Object.entries(conns)) {
+      if (!logoutIsTrustworthy(p, rec)) { delete conns[p]; changed = true; }
+    }
     if (changed) await chrome.storage.local.set({ platformConnections: conns });
   }
   await fetchAndCacheProfile().catch(() => {});
@@ -983,8 +991,9 @@ async function nativeWalkWatchdog() {
   // Parked on purpose, waiting for Igor's hands — silence here is the FEATURE.
   if (d.captchaWaiting || d.reviewPending) return;
   const conns = d.platformConnections || {};
-  const loggedOutRecently = Object.values(conns).some(
-    (c) => c && c.status === "logged_out" && c.checkedAt &&
+  const loggedOutRecently = Object.entries(conns).some(
+    ([platform, c]) => c && c.status === "logged_out" && c.checkedAt &&
+      logoutIsTrustworthy(platform, c) &&
       Date.now() - new Date(c.checkedAt).getTime() < 2 * 60 * 60 * 1000
   );
   if (loggedOutRecently) return;
@@ -1043,6 +1052,45 @@ async function tapPoolIdleRefill() {
   await chrome.storage.local.set({ atsQueue: more, atsNavAt: Date.now(), atsNavTries: 0, poolIdleSince: null });
   await addToActivityLog(`Applying ${more.length} more approved job${more.length > 1 ? "s" : ""} you swiped…`, "info");
   await navigatePoolNext(d.campaignTabId, more[0]);
+}
+
+// ---------------------------------------------------------------------------
+// Connection records: provenance decides whether a "logged out" may gate a launch
+//
+// Indeed keeps its SEARCH host and its APPLY host on separate session surfaces —
+// www.indeed.com's gnav renders SignIn for a session that applies perfectly well. That
+// guess used to be stored as fact, and both pre-flight gates (this file's START_CAMPAIGN
+// and the dashboard's QuickActions, which reads the very same record over the ping.js
+// bridge) then refused to launch on Indeed. Live 09-06: gate said logged_out, a campaign
+// that hopped to Indeed from ZipRecruiter submitted a real application at 05:11 UTC.
+// content.js now stamps each record with the host it was read on; a logged_out for Indeed
+// only counts from the domains where applying actually happens. Records written before
+// this rule carry no host at all — those are guesses too, and get dropped on first read,
+// which is what un-sticks a browser that's already poisoned.
+// (INDEED_APPLY_HOSTS is mirrored in content.js — content scripts don't see config.js.)
+const INDEED_APPLY_HOSTS = ["smartapply.indeed.com", "secure.indeed.com"];
+
+function logoutIsTrustworthy(platform, rec) {
+  if (!rec || rec.status !== "logged_out") return true;
+  if (platform !== "indeed") return true; // ZR's login link is server-rendered on every host
+  const host = rec.host;
+  if (!host) return false;
+  return INDEED_APPLY_HOSTS.some((h) => host === h || host.endsWith("." + h));
+}
+
+// Every read of platformConnections goes through here, so a poisoned record can't outlive
+// the next read — including the dashboard's 10s poll, which is how the website-side gate
+// heals without a redeploy.
+async function getPlatformConnections() {
+  const conns = (await chrome.storage.local.get("platformConnections")).platformConnections || {};
+  const kept = {};
+  let dropped = false;
+  for (const [platform, rec] of Object.entries(conns)) {
+    if (!logoutIsTrustworthy(platform, rec)) { dropped = true; continue; }
+    kept[platform] = rec;
+  }
+  if (dropped) await chrome.storage.local.set({ platformConnections: kept });
+  return kept;
 }
 
 // Unified auth page per platform (enter email → logs in or creates an account),
@@ -1262,7 +1310,23 @@ async function handleMessage(msg, sender) {
       // Status BEFORE target selection: Lever/tap-pool eligibility depends on submit_mode.
       let preSt = null;
       try { preSt = await apiGet("/campaign/status"); } catch {}
-      const tapMode = !!(preSt && preSt.submit_mode === "tap");
+      // Auto vs Tap decides whether this run SUBMITS without a human. Reading that off a
+      // request that may never have arrived — the `catch {}` above leaves preSt null, and
+      // null used to read as "auto" — handed Tap users a full auto walk over cards they
+      // never swiped. Third layer of the #98 class: a value that can be produced from
+      // nothing is not evidence. Refuse and say why: a campaign that didn't start is
+      // recoverable in one click, applications nobody approved are not.
+      // (submit_mode_known is the backend's half of the same rule — its profile read has
+      // an unreadable case too, and it no longer hides that behind a default "auto".
+      // Older backends don't send the field; undefined means "no reason to doubt it".)
+      if (!preSt || preSt.submit_mode_known === false) {
+        return {
+          started: false,
+          error: "mode_unknown",
+          message: "Couldn't reach HireDrop to check whether you're on Auto or Tap — starting now could apply to jobs you never approved. Check your connection and press Start again.",
+        };
+      }
+      const tapMode = preSt.submit_mode === "tap";
 
       // reviewMode is now ALWAYS off (Igor 2026-07-25, instant-tap rebuild). The new
       // tap flow pre-approves via the swipe deck — the human decision happens on
@@ -1333,7 +1397,7 @@ async function handleMessage(msg, sender) {
       // Pre-flight login check applies only to native board platforms (Indeed/ZR). ATS apply
       // pages are public — no login wall — so skip it in pool-driven mode.
       if (!atsTarget && !tapPoolQueue.length) {
-        const conns = (await chrome.storage.local.get("platformConnections")).platformConnections || {};
+        const conns = await getPlatformConnections();
         if (conns[primaryPlatform]?.status === "logged_out") {
           chrome.tabs.create({ url: platformLoginUrl(primaryPlatform) }).catch(() => {});
           return {
@@ -1495,8 +1559,8 @@ async function handleMessage(msg, sender) {
     // content.js reports login state whenever the user is on a platform page.
     case "PLATFORM_AUTH": {
       if (msg.platform && msg.status && msg.status !== "unknown") {
-        const conns = (await chrome.storage.local.get("platformConnections")).platformConnections || {};
-        conns[msg.platform] = { status: msg.status, checkedAt: new Date().toISOString() };
+        const conns = await getPlatformConnections();
+        conns[msg.platform] = { status: msg.status, checkedAt: new Date().toISOString(), host: msg.host || null };
         await chrome.storage.local.set({ platformConnections: conns });
       }
       return { ok: true };
@@ -1504,7 +1568,7 @@ async function handleMessage(msg, sender) {
 
     // Dashboard reads connection status (via ping.js bridge) to render "connect" chips.
     case "GET_PLATFORM_CONNECTIONS": {
-      const conns = (await chrome.storage.local.get("platformConnections")).platformConnections || {};
+      const conns = await getPlatformConnections();
       return { ok: true, connections: conns };
     }
 
@@ -1519,8 +1583,10 @@ async function handleMessage(msg, sender) {
     // notify the user; the campaign pauses in-page until they sign in.
     case "PLATFORM_LOGIN_REQUIRED": {
       if (msg.platform) {
-        const conns = (await chrome.storage.local.get("platformConnections")).platformConnections || {};
-        conns[msg.platform] = { status: "logged_out", checkedAt: new Date().toISOString() };
+        const conns = await getPlatformConnections();
+        // The wall was hit on a real page — carry its host so the record survives the
+        // provenance check above (a hostless logged_out is treated as a guess).
+        conns[msg.platform] = { status: "logged_out", checkedAt: new Date().toISOString(), host: msg.host || null };
         await chrome.storage.local.set({ platformConnections: conns });
         try {
           chrome.notifications.create({
