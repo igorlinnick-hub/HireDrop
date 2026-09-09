@@ -74,6 +74,16 @@ def _categorize(msg: str) -> str | None:
         return "captcha"
     if "not signed into" in m or "login required" in m:
         return "login_required"
+    # Outcomes below are what run_report() needs to compute YIELD. The categories above
+    # answer "is something wrong"; these answer "where did the time go".
+    if "opening job:" in m or "applying your approved pick" in m:
+        return "opened"
+    if "skip (title mismatch)" in m:
+        return "skipped_title"
+    if "no quick apply" in m or "couldn't open" in m or "no easy apply jobs" in m:
+        return "skipped_no_button"
+    if "dead link" in m:
+        return "dead_link"
     return None
 
 
@@ -136,6 +146,98 @@ def summary(
         "last_error_at": last_error_at,
         "last_error_msg": last_error_msg,
     }
+
+
+def run_report(user_id: str, since: str | None = None, window_hours: int = 6) -> dict:
+    """What the last run actually PRODUCED, and where the time went.
+
+    summary() answers "is something wrong"; this answers the question that costs real days:
+    the run looked alive and applied to nothing. On 2026-09-08 an auto walk ran 20 minutes,
+    opened dozens of postings and submitted zero — every one skipped on fit — and nothing in
+    the product said so. Liveness was green the whole time, because liveness was the wrong
+    thing to measure.
+
+    So the numbers here are a FUNNEL (opened → applied) and a YIELD (minutes per
+    application), plus one sentence naming the dominant loss. A rate is what makes "it
+    feels broken" checkable without reading a log.
+    """
+    counts = summary(user_id, window_hours=window_hours, since=since)
+    by_type = counts["by_type"]
+    opened = by_type.get("opened", 0)
+    applied = by_type.get("applied", 0)
+
+    losses = {
+        "fit gate": by_type.get("skipped_fit", 0),
+        "title mismatch": by_type.get("skipped_title", 0),
+        "no apply button": by_type.get("skipped_no_button", 0),
+        "dead links": by_type.get("dead_link", 0),
+        "captcha": by_type.get("captcha", 0),
+        "no résumé attached": by_type.get("skipped_no_resume", 0),
+        "login needed": by_type.get("login_required", 0),
+    }
+    top_loss, top_n = max(losses.items(), key=lambda kv: kv[1], default=("", 0))
+
+    minutes = _minutes_spanned(user_id, since, window_hours)
+    per_application = round(minutes / applied, 1) if applied else None
+
+    return {
+        "since": counts["since"],
+        "window_hours": window_hours,
+        "minutes": minutes,
+        "opened": opened,
+        "applied": applied,
+        "losses": {k: v for k, v in losses.items() if v},
+        "minutes_per_application": per_application,
+        "applications_per_hour": round(applied / (minutes / 60), 1) if minutes >= 5 else None,
+        "verdict": _verdict(minutes, opened, applied, top_loss, top_n, counts),
+    }
+
+
+def _minutes_spanned(user_id: str, since: str | None, window_hours: int) -> int:
+    """Wall-clock the log actually covers — first line to last, not the window we asked for.
+    A run that stopped after 4 minutes must not be judged as if it had an hour."""
+    cutoff = since or (datetime.now(UTC) - timedelta(hours=max(1, window_hours))).isoformat()
+    try:
+        res = (
+            get_supabase()
+            .table("activity_log")
+            .select("timestamp")
+            .eq("user_id", user_id)
+            .gte("timestamp", cutoff)
+            .order("timestamp")
+            .limit(1)
+            .execute()
+        )
+        first = (res.data or [{}])[0].get("timestamp")
+        if not first:
+            return 0
+        start = datetime.fromisoformat(first.replace("Z", "+00:00"))
+        return max(0, int((datetime.now(UTC) - start).total_seconds() // 60))
+    except Exception:  # noqa: BLE001 — a report that can't measure time still reports counts
+        return 0
+
+
+def _verdict(
+    minutes: int, opened: int, applied: int, top_loss: str, top_n: int, counts: dict
+) -> str:
+    """One sentence a human can act on. Ordered by how badly each case misleads."""
+    if counts["total"] == 0:
+        return "No activity in this window — nothing has been running."
+    if counts["auth_401"]:
+        return "Applications are failing on auth (401) — the extension's token is stale; reload the dashboard tab."
+    if opened and not applied:
+        # The exact shape of the 09-08 run: busy, alive, produced nothing.
+        reason = f" — every one lost to {top_loss}" if top_n else ""
+        return f"Opened {opened} postings in {minutes} min and applied to NONE{reason}."
+    if applied and top_n > applied * 3:
+        return f"Applying, but {top_n} postings were lost to {top_loss} for every {applied} sent — the search is aimed wrong."
+    # Under 3/hour after half an hour. A live application takes ~30-160s end to end
+    # (measured 09-06), so this floor is generous — it fires on stalling, not on pacing.
+    if applied and minutes >= 30 and applied / (minutes / 60) < 3:
+        return f"Slow: {applied} applications in {minutes} min. Something is stalling between postings."
+    if applied:
+        return f"Healthy: {applied} applications in {minutes} min."
+    return "Nothing opened yet in this window."
 
 
 def handback_stats(window_hours: int = 168, cap: int = 5000) -> dict:
