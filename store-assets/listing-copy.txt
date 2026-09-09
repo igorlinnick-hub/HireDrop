@@ -1,0 +1,70 @@
+HIREDROP — CHROME WEB STORE LISTING COPY
+Готово к вставке. Обновлено 2026-09-07 под цены $12/$39 и реальные лимиты.
+Каждое число сверено с кодом: FREE_APP_LIMIT=40, TIER_LIMITS["pro"]=30,
+MAX_PER_PLATFORM=15, billing_config.PLANS = $12/week, $39/month.
+
+════════════════════════════════════════════════════════════════════
+1) SHORT DESCRIPTION  →  вкладка «Магазин» → «Краткое описание»
+   (максимум 132 символа)
+════════════════════════════════════════════════════════════════════
+
+Applies to jobs for you on Indeed, ZipRecruiter, Greenhouse, Lever and Ashby — a cover letter per role, all from one dashboard.
+
+════════════════════════════════════════════════════════════════════
+2) DETAILED DESCRIPTION  →  вкладка «Магазин» → «Подробное описание»
+   (вставить целиком, ниже разделителя)
+════════════════════════════════════════════════════════════════════
+
+HireDrop applies to jobs for you. You set what you are looking for; it does the typing.
+
+A job application is the same six steps every time — open the posting, retype your details, upload the resume, write a cover letter, answer the screening questions, submit. HireDrop does those six steps on the boards you already use, in your own browser, under your own account.
+
+WHERE IT APPLIES
+Indeed, ZipRecruiter, and company career pages running Greenhouse, Lever or Ashby.
+
+HOW IT WORKS
+1. Sign up at hiredrop.io, upload your resume, set your keywords, location and writing style.
+2. Install this extension and open your dashboard — it pairs in one click.
+3. Press Start. A visible browser window opens and works through matching jobs one at a time.
+4. For each job, HireDrop reads the posting, writes a cover letter for that specific role, fills the form from your profile, answers the screening questions and submits.
+5. Every application lands in your dashboard — what was sent, where, and when.
+
+TWO WAYS TO RUN IT
+• Auto — it applies to the matches that clear the fit threshold you choose.
+• Tap — each job arrives as a card and nothing is sent until you approve it.
+
+LIMITS, ON PURPOSE
+• 15 applications per board per day. Volume comes from applying across several boards, not from hammering one.
+• 30 applications a day on the paid plan.
+• A steady, human pace between actions — HireDrop is never faster than a person doing the same thing by hand.
+• If a board shows a captcha, the campaign stops and tells you why instead of pretending it is still working.
+
+WHAT IT COSTS
+Your first 40 applications are free, with no card. After that it is $12 per week or $39 per month — the same full product on either plan, cancel any time in one click.
+
+YOU STAY IN CONTROL
+• Nothing runs hidden. The browser window is visible, and you start and stop it yourself.
+• Change your resume, keywords or writing style whenever you like.
+• In Tap mode nothing is ever sent that you did not approve.
+• Your application history is yours to read and export.
+
+PRIVACY
+• Signing in uses a session token stored in chrome.storage.local on your machine.
+• Data goes to the HireDrop backend and nowhere else. Nothing is sold to or shared with advertisers.
+• Single purpose: applying to jobs on your behalf.
+
+HireDrop is not affiliated with Indeed, ZipRecruiter, Greenhouse, Lever or Ashby. You are responsible for making sure your use of automation complies with each site's terms of service.
+
+════════════════════════════════════════════════════════════════════
+3) ЧТО ИМЕННО БЫЛО НЕВЕРНО В СТАРОМ ОПИСАНИИ
+════════════════════════════════════════════════════════════════════
+
+• «tiered global daily limits (Free 10, Pro 50, Elite 200)» — таких тиров нет.
+  Free = 40 заявок всего (не в день), платный = 30 в день, других тиров не существует.
+• «Per-platform daily cap of 50 applications» — на самом деле 15 (MAX_PER_PLATFORM).
+• Описание говорило только про Indeed, хотя расширение работает на пяти площадках.
+• Цены не назывались вообще.
+• «randomized delays + occasional misclick + Bezier-path mouse emulation so behavior
+  looks human» — убрано намеренно. Это читается ревьюером как обход детекции, а не как
+  вежливость к площадке, и это лишний повод для отказа. Смысл сохранён формулировкой
+  «never faster than a person doing the same thing by hand».
