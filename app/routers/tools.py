@@ -4,6 +4,8 @@ from datetime import date
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
+import contextlib
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
@@ -289,6 +291,27 @@ def stall_scan(user=Depends(get_current_user)):
         "verdicts": verdicts,
         "thresholds_secs": {"first_application": STALL_FIRST_SECS, "between": STALL_GAP_SECS},
     }
+
+
+@router.get("/tools/run-report")
+def run_report(window_hours: int = 6, user=Depends(get_current_user)):
+    """What YOUR last run produced, and where the time went — not whether it was alive.
+
+    Liveness was the wrong metric: on 2026-09-08 a walk ran 20 minutes, opened dozens of
+    postings and applied to zero (every one skipped on fit) while every health signal
+    stayed green. This returns the funnel (opened → applied), the yield (minutes per
+    application) and one sentence naming the dominant loss.
+
+    Scoped to the CURRENT run when one is going (campaign started_at), otherwise the last
+    `window_hours`. Own data only — no admin gate needed, and none of it is cross-user.
+    """
+    from app.db import activity as activity_db
+    from app.db import campaign as campaign_db
+
+    started_at = None
+    with contextlib.suppress(Exception):
+        started_at = campaign_db.get_effective_state(user.id).get("started_at")
+    return activity_db.run_report(user.id, since=started_at, window_hours=window_hours)
 
 
 @router.get("/tools/ops-scan")
