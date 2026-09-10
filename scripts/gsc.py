@@ -49,8 +49,7 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 AUTH_URL = "https://accounts.google.com/o/oauth2/auth"
 # webmasters = read+write on properties and sitemaps; siteverification = claim ownership.
 SCOPES = (
-    "https://www.googleapis.com/auth/webmasters "
-    "https://www.googleapis.com/auth/siteverification"
+    "https://www.googleapis.com/auth/webmasters https://www.googleapis.com/auth/siteverification"
 )
 
 SC_API = "https://www.googleapis.com/webmasters/v3"
@@ -233,9 +232,7 @@ def cmd_token():
 def cmd_verify():
     """Claim ownership. The meta tag must already be live on the homepage."""
     body = {"site": {"type": "SITE", "identifier": SITE}}
-    data = api(
-        "POST", f"{SV_API}/webResource?verificationMethod=META", access_token(), body
-    )
+    data = api("POST", f"{SV_API}/webResource?verificationMethod=META", access_token(), body)
     owners = ", ".join(data.get("owners", []))
     print(f"✓ verified {data.get('id', SITE)} — owners: {owners}")
 
@@ -247,8 +244,11 @@ def cmd_add():
 
 
 def cmd_sitemap(feed: str = SITEMAP):
-    api("PUT", f"{SC_API}/sites/{site_path()}/sitemaps/{urllib.parse.quote(feed, safe='')}",
-        access_token())
+    api(
+        "PUT",
+        f"{SC_API}/sites/{site_path()}/sitemaps/{urllib.parse.quote(feed, safe='')}",
+        access_token(),
+    )
     print(f"✓ sitemap submitted: {feed}")
 
 
