@@ -107,12 +107,14 @@ def get_deck(user=Depends(get_current_user)):
     back and why.
     """
     from app.db.profile import get_profile
+    from modules.job_location import location_verdict, parse_user_location
     from modules.job_type import matches_job_type
     from modules.platforms.ats_boards import keyword_match
 
     profile = get_profile(user.id)
     keywords = [k for k in (profile.get("keywords") or []) if (k or "").strip()]
     wanted_type = (profile.get("job_type") or "").strip() or None
+    user_loc = parse_user_location(profile.get("location") or "")
 
     swipeable = [
         j
@@ -126,11 +128,18 @@ def get_deck(user=Depends(get_current_user)):
     # same title, and the picker on the dashboard has been promising this since long before
     # anything wrote the column (see modules/job_type.py). Rows harvested before that write
     # carry no type and pass: emptying the deck to prove a point is the worse failure.
+    # Location joined the filters 09-11 (Igor: a Miami profile was swiping Zoox in CA).
+    # Three-way verdict from modules/job_location: "elsewhere" is hidden, "unknown"
+    # PASSES — the legacy pool carries free-text locations this parser can't always
+    # place, and an empty deck is the worse failure. No coordinates exist in the
+    # backend, so this is city/state/remote honesty, not a miles radius: the radius
+    # picker keeps steering the native searches only.
     on_search = [
         j
         for j in swipeable
         if keyword_match(f"{j.get('title', '')} {j.get('location', '')}", keywords)
         and matches_job_type(j.get("job_type"), wanted_type)
+        and location_verdict(j.get("location"), user_loc) != "elsewhere"
     ]
     # Best fit first, freshest as the tie-break: `score` is a coarse 0-10 from the Haiku
     # scorer, so whole bands of cards tie and date is what separates a live posting from a
@@ -143,6 +152,7 @@ def get_deck(user=Depends(get_current_user)):
         "off_search": len(swipeable) - len(on_search),
         "keywords": keywords,
         "job_type": wanted_type,
+        "location": profile.get("location") or "",
         # How much of the pool predates the job_type write and therefore can't be filtered
         # yet. Without this the type filter looks broken while it is merely uninformed.
         "untyped_rows": sum(1 for j in on_search if not j.get("job_type")),
