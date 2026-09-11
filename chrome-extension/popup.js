@@ -39,24 +39,55 @@ $("btn-connect").addEventListener("click", () => {
 // ---------------------------------------------------------------------------
 
 let _captchaTabId = null;
+let _captchaUrl = null;
 
-function showCaptchaAlert(signal) {
+// Two hand-offs share this banner: a captcha ("prove you're human") and a consent wall
+// ("accept our terms"). They need different words — pointing someone at a challenge that
+// isn't on screen just makes them hunt. `waiting` is chrome.storage.captchaWaiting.
+function showCaptchaAlert(waiting) {
+  const w = waiting || {};
+  _captchaUrl = w.url || null;
+  // The storage-backed path carries a pretty platform name; the live runtime message from
+  // content.js carries only the URL. Fall back to its host rather than "The site".
+  let site = w.site || "";
+  if (!site && w.url) { try { site = new URL(w.url).hostname.replace(/^www\./, ""); } catch {} }
+  if (!site) site = "The site";
+  if (w.kind === "terms") {
+    $("captcha-alert-title").textContent = "⏸ Terms need accepting";
+    $("captcha-alert-sub").textContent =
+      `${site} is asking you to accept its terms. ${w.action || "Accept them in the campaign window"} — the campaign resumes automatically.`;
+  } else {
+    $("captcha-alert-title").textContent = "⚠️ CAPTCHA Detected";
+    $("captcha-alert-sub").textContent =
+      `${site} showed a security challenge. Switch to the campaign window and solve it — the campaign will resume automatically.`;
+  }
   $("captcha-alert").classList.add("visible");
 }
 
 function hideCaptchaAlert() {
   $("captcha-alert").classList.remove("visible");
   _captchaTabId = null;
+  _captchaUrl = null;
 }
 
 $("btn-go-indeed").addEventListener("click", () => {
   if (_captchaTabId) {
     chrome.tabs.update(_captchaTabId, { active: true });
-  } else {
-    chrome.tabs.query({ url: "*://*.indeed.com/*" }, (tabs) => {
-      if (tabs.length) chrome.tabs.update(tabs[0].id, { active: true });
-    });
+    return;
   }
+  // The button used to hunt for an indeed.com tab by hard-coded pattern — wrong on every
+  // other platform (ZR/Greenhouse/Lever all raise these hand-offs too), so it silently did
+  // nothing. Match the host the hand-off actually came from.
+  let pattern = "*://*.indeed.com/*";
+  try {
+    if (_captchaUrl) pattern = `*://${new URL(_captchaUrl).hostname}/*`;
+  } catch {}
+  chrome.tabs.query({ url: pattern }, (tabs) => {
+    if (tabs.length) {
+      chrome.tabs.update(tabs[0].id, { active: true });
+      if (tabs[0].windowId != null) chrome.windows.update(tabs[0].windowId, { focused: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -245,7 +276,7 @@ async function loadStatus() {
     // storage) — this survives popup reopen, unlike the DETECTION_TRIPPED
     // runtime message which only reaches an already-open popup. Hide it once
     // the campaign is running normally again.
-    if (status.captchaDetected) showCaptchaAlert(status.captchaWaiting?.signal);
+    if (status.captchaDetected) showCaptchaAlert(status.captchaWaiting);
     else hideCaptchaAlert();
   } else {
     $("campaign-stopped").style.display = "";
@@ -376,9 +407,16 @@ chrome.runtime.onMessage.addListener((msg) => {
     );
   }
   if (msg.type === "DETECTION_TRIPPED") {
-    _captchaTabId = msg.data?.tabId || null;
-    showCaptchaAlert(msg.data?.signal);
-    addLog(`⚠️ CAPTCHA / security check — solve it in the Indeed tab`, "err");
+    const d = msg.data || {};
+    _captchaTabId = d.tabId || null;
+    const isTerms = d.kind === "terms";
+    showCaptchaAlert({ kind: d.kind, action: d.action, url: d.url, site: d.site });
+    addLog(
+      isTerms
+        ? `⏸ Terms need accepting — ${d.action || "accept them in the campaign window"}`
+        : `⚠️ CAPTCHA / security check — solve it in the campaign window`,
+      isTerms ? "warn" : "err"
+    );
   }
 });
 

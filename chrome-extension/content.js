@@ -948,6 +948,96 @@
     return { detected: false, signal: "" };
   }
 
+  // A consent wall is NOT a challenge. Nothing here is testing whether we are human —
+  // the site is asking the ACCOUNT HOLDER to agree to something ("we've updated our
+  // Terms", "Accept to continue"), and until they do, every job page behind it is
+  // blocked. We never click Accept for them: agreeing to a ToS is a legal act by the
+  // person whose account it is, and a bot-accepted agreement is exactly the kind of
+  // thing that voids one. So we do what we do with a captcha — pause, name the button,
+  // and resume the moment it's gone.
+  const FALLBACK_CONSENT_GATE = {
+    // The dialog has to SAY it is about terms…
+    phrases: [
+      "terms of service",
+      "terms and conditions",
+      "terms of use",
+      "user agreement",
+      "updated our terms",
+      "updated terms",
+      "accept the terms",
+      "accept terms",
+      // "privacy policy" is deliberately NOT here. It appears in every cookie banner and
+      // in most ATS footers, and a cookie banner is usually dismissible rather than
+      // blocking — pausing a campaign behind one would trade a rare stall for a constant
+      // one. A genuine consent wall names the terms.
+    ],
+    // …and carry a button that accepts them. "Continue" / "OK" alone is far too generic
+    // — half the modals on a job board have one, and pausing on those would stall every
+    // run behind a dismissible promo.
+    acceptLabels: [
+      "accept",
+      "agree",
+      "i agree",
+      "i accept",
+      "accept all",
+      "accept and continue",
+      "accept & continue",
+      "agree and continue",
+      "agree & continue",
+    ],
+  };
+
+  function consentGate() {
+    return detection().consentGate || FALLBACK_CONSENT_GATE;
+  }
+
+  // offsetParent is null for position:fixed elements — which is what every modal is —
+  // so the offsetParent test used elsewhere in this file cannot be reused here.
+  function isVisibleBox(el, minW, minH) {
+    const r = el.getBoundingClientRect();
+    if (r.width < minW || r.height < minH) return false;
+    const cs = getComputedStyle(el);
+    if (cs.visibility === "hidden" || cs.display === "none") return false;
+    return parseFloat(cs.opacity || "1") > 0.1;
+  }
+
+  // Returns { gated: bool, label: string }. `label` is the exact button text so the
+  // hand-off can tell the user which word to look for instead of "accept the terms",
+  // which may not be what the button says.
+  function detectConsentGate() {
+    const cfg = consentGate();
+    const phrases = cfg.phrases || [];
+    const accepts = cfg.acceptLabels || [];
+    const dialogs = document.querySelectorAll('[role="dialog"], [role="alertdialog"], [aria-modal="true"], dialog[open]');
+    for (const d of dialogs) {
+      // A real consent wall covers the page. 240x100 keeps out the collapsed/aria-only
+      // dialog nodes that React frameworks leave in the DOM permanently.
+      if (!isVisibleBox(d, 240, 100)) continue;
+      const text = (d.textContent || "").toLowerCase();
+      if (!phrases.some((p) => text.includes(p))) continue;
+      // An apply or login modal quotes the terms in its fine print ("by continuing you
+      // agree to…"). Those are FORMS — the campaign's job is to fill them, not to park
+      // in front of them. If the dialog collects input, it is not a consent wall.
+      // (This is also what keeps the Lever/Greenhouse "I agree to the terms" checkbox,
+      // which lives inside the application form, from stopping every ATS submit.)
+      if (d.querySelector('input[type="file"], input[type="password"], textarea')) continue;
+      const typed = d.querySelectorAll(
+        'input:not([type="hidden"]):not([type="checkbox"]):not([type="radio"]):not([type="submit"]):not([type="button"])'
+      );
+      if (typed.length > 1) continue;
+      const buttons = d.querySelectorAll('button, a[role="button"], [role="button"], input[type="submit"], input[type="button"]');
+      for (const btn of buttons) {
+        const raw = (btn.innerText || btn.textContent || btn.value || "").trim().replace(/\s+/g, " ");
+        if (!raw || raw.length > 40) continue;
+        const norm = raw.toLowerCase();
+        if (accepts.some((a) => norm === a || norm.startsWith(a + " "))) {
+          return { gated: true, label: raw };
+        }
+      }
+    }
+    return { gated: false, label: "" };
+  }
+
   async function loadSelectors() {
     const platform = detectPlatform();
     const cacheKey = `selectors_${platform}`;
@@ -4631,6 +4721,56 @@
           await sendMsg({ type: "STOP_CAMPAIGN" });
           return;
         }
+      }
+    }
+
+    // Consent wall ("we've updated our Terms", "Accept to continue"). It blocks the page
+    // the same way a captcha does, but it is ACCOUNT-wide, not posting-specific: skipping
+    // to the next job walks straight into the same modal and burns the queue one approved
+    // pick at a time. So pool mode pauses here too — the opposite of the captcha branch
+    // above, and deliberately so.
+    {
+      const gate = detectConsentGate();
+      if (gate.gated) {
+        const site = window.location.hostname.replace(/^www\./, "");
+        log(`⚠️ ${site} wants you to accept its terms — click "${gate.label}" in this window; the campaign resumes on its own.`, "err");
+        // The pool window runs unfocused and unwatched, so the in-window line above may
+        // never be read. Put the same sentence in the dashboard feed.
+        logBackend(`⏸ Paused — ${site} is asking you to accept its terms. Click "${gate.label}" in the campaign window.`, "warn");
+        await sendMsg({
+          type: "DETECTION_TRIPPED",
+          data: {
+            signal: `consent:${gate.label}`,
+            // `kind` splits the hand-off copy: this is not a "prove you're human" moment,
+            // and telling someone to solve a captcha that isn't there sends them hunting.
+            kind: "terms",
+            action: `Click "${gate.label}" in the campaign window`,
+            url: window.location.href,
+            phase: detectPhase(),
+          },
+        });
+        const _gateStart = Date.now();
+        while (Date.now() - _gateStart < 2 * 60 * 60 * 1000) {
+          await sleep(8000);
+          if (!(await isCampaignRunning())) return; // user stopped it themselves
+          if (!detectConsentGate().gated) {
+            log("Terms accepted — resuming campaign", "ok");
+            logBackend("▶ Terms accepted — campaign resumed", "info");
+            await sendMsg({ type: "DETECTION_CLEARED" });
+            break;
+          }
+        }
+        if (detectConsentGate().gated) {
+          log("Terms still not accepted after 2h — stopping campaign", "err");
+          await sendMsg({ type: "STOP_CAMPAIGN" });
+          return;
+        }
+        // Accepting usually navigates or re-renders the page under us, so the phase we
+        // detected before the pause is stale. Fall through — `detectPhase()` below runs
+        // after this block — and clear lastPhase so the observer isn't suppressed if the
+        // page re-renders into the same phase name. (Same shape as the captcha branch:
+        // the tick continues, it doesn't hand back and hope for another one.)
+        lastPhase = "";
       }
     }
 
