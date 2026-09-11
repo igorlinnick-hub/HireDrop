@@ -84,6 +84,8 @@ def _categorize(msg: str) -> str | None:
         return "skipped_no_button"
     if "dead link" in m:
         return "dead_link"
+    if "no job title" in m:
+        return "page_unreadable"
     return None
 
 
@@ -171,6 +173,7 @@ def run_report(user_id: str, since: str | None = None, window_hours: int = 6) ->
         "title mismatch": by_type.get("skipped_title", 0),
         "no apply button": by_type.get("skipped_no_button", 0),
         "dead links": by_type.get("dead_link", 0),
+        "page changed under us": by_type.get("page_unreadable", 0),
         "captcha": by_type.get("captcha", 0),
         "no résumé attached": by_type.get("skipped_no_resume", 0),
         "login needed": by_type.get("login_required", 0),
