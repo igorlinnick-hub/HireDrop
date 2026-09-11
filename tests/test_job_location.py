@@ -64,3 +64,30 @@ def test_profile_without_a_city_matches_at_state_level():
     assert fl_only["city"] is None
     assert location_verdict("Orlando, FL", fl_only) == "fits"
     assert location_verdict("Austin, TX", fl_only) == "elsewhere"
+
+
+def test_profile_without_a_location_disables_the_filter_entirely():
+    # Like keywords: nothing to compare against must mean "show", not "hide everything".
+    # The first full-suite run caught exactly this — every deck test emptied out because
+    # its mock profile carries no location.
+    from unittest.mock import patch
+
+    from app.routers import jobs as jobs_router
+
+    class _User:
+        id = "u1"
+
+    row = {
+        "title": "AI Engineer",
+        "location": "Foster City, CA",
+        "platform": "greenhouse",
+        "status": "new",
+        "link": "https://boards.greenhouse.io/x/jobs/1234567",
+        "job_type": None,
+    }
+    with (
+        patch.object(jobs_router.jobs_db, "get_jobs", return_value=[row]),
+        patch("app.db.profile.get_profile", return_value={"keywords": ["ai engineer"]}),
+    ):
+        out = jobs_router.get_deck(user=_User())
+    assert [c["title"] for c in out["cards"]] == ["AI Engineer"]

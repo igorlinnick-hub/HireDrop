@@ -114,7 +114,11 @@ def get_deck(user=Depends(get_current_user)):
     profile = get_profile(user.id)
     keywords = [k for k in (profile.get("keywords") or []) if (k or "").strip()]
     wanted_type = (profile.get("job_type") or "").strip() or None
+    # No location on the profile = no location filter, exactly like keywords: with
+    # nothing to compare against, every on-site row would read "elsewhere" and the
+    # deck would empty itself (the first run of the test suite caught precisely that).
     user_loc = parse_user_location(profile.get("location") or "")
+    loc_filter_on = bool(user_loc.get("city") or user_loc.get("state_code"))
 
     swipeable = [
         j
@@ -139,7 +143,7 @@ def get_deck(user=Depends(get_current_user)):
         for j in swipeable
         if keyword_match(f"{j.get('title', '')} {j.get('location', '')}", keywords)
         and matches_job_type(j.get("job_type"), wanted_type)
-        and location_verdict(j.get("location"), user_loc) != "elsewhere"
+        and (not loc_filter_on or location_verdict(j.get("location"), user_loc) != "elsewhere")
     ]
     # Best fit first, freshest as the tie-break: `score` is a coarse 0-10 from the Haiku
     # scorer, so whole bands of cards tie and date is what separates a live posting from a
