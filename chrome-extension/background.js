@@ -2057,31 +2057,59 @@ async function handleMessage(msg, sender) {
     // ----- Detection tripped (Phase 5.5) -----
     case "DETECTION_TRIPPED": {
       const data = msg.data || {};
-      // Mirror to backend activity log with explicit error level.
-      try {
-        await apiPost("/activity", {
-          message: `Detection tripped (${data.signal}) on ${data.url}`,
-          level: "error",
-          phase: "detection",
-          metadata: { signal: data.signal, page_phase: data.phase, url: data.url },
-        });
-      } catch {}
+      // Two different hand-offs ride this one channel. A captcha asks "are you human";
+      // a consent wall asks the account holder to agree to something. Sending someone to
+      // "solve the captcha" when the window holds an Accept-Terms modal makes them hunt
+      // for a challenge that isn't there — so the copy follows data.kind. Older content
+      // scripts don't send the field; undefined keeps the captcha wording.
+      const isTerms = data.kind === "terms";
       // Name the actual platform (captchas fire on ZR/Greenhouse/Lever too, not just Indeed).
       const site = platformDisplayNameFromUrl(data.url);
+      // Mirror to the backend activity log. A captcha is an error-level event; a terms
+      // modal is not — it is the site doing something normal, and filing it as an error
+      // inflates the run's error count and hijacks `last_error_msg` on the dashboard.
+      try {
+        await apiPost("/activity", {
+          message: isTerms
+            ? `Consent wall (${data.signal}) on ${data.url}`
+            : `Detection tripped (${data.signal}) on ${data.url}`,
+          level: isTerms ? "warn" : "error",
+          phase: "detection",
+          metadata: { signal: data.signal, page_phase: data.phase, url: data.url, kind: data.kind || "captcha" },
+        });
+      } catch {}
+      const askLine = isTerms
+        ? `${site} is asking you to accept its terms. ${data.action || "Open the automation window and accept them"} — the campaign resumes automatically.`
+        : `${site} is asking you to verify you're human. Open the automation window, solve it, and the campaign resumes automatically.`;
       // Persist the hand-off so the popup (GET_STATUS) and the dashboard live
-      // view (ping.js HIREDROP_GET_LIVE_STATE) can show a "solve the captcha"
-      // CTA that survives popup reopen / page reload. Cleared by
-      // DETECTION_CLEARED, START_CAMPAIGN and STOP_CAMPAIGN.
-      await chrome.storage.local.set({ captchaWaiting: { url: data.url, site, signal: data.signal, at: Date.now() } });
+      // view (ping.js HIREDROP_GET_LIVE_STATE) can show a "your turn" CTA that
+      // survives popup reopen / page reload. Cleared by DETECTION_CLEARED,
+      // START_CAMPAIGN and STOP_CAMPAIGN. `kind`/`action` are the seam the dashboard
+      // banner reads to swap its own wording (website lane).
+      await chrome.storage.local.set({
+        captchaWaiting: {
+          url: data.url,
+          site,
+          signal: data.signal,
+          kind: isTerms ? "terms" : "captcha",
+          action: data.action || null,
+          at: Date.now(),
+        },
+      });
       // Local log so the popup shows it without waiting for a refresh.
-      await addToActivityLog(`⚠️ ${site} asked for a human check — campaign paused`, "err");
+      await addToActivityLog(
+        isTerms
+          ? `⏸ ${site} wants its terms accepted — campaign paused`
+          : `⚠️ ${site} asked for a human check — campaign paused`,
+        isTerms ? "warn" : "err"
+      );
       // System notification so the user sees this even if the popup is closed.
       try {
         await chrome.notifications.create({
           type: "basic",
           iconUrl: "icons/icon128.png",
           title: "HireDrop paused — action needed",
-          message: `${site} is asking you to verify you're human. Open the automation window, solve it, and the campaign resumes automatically.`,
+          message: askLine,
         });
       } catch {}
       return { handled: true };
