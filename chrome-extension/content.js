@@ -159,6 +159,21 @@
     return status;
   }
 
+  // The new description block ships its own <style> INSIDE the node, so a plain
+  // textContent starts with "@layer htmlContent { /* … */ }" — stylesheet text that
+  // would travel to the backend and into the cover-letter prompt as if it were the job
+  // ad. Clone, drop style/script, then read.
+  function readJobDescription(el) {
+    if (!el) return "";
+    try {
+      const c = el.cloneNode(true);
+      c.querySelectorAll("style,script").forEach((n) => n.remove());
+      return (c.textContent || "").trim();
+    } catch {
+      return (el.textContent || "").trim();
+    }
+  }
+
   // =========================================================================
   // Utilities
   // =========================================================================
@@ -755,6 +770,9 @@
       'td.resultContent',
     ],
     applyButton: [
+      // 2026-09 rebuild: the button became an <a> straight to smartapply, so every
+      // `button[...]` entry below silently stopped matching. Tag-free on purpose.
+      '[data-testid="viewjob-indeed-apply"]',
       'button[id="indeedApplyButton"]',
       'button[data-testid="indeedApplyButton-test"]',
       'button[id*="indeedApply"]',
@@ -1332,25 +1350,47 @@
     log("On job detail page — extracting info...", "");
     await sleep(humanDelay(1500, 2500));
 
-    // Extract job info
+    // Extract job info.
+    //
+    // Indeed rebuilt the job page on React-Native-Web (live 2026-09-11): the title is an
+    // h5[data-testid="vj-job-title"], the page has NO h1 at all, and the old
+    // jobsearch-* classes are gone. Every selector below it missed, so the walk read
+    // "no job title" on every posting and skipped the lot — Indeed applications went to
+    // zero while the campaign reported itself perfectly healthy.
+    //
+    // The bare h1 fallback is deliberately scoped to /viewjob now. On a search page the
+    // only h1 is the SERP heading ("ai engineer jobs in Miami, FL"), so the fallback
+    // didn't just fail to help — it stood ready to hand a search heading to the cover
+    // letter as if it were a job title.
+    const onDetailPage = location.pathname.startsWith("/viewjob");
     const titleEl =
+      document.querySelector('[data-testid="vj-job-title"]') ||
       document.querySelector("h1.jobsearch-JobInfoHeader-title") ||
       document.querySelector('[data-testid="jobsearch-JobInfoHeader-title"]') ||
       document.querySelector("h2.jobTitle") ||
-      document.querySelector("h1");
+      (onDetailPage ? document.querySelector("h1") : null);
+    // Company lives in the header's /cmp/ link now. SCOPED to the job container: an
+    // unscoped a[href*="/cmp/"] on the results page matches the first result CARD, which
+    // is a different job than the one open in the right pane — a silent mismatch that
+    // would file the application under the wrong employer.
+    const jobRoot =
+      document.querySelector('[data-testid="viewjob-main-content"]') ||
+      document.querySelector('[data-testid="desktop-job-header"]');
     const companyEl =
+      jobRoot?.querySelector('a[href*="/cmp/"]') ||
       document.querySelector('[data-testid="inlineHeader-companyName"]') ||
       document.querySelector('[data-testid="company-name"]') ||
       document.querySelector(".jobsearch-InlineCompanyRating-companyHeader") ||
       document.querySelector(".companyName");
     const descEl =
       document.querySelector("#jobDescriptionText") ||
+      document.querySelector(".simple-job-description-html") ||
       document.querySelector('[class*="jobDescriptionText"]') ||
       document.querySelector(".jobsearch-JobComponent-description");
 
     const jobTitle = titleEl?.textContent?.trim() || "";
     const jobCompany = companyEl?.textContent?.trim() || "";
-    const jobDesc = descEl?.textContent?.trim().slice(0, 1000) || "";
+    const jobDesc = readJobDescription(descEl).slice(0, 1000);
     const jobUrl = window.location.href;
 
     if (!jobTitle) {
