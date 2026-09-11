@@ -79,3 +79,19 @@ def test_yield_is_none_rather_than_a_divide_by_zero():
     out = _report({"opened": 5}, minutes=3)
     assert out["minutes_per_application"] is None
     assert out["applications_per_hour"] is None  # under 5 min = not enough to rate
+
+
+def test_a_dom_change_is_named_not_scattered_into_other_buckets():
+    # First live use of this report (2026-09-11) had exactly this blind spot: Indeed
+    # rebuilt /viewjob, dozens of postings logged "No job title on this page" — and the
+    # verdict blamed 4 dead links, because the dominant loss wasn't a category at all.
+    # A loss the report cannot name is a loss it will misattribute.
+    out = _report({"opened": 15, "page_unreadable": 30, "dead_link": 4}, minutes=22)
+    assert "page changed under us" in out["verdict"]
+
+
+def test_the_live_log_line_maps_to_the_category():
+    assert (
+        activity_db._categorize("⏭️ No job title on this page (/viewjob) — skipping to the next job")
+        == "page_unreadable"
+    )
