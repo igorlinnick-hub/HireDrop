@@ -1535,6 +1535,7 @@ async function handleMessage(msg, sender) {
         kwIndex: 0, // keyword rotation cursor — content.js advances it as each keyword is exhausted
         triedPlatforms: [primaryPlatform], // platform-failover ledger — PLATFORM_EXHAUSTED never revisits these
         zrNoBtnStreak: 0, // external-apply wall guard counter
+        unreadableStreak: 0, // consecutive unreadable job pages — platform-broken detector
         // Stale per-job state from the LAST run must not leak into this one: with these
         // left over, the fresh homepage was treated as an open application form and
         // phase3 ran against it, logging "form abandoned" for a job we never touched
