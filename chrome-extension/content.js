@@ -1312,6 +1312,18 @@
     return true;
   }
 
+  // "Job Title - Miami, FL 33134 - Indeed.com" — the one part of /viewjob that has survived
+  // every redesign. Only consulted when every selector missed (2026-09-11).
+  function titleFromDocumentTitle() {
+    const raw = (document.title || "").trim();
+    if (!raw || !/indeed\.com\s*$/i.test(raw)) return "";
+    const parts = raw.split(" - ").filter(Boolean);
+    parts.pop(); // drop "Indeed.com"
+    // Drop the trailing location segment when Indeed includes one.
+    if (parts.length > 1 && /,\s*[A-Z]{2}\b|\d{5}/.test(parts[parts.length - 1])) parts.pop();
+    return parts.join(" - ").trim();
+  }
+
   async function phase2_jobDetail() {
     const platform = detectPlatform();
     if (await bailIfDeadPosting()) return;
@@ -1332,8 +1344,20 @@
     log("On job detail page — extracting info...", "");
     await sleep(humanDelay(1500, 2500));
 
-    // Extract job info
+    // Extract job info.
+    //
+    // Indeed rebuilt /viewjob on a react-native-web renderer (caught live 2026-09-11):
+    // the title is an h5[data-testid="vj-job-title"], there is NO h1 on the page at all,
+    // and the description left #jobDescriptionText for .simple-job-description-html.
+    // Every selector here was written against the old DOM, so the walk opened ten postings
+    // in a row and skipped every one on "no job title" — fifteen minutes of a campaign
+    // that looked perfectly alive and applied to nothing.
+    //
+    // NEW selectors go FIRST: the old ones stay for layouts Indeed still serves, but a
+    // stale selector must never win over a current one.
     const titleEl =
+      document.querySelector('[data-testid="vj-job-title"]') ||
+      document.querySelector('[data-testid="simpler-jobTitle"]') ||
       document.querySelector("h1.jobsearch-JobInfoHeader-title") ||
       document.querySelector('[data-testid="jobsearch-JobInfoHeader-title"]') ||
       document.querySelector("h2.jobTitle") ||
@@ -1344,11 +1368,15 @@
       document.querySelector(".jobsearch-InlineCompanyRating-companyHeader") ||
       document.querySelector(".companyName");
     const descEl =
+      document.querySelector('[class*="simple-job-description"]') ||
+      document.querySelector(".react-native-html-content") ||
       document.querySelector("#jobDescriptionText") ||
       document.querySelector('[class*="jobDescriptionText"]') ||
       document.querySelector(".jobsearch-JobComponent-description");
 
-    const jobTitle = titleEl?.textContent?.trim() || "";
+    // Last resort, and the reason a future redesign costs us a worse job title instead of
+    // the whole walk: Indeed's <title> has outlived every rebuild of this page.
+    const jobTitle = titleEl?.textContent?.trim() || titleFromDocumentTitle();
     const jobCompany = companyEl?.textContent?.trim() || "";
     const jobDesc = descEl?.textContent?.trim().slice(0, 1000) || "";
     const jobUrl = window.location.href;
