@@ -100,6 +100,11 @@
   // Mirrored in background.js (INDEED_APPLY_HOSTS) — content scripts don't see config.js.
   // =========================================================================
 
+  // How many consecutive unreadable job pages it takes to call the PLATFORM broken
+  // rather than the postings. 5 is far above real-world noise (dead links and ad pages
+  // come one or two at a time) and still fires inside a minute of walking.
+  const UNREADABLE_STREAK_LIMIT = 5;
+
   const INDEED_APPLY_HOSTS = ["smartapply.indeed.com", "secure.indeed.com"];
   function onIndeedApplyHost() {
     const host = window.location.hostname;
@@ -1420,9 +1425,31 @@
       // end the walk in silence — nothing in the activity log to tell it from a freeze.
       log("Could not find job title — skipping", "err");
       logBackend(`⏭️ No job title on this page (${location.pathname}) — skipping to the next job`, "warn");
+      // One unreadable page is a bad posting. A STREAK of them is a broken platform —
+      // the 2026-09-11 DOM rebuild produced 84 of these in a row while the walk kept
+      // grinding Indeed and the user watched a "running" campaign apply to nothing,
+      // concluding the product was broken. After UNREADABLE_STREAK_LIMIT in a row, say
+      // so out loud and hand the walk to the next platform (the PLATFORM_EXHAUSTED
+      // failover already knows how); Indeed gets retried automatically on the next run.
+      const u = await chrome.storage.local.get("unreadableStreak");
+      const streak = (u.unreadableStreak || 0) + 1;
+      await chrome.storage.local.set({ unreadableStreak: streak });
+      if (streak >= UNREADABLE_STREAK_LIMIT) {
+        await chrome.storage.local.set({ unreadableStreak: 0 });
+        logBackend(
+          `⚠️ ${streak} job pages in a row were unreadable — Indeed likely changed its layout. ` +
+          "Moving on to another platform so your run keeps producing; we'll fix Indeed on our side.",
+          "warn"
+        );
+        await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: "indeed", reason: "job pages unreadable — layout change suspected" });
+        return;
+      }
       await skipToNextJob();
       return;
     }
+    // A readable page breaks the streak: scattered bad postings must never add up to
+    // a false "platform broken" verdict over a long healthy run.
+    await chrome.storage.local.set({ unreadableStreak: 0 });
 
     // Deduplicate by job key (jk= / vjk= in URL).
     // Indeed jk values are alphanumeric, NOT just hex — the original [a-f0-9]+
