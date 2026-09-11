@@ -1534,6 +1534,12 @@ async function handleMessage(msg, sender) {
         processedPageStarts: [0],
         kwIndex: 0, // keyword rotation cursor — content.js advances it as each keyword is exhausted
         triedPlatforms: [primaryPlatform], // platform-failover ledger — PLATFORM_EXHAUSTED never revisits these
+        // Consent boundary for that failover (Igor 09-11): the launch modal's default is
+        // "All connected platforms" (platform_mode "all") — switching boards is what the
+        // user asked for. A single pick ("single") means THIS board only: on exhaustion
+        // we stop honestly instead of surprising them on a platform they didn't choose.
+        // Absent field (older dashboard) = the old always-failover behavior.
+        platformFailover: (filters.platform_mode || "all") !== "single",
         zrNoBtnStreak: 0, // external-apply wall guard counter
         unreadableStreak: 0, // consecutive unreadable job pages — platform-broken detector
         // Stale per-job state from the LAST run must not leak into this one: with these
@@ -1628,10 +1634,22 @@ async function handleMessage(msg, sender) {
     case "PLATFORM_EXHAUSTED": {
       const ex = await chrome.storage.local.get([
         "campaignRunning", "campaignFilters", "campaignTabId", "triedPlatforms", "platformConnections",
+        "platformFailover",
       ]);
       if (!ex.campaignRunning) return { ok: true, stopped: true };
       const NAMES = { indeed: "Indeed", ziprecruiter: "ZipRecruiter", linkedin: "LinkedIn" };
       const curPlat = msg.platform || "unknown";
+      // Single-platform runs (launch modal "Pick one platform") never switch boards:
+      // the user consented to THIS board only. Stop out loud with the road back —
+      // "offer the fix, not the exit". Missing key (run started pre-1.8.2) = failover on.
+      if (ex.platformFailover === false) {
+        await addToActivityLog(
+          `${NAMES[curPlat] || curPlat} exhausted (${msg.reason || "no applyable jobs"}) — you picked ` +
+          `${NAMES[curPlat] || curPlat} only for this run, so we stopped instead of switching boards. ` +
+          `Start again and choose "All connected platforms" to keep going elsewhere.`,
+          "warn");
+        return await handleMessage({ type: "STOP_CAMPAIGN" }, sender);
+      }
       const tried = Array.from(new Set([...(ex.triedPlatforms || []), curPlat]));
       const conns = ex.platformConnections || {};
       // Indeed is allowed without a stored connection record (the resume lives on the
