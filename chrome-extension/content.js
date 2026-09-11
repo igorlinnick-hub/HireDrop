@@ -980,11 +980,18 @@
   }
 
   function extractCardInfo(card) {
+    // The named selectors are the old SERP DOM. The last two are the invariant: however
+    // Indeed redraws the card, it must link the posting (viewjob/jk) or the card is
+    // useless to Indeed itself. Without them a SERP redesign zeroes every card via the
+    // `!info.title || !info.clickEl` gate below and the walk pages forever through
+    // "No Easy Apply jobs" — the exact silent shape the /viewjob rebuild had (2026-09-11).
     const titleEl =
       card.querySelector(".jobTitle a") ||
       card.querySelector("h2.jobTitle a") ||
       card.querySelector("h2 a") ||
-      card.querySelector("a[data-jk]");
+      card.querySelector("a[data-jk]") ||
+      card.querySelector('a[href*="viewjob"]') ||
+      card.querySelector('a[href*="jk="]');
     const companyEl =
       card.querySelector('[data-testid="company-name"]') ||
       card.querySelector(".companyName") ||
@@ -1330,6 +1337,17 @@
     return true;
   }
 
+  // "Job Title - Miami, FL 33134 - Indeed.com" -> "Job Title". Only consulted when every
+  // DOM selector missed; answers "" off indeed.com so it can never invent a title elsewhere.
+  function titleFromDocumentTitle() {
+    const raw = (document.title || "").trim();
+    if (!raw || !/indeed\.com\s*$/i.test(raw)) return "";
+    const parts = raw.split(" - ").filter(Boolean);
+    parts.pop(); // "Indeed.com"
+    if (parts.length > 1 && /,\s*[A-Z]{2}\b|\d{5}/.test(parts[parts.length - 1])) parts.pop();
+    return parts.join(" - ").trim();
+  }
+
   async function phase2_jobDetail() {
     const platform = detectPlatform();
     if (await bailIfDeadPosting()) return;
@@ -1388,7 +1406,11 @@
       document.querySelector('[class*="jobDescriptionText"]') ||
       document.querySelector(".jobsearch-JobComponent-description");
 
-    const jobTitle = titleEl?.textContent?.trim() || "";
+    // Last resort when every selector missed: Indeed's <title> ("Job Title - City, ST
+    // 12345 - Indeed.com") has outlived every rebuild of this page, including the 2026-09
+    // react-native-web one. The next redesign should cost us a slightly worse title, not
+    // the walk — 84 postings were skipped on "no job title" before this line existed.
+    const jobTitle = titleEl?.textContent?.trim() || titleFromDocumentTitle();
     const jobCompany = companyEl?.textContent?.trim() || "";
     const jobDesc = readJobDescription(descEl).slice(0, 1000);
     const jobUrl = window.location.href;
@@ -2845,8 +2867,10 @@
       if (el && el.offsetParent !== null && !isDeniedFormButton(el)) return el;
     }
 
-    // Text-based fallback
-    const buttons = scope.querySelectorAll("button");
+    // Text-based fallback. <a> included: the 2026-09 rebuild renders actionable
+    // "buttons" as anchors (the viewjob apply button already became one), so a
+    // button-only sweep goes blind on exactly the layouts that need the fallback.
+    const buttons = scope.querySelectorAll('button, a[href], [role="button"]');
     for (const btn of buttons) {
       if (btn.offsetParent === null || isDeniedFormButton(btn)) continue;
       if (FORM_ADVANCE_RE.test(btnLabel(btn))) return btn;
@@ -2879,8 +2903,9 @@
   const FORM_ADVANCE_RE = /^(continue|next|submit|review|apply|send application|finish|done)\b/;
 
   function isSubmitStep() {
-    // Check buttons for submit-intent text
-    const buttons = document.querySelectorAll("button");
+    // Check buttons for submit-intent text. <a>/[role=button] included for the same
+    // reason as findFormButtonIn: the 2026-09 DOM renders controls as anchors.
+    const buttons = document.querySelectorAll('button, a[href], [role="button"]');
     for (const btn of buttons) {
       if (btn.offsetParent === null) continue;
       const text = btn.textContent?.trim().toLowerCase() || "";
