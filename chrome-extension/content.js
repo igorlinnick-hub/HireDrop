@@ -918,12 +918,27 @@
       if (title.includes(phrase)) return { detected: true, signal: `title:${phrase.slice(0, 40)}` };
     }
     for (const sel of det.domSelectors || []) {
-      const el = document.querySelector(sel);
-      // Scripts are never offsetParent-visible — query separately above
-      // doesn't apply here, but a present <script> still matters.
+      // querySelectorAll, not querySelector: this channel asks "is there a VISIBLE
+      // challenge element", and taking only the FIRST match answered a different
+      // question. A page that renders a hidden .g-recaptcha in a template before the
+      // real one hid the real one behind it (2026-09-11 audit).
+      const els = document.querySelectorAll(sel);
+      if (!els.length) continue;
+      // A present <script> matters even though it has no box of its own.
       const isScript = sel.startsWith("script[");
-      if (el && (isScript || el.offsetParent !== null)) {
-        return { detected: true, signal: `dom:${sel.slice(0, 40)}` };
+      if (isScript) return { detected: true, signal: `dom:${sel.slice(0, 40)}` };
+      for (const el of els) {
+        // NOT offsetParent: it is null for every position:fixed element — which is what a
+        // modal IS. Two of this list's own selectors ([data-testid="captcha-modal"],
+        // [class*="indeed-captcha"]) name fixed overlays, so the DOM channel could never
+        // see them and only the title/text channels stood between us and a fake-submit
+        // into a live captcha (2026-09-11 audit). isVisibleBox is also STRICTER than the
+        // old test everywhere else: offsetParent is non-null for visibility:hidden.
+        // 24x24 keeps out collapsed/zero-size leftovers; every real challenge widget
+        // (reCAPTCHA checkbox ~300x74, hCaptcha iframe, CF interstitial) clears it easily.
+        if (isVisibleBox(el, 24, 24)) {
+          return { detected: true, signal: `dom:${sel.slice(0, 40)}` };
+        }
       }
     }
     for (const pat of det.scriptSrcPatterns || []) {
