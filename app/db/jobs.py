@@ -395,6 +395,24 @@ def count_jobs_found_today(user_id: str) -> int:
     return res.count or 0
 
 
+def count_approved_jobs(user_id: str) -> int:
+    """Swipes the user approved that are still waiting — nobody has applied to them yet.
+
+    Applying flips the row to `applied`, so an `approved` row is by definition undone work.
+    Counted server-side (head query, no rows) because /campaign/status is polled: the point
+    is to make a stranded stack VISIBLE, not to pay for it every few seconds.
+    """
+    res = (
+        get_supabase()
+        .table("jobs")
+        .select("id", count="exact")
+        .eq("user_id", user_id)
+        .eq("status", "approved")
+        .execute()
+    )
+    return res.count or 0
+
+
 def count_new_jobs(user_id: str, platforms: list | None = None) -> int:
     """Кол-во jobs со статусом new (для campaign status)."""
     query = (
