@@ -2012,6 +2012,17 @@ async function handleMessage(msg, sender) {
       }
     }
 
+    // ----- Engine clock (throttle-immune sleep) -----
+    // content.js races every pause against this timer because the campaign window's own
+    // clock is throttled when the window is covered (1s alignment; 1/min for chained
+    // timers after 5 min hidden). The SW is not. Capped: the longest engine pause is 15s,
+    // and an uncapped value would hold the response channel hostage on a bad call.
+    case "SLEEP": {
+      const ms = Math.max(0, Math.min(30000, Number(msg.ms) || 0));
+      await new Promise((r) => setTimeout(r, ms));
+      return { ok: true };
+    }
+
     // ----- Step failed -----
     case "STEP_FAILED":
       return { ok: true };

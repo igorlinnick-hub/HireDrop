@@ -211,8 +211,34 @@
     chrome.runtime.sendMessage({ type: "LOG_BACKEND", text, level: level || "info" }).catch(() => {});
   }
 
+  // The engine's clock. A bare setTimeout is the wrong clock for this window: the
+  // campaign window is opened focused:false and usually sits fully covered, which Chrome
+  // treats as hidden — timers get aligned to 1s, and after 5 minutes hidden every CHAINED
+  // timer (exactly what an await-sleep loop is) is throttled to one tick per MINUTE. #154
+  // trimmed the pause VALUES and the form still took 5-6 min: the milliseconds we ask for
+  // stop being the milliseconds we get. The service worker's clock is not subject to any
+  // of this, so every sleep races an SW timer against the local one:
+  //   - normal window: both fire on time, whichever lands first resolves;
+  //   - throttled window: the SW reply arrives on time while the local timer is held;
+  //   - dead/restarting SW or orphaned context: the local timer still resolves (late
+  //     under throttling — i.e. exactly today's behavior, never worse).
+  // The guard that matters: a dying SW fires the callback EARLY with lastError and no
+  // response. Resolving on that would cut pauses to ~zero and hammer the page — so only
+  // a real {ok} reply may finish the wait ahead of the local timer.
   function sleep(ms) {
-    return new Promise((r) => setTimeout(r, ms));
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => { if (!done) { done = true; resolve(); } };
+      setTimeout(finish, ms);
+      try {
+        chrome.runtime.sendMessage({ type: "SLEEP", ms }, (res) => {
+          void chrome.runtime.lastError; // swallow "message port closed"
+          if (res && res.ok) finish();
+        });
+      } catch {
+        // Extension context invalidated (orphaned script) — the local timer stands alone.
+      }
+    });
   }
 
   function rand(min, max) {
