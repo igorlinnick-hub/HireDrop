@@ -205,3 +205,43 @@ def test_post_caches_the_generated_kit(auth_client, app_row):
     assert res.status_code == 200
     assert res.json()["kit"] == payload
     save.assert_called_once()
+
+
+# ── the free taste is the whole product, prep sheets included ────────────────
+# Igor 09-12: 40 applications free, then data + interview kit + the rest are what the
+# subscription buys. Enforced server-side — a paywall that only exists in the UI isn't one.
+
+
+def _post_kit(auth_client, app_row, *, tier, free_used, free_limit=40):
+    with (
+        patch("app.db.interview_kit.get_kit", return_value=None),
+        patch("app.db.applications.get_for_interview_kit", return_value=app_row),
+        patch("app.db.profile.get_profile", return_value={"resume_url": "r.pdf"}),
+        patch("app.db.subscriptions.get_tier", return_value=tier),
+        patch("app.db.subscriptions.get_free_apps_used", return_value=free_used),
+        patch("config.FREE_APP_LIMIT", free_limit),
+        patch("app.db.usage.claim_daily_ai_slot", return_value=True) as claim,
+        patch("modules.ai_interview_kit.generate_interview_kit", return_value={"your_angle": "x"}),
+        patch("app.db.interview_kit.save_kit", return_value=None),
+    ):
+        res = auth_client.post(f"/api/v1/applications/{APP_ID}/interview-kit")
+    return res, claim
+
+
+def test_free_user_past_the_taste_cannot_build_a_kit(auth_client, app_row):
+    res, claim = _post_kit(auth_client, app_row, tier="free", free_used=40)
+    assert res.status_code == 402
+    assert res.json()["error"] == "free_taste_spent"
+    # The refusal must land BEFORE the paid call — otherwise the paywall costs us money.
+    claim.assert_not_called()
+
+
+def test_free_user_inside_the_taste_still_builds(auth_client, app_row):
+    res, _ = _post_kit(auth_client, app_row, tier="free", free_used=39)
+    assert res.status_code == 200
+
+
+def test_paid_user_is_never_gated(auth_client, app_row):
+    """A subscriber's free counter is irrelevant — it can read anything and must not gate."""
+    res, _ = _post_kit(auth_client, app_row, tier="pro", free_used=999)
+    assert res.status_code == 200

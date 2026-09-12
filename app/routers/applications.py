@@ -157,6 +157,28 @@ def create_interview_kit(application_id: str, user=Depends(get_current_user)):
             },
         )
 
+    # The free taste buys the WHOLE product for 40 applications — after that everything
+    # behind it, this prep sheet included, is what the subscription is for (Igor 09-12).
+    # Gated on generation only: a kit already built stays readable forever, because taking
+    # back something the user already has is a different (and worse) promise than "the
+    # taste ran out". Checked here rather than in the UI — the paywall is a server fact.
+    from app.db.subscriptions import get_free_apps_used, get_tier
+    from config import FREE_APP_LIMIT
+
+    if get_tier(user.id, getattr(user, "email", None)) == "free" and (
+        get_free_apps_used(user.id) >= FREE_APP_LIMIT
+    ):
+        return JSONResponse(
+            status_code=402,
+            content={
+                "error": "free_taste_spent",
+                "message": (
+                    f"Your {FREE_APP_LIMIT} free applications are used up. "
+                    "Pick a plan to build interview prep sheets."
+                ),
+            },
+        )
+
     # Claim the shared daily AI slot BEFORE the paid call, refund if it doesn't produce
     # a kit (same contract as the resume/cover-letter paths).
     if not usage_db.claim_daily_ai_slot(user.id, getattr(user, "email", None)):
