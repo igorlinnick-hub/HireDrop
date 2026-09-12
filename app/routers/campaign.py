@@ -127,6 +127,11 @@ def campaign_status(since: str | None = None, user=Depends(get_current_user)):
     today_count = apps_db.count_today(user.id, since)
     platform_counts = apps_db.count_today_by_platform(user.id, since)
     jobs_ready = jobs_db.count_new_jobs(user.id, enabled_platforms)
+    # Swipes the user approved that are still undone. Reported in EVERY mode on purpose:
+    # only a tap run consumes them, so an auto user who swiped (or swiped and then switched
+    # back to Auto in Settings) has a stack nothing will ever pick up, and today nothing says
+    # so. Found live 09-11: a real user has had 4 approved swipes waiting since 09-02.
+    approved_waiting = jobs_db.count_approved_jobs(user.id)
 
     tier = get_tier(user.id, getattr(user, "email", None))
     # Say whether the mode is KNOWN, don't just hand over a fallback. The extension reads
@@ -151,6 +156,9 @@ def campaign_status(since: str | None = None, user=Depends(get_current_user)):
         "submit_mode": submit_mode,
         "submit_mode_known": known_mode is not None,
         "jobs_ready": jobs_ready,
+        # > 0 while submit_mode is "auto" means a stranded stack: the auto walk searches
+        # platforms, it never reads approved rows. The surface that shows it must say that.
+        "approved_waiting": approved_waiting,
         # Third cap, free tier only: the lifetime 40-app taste (FREE_TASTE_PLAN.md).
         # The extension stops the campaign when free_used hits free_limit; the
         # dashboard shows the paywall. None for paid/admin.
