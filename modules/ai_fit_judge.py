@@ -20,8 +20,9 @@ from modules.ai_cover_letter import get_anthropic_client, load_resume_text
 _MAX_DESC_CHARS = 2500
 _MAX_Q = 20
 
-# Score thresholds per apply mode.
-# assess_fit returns 0-100; if Claude's "decision" field is missing we fall back to these.
+# Score thresholds per apply mode — the BAR, not a fallback. assess_fit returns 0-100 and the
+# verdict is `score >= threshold`; the model's own "decision" word is advisory telemetry only
+# (see the reconciliation comment in assess_fit for the bug that made this explicit).
 _MODE_THRESHOLDS = {
     "broad": 35,
     "standard": 55,
@@ -53,7 +54,7 @@ def _prefs_line(profile: dict) -> str:
     return "\n".join(bits) if bits else "No explicit preferences given."
 
 
-def _system_prompt(mode: str = "standard") -> str:
+def _system_prompt(mode: str = "standard", threshold: int = 55) -> str:
     if mode == "broad":
         stance = (
             "The candidate is in BROAD mode — exploring the market widely. "
@@ -94,6 +95,13 @@ Score calibration (fit_score 0-100):
 - 55-79: reasonable match — worth applying, minor gaps or imperfect alignment
 - 35-54: weak match — significant gap in requirements, level, or preferences
 - 0-34: clear mismatch — wrong field, hard missing credential, or role the candidate obviously wouldn't take
+
+DECISION RULE (binding): this candidate is in {mode.upper()} mode, where the bar is \
+fit_score >= {threshold}. Your "decision" MUST agree with your own score: "apply" at or above \
+the bar, "skip" below it. The bar is the candidate's own choice of how wide to cast — do not \
+second-guess it with a stricter verdict than your score. If the posting names a hard requirement \
+this candidate clearly lacks (license, degree, clearance, a different field entirely), that is a \
+real mismatch: say so by scoring it 0-34, never by skipping a job you scored above the bar.
 
 Return ONLY a JSON object, no prose, in this exact shape:
 {{"fit_score": <0-100 int>, "decision": "apply" | "skip", "reason": "<one plain sentence, \
@@ -163,7 +171,7 @@ Decide: should this candidate apply? Return the JSON object only."""
         message = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=400,
-            system=_system_prompt(mode),
+            system=_system_prompt(mode, threshold),
             messages=[{"role": "user", "content": prompt}],
         )
         raw = (message.content[0].text or "").strip()
@@ -181,11 +189,15 @@ Decide: should this candidate apply? Return the JSON object only."""
         # Otherwise a garbage score would default to 50 and, with no valid decision below,
         # green-light an "apply" in broad mode (threshold 35). Fail-closed on bad data.
         score = 0
-    decision = data.get("decision")
-    if decision not in ("apply", "skip"):
-        # No explicit decision → derive from the score. With score=0 on garbage input this
-        # correctly skips; an explicit valid decision above still wins.
-        decision = "apply" if score >= threshold else "skip"
+    # ONE authority for the verdict: the mode the user chose. The model's own "decision" word
+    # used to win here, and it quietly overrode the dial — the rubric below calls 35-54 a "weak
+    # match", so in BROAD mode (bar 35) the judge kept returning score 42 + decision "skip" and
+    # the extension, which gates on `decision` alone, skipped a job the user's own setting said
+    # to apply to. Live run 09-11: three 42s skipped in broad mode, zero applications. The score
+    # is the comparable quantity; the bar belongs to the user. A hard blocker is still expressible
+    # — the prompt binds it to a 0-34 score, which lands below every bar.
+    model_decision = data.get("decision")
+    decision = "apply" if score >= threshold else "skip"
     reason = str(data.get("reason") or "").strip()[:300]
     concerns = [str(c).strip()[:120] for c in (data.get("concerns") or []) if str(c).strip()][:5]
     return {
@@ -195,4 +207,8 @@ Decide: should this candidate apply? Return the JSON object only."""
         "concerns": concerns,
         "judged": True,
         "apply_mode": mode,
+        "threshold": threshold,
+        # Kept for telemetry: a model that still contradicts its own score is a prompt bug,
+        # and it is invisible once the bar decides.
+        "model_decision": model_decision if model_decision in ("apply", "skip") else None,
     }
