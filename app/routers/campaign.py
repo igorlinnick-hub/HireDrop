@@ -26,6 +26,8 @@ from app.db.subscriptions import (
 from app.deps import get_current_user
 from app.disposable_email import is_disposable_email
 from app.schemas import CampaignStartRequest
+from modules.ai_role_suggest import role_limit
+from modules.keyword_rotation import rotate as rotate_keywords
 
 router = APIRouter(tags=["campaign"])
 
@@ -156,6 +158,10 @@ def campaign_status(since: str | None = None, user=Depends(get_current_user)):
         "submit_mode": submit_mode,
         "submit_mode_known": known_mode is not None,
         "jobs_ready": jobs_ready,
+        # How many roles this apply mode may carry (broad 7 / standard 5 / precise 3).
+        # Served from the backend so the count lives in ONE place instead of being retyped
+        # in every surface that shows the role picker.
+        "role_limit": role_limit(profile.get("apply_mode")),
         # > 0 while submit_mode is "auto" means a stranded stack: the auto walk searches
         # platforms, it never reads approved rows. The surface that shows it must say that.
         "approved_waiting": approved_waiting,
@@ -183,8 +189,15 @@ def campaign_start(req: CampaignStartRequest, user=Depends(get_current_user)):
     profile = get_profile(user.id)
     if not profile.get("onboarding_completed"):
         raise HTTPException(status_code=403, detail="onboarding_incomplete")
+    # Round-robin the roles: the walk always starts at index 0 and every cap counts
+    # applications, so with six or seven roles the tail of the list never gets searched.
+    # The server decides who leads this run and remembers it in the row it is about to
+    # overwrite. See modules/keyword_rotation.
+    prev_cursor = (campaign_db.get_state(user.id).get("filters") or {}).get("kw_cursor", 0)
+    ordered_keywords, next_cursor = rotate_keywords(req.keywords, prev_cursor)
     filters = {
-        "keywords": req.keywords,
+        "keywords": ordered_keywords,
+        "kw_cursor": next_cursor,
         "platforms": req.platforms,
         "location": req.location,
         "job_type": req.job_type,
@@ -196,7 +209,10 @@ def campaign_start(req: CampaignStartRequest, user=Depends(get_current_user)):
         "search_radius_miles": profile.get("search_radius_miles"),
     }
     state = campaign_db.start(user.id, filters)
-    return {"started": True, "state": state}
+    # The dashboard arms the extension from THIS response, not from its own local list —
+    # otherwise the rotation would live only in the server's record of the run while the
+    # browser kept searching role #1 first (QuickActions.tsx).
+    return {"started": True, "state": state, "filters": filters}
 
 
 @router.get("/campaign/readiness")

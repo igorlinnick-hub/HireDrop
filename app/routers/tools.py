@@ -24,10 +24,11 @@ from app.schemas import (
     TemplateRequest,
 )
 from config import RATE_LIMIT_ENFORCE, RATE_LIMIT_LETTERS_PER_DAY
-from modules.ai_cover_letter import generate_cover_letter
+from modules.ai_cover_letter import generate_cover_letter, load_resume_text
 from modules.ai_fit_judge import assess_fit
 from modules.ai_keyword_normalize import normalize_keywords
 from modules.ai_question_answer import answer_screener_question
+from modules.ai_role_suggest import ROLE_LIMITS, role_limit, suggest_roles
 
 router = APIRouter(tags=["tools"])
 
@@ -191,6 +192,52 @@ def _assess_fit_gate(user) -> None:
 
 
 _BROAD_DAILY_CAP = int(os.getenv("BROAD_DAILY_CAP", "40"))
+
+
+_role_suggest_counts: dict = {}
+_ROLE_SUGGEST_DAILY_CAP = int(os.getenv("ROLE_SUGGEST_DAILY_CAP", "20"))
+
+
+@router.get("/tools/suggest-roles")
+def suggest_roles_endpoint(mode: str | None = None, user=Depends(get_current_user)):
+    """Roles to offer the user, read off the resume they already uploaded.
+
+    Setup asks "which roles do you want?" and an empty field is answered badly or not at
+    all — Igor's own account searched "ai engineer" against a marketing resume for weeks.
+    The resume is the one source that cannot be a blind guess, and it is already stored.
+
+    Also serves `limit`: how many roles this apply mode may carry (broad 7 / standard 5 /
+    precise 3). The UI enforces the count, so the number has to come from here rather than
+    being retyped in the dashboard — the same mistake the $12/$39 prices made in 8 files.
+
+    Capped per user/day like the other AI helpers: a few calls cover real setup, a loop
+    cannot burn Anthropic budget.
+    """
+    if not is_admin(getattr(user, "email", None)):
+        today = date.today().isoformat()
+        rec = _role_suggest_counts.get(user.id)
+        if not rec or rec.get("day") != today:
+            rec = {"day": today, "n": 0}
+            _role_suggest_counts[user.id] = rec
+        rec["n"] += 1
+        if rec["n"] > _ROLE_SUGGEST_DAILY_CAP:
+            raise HTTPException(status_code=429, detail="Daily role-suggestion limit reached.")
+
+    profile = get_profile(user.id)
+    limit = role_limit(mode or profile.get("apply_mode"))
+    resume_text = load_resume_text(profile.get("resume_url"))
+    roles = suggest_roles(resume_text, limit=max(ROLE_LIMITS.values()))
+    return {
+        "roles": roles,
+        # The cap for the mode asked about; `roles` deliberately carries MORE than this so
+        # the user picks from a real list instead of being handed a pre-trimmed one.
+        "limit": limit,
+        "limits": ROLE_LIMITS,
+        "mode": (mode or profile.get("apply_mode") or "standard"),
+        # "none" = nothing to read: the surface must say "add your resume first" instead of
+        # showing an empty list that looks like a broken call.
+        "source": "resume" if roles else "none",
+    }
 
 
 @router.post("/tools/assess-fit")
