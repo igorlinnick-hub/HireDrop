@@ -87,6 +87,69 @@ def get_jobs(user=Depends(get_current_user)):
 TAP_APPLY_PLATFORMS = ("greenhouse", "lever", "indeed", "ashby")
 
 
+def on_search_filter(jobs: list, profile: dict) -> list:
+    """Keep only the pool rows that match the profile's CURRENT search.
+
+    The pool is INSERT-only and never expires, so any raw read of it is an ARCHIVE: every
+    job ever harvested under every keyword set the user has tried. Three filters, each
+    with its own "unknown passes" rule, documented at the call sites they were born in
+    (see get_deck below). Extracted 09-13 because the Tap deck had this and the auto ATS
+    queue did not: Igor's 09-13 run walked 15 Oura/Braze ENGINEERING jobs harvested weeks
+    earlier under `ai engineer` while his profile read `event manager`, scored them 2-12
+    against a bar of 35, applied to nothing, and reported "pool complete" in 2m26s. One
+    rule, one place — "what we collect", "what we show" and "what we apply to" cannot
+    drift apart again.
+    """
+    from modules.job_location import location_verdict, parse_user_location
+    from modules.job_type import matches_job_type
+    from modules.platforms.ats_boards import keyword_match
+
+    keywords = [k for k in (profile.get("keywords") or []) if (k or "").strip()]
+    wanted_type = (profile.get("job_type") or "").strip() or None
+    user_loc = parse_user_location(profile.get("location") or "")
+    loc_filter_on = bool(user_loc.get("city") or user_loc.get("state_code"))
+    return [
+        j
+        for j in jobs
+        if keyword_match(f"{j.get('title', '')} {j.get('location', '')}", keywords)
+        and matches_job_type(j.get("job_type"), wanted_type)
+        and (not loc_filter_on or location_verdict(j.get("location"), user_loc) != "elsewhere")
+    ]
+
+
+@router.get("/jobs/ats-queue")
+def get_ats_queue(platform: str, limit: int = 20, user=Depends(get_current_user)):
+    """The auto campaign's ATS apply queue — the same pool, cut by the same rule as the deck.
+
+    The extension used to build this from a raw `GET /jobs` and filter only on platform +
+    zero_touch, which made every auto run a walk over the archive (see on_search_filter).
+    Counts ride along because a queue that silently shrank is indistinguishable from a
+    broken one (#113): the campaign logs "N of M" instead of a bare number.
+
+    Ordering mirrors the deck — best fit first, freshest as the tie-break — so the cap
+    cuts the tail, not the middle. `already_applied` dedup stays client-side: the
+    extension holds the authoritative appliedUrls/appliedJobKeys sets.
+    """
+    from app.db.profile import get_profile
+
+    pool = [
+        j
+        for j in jobs_db.get_jobs(user.id)
+        if (j.get("status") or "new") == "new"
+        and (j.get("link") or j.get("apply_url"))
+        and j.get("platform") == platform
+        and (platform == "lever" or is_zero_touch(platform, j.get("company", "")))
+    ]
+    on_search = on_search_filter(pool, get_profile(user.id))
+    on_search.sort(key=lambda j: j.get("date_found") or "", reverse=True)
+    on_search.sort(key=lambda j: j.get("score") or 0, reverse=True)  # stable: date breaks ties
+    return {
+        "jobs": _with_captcha(on_search[: max(1, min(limit, 100))]),
+        "pool": len(pool),
+        "off_search": len(pool) - len(on_search),
+    }
+
+
 @router.get("/jobs/deck")
 def get_deck(user=Depends(get_current_user)):
     """The Tap deck: the pool rows that match the CURRENT search, not the pool's history.
@@ -107,18 +170,10 @@ def get_deck(user=Depends(get_current_user)):
     back and why.
     """
     from app.db.profile import get_profile
-    from modules.job_location import location_verdict, parse_user_location
-    from modules.job_type import matches_job_type
-    from modules.platforms.ats_boards import keyword_match
 
     profile = get_profile(user.id)
     keywords = [k for k in (profile.get("keywords") or []) if (k or "").strip()]
     wanted_type = (profile.get("job_type") or "").strip() or None
-    # No location on the profile = no location filter, exactly like keywords: with
-    # nothing to compare against, every on-site row would read "elsewhere" and the
-    # deck would empty itself (the first run of the test suite caught precisely that).
-    user_loc = parse_user_location(profile.get("location") or "")
-    loc_filter_on = bool(user_loc.get("city") or user_loc.get("state_code"))
 
     swipeable = [
         j
@@ -127,24 +182,19 @@ def get_deck(user=Depends(get_current_user)):
         and (j.get("link") or j.get("apply_url"))
         and j.get("platform") in TAP_APPLY_PLATFORMS
     ]
-    # Two filters, not one. Keywords say WHAT the job is; job_type says on what terms —
-    # a contract role is a different answer to "should I apply" than a staff job with the
-    # same title, and the picker on the dashboard has been promising this since long before
-    # anything wrote the column (see modules/job_type.py). Rows harvested before that write
-    # carry no type and pass: emptying the deck to prove a point is the worse failure.
+    # Three filters, not one — all in on_search_filter(), shared with the auto ATS queue.
+    # Keywords say WHAT the job is; job_type says on what terms — a contract role is a
+    # different answer to "should I apply" than a staff job with the same title, and the
+    # picker on the dashboard has been promising this since long before anything wrote the
+    # column (see modules/job_type.py). Rows harvested before that write carry no type and
+    # pass: emptying the deck to prove a point is the worse failure.
     # Location joined the filters 09-11 (Igor: a Miami profile was swiping Zoox in CA).
     # Three-way verdict from modules/job_location: "elsewhere" is hidden, "unknown"
     # PASSES — the legacy pool carries free-text locations this parser can't always
     # place, and an empty deck is the worse failure. No coordinates exist in the
     # backend, so this is city/state/remote honesty, not a miles radius: the radius
     # picker keeps steering the native searches only.
-    on_search = [
-        j
-        for j in swipeable
-        if keyword_match(f"{j.get('title', '')} {j.get('location', '')}", keywords)
-        and matches_job_type(j.get("job_type"), wanted_type)
-        and (not loc_filter_on or location_verdict(j.get("location"), user_loc) != "elsewhere")
-    ]
+    on_search = on_search_filter(swipeable, profile)
     # Best fit first, freshest as the tie-break: `score` is a coarse 0-10 from the Haiku
     # scorer, so whole bands of cards tie and date is what separates a live posting from a
     # six-week-old one. The client interleaves platforms on top of this order.

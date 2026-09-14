@@ -693,32 +693,72 @@ function pickPrimaryPlatform(platforms) {
 const ATS_PLATFORMS = ["greenhouse", "lever", "ashby"];
 const ATS_ZERO_TOUCH_PLATFORMS = ["greenhouse"];
 
+// ---- STAGE ORDER (pure; fixtures in tests/platform-order.test.js) ------------------
+// Igor's "All connected platforms" verdict (#143/#180): run the boards by yield first —
+// Indeed → ZipRecruiter — and only then walk the saved ATS pool. Two separate bugs lived
+// in this order before 09-13 and both produced runs that never touched a board:
+//   · the opener picked the pool whenever greenhouse was anywhere in the list;
+//   · "pool complete" ended the campaign instead of handing off to the untried boards.
+// Both now answer to these two functions, so the order exists in one place.
+
+/** The stage a run OPENS on: a selected board always outranks the pool. */
+function pickAtsOpener(platforms) {
+  const list = platforms || [];
+  if (list.some((p) => AUTO_APPLY_PLATFORMS.includes(p))) return null;
+  return list.find((p) => ATS_ZERO_TOUCH_PLATFORMS.includes(p)) || null;
+}
+
+/** The next stage after `tried` are spent, or null to stop. Pool is always last.
+ *  Only SELECTED platforms are eligible — switching a user onto a board they never
+ *  picked is the consent breach "All connected" was written to prevent. */
+function pickNextStage(tried, selected, conns) {
+  const done = tried || [];
+  const sel = selected || [];
+  const c = conns || {};
+  const board = ["indeed", "ziprecruiter"].find(
+    (p) => !done.includes(p) && sel.includes(p) && (p === "indeed" || c[p]?.status === "connected"));
+  // Indeed needs no stored connection record (the resume lives on the Indeed account);
+  // ZR needs a live "connected" one or the walk just hits a login wall.
+  return board || ATS_ZERO_TOUCH_PLATFORMS.find((p) => !done.includes(p) && sel.includes(p)) || null;
+}
+// ------------------------------------------------------------------------------------
+
 // Build the ATS apply queue for a campaign (GLOBAL_PLAN P1a+P1b): populate the pool via
-// /jobs/find-ats, then pull the user's ZERO-TOUCH jobs for this platform (GET /jobs already
-// tags zero_touch + orders them first — PR #32), capped at the per-platform rail. Each item
-// = { applyUrl, title, company }. Returns [] on any error (campaign then reports "no jobs").
+// /jobs/find-ats, then pull this platform's jobs from /jobs/ats-queue, capped at the
+// per-platform rail. Each item = { applyUrl, title, company }.
+//
+// The server endpoint applies the CURRENT search (keywords/type/location) — the same cut
+// as the Tap deck. This used to read raw `GET /jobs`, which is the INSERT-only pool, i.e.
+// the archive: on 09-13 that walked 15 Oura/Braze engineering postings harvested weeks
+// earlier under `ai engineer` for a profile that now reads `event manager`, skipped all 15
+// on fit, and ended the run in 2m26s with zero applications. A stale queue is worse than
+// an empty one: it looks like work. Returns { queue, pool, offSearch } — offSearch is the
+// honest reason an empty queue is empty, so the campaign can say "your pool holds N, none
+// match your search" instead of a bare "no jobs".
 async function buildAtsQueue(platform, perPlatformCap) {
   try { await apiPost("/jobs/find-ats", {}); } catch (e) { /* discovery best-effort */ }
-  let jobs = [];
-  try { jobs = await apiGet("/jobs"); } catch (e) { return []; }
   const cap = perPlatformCap > 0 ? perPlatformCap : 20;
+  let res = null;
+  // No fallback to the unfiltered pool on error: falling back to the archive is exactly
+  // the failure this replaced. An honest zero beats a plausible wrong queue.
+  try { res = await apiGet(`/jobs/ats-queue?platform=${encodeURIComponent(platform)}&limit=${cap}`); }
+  catch (e) { return { queue: [], pool: 0, offSearch: 0, error: true }; }
   // Drop jobs we already applied to (URL or title|company key) — an already-applied job
   // at the queue head used to dead-stop the walk: phase_ats skips it silently and only a
   // real submit advances the queue. Mirrors content.js's dedup (jobDedupKey format).
+  // Stays client-side: the extension holds the authoritative applied sets.
   const dd = await chrome.storage.local.get(["appliedUrls", "appliedJobKeys"]);
   const appliedUrls = new Set(dd.appliedUrls || []);
   const appliedKeys = new Set(dd.appliedJobKeys || []);
   const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
-  return (jobs || [])
-    // greenhouse queue = zero-touch only (full-auto); lever jobs are human-touch by
-    // definition (hCaptcha) and only reach here in tap mode — platform match suffices.
-    .filter((j) => j.platform === platform && (platform === "lever" || j.zero_touch === true) && (j.link || j.apply_url))
+  const queue = (res.jobs || [])
+    .filter((j) => j.link || j.apply_url)
     .filter((j) => {
       const url = (j.link || j.apply_url).split("?")[0];
       return !appliedUrls.has(url) && !appliedKeys.has(`${norm(j.title)}|${norm(j.company)}`);
     })
-    .slice(0, cap)
     .map((j) => ({ applyUrl: j.link || j.apply_url, title: j.title || "", company: j.company || "" }));
+  return { queue, pool: res.pool || 0, offSearch: res.off_search || 0 };
 }
 
 // TAP-POOL queue (Igor 2026-07-16): the user's APPROVED swipe cards, platform-mixed
@@ -924,10 +964,17 @@ async function advanceAtsQueue() {
           }
           return;
         }
-        await addToActivityLog("ATS pool complete — walked every discovered zero-touch job. Campaign finished.", "ok");
-        await chrome.storage.local.set({ campaignRunning: false });
+        // Pool walked — hand off to whatever board is still untried instead of ending the
+        // run. This used to stop the campaign outright, which is how a user with all six
+        // platforms selected got a 2m26s run that never touched Indeed or ZipRecruiter
+        // (09-13). PLATFORM_EXHAUSTED owns every board hand-off and the triedPlatforms
+        // ledger; it stops the campaign itself when nothing is left, so the "finished"
+        // path lives in exactly one place.
         await chrome.storage.local.remove(["atsNavAt", "atsNavTries"]);
-        try { await apiPost("/campaign/stop", {}); } catch {}
+        await handleMessage(
+          { type: "PLATFORM_EXHAUSTED", platform: atsPlatform || "greenhouse", reason: "walked every discovered zero-touch job" },
+          {},
+        );
         updateBadge();
       }
     }
@@ -1381,8 +1428,15 @@ async function handleMessage(msg, sender) {
       // - greenhouse: zero-touch → any mode, full-auto;
       // - lever: hCaptcha at submit → tap mode only (human approves + clears it);
       //   in auto mode refuse with a clear message instead of a campaign that can't submit.
-      let atsTarget = (filters.platforms || []).find((p) => ATS_ZERO_TOUCH_PLATFORMS.includes(p)) || null;
-      if (!tapPoolQueue.length && !atsTarget && (filters.platforms || []).includes("lever")) {
+      //
+      // ORDER: see pickAtsOpener — a selected board outranks the pool, and the pool is
+      // reached through PLATFORM_EXHAUSTED once the boards are done.
+      const hasBoard = (filters.platforms || []).some((p) => AUTO_APPLY_PLATFORMS.includes(p));
+      let atsTarget = pickAtsOpener(filters.platforms);
+      // Lever-only runs: no board, no zero-touch pool, just Lever. `hasBoard` guards it
+      // because atsTarget is now null whenever a board leads the run — without this, any
+      // auto user who merely has Lever ticked alongside Indeed would be refused at Start.
+      if (!tapPoolQueue.length && !atsTarget && !hasBoard && (filters.platforms || []).includes("lever")) {
         if (tapMode) {
           atsTarget = "lever";
         } else {
@@ -1436,12 +1490,19 @@ async function handleMessage(msg, sender) {
         await addToActivityLog(`Applying to ${atsQueue.length} approved jobs (your swipes) — working through them now.`, "info");
       } else if (atsTarget) {
         const capState = (await chrome.storage.local.get("campaignCaps")).campaignCaps || {};
-        atsQueue = await buildAtsQueue(atsTarget, capState.perPlatform || 20);
+        const built = await buildAtsQueue(atsTarget, capState.perPlatform || 20);
+        atsQueue = built.queue;
         if (!atsQueue.length) {
+          // Name which zero it is. "No jobs yet" and "your pool is full of jobs that no
+          // longer match your search" need different actions from the user, and the old
+          // single message sent everyone to "broaden your keywords" — the wrong advice
+          // for the case where the keywords are right and the pool is stale.
           return {
             started: false,
             error: "no_ats_jobs",
-            message: `No zero-touch ${atsTarget} jobs to apply to yet — try again shortly or broaden your keywords.`,
+            message: built.offSearch > 0
+              ? `None of the ${built.pool} ${atsTarget} jobs in your pool match your current search — ${built.offSearch} are leftovers from earlier keywords. They'll refresh as new jobs are found.`
+              : `No zero-touch ${atsTarget} jobs to apply to yet — try again shortly or broaden your keywords.`,
           };
         }
         await chrome.storage.local.set({ atsQueue, atsPlatform: atsTarget, atsNavAt: Date.now(), atsNavTries: 0 });
@@ -1533,7 +1594,11 @@ async function handleMessage(msg, sender) {
         processedJobKeys: [],
         processedPageStarts: [0],
         kwIndex: 0, // keyword rotation cursor — content.js advances it as each keyword is exhausted
-        triedPlatforms: [primaryPlatform], // platform-failover ledger — PLATFORM_EXHAUSTED never revisits these
+        // Platform-failover ledger — PLATFORM_EXHAUSTED never revisits these. Seed it with
+        // the stage this run actually OPENS on: a pool-led run (no board selected) opens on
+        // the ATS target, and seeding "indeed" there would both lie and let the failover
+        // walk back into the pool it just finished.
+        triedPlatforms: [atsTarget || primaryPlatform],
         // Consent boundary for that failover (Igor 09-11): the launch modal's default is
         // "All connected platforms" (platform_mode "all") — switching boards is what the
         // user asked for. A single pick ("single") means THIS board only: on exhaustion
@@ -1637,7 +1702,10 @@ async function handleMessage(msg, sender) {
         "platformFailover",
       ]);
       if (!ex.campaignRunning) return { ok: true, stopped: true };
-      const NAMES = { indeed: "Indeed", ziprecruiter: "ZipRecruiter", linkedin: "LinkedIn" };
+      const NAMES = {
+        indeed: "Indeed", ziprecruiter: "ZipRecruiter", linkedin: "LinkedIn",
+        greenhouse: "Greenhouse", lever: "Lever", ashby: "Ashby",
+      };
       const curPlat = msg.platform || "unknown";
       // Single-platform runs (launch modal "Pick one platform") never switch boards:
       // the user consented to THIS board only. Stop out loud with the road back —
@@ -1648,24 +1716,66 @@ async function handleMessage(msg, sender) {
           `${NAMES[curPlat] || curPlat} only for this run, so we stopped instead of switching boards. ` +
           `Start again and choose "All connected platforms" to keep going elsewhere.`,
           "warn");
-        return await handleMessage({ type: "STOP_CAMPAIGN" }, sender);
+        // Still an orderly ending: the board ran out and the user's own choice said stop
+        // here. Not a death — the banner must not blame a browser that never went away.
+        return await handleMessage({ type: "STOP_CAMPAIGN", reason: "run complete", outcome: "completed" }, sender);
       }
       const tried = Array.from(new Set([...(ex.triedPlatforms || []), curPlat]));
       const conns = ex.platformConnections || {};
-      // Indeed is allowed without a stored connection record (the resume lives on the
-      // Indeed account); ZR needs a live "connected" record or the walk hits a login wall.
-      const next = ["indeed", "ziprecruiter"].find(
-        (p) => !tried.includes(p) && (p === "indeed" || conns[p]?.status === "connected"));
+      const next = pickNextStage(tried, (ex.campaignFilters || {}).platforms, conns);
       if (!next) {
+        // END OF RUN, and it is a COMPLETION, not a death. The dashboard used to see only
+        // `running: false` and print its one story — "the browser that was applying went
+        // away: closing your laptop, quitting Chrome" — which on 09-13 told Igor his
+        // laptop had closed while he sat in front of it. The outcome rides in metadata,
+        // not in the wording, so the banner can't drift from the truth the way a parsed
+        // string does (#147's lesson about matching on log text).
         await addToActivityLog(
-          `${NAMES[curPlat] || curPlat} exhausted (${msg.reason || "no applyable jobs"}) and no other platform left — stopping the campaign.`,
-          "warn");
-        return await handleMessage({ type: "STOP_CAMPAIGN" }, sender);
+          `${NAMES[curPlat] || curPlat} exhausted (${msg.reason || "no applyable jobs"}) and no other platform left — run complete.`,
+          "ok",
+          { outcome: "completed", last_platform: curPlat, tried_platforms: tried });
+        return await handleMessage({ type: "STOP_CAMPAIGN", reason: "run complete", outcome: "completed" }, sender);
+      }
+      const f = ex.campaignFilters || {};
+      // Handing off TO the pool is a different move than handing off to a board: there is
+      // no search to run, only saved apply URLs to walk. Build the queue first — an empty
+      // one means this stage has nothing to offer, so mark it tried and ask again rather
+      // than navigating the window to a job that isn't there.
+      if (ATS_ZERO_TOUCH_PLATFORMS.includes(next)) {
+        const caps = (await chrome.storage.local.get("campaignCaps")).campaignCaps || {};
+        const built = await buildAtsQueue(next, caps.perPlatform || 20);
+        if (!built.queue.length) {
+          await addToActivityLog(
+            built.offSearch > 0
+              ? `${NAMES[curPlat] || curPlat} exhausted — ${NAMES[next]} has ${built.pool} saved jobs but none match your current search (${built.offSearch} are from earlier keywords).`
+              : `${NAMES[curPlat] || curPlat} exhausted — no ${NAMES[next]} jobs saved to apply to yet.`,
+            "info");
+          await chrome.storage.local.set({ triedPlatforms: tried });
+          return await handleMessage({ type: "PLATFORM_EXHAUSTED", platform: next, reason: "nothing applyable in the pool" }, sender);
+        }
+        await addToActivityLog(
+          `${NAMES[curPlat] || curPlat} exhausted (${msg.reason || "no applyable jobs"}) — switching to ${built.queue.length} saved ${NAMES[next]} jobs.`,
+          "info");
+        await chrome.storage.local.set({
+          triedPlatforms: tried,
+          atsQueue: built.queue,
+          atsPlatform: next,
+          atsNavAt: Date.now(),
+          atsNavTries: 0,
+          campaignWarmedUp: false,
+          currentJob: null,
+        });
+        try {
+          await chrome.tabs.update(ex.campaignTabId, { url: built.queue[0].applyUrl });
+        } catch (e) {
+          await addToActivityLog(`Couldn't open ${NAMES[next]} (${e.message}) — stopping the campaign.`, "error");
+          return await handleMessage({ type: "STOP_CAMPAIGN" }, sender);
+        }
+        return { switched: true, to: next };
       }
       await addToActivityLog(
         `${NAMES[curPlat] || curPlat} exhausted (${msg.reason || "no applyable jobs"}) — switching to ${NAMES[next]} automatically.`,
         "info");
-      const f = ex.campaignFilters || {};
       const targetUrl = buildPlatformUrl(next, (f.keywords || []).slice(0, 1), f.location, f.job_type, f.search_radius_miles, f.work_setting);
       await chrome.storage.local.set({
         triedPlatforms: tried,
@@ -1678,6 +1788,9 @@ async function handleMessage(msg, sender) {
         zrRecoveries: 0,
         zrNoBtnStreak: 0,
       });
+      // Leaving the pool for a board: drop the half-walked queue, or the ATS advance
+      // handler would keep steering the window back into it behind the board search.
+      await chrome.storage.local.remove(["atsQueue", "atsPlatform", "atsNavAt", "atsNavTries"]);
       try {
         await chrome.tabs.update(ex.campaignTabId, { url: platformHomeUrl(next) });
       } catch (e) {
@@ -1690,7 +1803,14 @@ async function handleMessage(msg, sender) {
     case "STOP_CAMPAIGN": {
       const stopData = await chrome.storage.local.get(["campaignTabId", "campaignWindowId", "campaignRunning"]);
       if (stopData.campaignRunning) {
-        await addToActivityLog(`⏹ Campaign stopped (${msg.reason || "requested by you"}).`, "info");
+        // The terminal line of every run, and the one the dashboard trusts for WHY it
+        // ended. "completed" (nothing left to apply to) and a user's Stop are both
+        // orderly endings; anything that never reaches this handler — a closed laptop, a
+        // killed window — leaves no outcome at all, which is exactly how the dashboard
+        // tells a finished run from a vanished one.
+        await addToActivityLog(
+          `⏹ Campaign stopped (${msg.reason || "requested by you"}).`, "info",
+          { outcome: msg.outcome || "stopped_by_user" });
       }
 
       // Clear running state first so the onDetach listener won't auto-reattach.
