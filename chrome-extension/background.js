@@ -1500,7 +1500,11 @@ async function handleMessage(msg, sender) {
           return {
             started: false,
             error: "no_ats_jobs",
-            message: built.offSearch > 0
+            message: built.error
+              // Never dress a failed read as "no jobs" — a source that silently
+              // contributes zero is indistinguishable from a broken one (#113).
+              ? `Couldn't load your ${atsTarget} jobs just now (the server didn't answer). Try Start again in a moment.`
+              : built.offSearch > 0
               ? `None of the ${built.pool} ${atsTarget} jobs in your pool match your current search — ${built.offSearch} are leftovers from earlier keywords. They'll refresh as new jobs are found.`
               : `No zero-touch ${atsTarget} jobs to apply to yet — try again shortly or broaden your keywords.`,
           };
@@ -1746,10 +1750,12 @@ async function handleMessage(msg, sender) {
         const built = await buildAtsQueue(next, caps.perPlatform || 20);
         if (!built.queue.length) {
           await addToActivityLog(
-            built.offSearch > 0
+            built.error
+              ? `${NAMES[curPlat] || curPlat} exhausted — couldn't load your ${NAMES[next]} jobs (the server didn't answer), so this stage was skipped.`
+              : built.offSearch > 0
               ? `${NAMES[curPlat] || curPlat} exhausted — ${NAMES[next]} has ${built.pool} saved jobs but none match your current search (${built.offSearch} are from earlier keywords).`
               : `${NAMES[curPlat] || curPlat} exhausted — no ${NAMES[next]} jobs saved to apply to yet.`,
-            "info");
+            built.error ? "warn" : "info");
           await chrome.storage.local.set({ triedPlatforms: tried });
           return await handleMessage({ type: "PLATFORM_EXHAUSTED", platform: next, reason: "nothing applyable in the pool" }, sender);
         }
