@@ -123,7 +123,13 @@ def test_discover_ats_cap_bounds_NEW_rows_not_collected(monkeypatch):
 
     def fake_gh(token, keywords=None, limit=50):
         return [
-            ab._job(f"Role {i}", token, f"https://job-boards.greenhouse.io/{token}/jobs/{i}", "", "greenhouse")
+            ab._job(
+                f"Role {i}",
+                token,
+                f"https://job-boards.greenhouse.io/{token}/jobs/{i}",
+                "",
+                "greenhouse",
+            )
             for i in range(10)
         ]
 
@@ -138,7 +144,9 @@ def test_discover_ats_cap_bounds_NEW_rows_not_collected(monkeypatch):
     assert not seen & {j["apply_url"] for j in second}  # a full cap of genuinely new rows
 
     # And the supply runs out honestly rather than re-serving known rows.
-    rest = ab.discover_ats([("figma", "greenhouse")], cap=4, exclude=seen | {j["apply_url"] for j in second})
+    rest = ab.discover_ats(
+        [("figma", "greenhouse")], cap=4, exclude=seen | {j["apply_url"] for j in second}
+    )
     assert len(rest) == 2
 
 
@@ -149,7 +157,13 @@ def test_discover_ats_exclude_applies_to_the_topup_pass(monkeypatch):
 
     def fake_gh(token, keywords=None, limit=50):
         return [
-            ab._job(f"Role {i}", token, f"https://job-boards.greenhouse.io/{token}/jobs/{i}", "", "greenhouse")
+            ab._job(
+                f"Role {i}",
+                token,
+                f"https://job-boards.greenhouse.io/{token}/jobs/{i}",
+                "",
+                "greenhouse",
+            )
             for i in range(60)
         ]
 
