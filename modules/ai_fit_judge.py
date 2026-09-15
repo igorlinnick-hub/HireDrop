@@ -8,17 +8,44 @@ a selective agent that skips clearly-wrong-fit jobs and explains why.
 Returns a structured decision {fit_score, decision, reason, concerns} so the extension
 can gate the apply and the dashboard can show the user what was skipped and why.
 
-See project_fit_engine memory for the full roadmap. Model note: Sonnet 4.6 for judgment
-quality; Haiku 4.5 is the cost lever for this per-job call if volume cost bites.
+See project_fit_engine memory for the full roadmap.
+
+COST: this is the most expensive thing we do per application — it runs on every
+candidate job, not just the ones we apply to, which made it ~51% of the AI cost of
+an application (content-lab/campus/ECONOMICS.md §3c). The module docstring used to
+end "Haiku 4.5 is the cost lever for this per-job call if volume cost bites"; it
+bit, so the lever is now pulled as a CASCADE rather than a swap:
+
+  Haiku scores first. If its score sits clearly on one side of the user's bar, that
+  answer stands. Only scores inside an uncertainty band around the bar — where a
+  small model being slightly off would actually flip the verdict — are re-judged by
+  Sonnet. A clear yes and a clear no are cheap; the hard middle keeps the good model.
+
+The band is deliberately WIDE by default. Narrowing it is a decision to be made on
+measured agreement between the two models, and `judge_model` / `escalated` are
+returned on every verdict so that agreement can be measured before anyone tunes it.
 """
 
 import json
+import os
 
 from config import ANTHROPIC_API_KEY
 from modules.ai_cover_letter import get_anthropic_client, load_resume_text
 
 _MAX_DESC_CHARS = 2500
 _MAX_Q = 20
+
+_SCREEN_MODEL = "claude-haiku-4-5-20251001"
+_JUDGE_MODEL = "claude-sonnet-4-6"
+
+# Half-width of the uncertainty band around the bar, in fit-score points. A Haiku
+# score within this distance of the threshold is re-judged by Sonnet. 15 is wide on
+# purpose: at the standard bar of 55 it escalates everything from 40 to 70, so only
+# confident verdicts are decided cheaply. Set FIT_CASCADE_BAND=100 to escalate
+# everything (i.e. turn the cascade off and pay the old price).
+_CASCADE_BAND = int(os.getenv("FIT_CASCADE_BAND", "15"))
+# Kill switch: FIT_CASCADE=off restores the single Sonnet call, no redeploy of logic.
+_CASCADE_ON = os.getenv("FIT_CASCADE", "on").lower() not in ("off", "0", "false")
 
 # Score thresholds per apply mode — the BAR, not a fallback. assess_fit returns 0-100 and the
 # verdict is `score >= threshold`; the model's own "decision" word is advisory telemetry only
@@ -123,6 +150,40 @@ def _fallback(job: dict) -> dict:
     }
 
 
+def _call_model(model: str, system: str, prompt: str) -> dict | None:
+    """One judging call. Returns the parsed JSON object, or None if it did not produce one.
+
+    None means "this model told us nothing" — a transport error, or prose where JSON
+    was asked for. The caller decides what that costs; it is never a verdict on its own.
+    """
+    try:
+        client = get_anthropic_client()
+        message = client.messages.create(
+            model=model,
+            max_tokens=400,
+            system=system,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw = (message.content[0].text or "").strip()
+        start, end = raw.find("{"), raw.rfind("}")
+        if start == -1 or end == -1:
+            return None
+        return json.loads(raw[start : end + 1])
+    except Exception as e:
+        print(f"[fit_judge] {model} failed: {e}")
+        return None
+
+
+def _parse_score(data: dict | None) -> int | None:
+    """Clamp fit_score to 0-100, or None when the model did not return a usable number."""
+    if not data:
+        return None
+    try:
+        return max(0, min(100, int(data.get("fit_score"))))
+    except (TypeError, ValueError):
+        return None
+
+
 def assess_fit(job=None, profile=None, screener_questions=None):
     """Return {fit_score, decision, reason, concerns, judged, apply_mode}."""
     if not ANTHROPIC_API_KEY:
@@ -166,25 +227,31 @@ CANDIDATE RESUME:
 
 Decide: should this candidate apply? Return the JSON object only."""
 
-    try:
-        client = get_anthropic_client()
-        message = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=400,
-            system=_system_prompt(mode, threshold),
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = (message.content[0].text or "").strip()
-        start, end = raw.find("{"), raw.rfind("}")
-        data = json.loads(raw[start : end + 1]) if start != -1 and end != -1 else {}
-    except Exception as e:
-        print(f"[fit_judge] failed: {e}")
-        return _fallback(job)
+    system = _system_prompt(mode, threshold)
 
-    score = data.get("fit_score")
-    try:
-        score = max(0, min(100, int(score)))
-    except (TypeError, ValueError):
+    # ---- cascade: cheap model first, good model only for the hard middle ----
+    judge_model, escalated = _JUDGE_MODEL, False
+    data = None
+    if _CASCADE_ON:
+        screened = _call_model(_SCREEN_MODEL, system, prompt)
+        screen_score = _parse_score(screened)
+        if screened is not None and screen_score is not None:
+            if abs(screen_score - threshold) > _CASCADE_BAND:
+                # Far from the bar: a better model would have to move this score by
+                # more than the band to change the verdict. Take the cheap answer.
+                data, judge_model = screened, _SCREEN_MODEL
+            else:
+                escalated = True
+        # A Haiku error or an unparseable score is NOT fail-closed here — it just
+        # means we learned nothing cheaply. Fall through to Sonnet and pay.
+
+    if data is None:
+        data = _call_model(_JUDGE_MODEL, system, prompt)
+        if data is None:
+            return _fallback(job)
+
+    score = _parse_score(data)
+    if score is None:
         # Unparseable score from a non-erroring model response → treat as WORST (0), not 50.
         # Otherwise a garbage score would default to 50 and, with no valid decision below,
         # green-light an "apply" in broad mode (threshold 35). Fail-closed on bad data.
@@ -208,6 +275,11 @@ Decide: should this candidate apply? Return the JSON object only."""
         "judged": True,
         "apply_mode": mode,
         "threshold": threshold,
+        # Cascade telemetry. Needed before anyone narrows _CASCADE_BAND: it is the
+        # only way to see how often the cheap model decided, and — by comparing
+        # outcomes of escalated vs non-escalated jobs — whether it decided well.
+        "judge_model": judge_model,
+        "escalated": escalated,
         # Kept for telemetry: a model that still contradicts its own score is a prompt bug,
         # and it is invisible once the bar decides.
         "model_decision": model_decision if model_decision in ("apply", "skip") else None,

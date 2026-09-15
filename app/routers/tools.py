@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from app.db import applications as apps_db
 from app.db import jobs as jobs_db
+from app.db import screener_cache
 from app.db import usage as usage_db
 from app.db.profile import get_profile
 from app.db.subscriptions import get_usage_summary, is_admin
@@ -282,9 +283,23 @@ def answer_question(req: AnswerQuestionRequest, user=Depends(get_current_user)):
     filler can't handle. Deterministic cases (demographic decline, salary, Yes/No) are
     solved client-side and never reach here. Counts against the same daily AI quota as
     cover letters so it can't be abused to burn Anthropic spend.
+
+    Multiple-choice answers are cached per (user, question, options, profile) — the
+    same screener recurs on form after form, and re-deriving the answer both cost a
+    Sonnet call and let one candidate give two different answers to one question.
+    The cache is consulted BEFORE the quota is claimed: a repeat must not spend a
+    slot, or the budget still drains at the old rate and only the bill improves.
     """
-    _claim_ai_slot(user)
     profile = get_profile(user.id)
+
+    cache_key = screener_cache.build_key(req.question, req.options, profile)
+    if cache_key:
+        cached = screener_cache.get(user.id, cache_key)
+        if cached:
+            screener_cache.touch(user.id, cache_key)
+            return {"answer": cached, "cached": True}
+
+    _claim_ai_slot(user)
     try:
         answer = answer_screener_question(
             req.question,
@@ -297,7 +312,9 @@ def answer_question(req: AnswerQuestionRequest, user=Depends(get_current_user)):
         raise
     if not answer:
         usage_db.release_today(user.id)
-    return {"answer": answer}
+    elif cache_key:
+        screener_cache.put(user.id, cache_key, req.question, answer)
+    return {"answer": answer, "cached": False}
 
 
 @router.post("/tools/cover-letter-template")
