@@ -111,6 +111,70 @@ def test_discover_ats_dedups_by_apply_url(monkeypatch):
     assert len(out) == 1  # same apply_url deduped
 
 
+def test_discover_ats_cap_bounds_NEW_rows_not_collected(monkeypatch):
+    """The cap must be spent on postings the caller hasn't seen.
+
+    Until 09-15 it was applied to everything collected, BEFORE the caller deduped against
+    the pool, so a fixed ranking handed back the same top rows sweep after sweep and the
+    pool grew only by churn. Two sweeps over an unchanged board must therefore return
+    DIFFERENT postings once the first sweep's urls are passed back as `exclude`.
+    """
+    import modules.platforms.ats_boards as ab
+
+    def fake_gh(token, keywords=None, limit=50):
+        return [
+            ab._job(
+                f"Role {i}",
+                token,
+                f"https://job-boards.greenhouse.io/{token}/jobs/{i}",
+                "",
+                "greenhouse",
+            )
+            for i in range(10)
+        ]
+
+    monkeypatch.setitem(ab._FETCHERS, "greenhouse", fake_gh)
+
+    first = ab.discover_ats([("figma", "greenhouse")], cap=4)
+    assert len(first) == 4
+    seen = {j["apply_url"] for j in first}
+
+    second = ab.discover_ats([("figma", "greenhouse")], cap=4, exclude=seen)
+    assert len(second) == 4
+    assert not seen & {j["apply_url"] for j in second}  # a full cap of genuinely new rows
+
+    # And the supply runs out honestly rather than re-serving known rows.
+    rest = ab.discover_ats(
+        [("figma", "greenhouse")], cap=4, exclude=seen | {j["apply_url"] for j in second}
+    )
+    assert len(rest) == 2
+
+
+def test_discover_ats_exclude_applies_to_the_topup_pass(monkeypatch):
+    """The quota loop has a second 'top up the cap' pass — it must honour exclude too,
+    or a single-platform sweep (the common case) leaks known rows straight back in."""
+    import modules.platforms.ats_boards as ab
+
+    def fake_gh(token, keywords=None, limit=50):
+        return [
+            ab._job(
+                f"Role {i}",
+                token,
+                f"https://job-boards.greenhouse.io/{token}/jobs/{i}",
+                "",
+                "greenhouse",
+            )
+            for i in range(60)
+        ]
+
+    monkeypatch.setitem(ab._FETCHERS, "greenhouse", fake_gh)
+    known = {f"https://job-boards.greenhouse.io/figma/jobs/{i}" for i in range(50)}
+    # cap 50 > per_platform_cap floor of 40 → the top-up pass runs.
+    out = ab.discover_ats([("figma", "greenhouse")], cap=50, exclude=known)
+    assert len(out) == 10
+    assert not known & {j["apply_url"] for j in out}
+
+
 # ---------- jobs enrichment: /jobs tags + orders zero-touch first (feeds the queue) ----------
 
 

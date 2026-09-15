@@ -350,7 +350,10 @@ _FETCHERS = {
 
 
 def discover_ats(
-    companies: list[tuple[str, str]], keywords: list[str] | None = None, cap: int = 100
+    companies: list[tuple[str, str]],
+    keywords: list[str] | None = None,
+    cap: int = 100,
+    exclude: set[str] | None = None,
 ) -> list[dict]:
     """Pull live jobs across a watchlist of (token, platform) companies, keyword-filtered.
 
@@ -358,6 +361,16 @@ def discover_ats(
     slow board or a Cloudflare challenge can no longer hold the caller for minutes (the
     old sequential loop was the API-000 worker-starvation cause). Dedups by apply_url and
     keeps zero-touch (low-captcha) destinations first so the cap fills with the easy wins.
+
+    `exclude` = apply_urls the caller ALREADY has. The cap is meant to bound how much work
+    one sweep creates, but until 2026-09-15 it was applied to everything COLLECTED, before
+    the caller deduped against the pool — so every sweep spent its 160 slots re-returning
+    the same top-ranked postings and only churn leaked through. Measured that day on the
+    live 213-board watchlist: 560 unique postings matched Igor's keywords (4865 with no
+    keyword filter) and 160 came back, i.e. 71% of the supply we already fetch was thrown
+    away each time. Skipping known urls here makes the cap bound NEW inventory instead, so
+    the pool walks out to the watchlist's real supply over a few sweeps at unchanged
+    per-sweep cost (~$0.0019/row scored, so ~$0.30 a sweep).
     """
     import concurrent.futures
     from collections import deque
@@ -427,9 +440,10 @@ def discover_ats(
     seen: set[str] = set()
     per: dict[str, int] = {}
     out: list[dict] = []
+    known = exclude or set()
     for job in collected:
         u = job.get("apply_url")
-        if not u or u in seen:
+        if not u or u in seen or u in known:
             continue
         p = job.get("platform", "")
         if per.get(p, 0) >= per_platform_cap:
@@ -444,7 +458,7 @@ def discover_ats(
     if len(out) < cap:
         for job in collected:
             u = job.get("apply_url")
-            if not u or u in seen:
+            if not u or u in seen or u in known:
                 continue
             seen.add(u)
             out.append(job)
