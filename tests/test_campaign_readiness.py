@@ -53,15 +53,19 @@ def test_board_platform_needs_no_resume():
     assert checks["resume"] is True and ready is True
 
 
-def test_lever_requires_tap():
+def test_lever_no_longer_blocks_the_start():
+    """A board only SOME of the run can use is not a precondition for the run.
+
+    Lever's captcha needs a human, so an auto run cannot finish one — but blocking Start
+    over it offered a single button, "switch to Tap", which trades the whole auto campaign
+    for one board out of six (Igor, 09-15). /campaign/start drops Lever from an auto run
+    and says so in the feed instead; readiness stays about the campaign as a whole.
+    """
     ready, checks = _ready(
         build_readiness(_profile(platforms=["lever"]), False, "pro", "auto", None, 40)
     )
-    assert ready is False and checks["lever_tap"] is False
-    ready2, checks2 = _ready(
-        build_readiness(_profile(platforms=["lever"]), False, "pro", "tap", None, 40)
-    )
-    assert checks2["lever_tap"] is True
+    assert "lever_tap" not in checks
+    assert ready is True
 
 
 def test_free_quota_blocks_when_exhausted():

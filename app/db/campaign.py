@@ -76,6 +76,13 @@ def build_readiness(
     the failed checks as a what's-left checklist instead of a dead button. (Extension
     installed/connected is a CLIENT-side check — the dashboard adds it via the PING
     bridge; the server can't see it.)
+
+    What does NOT belong here: a platform that only SOME of the run cannot use. Lever
+    (captcha needs a human) used to block Start outright, and the only offered fix was
+    "switch to Tap", which drags the user out of the auto campaign they asked for —
+    a modal demanding a trade nobody wanted, for one board out of six. The run now
+    simply leaves Lever out and says so (see /campaign/start). A precondition belongs
+    here only when the campaign as a whole has nothing to do without it.
     """
     platforms = profile.get("platforms") or []
     ats_selected = any(p in ("greenhouse", "lever") for p in platforms)
@@ -108,12 +115,6 @@ def build_readiness(
         (not ats_selected) or bool(profile.get("resume_url")),
         "Upload a resume — company-site (Greenhouse/Lever) applications require one",
         "settings",
-    )
-    add(
-        "lever_tap",
-        not ("lever" in platforms and submit_mode != "tap"),
-        "Lever needs Tap mode (its captcha requires a human) — switch to Tap or unselect Lever",
-        "tap",
     )
     if tier == "free":
         add(
