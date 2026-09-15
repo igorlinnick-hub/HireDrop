@@ -33,9 +33,7 @@ def _run(monkeypatch, replies, *, mode="standard", band=15):
             reply = replies.get(model)
             if reply is None:
                 raise RuntimeError(f"{model} is down")
-            return types.SimpleNamespace(
-                content=[types.SimpleNamespace(text=json.dumps(reply))]
-            )
+            return types.SimpleNamespace(content=[types.SimpleNamespace(text=json.dumps(reply))])
 
     monkeypatch.setattr(ai_fit_judge, "ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setattr(ai_fit_judge, "_CASCADE_ON", True)
