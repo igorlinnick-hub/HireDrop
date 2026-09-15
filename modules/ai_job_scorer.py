@@ -60,6 +60,9 @@ Return this exact JSON (no markdown, no explanation):
 
 Score guide: 8-10=strong match, 5-7=worth considering, 0-4=skip.
 Verdict: подходит=8+, сомнительно=5-7, пропустить=0-4.
+If the description is NOT AVAILABLE you cannot check a single requirement, so a
+high score would be a guess dressed as a match: score at most 5, and say so in
+flags. A job you know nothing about is "worth considering" at best, never strong.
 Keep reasons and flags short (max 8 words each). Max 3 items per list.
 ats_keywords: extract 5-12 critical terms an ATS would filter on — skills, tools, technologies, certifications, role-specific buzzwords from the job description. These are exact strings a recruiter's ATS would search for."""
 
@@ -141,6 +144,17 @@ def _format_job(job: dict) -> str:
     desc = (job.get("description") or "")[:800]
     if desc:
         parts.append(f"Description: {desc}")
+    else:
+        # Say it out loud. Dropping the line entirely left the model with a title
+        # and a company and no way to know anything was missing — so it scored the
+        # title match and scored it HIGH. Measured 2026-09-15: jobs with no
+        # description averaged 2.93 against 1.67 for jobs with one, and 24 of the
+        # 26 jobs that ever cleared the tailoring gate were description-less
+        # LinkedIn rows. Absence of evidence was being read as evidence of fit.
+        parts.append(
+            "Description: NOT AVAILABLE — this posting was harvested without a "
+            "description. Nothing about its requirements can be verified."
+        )
     return "\n".join(parts)
 
 
