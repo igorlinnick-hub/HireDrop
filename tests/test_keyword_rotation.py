@@ -122,3 +122,61 @@ def test_start_survives_a_row_with_no_cursor_yet(auth_client):
             },
         ).json()
     assert body["filters"]["keywords"] == ROLES
+
+
+def _start(auth_client, platforms, mode="auto"):
+    with (
+        patch.object(campaign_router.campaign_db, "get_state", return_value={"filters": {}}),
+        patch.object(
+            campaign_router.campaign_db, "start", side_effect=lambda _u, f: {"filters": f}
+        ),
+        patch.object(campaign_router, "get_submit_mode", return_value=mode),
+        patch.object(campaign_router.activity_db, "write", return_value="id"),
+        patch.object(
+            campaign_router,
+            "get_profile",
+            return_value={"onboarding_completed": True, "search_radius_miles": None},
+        ),
+    ):
+        return auth_client.post(
+            "/api/v1/campaign/start",
+            json={
+                "keywords": ROLES,
+                "platforms": platforms,
+                "location": "Miami",
+                "job_type": "full-time",
+            },
+        )
+
+
+def test_lever_sits_out_an_auto_run_instead_of_blocking_it(auth_client):
+    """Lever's captcha needs a human, so an auto run cannot finish one.
+
+    It used to block Start with a modal offering one button — "switch to Tap" — which
+    trades the whole auto campaign for one board out of six (Igor, 09-15).
+    """
+    body = _start(auth_client, ["indeed", "lever", "greenhouse"]).json()
+    assert body["started"] is True
+    assert "lever" not in body["filters"]["platforms"]
+    # Named, not silently dropped: the dashboard and the feed both say what happened.
+    assert body["skipped_platforms"] == ["lever"]
+    assert body["filters"]["platforms"] == ["indeed", "greenhouse"]
+
+
+def test_tap_mode_keeps_lever(auth_client):
+    body = _start(auth_client, ["indeed", "lever"], mode="tap").json()
+    assert "lever" in body["filters"]["platforms"]
+    assert body["skipped_platforms"] == []
+
+
+def test_lever_alone_in_auto_is_refused_out_loud(auth_client):
+    # Dropping the only board would start a campaign that can never submit — a silent zero.
+    res = _start(auth_client, ["lever"])
+    assert res.status_code == 400
+    assert res.json()["detail"] == "lever_needs_tap"
+
+
+def test_a_run_without_lever_is_untouched(auth_client):
+    body = _start(auth_client, ["indeed", "ashby"]).json()
+    assert body["filters"]["platforms"] == ["indeed", "ashby"]
+    assert body["skipped_platforms"] == []

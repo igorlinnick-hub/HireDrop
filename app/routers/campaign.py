@@ -195,10 +195,34 @@ def campaign_start(req: CampaignStartRequest, user=Depends(get_current_user)):
     # overwrite. See modules/keyword_rotation.
     prev_cursor = (campaign_db.get_state(user.id).get("filters") or {}).get("kw_cursor", 0)
     ordered_keywords, next_cursor = rotate_keywords(req.keywords, prev_cursor)
+    # Lever's apply form is captcha-gated, so an AUTO run cannot finish one. That used to
+    # block Start with a modal whose only button was "switch to Tap" — trading the whole
+    # auto campaign for one board out of six, a swap nobody asked for (Igor, 09-15).
+    # The run leaves Lever out instead and says so in the feed. Not a silent substitution
+    # (#180): nothing is put in its place, the other platforms are the ones the user picked,
+    # and the line names both the reason and the way to include it.
+    run_platforms = list(req.platforms or [])
+    skipped_platforms: list[str] = []
+    if get_submit_mode(user.id) != "tap" and "lever" in run_platforms:
+        if len(run_platforms) > 1:
+            run_platforms = [p for p in run_platforms if p != "lever"]
+            skipped_platforms = ["lever"]
+            with contextlib.suppress(Exception):
+                activity_db.write(
+                    user.id,
+                    "Lever is sitting this run out — its apply form needs a human for the "
+                    "captcha. Switch to Tap to include it.",
+                    level="info",
+                    phase="campaign",
+                )
+        else:
+            # Lever alone in auto mode leaves the run with nothing it can submit to.
+            # Say that outright instead of starting a campaign that can only stall.
+            raise HTTPException(status_code=400, detail="lever_needs_tap")
     filters = {
         "keywords": ordered_keywords,
         "kw_cursor": next_cursor,
-        "platforms": req.platforms,
+        "platforms": run_platforms,
         "location": req.location,
         "job_type": req.job_type,
         # Geo-radius (miles) for non-remote searches. Sourced from the saved profile
@@ -212,7 +236,12 @@ def campaign_start(req: CampaignStartRequest, user=Depends(get_current_user)):
     # The dashboard arms the extension from THIS response, not from its own local list —
     # otherwise the rotation would live only in the server's record of the run while the
     # browser kept searching role #1 first (QuickActions.tsx).
-    return {"started": True, "state": state, "filters": filters}
+    return {
+        "started": True,
+        "state": state,
+        "filters": filters,
+        "skipped_platforms": skipped_platforms,
+    }
 
 
 @router.get("/campaign/readiness")
