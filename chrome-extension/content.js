@@ -1143,7 +1143,19 @@
       if (m) jk = m[1];
     }
 
-    return { title, company, url, jk, clickEl: titleEl };
+    // The card's own blurb. Thin — a sentence or two — but it is the ONLY description
+    // that exists before we open the posting, and the deck has to rank the pool before
+    // the user swipes it. Harvesting it costs nothing: the text is already in this DOM,
+    // no extra page load, so no extra ban surface. Without it every Indeed row landed
+    // with score null and sorted last forever (a third of the pool).
+    const snippetEl =
+      card.querySelector(".job-snippet") ||
+      card.querySelector('[class*="jobSnippet"]') ||
+      card.querySelector('[data-testid="jobsnippet_footer"]') ||
+      card.querySelector("ul");
+    const snippet = (snippetEl?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 1500);
+
+    return { title, company, url, jk, snippet, clickEl: titleEl };
   }
 
   async function phase1_jobList() {
@@ -1235,6 +1247,10 @@
           company: j.company || "",
           link: j.jk ? `https://www.indeed.com/viewjob?jk=${j.jk}` : (j.url || ""),
           platform: _plat,
+          // Server scores rows that arrive with a description (>=120 chars) and leaves
+          // title-only ones null — see /jobs/ingest. Sending "" is the same as sending
+          // nothing, so a card without a snippet degrades to the old behaviour.
+          description: j.snippet || "",
         }))
         .filter((j) => j.link && j.title);
       if (harvest.length) {
@@ -1880,7 +1896,16 @@
       if (alreadyApplied.has(jobUrl)) continue;
       if (processedKeys.has(uuid)) continue;
 
-      quickApplyJobs.push({ title, company, url: jobUrl, jk: uuid });
+      // Same reasoning as the Indeed snippet above: the card's own blurb is the only
+      // description that exists before the posting is opened, and it costs no extra
+      // page load. ZR does not label it, so take the card's longest paragraph — the
+      // short ones are salary/location chips.
+      const zrParas = Array.from(article.querySelectorAll("p"))
+        .map((el) => (el.textContent || "").replace(/\s+/g, " ").trim())
+        .filter((t) => t.length > 60);
+      const snippet = (zrParas.sort((a, b) => b.length - a.length)[0] || "").slice(0, 1500);
+
+      quickApplyJobs.push({ title, company, url: jobUrl, jk: uuid, snippet });
     }
 
     if (!quickApplyJobs.length) {
@@ -1900,7 +1925,13 @@
     // selectors we already have. Fire-and-forget; server dedups known links.
     try {
       const zrHarvest = quickApplyJobs
-        .map((j) => ({ title: j.title || "", company: j.company || "", link: j.url || "", platform: "ziprecruiter" }))
+        .map((j) => ({
+          title: j.title || "",
+          company: j.company || "",
+          link: j.url || "",
+          platform: "ziprecruiter",
+          description: j.snippet || "",
+        }))
         .filter((j) => j.link && j.title);
       if (zrHarvest.length) {
         Promise.resolve(sendMsg({ type: "INGEST_JOBS", data: { jobs: zrHarvest } })).catch(() => {});

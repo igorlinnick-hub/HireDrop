@@ -476,6 +476,12 @@ def backfill_ats_scores(user=Depends(get_current_user)):
     }
 
 
+# A search-result snippet is thin, but it is a real description. Below this many
+# characters we are back to scoring a title with decoration, which #192 showed the
+# model rewards rather than penalises. 120 chars ~= one sentence of the posting.
+MIN_SCORABLE_DESC = 120
+
+
 @router.post("/jobs/ingest")
 def ingest_jobs(req: IngestJobsRequest, user=Depends(get_current_user)):
     """Harvest-to-pool: the extension saves job cards it SEES in the user's browser
@@ -485,9 +491,20 @@ def ingest_jobs(req: IngestJobsRequest, user=Depends(get_current_user)):
 
     INSERT-only: existing links are skipped entirely (an upsert would reset the row's
     status to 'new', resurrecting applied/skipped/approved jobs — the dedup lane).
-    No AI scoring here: cards carry no description, and title-only scoring is the
-    exact ~6%-noise trap the GH backfill just fixed. score stays null → the deck
-    sorts them after scored jobs until a description-bearing pass rescores them.
+
+    Scoring is conditional on there being something to score. Title-only cards stay
+    unscored: that is the ~6%-noise trap the GH backfill fixed, and #192 confirmed it
+    from the other side — with no description the model scores the title match and
+    scores it HIGH. But the promise the old docstring made here ("score stays null
+    until a description-bearing pass rescores them") was never kept: no such pass
+    exists for Indeed — _backfill_thin_ats_scores only covers greenhouse and lever —
+    so 425 rows, a third of the pool and a VERIFIED platform, sat at null forever and
+    sorted last.
+
+    So: cards that arrive WITH a description (the search-result snippet the extension
+    now sends) get scored like any other job. A snippet is thin, but thin is what the
+    deck ranks on, and ranking has to happen BEFORE the user swipes — enriching at
+    apply time would deliver a score for a job we have already applied to.
     """
     harvest_platforms = {"indeed", "ziprecruiter"}
     candidates = [
@@ -498,23 +515,47 @@ def ingest_jobs(req: IngestJobsRequest, user=Depends(get_current_user)):
     # Existing links never enter the upsert — that's what keeps this INSERT-only.
     already_saved = jobs_db.existing_links(user.id, [j.link for j in candidates])
     fresh = [j for j in candidates if j.link not in already_saved]
-    saved = jobs_db.save_jobs_bulk(
-        user.id,
-        [
-            {
-                "title": j.title,
-                "company": j.company,
-                "link": j.link,
-                "status": "new",
-                "platform": j.platform,
-                "description": j.description,
-                "location": j.location,
-                "job_type": j.job_type,
-            }
-            for j in fresh
-        ],
-    )
-    return {"saved": saved, "skipped_existing": len(candidates) - len(fresh)}
+
+    rows = [
+        {
+            "title": j.title,
+            "company": j.company,
+            "link": j.link,
+            "status": "new",
+            "platform": j.platform,
+            "description": j.description,
+            "location": j.location,
+            "job_type": j.job_type,
+        }
+        for j in fresh
+    ]
+
+    scorable = [r for r in rows if len((r.get("description") or "").strip()) >= MIN_SCORABLE_DESC]
+    scored_count = 0
+    if scorable:
+        # Never let a scoring hiccup cost the harvest: the rows are the point, the
+        # score is an improvement. An exception here used to mean the whole page of
+        # cards was lost.
+        try:
+            from app.db.profile import get_profile
+            from modules.ai_cover_letter import load_resume_text
+            from modules.ai_job_scorer import score_jobs_batch
+
+            profile = get_profile(user.id)
+            score_jobs_batch(scorable, profile, load_resume_text(profile.get("resume_url")))
+            scored_count = sum(1 for r in scorable if r.get("score") is not None)
+        except Exception as e:
+            print(f"[ingest] scoring skipped (rows still saved): {e}", file=sys.stderr)
+
+    saved = jobs_db.save_jobs_bulk(user.id, rows)
+    return {
+        "saved": saved,
+        "skipped_existing": len(candidates) - len(fresh),
+        # Honest counters: "saved 15, scored 0" is a snippet-extraction regression in
+        # the extension, and it must not look identical to a healthy run.
+        "scored": scored_count,
+        "unscored_title_only": len(rows) - len(scorable),
+    }
 
 
 @router.patch("/jobs/{job_id}/status")
