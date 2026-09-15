@@ -210,15 +210,6 @@ SEED_WATCHLIST: list[tuple[str, str]] = [
     # apply is account-gated multi-step (not yet auto-filled) so these feed the pool for
     # "scrapeable" coverage but the extension never walks them. Script-verified live: cxs API
     # 200 + marketing>0. Ordered by marketing yield). ---
-    ("nvidia|wd5|NVIDIAExternalCareerSite", "workday"),  # 780 mktg
-    ("adobe|wd5|external_experienced", "workday"),  # 701
-    ("salesforce|wd12|External_Career_Site", "workday"),  # 458
-    ("mastercard|wd1|CorporateCareers", "workday"),  # 307
-    ("hp|wd5|ExternalCareerSite", "workday"),  # 227
-    ("paypal|wd1|jobs", "workday"),  # 112
-    ("target|wd5|targetcareers", "workday"),  # 91
-    ("workday|wd5|Workday", "workday"),  # 90
-    ("cvshealth|wd1|CVS_Health_Careers", "workday"),  # 79
     # --- added 2026-09-06: NON-TECH VERTICALS. The list above is SaaS/fintech/AI almost
     #     end to end, so a healthcare-marketing profile drew 3 Greenhouse candidates for a
     #     whole sweep — the boards simply had no such work on them. These were validated the
@@ -438,3 +429,30 @@ def prioritized_boards(
         tags = BOARD_VERTICALS.get(token.lower(), ())
         (front if any(t in wanted for t in tags) else back).append((token, platform))
     return front + back
+
+
+# WORKDAY IS OUT OF THE HARVEST (Igor 2026-09-15).
+#
+# These nine boards were pulled into the pool by fetch_workday, scored like any other
+# row, and then could never be applied to: the extension walks greenhouse/lever/ashby
+# only (background.js ATS_PLATFORMS), and STATUS_MATRIX has workday DEFERRED until Igor
+# supplies an account for the multi-step apply. ats_boards.py said so in a comment —
+# "scrapeable coverage but the extension never walks them" — and we harvested anyway.
+#
+# Measured before removal: 121 rows, 9% of the pool, all with empty descriptions, all
+# unreachable. Together with LinkedIn they were 146 rows of inventory nobody could use,
+# and until #192 their empty descriptions made them SORT FIRST.
+#
+# fetch_workday and _FETCHERS["workday"] in ats_boards.py are deliberately left intact:
+# when Workday is connected for real, re-enabling is pasting this block back.
+WORKDAY_BOARDS_PARKED = [
+    ("nvidia|wd5|NVIDIAExternalCareerSite", "workday"),  # 780 mktg,
+    ("adobe|wd5|external_experienced", "workday"),  # 701,
+    ("salesforce|wd12|External_Career_Site", "workday"),  # 458,
+    ("mastercard|wd1|CorporateCareers", "workday"),  # 307,
+    ("hp|wd5|ExternalCareerSite", "workday"),  # 227,
+    ("paypal|wd1|jobs", "workday"),  # 112,
+    ("target|wd5|targetcareers", "workday"),  # 91,
+    ("workday|wd5|Workday", "workday"),  # 90,
+    ("cvshealth|wd1|CVS_Health_Careers", "workday"),  # 79,
+]

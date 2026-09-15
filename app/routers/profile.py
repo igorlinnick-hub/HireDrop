@@ -523,8 +523,29 @@ def _store_tailored_pdf(user_id: str, job_id: str, tailored_text: str) -> None:
 def _lazy_tailor_for_job(user, job) -> None:
     """Economics #2 — tailor a job's resume ON DEMAND at apply time (when the
     extension fetches the best resume for this specific job), not eagerly for every
-    job discovered. Gating: Premium/admin + score ≥ the user's Apply-Mode threshold.
-    Idempotent; best-effort (never raises into the resume-fetch path).
+    job discovered. Gating: paid tier. Idempotent; best-effort (never raises into
+    the resume-fetch path).
+
+    THE SCORE GATE IS GONE (Igor 2026-09-15). It was `jobs.score >= 6/7/8 by apply
+    mode`, and it was a vestige: when tailoring ran EAGERLY at discovery, jobs.score
+    was the only signal available, and when commit 391558b moved tailoring to apply
+    time the gate did not move with it.
+
+    It was also never derived from anything. Commit ceab921 says so outright — "was
+    hardcoded 7" — and the number came from the wording of the scorer's own rubric
+    ("8-10=strong, 5-7=worth considering"). Measured on 2026-09-15: 2 of 719 real
+    described jobs cleared it, and `tailored_resume` was set on ONE row in 1307 —
+    for a feature the landing page sells on.
+
+    Reaching this function already means we are applying: its only caller is
+    GET /profile/resume/url/best, whose only caller is content.js uploadResume(),
+    which runs while filling the form we are about to submit. A second, unrelated
+    score deciding whether that application deserves a tailored resume was the bug.
+
+    Cost, measured not estimated: $0.0070 per tailor (in 1027 / out 261), taking an
+    application from $0.0129 to $0.0199. At the observed 31 applications/month that
+    is $0.22/month per user. See content-lab/campus/ECONOMICS.md and
+    docs/handoff/pool-quality.md (W2).
     """
     try:
         from app.db import jobs as jobs_db
@@ -553,10 +574,6 @@ def _lazy_tailor_for_job(user, job) -> None:
         if get_tier(user.id, getattr(user, "email", None)) not in ("pro", "premium", "admin"):
             return
         prof = profile_db.get_profile(user.id)
-        mode = prof.get("apply_mode") or "standard"
-        threshold = {"broad": 6, "standard": 7, "precise": 8}.get(mode, 7)
-        if (fresh.get("score") or 0) < threshold:
-            return
         from modules.ai_cover_letter import load_resume_text
 
         resume_text = load_resume_text(prof.get("resume_url"))
