@@ -314,8 +314,22 @@ def _run_ats_discovery(user_id: str) -> None:
         resume_text = load_resume_text(profile.get("resume_url"))
         keywords = profile.get("keywords", [])
 
+        # The cap must bound NEW inventory, not everything collected. Measured 09-15: the
+        # 213-board watchlist yields 560 postings on Igor's keywords, the sweep returned
+        # its top 160, and those 160 were largely the SAME rows every time — so the pool
+        # grew only by what churn leaked past a fixed ranking (378 rows/user/30d against a
+        # 900 applications/month cap). Handing discovery what we already have lets each
+        # sweep spend its 160 slots on postings we've never seen, and the pool walks out to
+        # the watchlist's real supply in a few sweeps. Per-sweep cost is unchanged: the
+        # slots are the same, and scoring is $0.0019/row (~$0.30 a sweep).
         try:
-            found = discover_ats(SEED_WATCHLIST, keywords, cap=160)
+            known = jobs_db.all_links(user_id)
+        except Exception as e:
+            print(f"[find-ats bg] pool read failed, sweeping unfiltered: {e}", file=sys.stderr)
+            known = set()
+
+        try:
+            found = discover_ats(SEED_WATCHLIST, keywords, cap=160, exclude=known)
         except Exception as e:
             print(f"[find-ats bg] discovery failed: {e}", file=sys.stderr)
             found = []
@@ -323,6 +337,8 @@ def _run_ats_discovery(user_id: str) -> None:
 
         record_scrape("ats_boards", len(found))
 
+        # Still ask the DB: `known` is a snapshot, and a concurrent sweep (or a swipe-pool
+        # write) can save a link between the read above and here.
         already_saved = jobs_db.existing_links(user_id, [j["link"] for j in found])
         new_jobs = [j for j in found if j["link"] not in already_saved]
         new_jobs, _salary_dropped = filter_by_salary(new_jobs, profile)

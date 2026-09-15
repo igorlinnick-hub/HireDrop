@@ -158,6 +158,32 @@ def save_jobs_bulk(user_id: str, jobs: list) -> int:
     return saved
 
 
+def all_links(user_id: str, limit: int = 20000) -> set:
+    """EVERY link already in this user's pool, in one paginated sweep.
+
+    `existing_links` answers "are THESE saved?" — one IN-query per 40 links. Discovery
+    now needs the mirror question ("what have we NOT seen?") over the whole collected
+    sweep, which is ~500-5000 links: that would be 12-125 round-trips. The pool is a
+    couple of thousand rows, so pulling the link column whole is two queries.
+    """
+    out: set = set()
+    page = 1000
+    for start in range(0, limit, page):
+        res = (
+            get_supabase()
+            .table("jobs")
+            .select("link")
+            .eq("user_id", user_id)
+            .range(start, start + page - 1)
+            .execute()
+        )
+        rows = res.data or []
+        out.update(r["link"] for r in rows if r.get("link"))
+        if len(rows) < page:
+            break
+    return out
+
+
 def existing_links(user_id: str, links: list) -> set:
     """Which of these links are already saved — chunked IN-queries (40 links each)
     instead of one job_exists round-trip per link. Chunked because PostgREST puts
