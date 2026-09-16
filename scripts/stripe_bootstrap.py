@@ -40,6 +40,8 @@ WEBHOOK_EVENTS = [
     "customer.subscription.updated",
     "customer.subscription.deleted",
     "invoice.paid",
+    # Affiliate clawback — a refunded charge voids the commission it earned.
+    "charge.refunded",
 ]
 LOOKUP_KEYS = {"weekly": "hiredrop_pro_weekly", "monthly": "hiredrop_pro_monthly"}
 
@@ -160,7 +162,20 @@ def ensure_webhook(secret: str, have_signing_secret: bool) -> str | None:
     endpoints = stripe_call(secret, "GET", "/v1/webhook_endpoints", [("limit", "100")])["data"]
     ours = [e for e in endpoints if e["url"] == WEBHOOK_URL]
     if ours and have_signing_secret:
-        print(f"  webhook: exists ({ours[0]['id']}), secret already in .env — keeping")
+        # Keep the endpoint (Stripe never re-shows a signing secret), but make sure
+        # it still listens to everything we handle — a new event type added to
+        # WEBHOOK_EVENTS is silently never delivered otherwise.
+        missing = [ev for ev in WEBHOOK_EVENTS if ev not in ours[0].get("enabled_events", [])]
+        if missing:
+            stripe_call(
+                secret,
+                "POST",
+                f"/v1/webhook_endpoints/{ours[0]['id']}",
+                [("enabled_events[]", ev) for ev in WEBHOOK_EVENTS],
+            )
+            print(f"  webhook: exists ({ours[0]['id']}), subscribed to {', '.join(missing)}")
+        else:
+            print(f"  webhook: exists ({ours[0]['id']}), secret already in .env — keeping")
         return None
     for e in ours:  # exists but we don't hold its secret — Stripe won't re-show it
         stripe_call(secret, "DELETE", f"/v1/webhook_endpoints/{e['id']}")

@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.billing_config import plan_by_key, tier_for_price
+from app.db import affiliates as affiliates_db
 from app.db import billing as billing_db
 from app.deps import get_current_user
 from config import (
@@ -223,6 +224,16 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
                     _grant_from_subscription(stripe, user_id, sub_obj)
                 else:
                     billing_db.downgrade(user_id)
+
+            # Affiliate commission accrues from COLLECTED money, so it hangs off
+            # invoice.paid only — never off signup or subscription.updated.
+            if etype == "invoice.paid":
+                affiliates_db.accrue_from_invoice(user_id, obj)
+
+        elif etype == "charge.refunded":
+            # Clawback: the commission for that invoice is voided. Resolving the
+            # user isn't needed — the invoice id alone identifies the commission.
+            affiliates_db.reverse_for_invoice(obj.get("invoice"))
 
         elif etype == "customer.subscription.deleted":
             customer_id = obj.get("customer")
