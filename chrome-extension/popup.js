@@ -290,7 +290,9 @@ async function loadStatus() {
     // honest denominator; both now come from the backend (app/db/subscriptions.py).
     const limit = status.dailyLimit || status.limitPerPlatform || 20;
     const today = status.todayCount || 0;
-    $("limit-text").textContent = `${today} / ${limit} today`;
+    // ADMIN_DAILY_LIMIT (subscriptions.py) is a 10M "unlimited" sentinel — render it
+    // as ∞ like the dashboard does, not as a raw number.
+    $("limit-text").textContent = limit >= 1_000_000 ? `${today} today · unlimited` : `${today} / ${limit} today`;
     $("btn-start").disabled = !isConnected;
   }
 
