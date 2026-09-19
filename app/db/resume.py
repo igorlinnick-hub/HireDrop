@@ -30,6 +30,14 @@ def _ats_docx_path(user_id: str) -> str:
 _DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
+def _skills_path(user_id: str) -> str:
+    return f"{user_id}/resume_skills.pdf"
+
+
+def _skills_docx_path(user_id: str) -> str:
+    return f"{user_id}/resume_skills.docx"
+
+
 def upload(user_id: str, content: bytes) -> None:
     """Upsert the user's resume PDF into the bucket."""
     storage = get_supabase().storage.from_(BUCKET)
@@ -64,6 +72,28 @@ def upload_ats_docx(user_id: str, content: bytes) -> str:
         file_options={"content-type": _DOCX_MIME, "upsert": "true"},
     )
     return _ats_docx_path(user_id)
+
+
+def upload_skills(user_id: str, content: bytes) -> str:
+    """Upsert the skills-style resume PDF. Returns the storage path."""
+    storage = get_supabase().storage.from_(BUCKET)
+    storage.upload(
+        path=_skills_path(user_id),
+        file=content,
+        file_options={"content-type": "application/pdf", "upsert": "true"},
+    )
+    return _skills_path(user_id)
+
+
+def upload_skills_docx(user_id: str, content: bytes) -> str:
+    """Upsert the skills-style resume DOCX. Returns the storage path."""
+    storage = get_supabase().storage.from_(BUCKET)
+    storage.upload(
+        path=_skills_docx_path(user_id),
+        file=content,
+        file_options={"content-type": _DOCX_MIME, "upsert": "true"},
+    )
+    return _skills_docx_path(user_id)
 
 
 def _object_exists(path: str) -> bool:
@@ -135,9 +165,39 @@ def signed_download_url_ats_docx(user_id: str) -> str | None:
     return res.get("signedURL") or res.get("signed_url")
 
 
-def best_signed_url(user_id: str, ats_approved: bool) -> str | None:
-    """Return the ATS resume URL if approved, else the original."""
-    if ats_approved:
+def signed_download_url_skills(user_id: str) -> str | None:
+    storage = get_supabase().storage.from_(BUCKET)
+    if not _object_exists(_skills_path(user_id)):
+        return None
+    res = storage.create_signed_url(_skills_path(user_id), SIGNED_URL_TTL_SECONDS)
+    return res.get("signedURL") or res.get("signed_url")
+
+
+def signed_download_url_skills_docx(user_id: str) -> str | None:
+    storage = get_supabase().storage.from_(BUCKET)
+    if not _object_exists(_skills_docx_path(user_id)):
+        return None
+    res = storage.create_signed_url(_skills_docx_path(user_id), SIGNED_URL_TTL_SECONDS)
+    return res.get("signedURL") or res.get("signed_url")
+
+
+def best_signed_url(
+    user_id: str, ats_approved: bool, default_resume: str | None = None
+) -> str | None:
+    """The user's base resume for applying.
+
+    `default_resume` ('original' | 'ats' | 'skills') is THE authority when set —
+    one dial, one owner (profiles.default_resume). `ats_approved` is the legacy
+    fallback for profiles that never touched the dial; keeping both authorities
+    live at once is exactly the two-masters bug the fit engine already paid for.
+    Missing generated files fall back to the original rather than 404ing an
+    apply in progress.
+    """
+    if default_resume == "skills":
+        url = signed_download_url_skills(user_id)
+        if url:
+            return url
+    elif default_resume == "ats" or (default_resume is None and ats_approved):
         url = signed_download_url_ats(user_id)
         if url:
             return url

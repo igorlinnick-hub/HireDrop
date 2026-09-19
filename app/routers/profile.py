@@ -452,6 +452,116 @@ def ats_decline(user=Depends(get_current_user)):
     return {"approved": False}
 
 
+@router.post("/profile/resume/skills/generate")
+async def skills_resume_generate(body: dict = None, user=Depends(get_current_user)):
+    """Generate the skills-style (second) resume — PDF + DOCX — from the uploaded resume.
+
+    Hybrid format: grouped skills lead, each job compressed to 1-2 lines. Accepts
+    optional {"answers": [{"question","answer"}]} from the describe-your-skills
+    Q&A (source of skills = the resume; answers only fill what it lacks). One
+    Claude call structures, both formats render from it. Stores skill_groups on
+    the profile so the dashboard can show/edit the grouping later.
+    """
+    answers = (body or {}).get("answers") or []
+
+    signed_url = resume_storage.signed_download_url(user.id)
+    if not signed_url:
+        return JSONResponse(status_code=404, content={"error": "No resume uploaded"})
+
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            resp = await client.get(signed_url, timeout=30)
+            resp.raise_for_status()
+            pdf_bytes = resp.content
+    except Exception as e:
+        print(f"[profile] resume fetch failed: {e}", file=sys.stderr)
+        return JSONResponse(status_code=502, content={"error": "Could not fetch resume"})
+
+    # Same atomic quota claim as /profile/ats/generate — paid Sonnet call behind it.
+    if not usage_db.claim_daily_ai_slot(user.id, getattr(user, "email", None)):
+        return JSONResponse(
+            status_code=429, content={"error": "Daily AI limit reached — try again tomorrow."}
+        )
+    try:
+        from modules.skills_resume import (
+            generate_skills_docx,
+            generate_skills_pdf,
+            structure_skills_resume,
+        )
+
+        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+            resume_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
+        data = structure_skills_resume(resume_text, answers=answers)
+        if not data:
+            raise ValueError("structuring returned nothing")
+        skills_pdf_bytes = generate_skills_pdf(data)
+        skills_docx_bytes = generate_skills_docx(data)
+    except Exception as e:
+        usage_db.release_today(user.id)
+        print(f"[profile] skills resume generation failed: {e}", file=sys.stderr)
+        return JSONResponse(status_code=500, content={"error": "Resume generation failed"})
+
+    skills_path = resume_storage.upload_skills(user.id, skills_pdf_bytes)
+    try:
+        resume_storage.upload_skills_docx(user.id, skills_docx_bytes)
+    except Exception as e:
+        print(f"[skills] DOCX upload failed (non-fatal): {e}")
+    profile_db.update_skills_resume(
+        user.id,
+        {"skills_resume_url": skills_path, "skill_groups": data.get("skill_groups") or []},
+    )
+
+    return {
+        "success": True,
+        "skills_resume_url": skills_path,
+        "skill_groups": data.get("skill_groups") or [],
+        "preview_url": resume_storage.signed_download_url_skills(user.id),
+        "docx_url": resume_storage.signed_download_url_skills_docx(user.id),
+    }
+
+
+@router.get("/profile/resume/skills/url")
+def skills_resume_url(user=Depends(get_current_user)):
+    """Signed URL for the skills-style resume (preview/download)."""
+    url = resume_storage.signed_download_url_skills(user.id)
+    if not url:
+        return JSONResponse(status_code=404, content={"error": "No skills resume generated yet"})
+    return {"url": url, "expires_in": resume_storage.SIGNED_URL_TTL_SECONDS}
+
+
+@router.get("/profile/resume/skills/docx-url")
+def skills_resume_docx_url(user=Depends(get_current_user)):
+    """Signed URL for the skills-style DOCX (download)."""
+    url = resume_storage.signed_download_url_skills_docx(user.id)
+    if not url:
+        return JSONResponse(status_code=404, content={"error": "No skills DOCX generated yet"})
+    return {"url": url, "expires_in": resume_storage.SIGNED_URL_TTL_SECONDS}
+
+
+@router.post("/profile/resume/default")
+def set_default_resume(body: dict, user=Depends(get_current_user)):
+    """Set which resume applications use by default: original | ats | skills.
+
+    This is THE dial (profiles.default_resume) — when set it overrides the legacy
+    ats_approved behavior in best_signed_url. A generated choice must actually
+    exist before it can become the default.
+    """
+    choice = (body or {}).get("choice")
+    if choice not in ("original", "ats", "skills"):
+        return JSONResponse(
+            status_code=400, content={"error": "choice must be original | ats | skills"}
+        )
+    profile = profile_db.get_profile(user.id)
+    if choice == "ats" and not profile.get("ats_resume_url"):
+        return JSONResponse(status_code=400, content={"error": "No ATS resume generated yet"})
+    if choice == "skills" and not profile.get("skills_resume_url"):
+        return JSONResponse(status_code=400, content={"error": "No skills resume generated yet"})
+    profile_db.update_skills_resume(user.id, {"default_resume": choice})
+    return {"default_resume": choice}
+
+
 def _seed_employment_from_resume(user_id: str, data: dict) -> None:
     """Take current employer/title from the structured resume we just paid to parse.
 
@@ -601,8 +711,8 @@ def _lazy_tailor_for_job(user, job) -> None:
 def resume_best_url(job_url: str = None, user=Depends(get_current_user)):
     """Return signed URL for the best available resume.
 
-    Priority: per-job tailored PDF (if job_url matches a scored job) →
-    user-approved ATS PDF → original resume.
+    Priority: per-job tailored PDF (if job_url matches a scored job) → the user's
+    default_resume dial (skills | ats | original) → legacy ats_approved → original.
 
     Lazy tailoring (economics #2): this endpoint is hit at apply time. If the matched
     job is a strong match for a Premium user but isn't tailored yet, we tailor it NOW
@@ -625,13 +735,16 @@ def resume_best_url(job_url: str = None, user=Depends(get_current_user)):
                 }
     profile = profile_db.get_profile(user.id)
     ats_approved = profile.get("ats_approved") or False
-    url = resume_storage.best_signed_url(user.id, ats_approved)
+    default_resume = profile.get("default_resume")
+    url = resume_storage.best_signed_url(user.id, ats_approved, default_resume=default_resume)
     if not url:
         return JSONResponse(status_code=404, content={"error": "No resume found"})
+    # Report what actually resolved: the dial when set, legacy ats_approved otherwise.
+    resolved = default_resume or ("ats" if ats_approved else "original")
     return {
         "url": url,
         "expires_in": resume_storage.SIGNED_URL_TTL_SECONDS,
-        "type": "ats" if ats_approved else "original",
+        "type": resolved,
     }
 
 
