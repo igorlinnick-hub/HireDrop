@@ -452,17 +452,43 @@ def ats_decline(user=Depends(get_current_user)):
     return {"approved": False}
 
 
+# The user's own words are worth persisting even without a generation: the box in
+# Settings pre-fills from it, and the next regeneration keeps using it. Capped so
+# a paste of a whole resume doesn't become the field.
+SKILLS_DESCRIPTION_MAX = 4000
+
+
+@router.post("/profile/skills/describe")
+def skills_describe(body: dict, user=Depends(get_current_user)):
+    """Save the user's free-text description of their skills to the profile."""
+    description = ((body or {}).get("description") or "").strip()[:SKILLS_DESCRIPTION_MAX]
+    profile_db.update_skills_resume(user.id, {"skills_description": description})
+    return {"saved": True, "skills_description": description}
+
+
 @router.post("/profile/resume/skills/generate")
 async def skills_resume_generate(body: dict = None, user=Depends(get_current_user)):
     """Generate the skills-style (second) resume — PDF + DOCX — from the uploaded resume.
 
     Hybrid format: grouped skills lead, each job compressed to 1-2 lines. Accepts
-    optional {"answers": [{"question","answer"}]} from the describe-your-skills
-    Q&A (source of skills = the resume; answers only fill what it lacks). One
-    Claude call structures, both formats render from it. Stores skill_groups on
-    the profile so the dashboard can show/edit the grouping later.
+    optional {"answers": [...]} and/or {"description": "..."} — the user's own
+    words about their skills. A provided description is persisted to the profile
+    first (so it survives and pre-fills next time); with none provided, the saved
+    one is used. Source of skills = the resume; the description only fills what
+    it lacks. One Claude call structures, both formats render from it. Stores
+    skill_groups on the profile so the dashboard can show the grouping.
     """
-    answers = (body or {}).get("answers") or []
+    answers = list((body or {}).get("answers") or [])
+    description = (body or {}).get("description")
+    if description is not None:
+        description = (description or "").strip()[:SKILLS_DESCRIPTION_MAX]
+        profile_db.update_skills_resume(user.id, {"skills_description": description})
+    else:
+        description = profile_db.get_profile(user.id).get("skills_description") or ""
+    if description:
+        answers.append(
+            {"question": "Describe your skills in your own words", "answer": description}
+        )
 
     signed_url = resume_storage.signed_download_url(user.id)
     if not signed_url:
