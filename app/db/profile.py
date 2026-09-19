@@ -20,6 +20,11 @@ _DEFAULTS = {
     "ats_resume_url": None,
     "ats_approved": False,
     "ats_checked_at": None,
+    # Skills-style (second) resume + the explicit default-resume dial.
+    # default_resume None = legacy behavior (ats_approved decides).
+    "skills_resume_url": None,
+    "skill_groups": None,
+    "default_resume": None,
     "apply_mode": "standard",
     "ideal_job_description": None,
     "linkedin_url": "",
@@ -65,6 +70,9 @@ def get_profile(user_id: str) -> dict:
         "ats_resume_url": p.get("ats_resume_url"),
         "ats_approved": p.get("ats_approved") or False,
         "ats_checked_at": p.get("ats_checked_at"),
+        "skills_resume_url": p.get("skills_resume_url"),
+        "skill_groups": p.get("skill_groups"),
+        "default_resume": p.get("default_resume"),
         "apply_mode": p.get("apply_mode") or "standard",
         "ideal_job_description": p.get("ideal_job_description") or None,
         "search_radius_miles": p.get("search_radius_miles"),
@@ -205,6 +213,17 @@ def update_ats(user_id: str, data: dict) -> None:
         k: v
         for k, v in data.items()
         if k in ("ats_score", "ats_issues", "ats_resume_url", "ats_approved", "ats_checked_at")
+    }
+    if payload:
+        get_supabase().table("profiles").update(payload).eq("user_id", user_id).execute()
+
+
+def update_skills_resume(user_id: str, data: dict) -> None:
+    """Partial update — only skills-resume fields. Does not touch other columns."""
+    payload = {
+        k: v
+        for k, v in data.items()
+        if k in ("skills_resume_url", "skill_groups", "default_resume")
     }
     if payload:
         get_supabase().table("profiles").update(payload).eq("user_id", user_id).execute()
