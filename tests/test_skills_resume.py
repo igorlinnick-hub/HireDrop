@@ -83,6 +83,32 @@ def test_dial_overrides_ats_approved(monkeypatch):
     assert resume_storage.best_signed_url("u", False, default_resume="ats") == "URL-ats"
 
 
+# ---------- /profile/skills/describe: the user's words persist to the profile ----------
+
+
+def test_skills_describe_saves_trimmed_capped(auth_client):
+    from unittest.mock import patch
+
+    with patch("app.routers.profile.profile_db.update_skills_resume") as upd:
+        res = auth_client.post(
+            "/api/v1/profile/skills/describe", json={"description": "  React, Figma  " + "x" * 5000}
+        )
+    assert res.status_code == 200
+    saved = upd.call_args[0][1]["skills_description"]
+    assert saved.startswith("React, Figma")
+    assert len(saved) <= 4000
+    assert res.json()["saved"] is True
+
+
+def test_skills_describe_empty_clears(auth_client):
+    from unittest.mock import patch
+
+    with patch("app.routers.profile.profile_db.update_skills_resume") as upd:
+        res = auth_client.post("/api/v1/profile/skills/describe", json={"description": "   "})
+    assert res.status_code == 200
+    assert upd.call_args[0][1]["skills_description"] == ""
+
+
 def test_dial_falls_back_to_original_when_file_missing(monkeypatch):
     _patch_urls(monkeypatch, skills=None, ats=None)
     # chosen file missing must not 404 an apply in progress

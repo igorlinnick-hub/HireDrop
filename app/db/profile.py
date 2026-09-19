@@ -25,6 +25,7 @@ _DEFAULTS = {
     "skills_resume_url": None,
     "skill_groups": None,
     "default_resume": None,
+    "skills_description": "",
     "apply_mode": "standard",
     "ideal_job_description": None,
     "linkedin_url": "",
@@ -73,6 +74,7 @@ def get_profile(user_id: str) -> dict:
         "skills_resume_url": p.get("skills_resume_url"),
         "skill_groups": p.get("skill_groups"),
         "default_resume": p.get("default_resume"),
+        "skills_description": p.get("skills_description") or "",
         "apply_mode": p.get("apply_mode") or "standard",
         "ideal_job_description": p.get("ideal_job_description") or None,
         "search_radius_miles": p.get("search_radius_miles"),
@@ -223,7 +225,7 @@ def update_skills_resume(user_id: str, data: dict) -> None:
     payload = {
         k: v
         for k, v in data.items()
-        if k in ("skills_resume_url", "skill_groups", "default_resume")
+        if k in ("skills_resume_url", "skill_groups", "default_resume", "skills_description")
     }
     if payload:
         get_supabase().table("profiles").update(payload).eq("user_id", user_id).execute()
