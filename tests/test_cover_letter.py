@@ -5,7 +5,7 @@ API call fails. If fallback contains AI-tells or hardcoded names, every
 single application sent in fallback mode burns the user's reputation.
 """
 
-from modules.ai_cover_letter import fallback_template
+from modules.ai_cover_letter import build_system_prompt, fallback_template
 
 # Tells the system prompt explicitly bans (modules/ai_cover_letter.py:53-54)
 AI_TELLS = [
@@ -70,3 +70,21 @@ def test_fallback_handles_empty_company_gracefully():
     letter = fallback_template(job, profile)
     # Should not produce literal "{company}" placeholder leak
     assert "{company}" not in letter
+
+
+def test_fallback_contains_no_dashes():
+    """Em-dashes are the strongest AI-tell in generated text — the fallback
+    letter must not contain them either."""
+    job = {"title": "Marketing Lead", "company": "Acme Co", "description": ""}
+    profile = {"name": "Anna", "last_name": "Smith"}
+    letter = fallback_template(job, profile)
+    assert "—" not in letter
+    assert "--" not in letter
+
+
+def test_system_prompt_bans_dashes():
+    """The dash ban must survive prompt edits, with and without writing_style."""
+    for style in ("", "Casual, short sentences."):
+        prompt = build_system_prompt(style)
+        assert "em-dash" in prompt.lower()
+        assert "--" in prompt

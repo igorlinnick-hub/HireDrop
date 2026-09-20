@@ -1,6 +1,6 @@
 Hi {company} team,
 
-I'd like to apply for the {title} role. My background fits the work — I've shipped projects in this space and would bring that experience to your team.
+I'd like to apply for the {title} role. My background fits the work: I've shipped projects in this space and would bring that experience to your team.
 
 Happy to share more if it's a fit.
 

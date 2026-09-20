@@ -84,6 +84,7 @@ STRICT RULES:
 - Sound like the person wrote it themselves, NOT like an AI assistant
 - NO buzzwords: leverage, passionate, synergy, excited to apply, unique opportunity, thrilled
 - NO formal openers like "I am writing to express my interest" or "I hope this message finds you well"
+- NO em-dashes (—) or double hyphens (--). Use periods, commas, or colons instead.
 - Short paragraphs. Max 2-3 sentences each.
 - Natural rhythm. Occasional imperfection is fine and actually good.
 - Max 120 words total. Be concise.
