@@ -334,3 +334,28 @@ def test_describe_job_caps_a_page_dump(auth_client):
     assert res.status_code == 200
     assert res.json()["chars"] == 20_000
     assert len(save.call_args.args[2]) == 20_000
+
+
+def test_interview_kit_refuses_to_prep_from_a_snippet(auth_client):
+    """A salary string is truthy — it used to buy a full prep sheet built on nothing."""
+    thin = {
+        "id": "a1",
+        "title": "Event Manager",
+        "company": "SchooLinks",
+        "platform": "indeed",
+        "link": "https://x/1",
+        "description": "From $40,000 a yearFull-time",
+        "location": "",
+        "status": "applied",
+    }
+    with (
+        patch("app.routers.applications.apps_db.get_for_interview_kit", return_value=thin),
+        patch("app.routers.applications.kit_db.get_kit", return_value=None),
+    ):
+        res = auth_client.get("/api/v1/applications/a1/interview-kit")
+        assert res.status_code == 200
+        assert res.json()["can_generate"] is False
+
+        post = auth_client.post("/api/v1/applications/a1/interview-kit")
+        assert post.status_code == 422
+        assert post.json()["error"] == "no_job_text"
