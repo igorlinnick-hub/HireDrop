@@ -60,6 +60,10 @@ class ApplicationSaveRequest(BaseModel):
     status: str = "applied"
 
 
+class ApplicationStatusRequest(BaseModel):
+    status: str
+
+
 class FindJobsRequest(BaseModel):
     platforms: list[str] = []
 

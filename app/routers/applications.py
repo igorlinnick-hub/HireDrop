@@ -13,7 +13,7 @@ from app.db import profile as profile_db
 from app.db import usage as usage_db
 from app.db.subscriptions import check_can_apply, increment_free_apps
 from app.deps import get_current_user
-from app.schemas import ApplicationSaveRequest
+from app.schemas import ApplicationSaveRequest, ApplicationStatusRequest
 
 router = APIRouter(tags=["applications"])
 
@@ -101,6 +101,42 @@ def _kit_response(row: dict, app_row: dict | None = None) -> dict:
         "schema_version": row.get("schema_version", 1),
         **(_header(app_row) if app_row else {}),
     }
+
+
+# Statuses a HUMAN may set on their own application. Deliberately NOT the whole
+# vocabulary: `applied` and `applied_unconfirmed` are written by the executor and
+# mean "we saw the confirmation" / "we clicked and could not confirm" — letting a
+# user hand-write those would turn the honesty counters into self-reported numbers.
+# `applied` is here only as the undo target for a mis-tap.
+#
+# This is the MANUAL channel on purpose. The automatic one (modules/email_parser +
+# main.py's _email_poll_loop) reads ONE shared inbox and matches by company name
+# across every user, so it stays off; a per-user inbox would mean OAuth into real
+# mailboxes, which the product said no to. The user already sees the employer's
+# reply in their own mail — one tap here is the honest version of that signal.
+USER_SETTABLE_STATUSES = {"applied", "received", "interview", "rejected"}
+
+
+@router.patch("/applications/{application_id}/status")
+def set_application_status(
+    application_id: str, req: ApplicationStatusRequest, user=Depends(get_current_user)
+):
+    """Let the owner mark what the employer answered."""
+    status = (req.status or "").strip().lower()
+    if status not in USER_SETTABLE_STATUSES:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": "invalid_status",
+                "allowed": sorted(USER_SETTABLE_STATUSES),
+            },
+        )
+    # update_status filters on user_id as well as id — service_role bypasses RLS, so
+    # that filter IS the IDOR defense. A row belonging to someone else simply matches
+    # nothing and comes back 404, which also covers a deleted application.
+    if not apps_db.update_status(application_id, status, user.id):
+        return JSONResponse(status_code=404, content={"error": "Application not found"})
+    return {"id": application_id, "status": status}
 
 
 @router.get("/applications/{application_id}/interview-kit")
