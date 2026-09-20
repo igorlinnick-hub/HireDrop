@@ -834,7 +834,7 @@ function normalizePoolApplyUrl(platform, url) {
   return url; // greenhouse/lever apply URLs are already single-job pages
 }
 
-async function buildApprovedAtsQueue(perPlatformCap) {
+async function buildApprovedAtsQueue(perPlatformCap, opts) {
   // The SERVER decides this list now (GET /campaign/queue, jobflow #162). It applies the
   // same four rules this function used to apply locally — approved swipes only, platforms
   // an approve can really be submitted to, nothing already applied, then the per-platform
@@ -866,10 +866,14 @@ async function buildApprovedAtsQueue(perPlatformCap) {
   const poolPlatforms = dd.tapNativePool === true
     ? ATS_PLATFORMS.concat(POOL_NATIVE_VERIFIED, POOL_NATIVE_PENDING)
     : ATS_PLATFORMS;
+  // Caller-supplied exclusions — an auto run drops Lever (its submit needs a human at the
+  // captcha), so those approvals wait for a tap run instead of stalling an unattended one.
+  const skip = (opts && opts.skipPlatforms) || [];
 
   const out = [];
   for (const j of (payload && payload.queue) || []) {
     if (!poolPlatforms.includes(j.platform)) continue;
+    if (skip.includes(j.platform)) continue;
     const url = normalizePoolApplyUrl(j.platform, j.apply_url);
     if (!url || doneUrls.has(url)) continue;
     out.push({ id: j.id, applyUrl: url, title: j.title || "", company: j.company || "", platform: j.platform });
@@ -949,20 +953,33 @@ async function advanceAtsQueue() {
         // we worked. Rebuild from newly-approved jobs and keep walking; only go idle
         // (STILL running) when nothing approved is left, so later swipes get picked up
         // (the ext-ping alarm re-checks — see tapPoolIdleRefill).
-        const { atsPlatform, campaignCaps } = await chrome.storage.local.get(["atsPlatform", "campaignCaps"]);
+        const { atsPlatform, campaignCaps, poolLeadMode } =
+          await chrome.storage.local.get(["atsPlatform", "campaignCaps", "poolLeadMode"]);
         if (atsPlatform === "pool" && running) {
           const cap = (campaignCaps && campaignCaps.perPlatform) || 15;
-          const more = await buildApprovedAtsQueue(cap);
+          // An auto run must not pick up a Lever approval mid-walk either — same reason as
+          // at Start: its captcha needs a human, and nobody is watching an auto run.
+          const more = await buildApprovedAtsQueue(
+            cap,
+            { skipPlatforms: poolLeadMode === "auto" ? ["lever"] : [] },
+          );
           if (more.length) {
             await chrome.storage.local.set({ atsQueue: more, atsNavAt: Date.now(), atsNavTries: 0 });
             await addToActivityLog(`Applying ${more.length} more approved job${more.length > 1 ? "s" : ""} you swiped…`, "info");
             await navigatePoolNext(campaignTabId, more[0]);
-          } else {
-            await chrome.storage.local.set({ atsQueue: [] });
-            await chrome.storage.local.remove(["atsNavAt", "atsNavTries"]);
-            await addToActivityLog("Caught up on approved jobs — swipe more and we'll apply them.", "info");
+            return;
           }
-          return;
+          await chrome.storage.local.set({ atsQueue: [] });
+          await chrome.storage.local.remove(["atsNavAt", "atsNavTries"]);
+          if (poolLeadMode === "auto") {
+            // Head start spent — the rest of the run is the ordinary board sweep. Falls
+            // through to PLATFORM_EXHAUSTED below, which owns every hand-off and the
+            // triedPlatforms ledger (seeded with "pool", so the boards are all still open).
+            await addToActivityLog("Sent the jobs you approved — now searching the boards for more.", "info");
+          } else {
+            await addToActivityLog("Caught up on approved jobs — swipe more and we'll apply them.", "info");
+            return;
+          }
         }
         // Pool walked — hand off to whatever board is still untried instead of ending the
         // run. This used to stop the campaign outright, which is how a user with all six
@@ -972,7 +989,13 @@ async function advanceAtsQueue() {
         // path lives in exactly one place.
         await chrome.storage.local.remove(["atsNavAt", "atsNavTries"]);
         await handleMessage(
-          { type: "PLATFORM_EXHAUSTED", platform: atsPlatform || "greenhouse", reason: "walked every discovered zero-touch job" },
+          {
+            type: "PLATFORM_EXHAUSTED",
+            platform: atsPlatform || "greenhouse",
+            reason: poolLeadMode === "auto"
+              ? "sent every job you approved"
+              : "walked every discovered zero-touch job",
+          },
           {},
         );
         updateBadge();
@@ -1073,9 +1096,14 @@ async function nativeWalkWatchdog() {
 // never double-navigates a job that's actively being filled.
 async function tapPoolIdleRefill() {
   const d = await chrome.storage.local.get([
-    "campaignRunning", "atsPlatform", "atsQueue", "campaignTabId", "atsNavAt", "campaignCaps", "poolIdleSince",
+    "campaignRunning", "atsPlatform", "atsQueue", "campaignTabId", "atsNavAt", "campaignCaps",
+    "poolIdleSince", "poolLeadMode",
   ]);
   if (!d.campaignRunning || d.atsPlatform !== "pool" || !d.campaignTabId) return;
+  // Waiting inside the pool for more swipes is the TAPALKA's behaviour. An auto run that
+  // led with approved cards has already handed off to the boards by now; this guard makes
+  // that explicit so a stray pool state can never park an auto run on "waiting for swipes".
+  if (d.poolLeadMode === "auto") return;
   if ((Array.isArray(d.atsQueue) && d.atsQueue.length) || d.atsNavAt) return; // busy, not idle
   const cap = (d.campaignCaps && d.campaignCaps.perPlatform) || 15;
   const more = await buildApprovedAtsQueue(cap);
@@ -1402,26 +1430,45 @@ async function handleMessage(msg, sender) {
         };
       }
 
-      // TAP-POOL (Igor 2026-07-25 instant rebuild): in tap mode the queue is ONLY the
-      // user's APPROVED swipe cards (GH + Lever, per-platform cap). Swipe first on the
-      // /dashboard/tap deck, machine applies after.
-      let tapPoolQueue = [];
-      if (tapMode) {
-        tapPoolQueue = await buildApprovedAtsQueue((preSt && preSt.limit_per_platform) || 15);
-        // Footgun guard: with nothing approved yet, do NOT fall through to an auto walk
-        // (native Indeed search / GH auto-sweep) — that would apply jobs the user never
-        // swiped. Ask them to swipe first; the deck marks jobs approved instantly and
-        // Start applies exactly those.
-        if (!tapPoolQueue.length) {
-          return {
-            started: false,
-            error: "no_approved_jobs",
-            // Covers both truths honestly: nothing approved yet, OR everything approved
-            // was already applied/dead (dedup excluded it) — live-test 2026-07-27 found
-            // the old "swipe first" wording gaslighting a user whose swipes WERE consumed.
-            message: "Nothing new to apply — jobs you approved before are already applied or closed. Swipe Approve on new cards, then Start.",
-          };
-        }
+      // APPROVED SWIPES LEAD THE RUN — in BOTH modes (Igor 09-19).
+      //
+      // Tap builds its whole queue from them (that IS tap). Auto used to not look at them
+      // at all: `approved` rows are consumed by a tap run and nothing else, so a user who
+      // swiped and then ran Auto left a stack nobody would ever pick up — live 09-11, a
+      // real account had 4 approved since 09-02, never sent. The dashboard dock (website
+      // #169) made that visible and offered a one-click fix, but a surface that reports a
+      // dead end is second best to a run that doesn't create one.
+      //
+      // This does NOT hand Auto more volume: the daily budget is counted from applications
+      // actually sent (server-side, one counter for both modes), so approved cards simply
+      // take the FIRST slots of the same 30. What changes is the order — the jobs a human
+      // picked go before the ones the machine found.
+      //
+      // Consent is intact in both directions: an approved row is a human decision, so
+      // sending it is exactly what was asked; and a run still never touches a card nobody
+      // swiped unless the mode says auto.
+      const approvedCap = (preSt && preSt.limit_per_platform) || 15;
+      let tapPoolQueue = await buildApprovedAtsQueue(
+        approvedCap,
+        // Lever stops at an hCaptcha a human has to clear. In tap the human is at the
+        // wheel, so a Lever card is a legitimate pause; in auto nobody is watching, so it
+        // would just hold the window until the watchdog skips it. Leave those approvals
+        // for a tap run rather than burning a slot on a submit that can't complete.
+        { skipPlatforms: tapMode ? [] : ["lever"] },
+      );
+      if (tapMode && !tapPoolQueue.length) {
+        // Footgun guard (tap only): with nothing approved yet, do NOT fall through to an
+        // auto walk (native Indeed search / GH auto-sweep) — that would apply jobs the
+        // user never swiped. Auto has no such guard to trip: an empty approved list there
+        // just means the run starts the way it always did.
+        return {
+          started: false,
+          error: "no_approved_jobs",
+          // Covers both truths honestly: nothing approved yet, OR everything approved
+          // was already applied/dead (dedup excluded it) — live-test 2026-07-27 found
+          // the old "swipe first" wording gaslighting a user whose swipes WERE consumed.
+          message: "Nothing new to apply — jobs you approved before are already applied or closed. Swipe Approve on new cards, then Start.",
+        };
       }
 
       // Pool-driven ATS target (GLOBAL_PLAN P1+P2):
@@ -1487,7 +1534,11 @@ async function handleMessage(msg, sender) {
         // submit_mode above; GH items auto-submit, Lever items stop for the human.
         atsQueue = tapPoolQueue;
         await chrome.storage.local.set({ atsQueue, atsPlatform: "pool", atsNavAt: Date.now(), atsNavTries: 0 });
-        await addToActivityLog(`Applying to ${atsQueue.length} approved jobs (your swipes) — working through them now.`, "info");
+        await addToActivityLog(
+          tapMode
+            ? `Applying to ${atsQueue.length} approved jobs (your swipes) — working through them now.`
+            : `Starting with ${atsQueue.length} job${atsQueue.length > 1 ? "s" : ""} you approved, then searching the boards for more.`,
+          "info");
       } else if (atsTarget) {
         const capState = (await chrome.storage.local.get("campaignCaps")).campaignCaps || {};
         const built = await buildAtsQueue(atsTarget, capState.perPlatform || 20);
@@ -1601,8 +1652,17 @@ async function handleMessage(msg, sender) {
         // Platform-failover ledger — PLATFORM_EXHAUSTED never revisits these. Seed it with
         // the stage this run actually OPENS on: a pool-led run (no board selected) opens on
         // the ATS target, and seeding "indeed" there would both lie and let the failover
-        // walk back into the pool it just finished.
-        triedPlatforms: [atsTarget || primaryPlatform],
+        // walk back into the pool it just finished. An APPROVED-led run opens on the pool,
+        // so it seeds "pool" — seeding the board here would burn the board before it ran,
+        // which is precisely the 09-13 failure (a run that never touched Indeed) in reverse.
+        triedPlatforms: [tapPoolQueue.length ? "pool" : (atsTarget || primaryPlatform)],
+        // Who leads the pool walk, and therefore what happens when it drains:
+        //   "tap"  → go idle INSIDE the pool and wait for more swipes (that's the tapalka);
+        //   "auto" → hand off to the boards, because the approved cards were only the
+        //            head start and the rest of the run is the ordinary auto sweep.
+        // Without this the auto run would sit idle after the last approved card, looking
+        // exactly like a finished campaign while 26 of its 30 slots went unused.
+        poolLeadMode: tapPoolQueue.length ? (tapMode ? "tap" : "auto") : null,
         // Consent boundary for that failover (Igor 09-11): the launch modal's default is
         // "All connected platforms" (platform_mode "all") — switching boards is what the
         // user asked for. A single pick ("single") means THIS board only: on exhaustion
@@ -1831,7 +1891,7 @@ async function handleMessage(msg, sender) {
         reviewPending: null,
         reviewDecision: null,
       });
-      await chrome.storage.local.remove(["atsQueue", "atsPlatform"]);
+      await chrome.storage.local.remove(["atsQueue", "atsPlatform", "poolLeadMode"]);
 
       try {
         if (stopData.campaignTabId) {
