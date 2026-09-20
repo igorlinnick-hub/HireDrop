@@ -86,6 +86,35 @@ def test_dial_overrides_ats_approved(monkeypatch):
 # ---------- /profile/skills/describe: the user's words persist to the profile ----------
 
 
+def test_count_skill_items_counts_what_people_actually_write():
+    from modules.skills_resume import count_skill_items
+
+    assert count_skill_items("") == 0
+    assert count_skill_items("React, TypeScript, Figma") == 3
+    # newlines, bullets, semicolons and a trailing "and" are all separators people use
+    assert count_skill_items("- React\n- Node.js\n- SQL") == 3
+    assert count_skill_items("Excel; PowerPoint; Meta Ads and Google Ads") == 4
+    # fragments too short to be a skill don't inflate the count
+    assert count_skill_items("React, , a, Figma") == 2
+
+
+def test_skills_describe_reports_progress_toward_minimum(auth_client):
+    from unittest.mock import patch
+
+    from modules.skills_resume import MIN_SKILLS
+
+    with patch("app.routers.profile.profile_db.update_skills_resume"):
+        res = auth_client.post(
+            "/api/v1/profile/skills/describe", json={"description": "React, Figma, SQL"}
+        )
+    body = res.json()
+    assert body["skill_count"] == 3
+    assert body["min_skills"] == MIN_SKILLS
+    assert body["meets_minimum"] is False
+    # Saving is never blocked on the count — a half-written list must survive.
+    assert body["saved"] is True
+
+
 def test_skills_describe_saves_trimmed_capped(auth_client):
     from unittest.mock import patch
 

@@ -460,10 +460,24 @@ SKILLS_DESCRIPTION_MAX = 4000
 
 @router.post("/profile/skills/describe")
 def skills_describe(body: dict, user=Depends(get_current_user)):
-    """Save the user's free-text description of their skills to the profile."""
+    """Save the user's free-text description of their skills to the profile.
+
+    Saving is never blocked on the count — a half-written list must survive the
+    tab closing. The count is returned so the UI can show progress toward the
+    MIN_SKILLS we ask for, using the same rule the generator uses.
+    """
+    from modules.skills_resume import MIN_SKILLS, count_skill_items
+
     description = ((body or {}).get("description") or "").strip()[:SKILLS_DESCRIPTION_MAX]
     profile_db.update_skills_resume(user.id, {"skills_description": description})
-    return {"saved": True, "skills_description": description}
+    count = count_skill_items(description)
+    return {
+        "saved": True,
+        "skills_description": description,
+        "skill_count": count,
+        "min_skills": MIN_SKILLS,
+        "meets_minimum": count >= MIN_SKILLS,
+    }
 
 
 @router.post("/profile/resume/skills/generate")

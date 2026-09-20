@@ -25,6 +25,7 @@ stale constant announces itself instead of lying quietly.
 import hmac
 import os
 import re
+import sys
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -199,7 +200,9 @@ def _error_shape(message: str) -> str:
     """Collapse an error to its shape so the same failure counts once: ids, urls
     and numbers differ per occurrence and would splinter it into singletons."""
     text = re.sub(r"https?://\S+", "<url>", message or "")
-    text = re.sub(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "<id>", text, flags=re.I)
+    text = re.sub(
+        r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", "<id>", text, flags=re.I
+    )
     return re.sub(r"\d+", "N", text)[:120]
 
 
@@ -284,8 +287,10 @@ def _section_ops(apps: list[dict], from_ts: str, to_ts: str) -> dict:
             {"message": m, "count": v["count"], "phase": v["phase"]}
             for m, v in sorted(grouped.items(), key=lambda kv: -kv[1]["count"])[:10]
         ]
-    except Exception:  # noqa: BLE001
-        pass  # activity_log unavailable — the rest of the section still renders
+    except Exception as e:  # noqa: BLE001
+        # activity_log unavailable — the rest of the section still renders, but a
+        # silent pass here reads as "no errors today" when it means "we couldn't look".
+        print(f"[admin] activity_log unavailable: {e}", file=sys.stderr)
 
     metrics.append(
         _metric("errors", "Errors", errors, description="activity_log rows at level=error.")
@@ -309,13 +314,19 @@ def _section_ops(apps: list[dict], from_ts: str, to_ts: str) -> dict:
             "by_platform",
             "Applications by platform",
             [_col("platform", "Platform"), _col("count", "Sent", "number", "right")],
-            [{"platform": p, "count": c} for p, c in _tally([a.get("platform") or "unknown" for a in period])],
+            [
+                {"platform": p, "count": c}
+                for p, c in _tally([a.get("platform") or "unknown" for a in period])
+            ],
         ),
         _table(
             "by_status",
             "Applications by status",
             [_col("status", "Status"), _col("count", "Count", "number", "right")],
-            [{"status": s, "count": c} for s, c in _tally([a.get("status") or "unknown" for a in period])],
+            [
+                {"status": s, "count": c}
+                for s, c in _tally([a.get("status") or "unknown" for a in period])
+            ],
         ),
     ]
     if top_errors:
@@ -323,7 +334,11 @@ def _section_ops(apps: list[dict], from_ts: str, to_ts: str) -> dict:
             _table(
                 "top_errors",
                 "What broke most",
-                [_col("message", "Error"), _col("phase", "Phase"), _col("count", "Times", "number", "right")],
+                [
+                    _col("message", "Error"),
+                    _col("phase", "Phase"),
+                    _col("count", "Times", "number", "right"),
+                ],
                 top_errors,
             )
         )
@@ -385,16 +400,37 @@ def _section_users(profiles: list[dict], apps: list[dict], from_ts: str, to_ts: 
         "title": "Accounts",
         "subtitle": "Who signed up, who pays, who actually uses it.",
         "metrics": [
-            _metric("paid_now", "Paying now", len(paying), scope="current", emphasis=True,
-                    description="Accounts on a paid tier that has not expired."),
+            _metric(
+                "paid_now",
+                "Paying now",
+                len(paying),
+                scope="current",
+                emphasis=True,
+                description="Accounts on a paid tier that has not expired.",
+            ),
             _metric("total_users", "Accounts", len(users), scope="all_time", emphasis=True),
             _metric("signups_period", "New signups", len(in_period)),
-            _metric("active_7d", "Active (7d)", len(active7), scope="current",
-                    description="Sent at least one application in the last 7 days."),
-            _metric("onboarded_share", "Onboarded", _pct(len(onboarded), len(users)), "percent",
-                    scope="all_time"),
-            _metric("never_applied", "Never applied", len(never), scope="all_time",
-                    description="Signed up and never sent one application — the real activation gap."),
+            _metric(
+                "active_7d",
+                "Active (7d)",
+                len(active7),
+                scope="current",
+                description="Sent at least one application in the last 7 days.",
+            ),
+            _metric(
+                "onboarded_share",
+                "Onboarded",
+                _pct(len(onboarded), len(users)),
+                "percent",
+                scope="all_time",
+            ),
+            _metric(
+                "never_applied",
+                "Never applied",
+                len(never),
+                scope="all_time",
+                description="Signed up and never sent one application — the real activation gap.",
+            ),
         ],
         "timeseries": {
             "label": "Signups per day",
@@ -414,8 +450,21 @@ def _section_users(profiles: list[dict], apps: list[dict], from_ts: str, to_ts: 
                     _col("onboarded", "Onboarded"),
                     _col("applications", "Apps", "number", "right"),
                 ],
-                [{k: u[k] for k in ("name", "tier", "source", "signed_up", "last_apply", "onboarded", "applications")}
-                 for u in roster],
+                [
+                    {
+                        k: u[k]
+                        for k in (
+                            "name",
+                            "tier",
+                            "source",
+                            "signed_up",
+                            "last_apply",
+                            "onboarded",
+                            "applications",
+                        )
+                    }
+                    for u in roster
+                ],
             ),
             _table(
                 "by_source",
@@ -447,9 +496,21 @@ def _section_funnel(profiles: list[dict], apps: list[dict], from_ts: str, to_ts:
 
     steps = [
         {"step": "Signed up", "count": len(signups), "of_signups": 100.0 if signups else None},
-        {"step": "Completed onboarding", "count": len(onboarded), "of_signups": _pct(len(onboarded), len(signups))},
-        {"step": "Connected extension", "count": connected, "of_signups": _pct(connected, len(signups))},
-        {"step": "Started a campaign", "count": campaigns, "of_signups": _pct(campaigns, len(signups))},
+        {
+            "step": "Completed onboarding",
+            "count": len(onboarded),
+            "of_signups": _pct(len(onboarded), len(signups)),
+        },
+        {
+            "step": "Connected extension",
+            "count": connected,
+            "of_signups": _pct(connected, len(signups)),
+        },
+        {
+            "step": "Started a campaign",
+            "count": campaigns,
+            "of_signups": _pct(campaigns, len(signups)),
+        },
     ]
 
     return {
@@ -460,11 +521,24 @@ def _section_funnel(profiles: list[dict], apps: list[dict], from_ts: str, to_ts:
             _metric("signups", "Signups", len(signups), emphasis=True),
             _metric("campaigns_started", "Campaigns started", campaigns),
             _metric("applications", "Applications sent", submitted),
-            _metric("paid_users", "Paid users", paid_now, scope="current", emphasis=True,
-                    description="Profiles on a paid tier right now (not period-scoped)."),
-            _metric("activation_rate", "Signup → campaign", _pct(campaigns, len(signups)), "percent",
-                    description="Share of period signups that started their first campaign."),
-            _metric("extension_rate", "Extension connect rate", _pct(connected, len(signups)), "percent"),
+            _metric(
+                "paid_users",
+                "Paid users",
+                paid_now,
+                scope="current",
+                emphasis=True,
+                description="Profiles on a paid tier right now (not period-scoped).",
+            ),
+            _metric(
+                "activation_rate",
+                "Signup → campaign",
+                _pct(campaigns, len(signups)),
+                "percent",
+                description="Share of period signups that started their first campaign.",
+            ),
+            _metric(
+                "extension_rate", "Extension connect rate", _pct(connected, len(signups)), "percent"
+            ),
         ],
         "timeseries": {
             "label": "Signups per day",
@@ -475,18 +549,25 @@ def _section_funnel(profiles: list[dict], apps: list[dict], from_ts: str, to_ts:
             _table(
                 "steps",
                 "Funnel steps",
-                [_col("step", "Step"), _col("count", "Count", "number", "right"),
-                 _col("of_signups", "% of signups", "percent", "right")],
+                [
+                    _col("step", "Step"),
+                    _col("count", "Count", "number", "right"),
+                    _col("of_signups", "% of signups", "percent", "right"),
+                ],
                 steps,
             )
         ],
     }
 
 
-def _section_ai_cost(apps: list[dict], from_ts: str, to_ts: str, from_day: str, to_day: str) -> dict:
+def _section_ai_cost(
+    apps: list[dict], from_ts: str, to_ts: str, from_day: str, to_day: str
+) -> dict:
     # cover_letter_usage is keyed by (user_id, date) with a plain DATE column —
     # one shared counter for cover letters, screener answers and resume work.
-    usage = _rows("cover_letter_usage", "user_id, date, count", date__gte=from_day, date__lte=to_day)
+    usage = _rows(
+        "cover_letter_usage", "user_id, date, count", date__gte=from_day, date__lte=to_day
+    )
     period = [a for a in apps if from_ts <= (a.get("date_applied") or "") <= to_ts]
 
     calls = sum(int(u.get("count") or 0) for u in usage)
@@ -517,20 +598,40 @@ def _section_ai_cost(apps: list[dict], from_ts: str, to_ts: str, from_day: str, 
     spenders.sort(key=lambda s: (-s["applications"], -s["calls"]))
 
     metrics = [
-        _metric("ai_spend", "AI spend (est.)", round(spend, 2), "currency", emphasis=True,
-                description=f"Applications x ${COST_PER_APPLICATION_USD} — measured 2026-09-15, not a live token read."),
-        _metric("ai_calls", "AI calls", calls, emphasis=True,
-                description="Counted for real: every billable call through the shared daily quota."),
+        _metric(
+            "ai_spend",
+            "AI spend (est.)",
+            round(spend, 2),
+            "currency",
+            emphasis=True,
+            description=f"Applications x ${COST_PER_APPLICATION_USD} — measured 2026-09-15, not a live token read.",
+        ),
+        _metric(
+            "ai_calls",
+            "AI calls",
+            calls,
+            emphasis=True,
+            description="Counted for real: every billable call through the shared daily quota.",
+        ),
         _metric("applications", "Applications", len(period)),
-        _metric("cost_per_application", "Cost / application", COST_PER_APPLICATION_USD, "currency",
-                scope="all_time",
-                description="Measured constant with resume tailoring on. Re-measure: scripts/measure_ai_cost.py."),
+        _metric(
+            "cost_per_application",
+            "Cost / application",
+            COST_PER_APPLICATION_USD,
+            "currency",
+            scope="all_time",
+            description="Measured constant with resume tailoring on. Re-measure: scripts/measure_ai_cost.py.",
+        ),
     ]
     if calls_per_app is not None:
         metrics.append(
-            _metric("calls_per_application", "Calls / application", calls_per_app,
-                    description=f"Measured at {MEASURED_CALLS_PER_APPLICATION} when the cost above was taken — "
-                                "drift means the dollar figure is stale.")
+            _metric(
+                "calls_per_application",
+                "Calls / application",
+                calls_per_app,
+                description=f"Measured at {MEASURED_CALLS_PER_APPLICATION} when the cost above was taken — "
+                "drift means the dollar figure is stale.",
+            )
         )
     metrics.append(_metric("active_spenders", "Accounts spending", len(calls_by_user)))
 
@@ -538,9 +639,13 @@ def _section_ai_cost(apps: list[dict], from_ts: str, to_ts: str, from_day: str, 
         monthly = PLANS["monthly"]["price_usd"]
         left = monthly * (1 - AFFILIATE_RATE) - spend / len(calls_by_user)
         metrics.append(
-            _metric("margin_per_paying_user", f"Left after AI + {int(AFFILIATE_RATE * 100)}%",
-                    round(left, 2), "currency",
-                    description=f"${monthly} monthly minus the affiliate share minus this period's AI cost per active account.")
+            _metric(
+                "margin_per_paying_user",
+                f"Left after AI + {int(AFFILIATE_RATE * 100)}%",
+                round(left, 2),
+                "currency",
+                description=f"${monthly} monthly minus the affiliate share minus this period's AI cost per active account.",
+            )
         )
 
     by_date: dict[str, int] = defaultdict(int)
@@ -561,9 +666,13 @@ def _section_ai_cost(apps: list[dict], from_ts: str, to_ts: str, from_day: str, 
             _table(
                 "spenders",
                 "Cost by account",
-                [_col("account", "Account"), _col("applications", "Apps", "number", "right"),
-                 _col("calls", "Calls", "number", "right"), _col("per_app", "Calls/app", "number", "right"),
-                 _col("cost", "Cost", "currency", "right")],
+                [
+                    _col("account", "Account"),
+                    _col("applications", "Apps", "number", "right"),
+                    _col("calls", "Calls", "number", "right"),
+                    _col("per_app", "Calls/app", "number", "right"),
+                    _col("cost", "Cost", "currency", "right"),
+                ],
                 spenders[:SPENDER_LIMIT],
             )
         ],
@@ -595,11 +704,14 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
 
     earned_period = sum(c["amount_cents"] for c in live if in_period(c.get("created_at")))
     reversed_period = sum(
-        c["amount_cents"] for c in commissions
+        c["amount_cents"]
+        for c in commissions
         if c.get("status") == "reversed" and in_period(c.get("created_at"))
     )
     owed_total = sum(c["amount_cents"] for c in accrued)
-    payable_now = sum(c["amount_cents"] for c in accrued if (c.get("created_at") or "") < payable_cutoff)
+    payable_now = sum(
+        c["amount_cents"] for c in accrued if (c.get("created_at") or "") < payable_cutoff
+    )
     paid_period = sum(p["amount_cents"] for p in payouts if in_period(p.get("paid_at")))
 
     rows = []
@@ -616,8 +728,13 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
                 "paying": len([r for r in mine if r.get("first_paid_at")]),
                 "earned": _usd(sum(c["amount_cents"] for c in cs if c.get("status") != "reversed")),
                 "owed": _usd(sum(c["amount_cents"] for c in mine_accrued)),
-                "payable": _usd(sum(c["amount_cents"] for c in mine_accrued
-                                    if (c.get("created_at") or "") < payable_cutoff)),
+                "payable": _usd(
+                    sum(
+                        c["amount_cents"]
+                        for c in mine_accrued
+                        if (c.get("created_at") or "") < payable_cutoff
+                    )
+                ),
                 # Text, because it is a to-do and not a number: a partner with
                 # money owed and no PayPal address cannot be paid.
                 "paypal": "missing" if not a.get("paypal_email") else "on file",
@@ -635,27 +752,64 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
         "title": "Affiliates",
         "subtitle": "What we owe partners, and what can actually be sent today.",
         "metrics": [
-            _metric("payable_now", "Ready to pay out", _usd(payable_now), "currency", scope="current",
-                    emphasis=True,
-                    description=f"Commission past the {REFUND_WINDOW_DAYS}-day refund window — payable today."),
-            _metric("owed_total", "Owed (incl. holding)", _usd(owed_total), "currency", scope="all_time",
-                    emphasis=True,
-                    description="Every accrued, unpaid commission — including what is still inside the refund window."),
+            _metric(
+                "payable_now",
+                "Ready to pay out",
+                _usd(payable_now),
+                "currency",
+                scope="current",
+                emphasis=True,
+                description=f"Commission past the {REFUND_WINDOW_DAYS}-day refund window — payable today.",
+            ),
+            _metric(
+                "owed_total",
+                "Owed (incl. holding)",
+                _usd(owed_total),
+                "currency",
+                scope="all_time",
+                emphasis=True,
+                description="Every accrued, unpaid commission — including what is still inside the refund window.",
+            ),
             _metric("earned_period", "Commission accrued", _usd(earned_period), "currency"),
-            _metric("paid_period", "Paid out", _usd(paid_period), "currency",
-                    description="Payouts recorded in this period (entered by hand after PayPal)."),
-            _metric("active_affiliates", "Active partners",
-                    len([a for a in affiliates if a.get("status") == "active"]), scope="current"),
-            _metric("referred_signups", "Referred signups",
-                    len([r for r in referrals if in_period(r.get("first_seen_at"))])),
-            _metric("paying_referrals", "Referrals paying",
-                    len([r for r in referrals if r.get("first_paid_at")]), scope="current"),
-            _metric("reversed_period", "Clawed back", _usd(reversed_period), "currency",
-                    description="Commission reversed by customer refunds in this period."),
-            _metric("applications_waiting", "Applications waiting",
-                    len([a for a in applications if a.get("status") == "new"]), scope="current",
-                    emphasis=True,
-                    description="People who asked for a link and are waiting on a decision."),
+            _metric(
+                "paid_period",
+                "Paid out",
+                _usd(paid_period),
+                "currency",
+                description="Payouts recorded in this period (entered by hand after PayPal).",
+            ),
+            _metric(
+                "active_affiliates",
+                "Active partners",
+                len([a for a in affiliates if a.get("status") == "active"]),
+                scope="current",
+            ),
+            _metric(
+                "referred_signups",
+                "Referred signups",
+                len([r for r in referrals if in_period(r.get("first_seen_at"))]),
+            ),
+            _metric(
+                "paying_referrals",
+                "Referrals paying",
+                len([r for r in referrals if r.get("first_paid_at")]),
+                scope="current",
+            ),
+            _metric(
+                "reversed_period",
+                "Clawed back",
+                _usd(reversed_period),
+                "currency",
+                description="Commission reversed by customer refunds in this period.",
+            ),
+            _metric(
+                "applications_waiting",
+                "Applications waiting",
+                len([a for a in applications if a.get("status") == "new"]),
+                scope="current",
+                emphasis=True,
+                description="People who asked for a link and are waiting on a decision.",
+            ),
         ],
         "timeseries": {
             "label": "Commission accrued per day",
@@ -666,11 +820,18 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
             _table(
                 "applications",
                 "Applications waiting",
-                [_col("name", "Name"), _col("email", "Email"), _col("desired_code", "Wants link"),
-                 _col("audience", "Audience"), _col("audience_size", "Size"),
-                 _col("promo_plan", "How they'll share"), _col("paypal", "PayPal"),
-                 _col("source", "Came from"), _col("applied", "Applied", "date"),
-                 _col("id", "id")],
+                [
+                    _col("name", "Name"),
+                    _col("email", "Email"),
+                    _col("desired_code", "Wants link"),
+                    _col("audience", "Audience"),
+                    _col("audience_size", "Size"),
+                    _col("promo_plan", "How they'll share"),
+                    _col("paypal", "PayPal"),
+                    _col("source", "Came from"),
+                    _col("applied", "Applied", "date"),
+                    _col("id", "id"),
+                ],
                 [
                     {
                         "name": a.get("name"),
@@ -694,8 +855,13 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
             _table(
                 "decided",
                 "Decided applications",
-                [_col("name", "Name"), _col("desired_code", "Link"), _col("status", "Decision"),
-                 _col("linked", "Live"), _col("applied", "Applied", "date")],
+                [
+                    _col("name", "Name"),
+                    _col("desired_code", "Link"),
+                    _col("status", "Decision"),
+                    _col("linked", "Live"),
+                    _col("applied", "Applied", "date"),
+                ],
                 [
                     {
                         "name": a.get("name"),
@@ -708,19 +874,27 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
                     }
                     for a in sorted(
                         [a for a in applications if a.get("status") != "new"],
-                        key=lambda a: a.get("created_at") or "", reverse=True,
+                        key=lambda a: a.get("created_at") or "",
+                        reverse=True,
                     )
                 ],
             ),
             _table(
                 "partners",
                 "Partner ledger",
-                [_col("code", "Code"), _col("status", "Status"), _col("rate", "Rate"),
-                 _col("signups", "Signups", "number", "right"), _col("paying", "Paying", "number", "right"),
-                 _col("earned", "Earned", "currency", "right"), _col("owed", "Owed", "currency", "right"),
-                 _col("payable", "Payable", "currency", "right"), _col("paypal", "PayPal")],
+                [
+                    _col("code", "Code"),
+                    _col("status", "Status"),
+                    _col("rate", "Rate"),
+                    _col("signups", "Signups", "number", "right"),
+                    _col("paying", "Paying", "number", "right"),
+                    _col("earned", "Earned", "currency", "right"),
+                    _col("owed", "Owed", "currency", "right"),
+                    _col("payable", "Payable", "currency", "right"),
+                    _col("paypal", "PayPal"),
+                ],
                 rows,
-            )
+            ),
         ],
     }
 
@@ -800,10 +974,23 @@ def _section_revenue(from_ts: str, to_ts: str) -> dict:
         "title": "Revenue",
         "subtitle": "Money taken through Stripe, net of refunds.",
         "metrics": [
-            _metric("net_revenue", "Net revenue", _usd(gross - refunded), "currency", emphasis=True,
-                    description="Charges succeeded in this period minus what was refunded on them."),
-            _metric("mrr", "MRR", _usd(mrr), "currency", scope="current", emphasis=True,
-                    description="Active subscriptions normalised to a monthly amount (weekly x 52/12)."),
+            _metric(
+                "net_revenue",
+                "Net revenue",
+                _usd(gross - refunded),
+                "currency",
+                emphasis=True,
+                description="Charges succeeded in this period minus what was refunded on them.",
+            ),
+            _metric(
+                "mrr",
+                "MRR",
+                _usd(mrr),
+                "currency",
+                scope="current",
+                emphasis=True,
+                description="Active subscriptions normalised to a monthly amount (weekly x 52/12).",
+            ),
             _metric("active_subscriptions", "Active subscriptions", active, scope="current"),
             _metric("refunded", "Refunded", _usd(refunded), "currency"),
         ],
@@ -855,9 +1042,7 @@ def metrics(
     # Shared reads. Applications and profiles are each read ONCE, all-time, and
     # sliced per section in Python: three sections need overlapping windows of
     # the same rows, and at this scale one read beats three.
-    apps = _rows(
-        "applications", "user_id, date_applied, status, platform"
-    )
+    apps = _rows("applications", "user_id, date_applied, status, platform")
     apps.sort(key=lambda a: a.get("date_applied") or "", reverse=True)
     profiles = _rows(
         "profiles",
@@ -872,7 +1057,12 @@ def metrics(
         ("users", lambda: _section_users(profiles, apps, from_ts, to_ts)),
         ("funnel", lambda: _section_funnel(profiles, apps, from_ts, to_ts)),
         ("affiliates", lambda: _section_affiliates(from_ts, to_ts)),
-        ("ai_cost", lambda: _section_ai_cost(apps, from_ts, to_ts, from_day.isoformat(), to_day.isoformat())),
+        (
+            "ai_cost",
+            lambda: _section_ai_cost(
+                apps, from_ts, to_ts, from_day.isoformat(), to_day.isoformat()
+            ),
+        ),
     ]
 
     sections = []
