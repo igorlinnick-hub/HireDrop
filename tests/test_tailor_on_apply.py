@@ -12,6 +12,11 @@ Reaching _lazy_tailor_for_job already means we are applying: its only caller is
 GET /profile/resume/url/best, whose only caller is content.js uploadResume(),
 filling the form we are about to submit.
 
+The gate that replaced it (2026-09-20) asks whether there is a JOB to tailor to.
+Indeed's `description` holds the search-card snippet — measured on the live pool,
+0 of 387 Indeed rows carry real posting text, and three resumes were tailored from
+strings like "From $40,000 a yearFull-time" the day the score gate came off.
+
 What must survive: the paid-tier gate, idempotency (never pay twice for one job),
 and best-effort (a tailoring failure must never break the resume fetch — the
 application still needs a resume).
@@ -22,6 +27,19 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.routers import profile as profile_router
+from app.routers.profile import MIN_TAILORABLE_DESC
+
+# A real ATS posting, shortened. The shortest greenhouse/lever/ashby row in the live
+# pool is ~1100 chars; the fixture used to carry 32, which the new gate correctly
+# refuses — a resume cannot be "targeted" at one sentence.
+REAL_POSTING = (
+    "Own delivery across three teams. You will run planning, keep the roadmap honest, "
+    "and be the person engineering and design both trust with scope. We work in "
+    "two-week cycles, ship behind flags, and expect written proposals before large "
+    "changes. You should be comfortable saying no to a stakeholder and explaining why "
+    "in terms of the customer. Five years of delivery experience, ideally in a "
+    "product company where you owned outcomes rather than tickets."
+)
 
 
 @pytest.fixture
@@ -30,7 +48,7 @@ def job_row():
         "id": "job-1",
         "title": "Project Manager",
         "company": "Corvant",
-        "description": "Own delivery across three teams.",
+        "description": REAL_POSTING,
         "score": 1,  # the score that used to veto everything
         "tailored_resume": None,
         "tailored_resume_pdf_url": None,
@@ -97,3 +115,46 @@ def test_empty_model_output_is_not_stored(job_row):
     """An empty tailor result would overwrite a good resume with nothing."""
     _, update = _run(job=job_row, tailored="")
     update.assert_not_called()
+
+
+# ── The gate that replaced the score: is there a job to tailor TO? ───────────
+
+
+def test_an_indeed_snippet_is_not_a_job_description(job_row):
+    """The live failure: Sonnet paid to target a salary string.
+
+    Three resumes were tailored from descriptions of 24-28 chars on 2026-09-20.
+    The output was fluent and entirely invented — worse than shipping the user's
+    own resume, because we paid for it and sent it to an employer.
+    """
+    tailor, update = _run(job={**job_row, "description": "From $40,000 a yearFull-time"})
+    tailor.assert_not_called()
+    update.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "desc", [None, "", "   ", "Marketing Manager", "x" * (MIN_TAILORABLE_DESC - 1)]
+)
+def test_thin_text_never_reaches_the_model(job_row, desc):
+    tailor, _ = _run(job={**job_row, "description": desc})
+    assert not tailor.called, f"{len(desc or '')} chars is not something to tailor toward"
+
+
+def test_a_real_posting_still_tailors(job_row):
+    """The gate must not become the new 'nothing ever tailors'."""
+    assert len(REAL_POSTING) >= MIN_TAILORABLE_DESC
+    tailor, update = _run(job=job_row)
+    tailor.assert_called_once()
+    update.assert_called_once()
+
+
+def test_the_cheap_check_runs_before_the_paid_one(job_row):
+    """A thin job must not even cost a tier lookup round-trip."""
+    user = type("U", (), {"id": "u1", "email": "x@y.z"})()
+    tier = MagicMock(return_value="pro")
+    with (
+        patch("app.db.jobs.get_job_by_id", return_value={**job_row, "description": "thin"}),
+        patch("app.db.subscriptions.get_tier", tier),
+    ):
+        profile_router._lazy_tailor_for_job(user, job_row)
+    tier.assert_not_called()
