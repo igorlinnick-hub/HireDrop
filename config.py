@@ -39,17 +39,6 @@ RESEND_FROM_EMAIL = os.getenv("RESEND_FROM_EMAIL", "")
 
 
 # =============================================================================
-# EMAIL — Gmail IMAP (optional, inbox-checking flow only)
-# =============================================================================
-# Separate from transactional sending — used by modules/email_parser.py to
-# scan a Gmail inbox for recruiter responses. EMAIL_PASSWORD must be a Gmail
-# app password (16 chars, generated with 2FA on).
-EMAIL_ADDRESS = os.getenv("EMAIL_ADDRESS", "")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
-EMAIL_IMAP_SERVER = os.getenv("EMAIL_IMAP_SERVER", "imap.gmail.com")
-
-
-# =============================================================================
 # FRONTEND — base URL for links in transactional emails
 # =============================================================================
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://hiredrop.io")
