@@ -2,7 +2,7 @@
 
 from datetime import date, datetime
 
-from app.db.client import get_supabase
+from app.db.client import fetch_paged, get_supabase
 
 
 def save_application(
@@ -49,10 +49,9 @@ def get_history(user_id: str, limit: int = 5000) -> list:
     list's length) would freeze. Same silent-cap class as get_jobs' 1000-row fix.
     Secondary order on id keeps pages stable when date_applied ties.
     """
-    data: list = []
-    page = 500
-    for start in range(0, limit, page):
-        res = (
+
+    def build(start: int, end: int):
+        return (
             get_supabase()
             .table("applications")
             .select(
@@ -61,13 +60,10 @@ def get_history(user_id: str, limit: int = 5000) -> list:
             .eq("user_id", user_id)
             .order("date_applied", desc=True)
             .order("id")
-            .range(start, start + page - 1)
-            .execute()
+            .range(start, end)
         )
-        batch = res.data or []
-        data.extend(batch)
-        if len(batch) < page:
-            break
+
+    data = fetch_paged(build, limit)
     # Lazy import avoids a module-load cycle (resume storage pulls in the client too).
     from app.db import resume as resume_storage
 
@@ -160,19 +156,27 @@ def applied_job_urls(user_id: str, limit: int = 2000) -> list[str]:
     on a fresh Chrome profile and was the only thing standing between a stuck pool row and
     a second application to the same employer.
     """
-    try:
-        res = (
+    # .limit(2000) here used to be a promise the server never kept: PostgREST truncates
+    # every response at 1000 rows silently, so past a thousand applications this guard
+    # would have started forgetting the oldest ones — and forgetting is what makes us
+    # apply to the same employer twice.
+
+    def build(start: int, end: int):
+        return (
             get_supabase()
             .table("applications")
             .select("job_url")
             .eq("user_id", user_id)
             .order("date_applied", desc=True)
-            .limit(limit)
-            .execute()
+            .order("id")
+            .range(start, end)
         )
+
+    try:
+        rows = fetch_paged(build, limit)
     except Exception:  # noqa: BLE001 — the queue must still build without this guard
         return []
-    return [r["job_url"] for r in (res.data or []) if r.get("job_url")]
+    return [r["job_url"] for r in rows if r.get("job_url")]
 
 
 def count_today(user_id: str, since_iso: str | None = None) -> int:

@@ -3,36 +3,35 @@
 import contextlib
 from datetime import date
 
-from app.db.client import get_supabase
+from app.db.client import fetch_paged, get_supabase
 
 
-def get_jobs(user_id: str, limit: int = 20000) -> list:
-    """The user's whole pool, newest first — paginated past PostgREST's silent 1000-row cap.
+def _pool_query(columns: str, user_id: str):
+    """The pool read both callers share, ordered so paging can't reshuffle rows."""
 
-    A bare select stops at max-rows (1000), so once the pool outgrew it every reader of
-    this function — the dashboard table, the auto ATS queue, the tap deck — was quietly
-    working on the newest thousand rows only: applied rows fell off the dashboard count
-    and older approved/new inventory became unreachable (read-side twin of #196's cap).
-    Secondary order on id keeps pages stable when date_found ties.
-    """
-    out: list = []
-    page = 1000
-    for start in range(0, limit, page):
-        res = (
+    def build(start: int, end: int):
+        return (
             get_supabase()
             .table("jobs")
-            .select("*")
+            .select(columns)
             .eq("user_id", user_id)
             .order("date_found", desc=True)
             .order("id")
-            .range(start, start + page - 1)
-            .execute()
+            .range(start, end)
         )
-        rows = res.data or []
-        out.extend(rows)
-        if len(rows) < page:
-            break
-    return out
+
+    return build
+
+
+def get_jobs(user_id: str, limit: int = 20000) -> list:
+    """The user's whole pool, newest first — paged past PostgREST's silent row cap.
+
+    A bare select stopped at 1000 rows, so once the pool outgrew it every reader of this
+    function — the dashboard table, the auto ATS queue, the tap deck — was quietly working
+    on the newest thousand only: applied rows fell off the dashboard count and older
+    approved/new inventory became unreachable (read-side twin of #196's cap).
+    """
+    return fetch_paged(_pool_query("*", user_id), limit)
 
 
 # Exactly what the dashboard's Job Listings table renders (jobflow-website
@@ -48,24 +47,7 @@ _LISTING_COLUMNS = (
 
 def get_jobs_for_listing(user_id: str, limit: int = 20000) -> list:
     """get_jobs, minus the columns the dashboard table never renders."""
-    out: list = []
-    page = 1000
-    for start in range(0, limit, page):
-        res = (
-            get_supabase()
-            .table("jobs")
-            .select(_LISTING_COLUMNS)
-            .eq("user_id", user_id)
-            .order("date_found", desc=True)
-            .order("id")
-            .range(start, start + page - 1)
-            .execute()
-        )
-        rows = res.data or []
-        out.extend(rows)
-        if len(rows) < page:
-            break
-    return out
+    return fetch_paged(_pool_query(_LISTING_COLUMNS, user_id), limit)
 
 
 def get_job_by_id(user_id: str, job_id: str) -> dict | None:
@@ -216,22 +198,18 @@ def all_links(user_id: str, limit: int = 20000) -> set:
     sweep, which is ~500-5000 links: that would be 12-125 round-trips. The pool is a
     couple of thousand rows, so pulling the link column whole is two queries.
     """
-    out: set = set()
-    page = 1000
-    for start in range(0, limit, page):
-        res = (
+
+    def build(start: int, end: int):
+        return (
             get_supabase()
             .table("jobs")
             .select("link")
             .eq("user_id", user_id)
-            .range(start, start + page - 1)
-            .execute()
+            .order("id")
+            .range(start, end)
         )
-        rows = res.data or []
-        out.update(r["link"] for r in rows if r.get("link"))
-        if len(rows) < page:
-            break
-    return out
+
+    return {r["link"] for r in fetch_paged(build, limit) if r.get("link")}
 
 
 def existing_links(user_id: str, links: list) -> set:
