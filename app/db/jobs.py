@@ -35,6 +35,39 @@ def get_jobs(user_id: str, limit: int = 20000) -> list:
     return out
 
 
+# Exactly what the dashboard's Job Listings table renders (jobflow-website
+# lib/types.ts::Job minus `description`). The pool carries up to 5000 chars of posting
+# text per row, which is half the weight of a `select *` and nothing the table draws —
+# on a 1300-row pool that is 1.3 MB shipped to the browser to be thrown away. The AI
+# lanes that DO need the text read the full rows via get_jobs().
+_LISTING_COLUMNS = (
+    "id, title, company, platform, status, date_found, link, score, ai_verdict, "
+    "ai_flags, ats_keywords, ats_match_pct, tailored_resume"
+)
+
+
+def get_jobs_for_listing(user_id: str, limit: int = 20000) -> list:
+    """get_jobs, minus the columns the dashboard table never renders."""
+    out: list = []
+    page = 1000
+    for start in range(0, limit, page):
+        res = (
+            get_supabase()
+            .table("jobs")
+            .select(_LISTING_COLUMNS)
+            .eq("user_id", user_id)
+            .order("date_found", desc=True)
+            .order("id")
+            .range(start, start + page - 1)
+            .execute()
+        )
+        rows = res.data or []
+        out.extend(rows)
+        if len(rows) < page:
+            break
+    return out
+
+
 def get_job_by_id(user_id: str, job_id: str) -> dict | None:
     res = get_supabase().table("jobs").select("*").eq("id", job_id).eq("user_id", user_id).execute()
     return res.data[0] if res.data else None
