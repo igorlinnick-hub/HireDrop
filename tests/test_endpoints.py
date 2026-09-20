@@ -253,3 +253,58 @@ def test_email_status_updates(auth_client):
     data = res.json()
     assert len(data) == 1
     assert data[0]["status"] == "interview"
+
+
+# ── Manual application status (PATCH /applications/{id}/status) ──────────────
+# The user's own "the employer answered" channel. The automatic email parser is
+# off (one shared inbox, matched by company across all users), so this is the
+# only way a row leaves "applied".
+
+
+def test_patch_application_status_ok(auth_client):
+    with patch(
+        "app.routers.applications.apps_db.update_status", return_value=True
+    ) as upd:
+        res = auth_client.patch(
+            "/api/v1/applications/app-1/status",
+            json={"status": "interview"},
+        )
+    assert res.status_code == 200
+    assert res.json() == {"id": "app-1", "status": "interview"}
+    # The owner's id must reach the DB layer — that filter is the IDOR defense.
+    assert upd.call_args.args[:2] == ("app-1", "interview")
+    assert upd.call_args.args[2]
+
+
+def test_patch_application_status_normalizes_case(auth_client):
+    with patch(
+        "app.routers.applications.apps_db.update_status", return_value=True
+    ) as upd:
+        res = auth_client.patch(
+            "/api/v1/applications/app-1/status",
+            json={"status": "  Interview  "},
+        )
+    assert res.status_code == 200
+    assert upd.call_args.args[1] == "interview"
+
+
+def test_patch_application_status_rejects_executor_written_state(auth_client):
+    """`applied_unconfirmed` is the executor's honesty signal, not a user's to write."""
+    with patch("app.routers.applications.apps_db.update_status") as upd:
+        res = auth_client.patch(
+            "/api/v1/applications/app-1/status",
+            json={"status": "applied_unconfirmed"},
+        )
+    assert res.status_code == 422
+    assert res.json()["error"] == "invalid_status"
+    upd.assert_not_called()
+
+
+def test_patch_application_status_not_found(auth_client):
+    """A row owned by someone else matches nothing and reads as 404."""
+    with patch("app.routers.applications.apps_db.update_status", return_value=False):
+        res = auth_client.patch(
+            "/api/v1/applications/someone-elses/status",
+            json={"status": "rejected"},
+        )
+    assert res.status_code == 404
