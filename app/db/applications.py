@@ -198,9 +198,8 @@ def count_today(user_id: str, since_iso: str | None = None) -> int:
 def update_status(application_id: str, status: str, user_id: str) -> bool:
     """Update an application's status, scoped to its owner.
 
-    user_id is required (not optional) so this can never cross tenants: even
-    the cross-user email-matching flow must pass the owning user_id from the
-    row returned by find_by_company_all_users().
+    user_id is required (not optional) so this can never cross tenants —
+    service_role bypasses RLS, so this filter IS the authorization check.
     """
     res = (
         get_supabase()
@@ -211,38 +210,6 @@ def update_status(application_id: str, status: str, user_id: str) -> bool:
         .execute()
     )
     return bool(res.data)
-
-
-def _escape_like(s: str) -> str:
-    """Escape LIKE/ILIKE wildcards so user/email-derived text can't widen the match.
-
-    Without this, a company fragment like "A%B" (from a crafted email subject)
-    becomes a broad wildcard and matches far more applications than intended.
-    """
-    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
-def find_by_company_all_users(company_fragment: str) -> list:
-    """Find applied/pending applications matching a company name fragment (case-insensitive)."""
-    res = (
-        get_supabase()
-        .table("applications")
-        .select("id, user_id, status, jobs(company)")
-        .ilike("jobs.company", f"%{_escape_like(company_fragment)}%")
-        .in_("status", ["applied", "pending"])
-        .limit(10)
-        .execute()
-    )
-    return [
-        {
-            "id": row["id"],
-            "user_id": row["user_id"],
-            "status": row["status"],
-            "company": (row.get("jobs") or {}).get("company", ""),
-        }
-        for row in (res.data or [])
-        if row.get("jobs")
-    ]
 
 
 def count_today_by_platform(user_id: str, since_iso: str | None = None) -> dict:
