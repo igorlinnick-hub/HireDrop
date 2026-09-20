@@ -1647,8 +1647,17 @@ async function handleMessage(msg, sender) {
         // doesn't re-warm the same domain. GH/Lever/Ashby heads need no warm, so [] for them.
         poolWarmedNatives: POOL_NATIVE_ALL.includes(headPlatform) ? [headPlatform] : [],
         processedJobKeys: [],
-        processedPageStarts: [0],
-        kwIndex: 0, // keyword rotation cursor — content.js advances it as each keyword is exhausted
+        // Keyword walk state, all per RUN. content.js goes one page per keyword and
+        // rotates through the whole list before deepening (kwLap = which page every
+        // phrase is on; kwDone = phrases that returned nothing this run).
+        // kwIndex starts at 0 on purpose: WHICH phrase leads a run is the server's
+        // decision — /campaign/start round-robins the list (modules/keyword_rotation,
+        // cursor in campaign_states.filters) and the dashboard arms us with that order.
+        // A second cursor kept here would advance independently of the server's and the
+        // two would drift apart.
+        kwIndex: 0,
+        kwLap: 0,
+        kwDone: [],
         // Platform-failover ledger — PLATFORM_EXHAUSTED never revisits these. Seed it with
         // the stage this run actually OPENS on: a pool-led run (no board selected) opens on
         // the ATS target, and seeding "indeed" there would both lie and let the failover
@@ -1847,8 +1856,11 @@ async function handleMessage(msg, sender) {
         triedPlatforms: tried,
         campaignTargetUrl: targetUrl,
         campaignWarmedUp: false, // new board → content.js re-runs its CF warmup hop
-        processedPageStarts: [0],
+        // A fresh board has searched nothing yet: every phrase gets its pages and its
+        // slice of the new board's cap back (the cap ledger is per platform already).
         kwIndex: 0,
+        kwLap: 0,
+        kwDone: [],
         pendingJobs: [],
         currentJobIndex: 0,
         zrRecoveries: 0,

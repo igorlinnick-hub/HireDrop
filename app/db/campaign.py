@@ -256,6 +256,16 @@ def start(user_id: str, filters: dict) -> dict:
 
 
 def stop(user_id: str) -> None:
+    """End the run — but keep the keyword cursor.
+
+    Everything else in `filters` belongs to the run that just ended. `kw_cursor` does not:
+    it is the ONLY record of which role leads NEXT time, and modules/keyword_rotation
+    reads it from this very row at the next /campaign/start. Wiping it here meant the
+    cursor was back at 0 by the time anyone looked — so the round-robin shipped on 09-11
+    never actually rotated, and every run led with role #1 again. That is the mechanism
+    behind the 09-19 measurement: 39 of 39 applications on keyword #1, zero on the tail.
+    """
+    kw_cursor = (get_state(user_id).get("filters") or {}).get("kw_cursor", 0)
     (
         get_supabase()
         .table("campaign_states")
@@ -263,7 +273,7 @@ def stop(user_id: str) -> None:
             {
                 "user_id": user_id,
                 "running": False,
-                "filters": {},
+                "filters": {"kw_cursor": kw_cursor},
                 "started_at": None,
             },
             on_conflict="user_id",
