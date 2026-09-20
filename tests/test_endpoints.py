@@ -262,9 +262,7 @@ def test_email_status_updates(auth_client):
 
 
 def test_patch_application_status_ok(auth_client):
-    with patch(
-        "app.routers.applications.apps_db.update_status", return_value=True
-    ) as upd:
+    with patch("app.routers.applications.apps_db.update_status", return_value=True) as upd:
         res = auth_client.patch(
             "/api/v1/applications/app-1/status",
             json={"status": "interview"},
@@ -277,9 +275,7 @@ def test_patch_application_status_ok(auth_client):
 
 
 def test_patch_application_status_normalizes_case(auth_client):
-    with patch(
-        "app.routers.applications.apps_db.update_status", return_value=True
-    ) as upd:
+    with patch("app.routers.applications.apps_db.update_status", return_value=True) as upd:
         res = auth_client.patch(
             "/api/v1/applications/app-1/status",
             json={"status": "  Interview  "},
