@@ -578,6 +578,14 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
     # The whole ledger, not just the period: "owed" is an all-time liability.
     commissions = _rows("commissions", "affiliate_id, amount_cents, status, created_at")
     payouts = _rows("payouts", "affiliate_id, amount_cents, paid_at")
+    # The inbox: people asking for a link. Approval is a human decision made
+    # on this board (POST /admin/affiliates/decide), never automatic.
+    applications = _rows(
+        "affiliate_applications",
+        "id, email, name, desired_code, audience, audience_size, promo_plan, "
+        "paypal_email, source, status, created_at, affiliate_id",
+        limit=500,
+    )
 
     def in_period(ts: str | None) -> bool:
         return bool(ts) and from_ts <= ts <= to_ts
@@ -644,6 +652,10 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
                     len([r for r in referrals if r.get("first_paid_at")]), scope="current"),
             _metric("reversed_period", "Clawed back", _usd(reversed_period), "currency",
                     description="Commission reversed by customer refunds in this period."),
+            _metric("applications_waiting", "Applications waiting",
+                    len([a for a in applications if a.get("status") == "new"]), scope="current",
+                    emphasis=True,
+                    description="People who asked for a link and are waiting on a decision."),
         ],
         "timeseries": {
             "label": "Commission accrued per day",
@@ -651,6 +663,55 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
             "points": [{"date": d, "value": _usd(v)} for d, v in sorted(by_date.items())],
         },
         "tables": [
+            _table(
+                "applications",
+                "Applications waiting",
+                [_col("name", "Name"), _col("email", "Email"), _col("desired_code", "Wants link"),
+                 _col("audience", "Audience"), _col("audience_size", "Size"),
+                 _col("promo_plan", "How they'll share"), _col("paypal", "PayPal"),
+                 _col("source", "Came from"), _col("applied", "Applied", "date"),
+                 _col("id", "id")],
+                [
+                    {
+                        "name": a.get("name"),
+                        "email": a.get("email"),
+                        "desired_code": a.get("desired_code"),
+                        "audience": a.get("audience") or "—",
+                        "audience_size": a.get("audience_size") or "—",
+                        "promo_plan": a.get("promo_plan") or "—",
+                        "paypal": "missing" if not a.get("paypal_email") else a.get("paypal_email"),
+                        "source": a.get("source") or "direct",
+                        "applied": (a.get("created_at") or "")[:10],
+                        # Carried so the board's Approve button knows what to act on.
+                        "id": a.get("id"),
+                    }
+                    for a in sorted(
+                        [a for a in applications if a.get("status") == "new"],
+                        key=lambda a: a.get("created_at") or "",
+                    )
+                ],
+            ),
+            _table(
+                "decided",
+                "Decided applications",
+                [_col("name", "Name"), _col("desired_code", "Link"), _col("status", "Decision"),
+                 _col("linked", "Live"), _col("applied", "Applied", "date")],
+                [
+                    {
+                        "name": a.get("name"),
+                        "desired_code": a.get("desired_code"),
+                        "status": a.get("status"),
+                        # Approved but not linked = the code is reserved and goes
+                        # live when that email signs up.
+                        "linked": "yes" if a.get("affiliate_id") else "reserved",
+                        "applied": (a.get("created_at") or "")[:10],
+                    }
+                    for a in sorted(
+                        [a for a in applications if a.get("status") != "new"],
+                        key=lambda a: a.get("created_at") or "", reverse=True,
+                    )
+                ],
+            ),
             _table(
                 "partners",
                 "Partner ledger",

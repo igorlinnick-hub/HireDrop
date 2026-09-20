@@ -30,6 +30,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from app.routers import (
     activity,
     admin,
+    affiliate,
     applications,
     auth,
     billing,
@@ -175,6 +176,8 @@ app.include_router(review.router, prefix="/api/v1")
 # Admin metrics: guarded by ADMIN_METRICS_TOKEN, not by a user JWT — the caller
 # is the server side of the admin panel, not a signed-in HireDrop user.
 app.include_router(admin.router, prefix="/api/v1")
+# Affiliate applications: public apply + admin decide (same admin token).
+app.include_router(affiliate.router, prefix="/api/v1")
 
 
 @app.get("/health")
