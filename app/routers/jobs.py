@@ -78,7 +78,12 @@ def select_scrapeable(requested: list[str]) -> tuple[list[str], list[str]]:
 
 @router.get("/jobs")
 def get_jobs(user=Depends(get_current_user)):
-    return _with_captcha(jobs_db.get_jobs(user.id))
+    """The dashboard's Job Listings table — display columns only.
+
+    The extension never reads this route (it uses /jobs/ats-queue), so the posting text
+    every other caller needs would only be weight on the wire here.
+    """
+    return _with_captcha(jobs_db.get_jobs_for_listing(user.id))
 
 
 # Platforms an approved swipe can actually be APPLIED to today. Mirrors TapView's
