@@ -6,16 +6,33 @@ from datetime import date
 from app.db.client import get_supabase
 
 
-def get_jobs(user_id: str) -> list:
-    res = (
-        get_supabase()
-        .table("jobs")
-        .select("*")
-        .eq("user_id", user_id)
-        .order("date_found", desc=True)
-        .execute()
-    )
-    return res.data or []
+def get_jobs(user_id: str, limit: int = 20000) -> list:
+    """The user's whole pool, newest first — paginated past PostgREST's silent 1000-row cap.
+
+    A bare select stops at max-rows (1000), so once the pool outgrew it every reader of
+    this function — the dashboard table, the auto ATS queue, the tap deck — was quietly
+    working on the newest thousand rows only: applied rows fell off the dashboard count
+    and older approved/new inventory became unreachable (read-side twin of #196's cap).
+    Secondary order on id keeps pages stable when date_found ties.
+    """
+    out: list = []
+    page = 1000
+    for start in range(0, limit, page):
+        res = (
+            get_supabase()
+            .table("jobs")
+            .select("*")
+            .eq("user_id", user_id)
+            .order("date_found", desc=True)
+            .order("id")
+            .range(start, start + page - 1)
+            .execute()
+        )
+        rows = res.data or []
+        out.extend(rows)
+        if len(rows) < page:
+            break
+    return out
 
 
 def get_job_by_id(user_id: str, job_id: str) -> dict | None:

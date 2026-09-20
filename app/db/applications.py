@@ -40,21 +40,39 @@ def save_application(
     return res.data[0]["id"] if res.data else ""
 
 
-def get_history(user_id: str, limit: int = 50) -> list:
-    res = (
-        get_supabase()
-        .table("applications")
-        .select("*, jobs(title, company, platform, link, tailored_resume, tailored_resume_pdf_url)")
-        .eq("user_id", user_id)
-        .order("date_applied", desc=True)
-        .limit(limit)
-        .execute()
-    )
+def get_history(user_id: str, limit: int = 5000) -> list:
+    """All-time application history, newest first — paginated, no silent cut.
+
+    This used to stop at 50 rows while the dashboard's "Total Applied" card counts the
+    whole table (count_applications), so the moment a user crossed 50 the two surfaces
+    would diverge and the History page's own "Total applied" metric (computed from this
+    list's length) would freeze. Same silent-cap class as get_jobs' 1000-row fix.
+    Secondary order on id keeps pages stable when date_applied ties.
+    """
+    data: list = []
+    page = 500
+    for start in range(0, limit, page):
+        res = (
+            get_supabase()
+            .table("applications")
+            .select(
+                "*, jobs(title, company, platform, link, tailored_resume, tailored_resume_pdf_url)"
+            )
+            .eq("user_id", user_id)
+            .order("date_applied", desc=True)
+            .order("id")
+            .range(start, start + page - 1)
+            .execute()
+        )
+        batch = res.data or []
+        data.extend(batch)
+        if len(batch) < page:
+            break
     # Lazy import avoids a module-load cycle (resume storage pulls in the client too).
     from app.db import resume as resume_storage
 
     rows = []
-    for row in res.data or []:
+    for row in data:
         # Snapshot fields first (survive job deletion — P3); joined jobs row is the
         # fallback for legacy rows and the only source of tailored_resume.
         job = row.get("jobs") or {}
