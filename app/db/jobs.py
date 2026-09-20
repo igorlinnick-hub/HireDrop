@@ -386,6 +386,49 @@ def get_by_link(user_id: str, link: str) -> dict | None:
     return None
 
 
+def save_description(user_id: str, link: str, description: str, **new_row) -> str:
+    """Store the posting text for a job the user is looking at RIGHT NOW.
+
+    Indeed's pool rows carry the search-card snippet, not the posting: measured
+    2026-09-20, 0 of 387 rows held real text and the longest was ~90 chars. The full
+    text is on the detail page the extension already parses — it just never reached
+    the row, so tailoring, the fit judge and the interview kit all read a salary
+    string for 86% of our applications.
+
+    Deliberately NOT save_job(): that upsert always sends `status`, so writing a
+    description through it would reset an `applied`/`skipped`/`approved` row to `new`
+    and resurrect it into the walk. This updates the text and nothing else, and only
+    falls back to an insert when the posting isn't in the pool at all (a by-link
+    apply). Matching mirrors get_by_link — exact URL, then the Indeed jk key, which is
+    what actually identifies a posting across query-string spellings.
+
+    Returns the row id, or "" if nothing was written.
+    """
+    row = get_by_link(user_id, link)
+    if row:
+        res = (
+            get_supabase()
+            .table("jobs")
+            .update({"description": description})
+            .eq("id", row["id"])
+            .eq("user_id", user_id)  # service_role bypasses RLS — this filter is the check
+            .execute()
+        )
+        return row["id"] if res.data else ""
+
+    payload = {
+        "user_id": user_id,
+        "link": link,
+        "description": description,
+        "status": "new",
+        "title": new_row.get("title", ""),
+        "company": new_row.get("company", ""),
+        "platform": new_row.get("platform", "unknown"),
+    }
+    res = get_supabase().table("jobs").insert(payload).execute()
+    return res.data[0]["id"] if res.data else ""
+
+
 def mark_dead_link(user_id: str, link: str) -> int:
     """Flip every row for this posting out of the pool — the board says it's gone.
 

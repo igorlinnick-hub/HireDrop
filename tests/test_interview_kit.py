@@ -15,6 +15,20 @@ from modules import ai_interview_kit as kit_mod
 APP_ID = "11111111-1111-1111-1111-111111111111"
 
 
+# A real greenhouse posting, shortened. The fixture used to carry 38 chars, which the
+# 2026-09-20 gate correctly refuses: an Indeed row's "description" is the search-card
+# snippet ("From $40,000 a yearFull-time"), and bool() said that was enough to build
+# an interview prep sheet from.
+REAL_POSTING = (
+    "We need Python and Postgres experience. You will own services end to end: design, "
+    "ship, and carry the pager for them. Our stack is FastAPI on Postgres with a small "
+    "amount of Go at the edges, deployed continuously behind feature flags. We care more "
+    "about how you reason through a failure than which frameworks you have used. You "
+    "will pair with product directly and are expected to push back when a request does "
+    "not survive contact with the data."
+)
+
+
 @pytest.fixture
 def app_row():
     return {
@@ -24,7 +38,7 @@ def app_row():
         "company": "Acme",
         "platform": "greenhouse",
         "link": "https://example.com/job",
-        "description": "We need Python and Postgres experience.",
+        "description": REAL_POSTING,
         "location": "Remote",
     }
 

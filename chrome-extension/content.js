@@ -1688,6 +1688,7 @@
     await chrome.storage.local.set({
       currentJobInfo: { title: jobTitle, company: jobCompany, description: jobDesc, url: jobUrl },
     });
+    await recordJobDescription(jobTitle, jobCompany, jobDesc, jobUrl);
 
     // Generate cover letter
     let coverLetter = "";
@@ -2125,6 +2126,7 @@
     await chrome.storage.local.set({
       currentJobInfo: { title: jobTitle, company: jobCompany, description: jobDesc, url: jobUrl },
     });
+    await recordJobDescription(jobTitle, jobCompany, jobDesc, jobUrl);
 
     // Generate cover letter
     let coverLetter = "";
@@ -3683,6 +3685,31 @@
     await skipToNextJob();
   }
 
+  // Hand the backend the posting text we just read off the page. The server can never
+  // fetch an Indeed page (403), so without this the job row keeps the search card's
+  // snippet — "From $40,000 a yearFull-time" — and the resume tailor, the fit judge and
+  // the interview kit all read that as if it were the job.
+  //
+  // Called where we COMMIT to applying (right after currentJobInfo is set, past the fit
+  // decision), not from uploadResume(): that only runs when the form happens to show a
+  // file input, which Indeed smartapply often doesn't — so the one platform this exists
+  // for would have been the one platform it never fired on. Here it also lands well
+  // before the resume fetch, which is what tailors against the row.
+  //
+  // Best-effort and awaited briefly; a describe failure must never cost an application.
+  async function recordJobDescription(title, company, description, url) {
+    if (!url || (description || "").length < 300) return;
+    try {
+      await Promise.race([
+        sendMsg({
+          type: "SAVE_JOB_DESCRIPTION",
+          data: { title, company, description, url, platform: detectPlatform() },
+        }),
+        sleep(8000),
+      ]);
+    } catch {}
+  }
+
   async function uploadResume(fileInput) {
     // Resume now lives in Supabase Storage (Phase 3.5). Backend returns a
     // signed URL valid for 1h that the content script fetches directly —
@@ -4044,6 +4071,8 @@
       }
       if (fit.judged) logBackend(`Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
     }
+
+    await recordJobDescription(jobTitle, jobCompany, jobDesc, jobUrl);
 
     // Cover letter
     logBackend(`✍️ Writing a tailored cover letter — ${jobTitle} @ ${jobCompany}`, "info");

@@ -670,6 +670,14 @@ def _store_tailored_pdf(user_id: str, job_id: str, tailored_text: str) -> None:
     jobs_db.update_tailored_resume_pdf(job_id, pdf_path, user_id)
 
 
+# How much posting text tailoring needs to be worth its $0.0070. Deliberately far
+# above jobs.MIN_SCORABLE_DESC (120): a scorer can rank a job off a thin snippet, but
+# rewriting a resume "for this job" off one produces confident fiction. 300 chars is
+# below every real ATS posting we store (shortest observed ~1100) and above every
+# Indeed snippet (longest observed ~90).
+MIN_TAILORABLE_DESC = 300
+
+
 def _lazy_tailor_for_job(user, job) -> None:
     """Economics #2 — tailor a job's resume ON DEMAND at apply time (when the
     extension fetches the best resume for this specific job), not eagerly for every
@@ -692,10 +700,22 @@ def _lazy_tailor_for_job(user, job) -> None:
     which runs while filling the form we are about to submit. A second, unrelated
     score deciding whether that application deserves a tailored resume was the bug.
 
-    Cost, measured not estimated: $0.0070 per tailor (in 1027 / out 261), taking an
-    application from $0.0129 to $0.0199. At the observed 31 applications/month that
-    is $0.22/month per user. See content-lab/campus/ECONOMICS.md and
-    docs/handoff/pool-quality.md (W2).
+    THE GATE THAT REPLACED IT IS "IS THERE A JOB TO TAILOR TO" (2026-09-20). Measured
+    on the live pool: Indeed's `description` column holds the search-card SNIPPET, not
+    the posting — 0 of 387 Indeed rows carry real text, and what they do carry looks
+    like "From $40,000 a yearFull-time" (28 chars). With the score gate gone, three
+    Indeed jobs were tailored from exactly that on 2026-09-20: we paid Sonnet to write
+    a resume "targeted" at a salary string, which is worse than not tailoring at all —
+    it is a paid-for hallucination shipped to an employer. ATS boards are the opposite:
+    97% of greenhouse/lever/ashby/remoteok rows carry 1100-3400 chars of real posting.
+
+    So tailoring follows the TEXT, not a score. Below the threshold we ship the user's
+    standard resume, which is the honest output when there is nothing to tailor toward.
+
+    Cost, measured not estimated: $0.0070 per tailor (in 1027 / out 261). Spent on
+    every application that would be $0.0129 -> $0.0199; spent only where real text
+    exists (~14% of current submissions) it is ~$0.001 blended. See
+    content-lab/campus/ECONOMICS.md and docs/handoff/pool-quality.md (W2).
     """
     try:
         from app.db import jobs as jobs_db
@@ -707,6 +727,10 @@ def _lazy_tailor_for_job(user, job) -> None:
         # select (get_by_link fetches only id + pdf_url) and a concurrent request may
         # have already tailored this job.
         fresh = jobs_db.get_job_by_id(user.id, job_id) or job
+        # Nothing to tailor TOWARD -> don't pay, don't pretend. Checked before the
+        # tier lookup so the cheapest test runs first.
+        if len((fresh.get("description") or "").strip()) < MIN_TAILORABLE_DESC:
+            return
         if fresh.get("tailored_resume_pdf_url"):
             return  # fully tailored already
         if fresh.get("tailored_resume"):
