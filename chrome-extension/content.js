@@ -3689,6 +3689,21 @@
     // the Storage URL doesn't need our Bearer token, the signature is the
     // capability.
     const { currentJobInfo } = await chrome.storage.local.get("currentJobInfo");
+    // Hand the backend the posting text BEFORE asking for the resume. The server can
+    // never fetch an Indeed page (403), so without this the job row holds the search
+    // card's snippet — "From $40,000 a yearFull-time" — and the resume tailor, the fit
+    // judge and the interview kit all read that as the job. We already parsed the real
+    // page for the cover letter; this is the same string, stored. Awaited on purpose:
+    // GET_RESUME_URL tailors against the row, so the text has to land first. Never
+    // fatal — a failed describe must not cost us the application.
+    if (currentJobInfo?.url && (currentJobInfo.description || "").length >= 300) {
+      try {
+        await sendMsg({
+          type: "SAVE_JOB_DESCRIPTION",
+          data: { ...currentJobInfo, platform: detectPlatform() },
+        });
+      } catch {}
+    }
     // Signed-URL fetch is transiently flaky ("No resume on server" x2 then success,
     // live 2026-08-08) — retry with backoff instead of failing the whole application
     // on a storage/token blip. 3 tries covers the observed transient window.

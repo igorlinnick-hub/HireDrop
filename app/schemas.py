@@ -106,6 +106,16 @@ class IngestJob(BaseModel):
     job_type: str = ""
 
 
+class JobDescriptionRequest(BaseModel):
+    """The posting text the extension is reading, for the job it is about to apply to."""
+
+    link: str
+    description: str
+    title: str = ""
+    company: str = ""
+    platform: str = "unknown"
+
+
 class IngestJobsRequest(BaseModel):
     jobs: list[IngestJob] = []
 

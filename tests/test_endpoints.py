@@ -286,3 +286,51 @@ def test_email_surfaces_are_gone(auth_client):
     """
     assert auth_client.get("/api/v1/tools/email-check").status_code == 404
     assert auth_client.get("/api/v1/email/status-updates").status_code == 404
+
+
+# ── POST /jobs/describe — the posting text the extension is reading ──────────
+# The server can never fetch an Indeed page (403), so this is the ONLY channel by
+# which a real Indeed description reaches the row that tailoring, the fit judge and
+# the interview kit all read.
+
+_POSTING = "Own delivery across three teams. " * 12  # ~400 chars
+
+
+def test_describe_job_stores_the_posting(auth_client):
+    with patch("app.routers.jobs.jobs_db.save_description", return_value="job-9") as save:
+        res = auth_client.post(
+            "/api/v1/jobs/describe",
+            json={
+                "link": "https://www.indeed.com/viewjob?jk=abc",
+                "description": _POSTING,
+                "title": "PM",
+                "company": "Corvant",
+                "platform": "indeed",
+            },
+        )
+    assert res.status_code == 200
+    assert res.json()["stored"] is True
+    assert save.call_args.args[1] == "https://www.indeed.com/viewjob?jk=abc"
+
+
+def test_describe_job_refuses_a_search_snippet(auth_client):
+    """ "From $40,000 a yearFull-time" must never overwrite real harvested text."""
+    with patch("app.routers.jobs.jobs_db.save_description") as save:
+        res = auth_client.post(
+            "/api/v1/jobs/describe",
+            json={"link": "https://x/1", "description": "From $40,000 a yearFull-time"},
+        )
+    assert res.status_code == 200
+    assert res.json()["stored"] is False
+    save.assert_not_called()
+
+
+def test_describe_job_caps_a_page_dump(auth_client):
+    with patch("app.routers.jobs.jobs_db.save_description", return_value="job-9") as save:
+        res = auth_client.post(
+            "/api/v1/jobs/describe",
+            json={"link": "https://x/1", "description": "y" * 50_000},
+        )
+    assert res.status_code == 200
+    assert res.json()["chars"] == 20_000
+    assert len(save.call_args.args[2]) == 20_000
