@@ -84,6 +84,12 @@ RATE_LIMIT_ENFORCE = os.getenv("RATE_LIMIT_ENFORCE", "true").lower() in ("1", "t
 # $0.007/call. Set ADMIN_AI_DAILY_MAX=0 to restore the old unlimited behaviour.
 ADMIN_AI_DAILY_MAX = int(os.getenv("ADMIN_AI_DAILY_MAX", "300"))
 
+# Shared secret for GET /api/v1/admin/metrics — the read-only feed behind the
+# admin panel (Hellometrix /hiredrop). Sent as the X-Admin-Token header by that
+# app's SERVER side only; it must never reach a browser. Unset -> the endpoint
+# returns 503, never an open board.
+ADMIN_METRICS_TOKEN = os.getenv("ADMIN_METRICS_TOKEN", "")
+
 # Free taste: lifetime cap on the free tier (FREE_TASTE_PLAN.md). The first N
 # applications are the product demo (~$0.02/app AI cost, no ATS tailoring);
 # after that the free tier is paywalled — subscribe to keep applying.
