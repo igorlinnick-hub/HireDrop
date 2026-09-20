@@ -66,7 +66,9 @@ def _rate_limited(key: str) -> bool:
 def _client_ip(request: Request) -> str:
     # Railway terminates TLS upstream, so the socket peer is the proxy.
     forwarded = request.headers.get("x-forwarded-for", "")
-    return (forwarded.split(",")[0].strip() or (request.client.host if request.client else "")) or "?"
+    return (
+        forwarded.split(",")[0].strip() or (request.client.host if request.client else "")
+    ) or "?"
 
 
 def _require_admin_token(token: str | None) -> None:
@@ -147,7 +149,9 @@ def apply(req: ApplicationRequest, request: Request) -> dict:
     except Exception as exc:  # noqa: BLE001
         text = str(exc)
         if "affiliate_applications_live_code_idx" in text:
-            raise HTTPException(status_code=409, detail="That link name is taken. Pick another.") from exc
+            raise HTTPException(
+                status_code=409, detail="That link name is taken. Pick another."
+            ) from exc
         if "affiliate_applications_live_email_idx" in text:
             # Already applied: same success shape, no new row.
             return {"status": "received"}
@@ -201,7 +205,12 @@ def decide(
     db = get_supabase()
 
     found = (
-        db.table("affiliate_applications").select("*").eq("id", req.application_id).limit(1).execute().data
+        db.table("affiliate_applications")
+        .select("*")
+        .eq("id", req.application_id)
+        .limit(1)
+        .execute()
+        .data
     )
     if not found:
         raise HTTPException(status_code=404, detail="Application not found")

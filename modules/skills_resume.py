@@ -13,6 +13,7 @@ from that single structuring.
 
 import io
 import json
+import re
 
 from reportlab.lib.pagesizes import letter
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
@@ -28,13 +29,34 @@ from modules.ats_pdf_generator import (
     clean_linkedin_url,
 )
 
+# The candidate writes their own skills; we ask for at least this many so the
+# grouping has something real to work with. Not a hard backend gate — the UI asks,
+# and a saved description shorter than this still generates rather than dead-ends.
+MIN_SKILLS = 10
+
+
+def count_skill_items(text: str) -> int:
+    """How many distinct skills the candidate listed.
+
+    They write freely, so count the separators people actually use — commas,
+    semicolons, newlines and bullet marks — and ignore fragments too short to be
+    a skill. This is the number the UI's "7 / 10" counter shows, so the rule lives
+    here and is tested rather than guessed at in two places.
+    """
+    if not text:
+        return 0
+    parts = re.split(r"[,;\n•·|]+|(?<=[a-z])\s+and\s+(?=[A-Za-z])", text)
+    return len([p for p in (part.strip(" \t-–—.") for part in parts) if len(p) >= 2])
+
 
 def structure_skills_resume(resume_text: str, answers: list[dict] | None = None) -> dict:
     """Structure resume text into the skills-resume JSON, once for both formats.
 
-    `answers` are the user's replies to the "describe your skills" questions —
-    every named skill must land in a group (the field's SOURCE is the resume;
-    answers only fill what the resume lacks)."""
+    The candidate's own description of their skills (passed in `answers`) is the
+    AUTHORITY on the skills themselves: we fix grammar, spelling and casing and
+    group them — we never invent, rename or drop a skill they wrote. The resume
+    supplies the chronology (employers, dates, roles).
+    """
     if not ANTHROPIC_API_KEY or not resume_text.strip():
         return {}
 
@@ -53,21 +75,28 @@ def structure_skills_resume(resume_text: str, answers: list[dict] | None = None)
             if qa_lines:
                 answers_block = f"""
 
-ADDITIONAL SKILLS FROM CANDIDATE (confirmed by the candidate; every specific
-skill/tool named below MUST appear in a skill group):
+SKILLS AS THE CANDIDATE WROTE THEM (this is the AUTHORITY on skills — see rules):
 {qa_lines}"""
 
         prompt = f"""Extract the resume below into this exact JSON structure for a SKILLS-FIRST resume.
 Return ONLY the JSON object, no explanation, no markdown.
 
 Rules:
-- "skill_groups": group ALL skills (hard + soft + tools) into 3-6 named groups the
-  candidate's target roles would search for (e.g. "Marketing Automation", "Team
-  Leadership", "Data & Analytics"). Every group 3-8 concise skills. No duplicates.
+- "skill_groups": the skills are the CANDIDATE'S OWN WORDS, given below. Your job is
+  copy-editing, not authoring:
+  * fix grammar, spelling, capitalization and obvious typos (e.g. "exel" → "Excel",
+    "comunication" → "Communication", "managed peoples" → "People Management");
+  * keep the candidate's meaning and wording — do NOT rewrite a skill into different
+    words, do NOT merge two of their skills into one, do NOT split one into two;
+  * EVERY skill they wrote must appear exactly once, none dropped;
+  * do NOT add skills they did not write, not even ones implied by the resume;
+  * then sort them into 3-6 named groups a recruiter would search for (e.g.
+    "Marketing Automation", "Team Leadership", "Data & Analytics").
+  If they wrote NO skills of their own, and only then, take the skills from the resume.
 - "experience": COMPACT. Per job exactly one "one_liner" (max ~18 words: what the
   role was about + the headline result) and "skills_gained" (2-4 skills this role
-  leveled up — must also appear in a skill group). NO bullet lists.
-- Do NOT invent skills, employers, dates, or results that are not in the text.
+  leveled up — each must be one of the skills above, worded identically). NO bullets.
+- Do NOT invent employers, dates, or results that are not in the resume text.
 
 {{
   "name": "FULL NAME",
