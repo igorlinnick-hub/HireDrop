@@ -8,7 +8,7 @@ be added incrementally without changing this module's contract.
 
 from datetime import UTC, datetime, timedelta
 
-from app.db.client import get_supabase
+from app.db.client import fetch_paged, get_supabase
 
 ALLOWED_LEVELS = {"info", "warn", "error"}
 
@@ -109,17 +109,22 @@ def summary(
         except (ValueError, AttributeError):
             scoped_since = None
     cutoff = scoped_since or (datetime.now(UTC) - timedelta(hours=max(1, window_hours))).isoformat()
-    res = (
-        get_supabase()
-        .table("activity_log")
-        .select("timestamp, level, message")
-        .eq("user_id", user_id)
-        .gte("timestamp", cutoff)
-        .order("timestamp", desc=True)
-        .limit(cap)
-        .execute()
-    )
-    rows = res.data or []
+
+    # Paged: `cap` is 2000 and PostgREST hands back 1000 without a word, so a busy run's
+    # health chips were counted from half the log they claimed to read.
+    def build(start: int, end: int):
+        return (
+            get_supabase()
+            .table("activity_log")
+            .select("timestamp, level, message")
+            .eq("user_id", user_id)
+            .gte("timestamp", cutoff)
+            .order("timestamp", desc=True)
+            .order("id")
+            .range(start, end)
+        )
+
+    rows = fetch_paged(build, cap)
     by_level = {"info": 0, "warn": 0, "error": 0}
     by_type: dict[str, int] = {}
     last_error_at = None
@@ -255,21 +260,25 @@ def handback_stats(window_hours: int = 168, cap: int = 5000) -> dict:
     backlog, not something a job seeker should ever have to look at.
     """
     cutoff = (datetime.now(UTC) - timedelta(hours=max(1, window_hours))).isoformat()
-    res = (
-        get_supabase()
-        .table("activity_log")
-        .select("timestamp, user_id, message, metadata_json")
-        .eq("level", "warn")
-        .gte("timestamp", cutoff)
-        .order("timestamp", desc=True)
-        .limit(cap)
-        .execute()
-    )
+
+    def build(start: int, end: int):
+        return (
+            get_supabase()
+            .table("activity_log")
+            .select("timestamp, user_id, message, metadata_json")
+            .eq("level", "warn")
+            .gte("timestamp", cutoff)
+            .order("timestamp", desc=True)
+            .order("id")
+            .range(start, end)
+        )
+
+    rows = fetch_paged(build, cap)
     fields: dict[str, int] = {}
     by_platform: dict[str, int] = {}
     by_user: dict[str, int] = {}
     total = 0
-    for r in res.data or []:
+    for r in rows:
         meta = r.get("metadata_json") or {}
         # Only rows the extension tagged as hand-backs — every other warn line
         # (cap hits, save failures) shares the level but not this shape.

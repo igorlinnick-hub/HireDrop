@@ -36,6 +36,28 @@ def _harden_postgrest_session(client: Client) -> None:
         old.close()
 
 
+# PostgREST's max-rows. Every response stops here and says nothing about it: a bare
+# select, and even .limit(2000), return exactly 1000 rows (measured 09-20 against a
+# 1314-row table). A read that outgrows it keeps "working" on a truncated slice.
+PAGE = 1000
+
+
+def fetch_paged(build, limit: int, page: int = PAGE) -> list:
+    """Run a read in pages so it survives past the cap above.
+
+    `build(start, end)` must return the query with `.range(start, end)` applied. Give the
+    query a deterministic total order (e.g. `.order("date_found", desc=True).order("id")`)
+    — ties that reshuffle between pages silently duplicate and drop rows.
+    """
+    out: list = []
+    for start in range(0, limit, page):
+        rows = build(start, min(start + page, limit) - 1).execute().data or []
+        out.extend(rows)
+        if len(rows) < page:
+            break
+    return out[:limit]
+
+
 def get_supabase() -> Client:
     global _client
     if _client is None:

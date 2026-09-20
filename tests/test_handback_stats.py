@@ -11,8 +11,15 @@ from app.db import activity as activity_db
 
 
 def _rows_chain(supabase_mock):
-    """The fluent chain handback_stats() builds: select→eq→gte→order→limit→execute."""
-    return supabase_mock.table.return_value.select.return_value.eq.return_value.gte.return_value.order.return_value.limit.return_value.execute.return_value
+    """The fluent chain handback_stats() builds:
+    select→eq→gte→order(timestamp)→order(id)→range→execute.
+
+    The read is paged (app.db.client.fetch_paged) because PostgREST silently truncates
+    at 1000 rows while this asks for 5000 — hence range, not limit, and the second
+    order() that keeps pages from reshuffling.
+    """
+    q = supabase_mock.table.return_value.select.return_value.eq.return_value.gte.return_value
+    return q.order.return_value.order.return_value.range.return_value.execute.return_value
 
 
 def test_handback_stats_aggregates_only_tagged_rows(supabase_mock):
