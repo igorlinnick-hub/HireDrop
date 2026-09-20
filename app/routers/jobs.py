@@ -9,7 +9,13 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from app.db import jobs as jobs_db
 from app.deps import get_current_user
-from app.schemas import DeadLinkReport, FindJobsRequest, IngestJobsRequest, JobStatusUpdate
+from app.schemas import (
+    DeadLinkReport,
+    FindJobsRequest,
+    IngestJobsRequest,
+    JobDescriptionRequest,
+    JobStatusUpdate,
+)
 from modules.captcha_profile import TOUCH_RANK, captcha_touch, is_zero_touch
 
 router = APIRouter(tags=["jobs"])
@@ -577,6 +583,45 @@ def ingest_jobs(req: IngestJobsRequest, user=Depends(get_current_user)):
         "scored": scored_count,
         "unscored_title_only": len(rows) - len(scorable),
     }
+
+
+# Upper bound on stored posting text. The longest real posting in the pool is ~3400
+# chars; 20k leaves room for verbose ATS boards while refusing a page dump.
+MAX_DESCRIPTION_CHARS = 20_000
+# Below this it isn't a posting, it's a card snippet (Indeed's longest is ~90) — and
+# writing it would overwrite good text harvested earlier with a salary string.
+MIN_STORABLE_DESC = 300
+
+
+@router.post("/jobs/describe")
+def describe_job(req: JobDescriptionRequest, user=Depends(get_current_user)):
+    """Record the posting text the extension is reading on the detail page.
+
+    Indeed never reaches the server (it 403s us), so everything we know about an
+    Indeed job came from the search card — a snippet like "From $40,000 a yearFull-time".
+    Measured 2026-09-20: 0 of 387 Indeed pool rows held real text. Meanwhile the full
+    posting is right there in the user's browser, already parsed for the cover letter.
+
+    Three things downstream read that column and were all being fed the snippet:
+    resume tailoring (paid Sonnet to target a salary string), the fit judge, and the
+    interview kit — which answers "we don't have the text of this job posting" for
+    86% of our applications today.
+
+    Text-only write: never touches `status`, so a job already applied to or skipped
+    cannot be resurrected into the walk by describing it.
+    """
+    text = (req.description or "").strip()[:MAX_DESCRIPTION_CHARS]
+    if not req.link or len(text) < MIN_STORABLE_DESC:
+        return {"stored": False, "reason": "not enough posting text"}
+    job_id = jobs_db.save_description(
+        user.id,
+        req.link,
+        text,
+        title=req.title,
+        company=req.company,
+        platform=req.platform,
+    )
+    return {"stored": bool(job_id), "job_id": job_id, "chars": len(text)}
 
 
 @router.patch("/jobs/{job_id}/status")

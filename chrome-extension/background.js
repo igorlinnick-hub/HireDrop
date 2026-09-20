@@ -1298,6 +1298,25 @@ async function handleMessage(msg, sender) {
       }
     }
 
+    // Store the posting text the content script just read off the detail page, so the
+    // server stops treating an Indeed search snippet as the job description.
+    case "SAVE_JOB_DESCRIPTION": {
+      const j = msg.data || {};
+      if (!j.url || !j.description) return { stored: false };
+      try {
+        const r = await apiPost("/jobs/describe", {
+          link: j.url,
+          description: j.description,
+          title: j.title || "",
+          company: j.company || "",
+          platform: j.platform || "indeed",
+        });
+        return r;
+      } catch (err) {
+        return { stored: false, error: err.message };
+      }
+    }
+
     case "GET_RESUME_URL": {
       try {
         const qs = msg.jobUrl ? `?job_url=${encodeURIComponent(msg.jobUrl)}` : "";

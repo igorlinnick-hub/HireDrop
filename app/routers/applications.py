@@ -83,6 +83,16 @@ def applications_history(user=Depends(get_current_user)):
 
 _NO_JOB_TEXT = "We don't have the text of this job posting, so there's nothing to prepare from."
 
+# `bool(description)` was the test, and an Indeed row's description is the search-card
+# snippet — "From $40,000 a yearFull-time" is truthy, so the kit didn't say "no text",
+# it built an interview prep sheet out of a price tag. Same threshold the resume tailor
+# uses (profile.MIN_TAILORABLE_DESC): below it there is no posting to prepare from.
+MIN_PREPARABLE_DESC = 300
+
+
+def _has_job_text(app_row: dict) -> bool:
+    return len((app_row.get("description") or "").strip()) >= MIN_PREPARABLE_DESC
+
 
 def _header(app_row: dict) -> dict:
     """Role/company/link — the prep screen shows them whether or not a kit exists."""
@@ -158,8 +168,8 @@ def get_interview_kit(application_id: str, user=Depends(get_current_user)):
 
     return {
         "ready": False,
-        "can_generate": bool(app_row["description"]),
-        "reason": "" if app_row["description"] else _NO_JOB_TEXT,
+        "can_generate": _has_job_text(app_row),
+        "reason": "" if _has_job_text(app_row) else _NO_JOB_TEXT,
         **_header(app_row),
     }
 
@@ -177,7 +187,7 @@ def create_interview_kit(application_id: str, user=Depends(get_current_user)):
     if cached:
         return _kit_response(cached, app_row)
 
-    if not app_row["description"]:
+    if not _has_job_text(app_row):
         return JSONResponse(
             status_code=422,
             content={"error": "no_job_text", "message": _NO_JOB_TEXT},
