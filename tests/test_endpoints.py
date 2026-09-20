@@ -111,16 +111,6 @@ def test_cover_letter_template_saves(auth_client):
     assert res.json()["saved"] is True
 
 
-def test_email_check_not_configured(auth_client):
-    with (
-        patch("config.EMAIL_ADDRESS", ""),
-        patch("config.EMAIL_PASSWORD", ""),
-    ):
-        res = auth_client.get("/api/v1/tools/email-check")
-    assert res.status_code == 200
-    assert res.json()["configured"] is False
-
-
 def test_cover_letter_endpoint(auth_client):
     fake_job = {"title": "Backend Dev", "company": "Acme", "description": "Python role"}
     with (
@@ -236,25 +226,6 @@ def test_resume_status(auth_client):
     assert res.json()["uploaded"] is False
 
 
-def test_email_status_updates(auth_client):
-    interview_app = {
-        "id": "a1",
-        "title": "Dev",
-        "company": "Acme",
-        "platform": "indeed",
-        "link": "https://indeed.com/1",
-        "date_applied": "2026-06-16",
-        "status": "interview",
-        "cover_letter": "",
-    }
-    with patch("app.routers.email_processor.apps_db.get_history", return_value=[interview_app]):
-        res = auth_client.get("/api/v1/email/status-updates")
-    assert res.status_code == 200
-    data = res.json()
-    assert len(data) == 1
-    assert data[0]["status"] == "interview"
-
-
 # ── Manual application status (PATCH /applications/{id}/status) ──────────────
 # The user's own "the employer answered" channel. The automatic email parser is
 # off (one shared inbox, matched by company across all users), so this is the
@@ -304,3 +275,14 @@ def test_patch_application_status_not_found(auth_client):
             json={"status": "rejected"},
         )
     assert res.status_code == 404
+
+
+def test_email_surfaces_are_gone(auth_client):
+    """The shared-inbox endpoints were removed 2026-09-20, not just disabled.
+
+    /tools/email-check returned the contents of ONE shared mailbox to any signed-in
+    user, and /email/status-updates was the vestige of the same idea. Marking a reply
+    is the owner's job now (PATCH /applications/{id}/status).
+    """
+    assert auth_client.get("/api/v1/tools/email-check").status_code == 404
+    assert auth_client.get("/api/v1/email/status-updates").status_code == 404

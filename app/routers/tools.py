@@ -325,17 +325,6 @@ def save_letter_template(req: TemplateRequest, user=Depends(get_current_user)):
     return {"saved": True}
 
 
-@router.get("/tools/email-check")
-def email_check(user=Depends(get_current_user)):
-    from config import EMAIL_ADDRESS, EMAIL_PASSWORD
-    from modules.email_parser import check_email_responses
-
-    if not EMAIL_ADDRESS or not EMAIL_PASSWORD:
-        return {"configured": False, "count": 0, "emails": []}
-    responses = check_email_responses()
-    return {"configured": True, "count": len(responses), "emails": responses}
-
-
 @router.get("/tools/stall-scan")
 def stall_scan(user=Depends(get_current_user)):
     """Admin-only, read-only: what the stall watch currently sees for every running campaign.

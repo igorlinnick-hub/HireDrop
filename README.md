@@ -50,8 +50,7 @@ modules/
 ├── filters.py             Pure keyword/location/job_type filter
 ├── ai_cover_letter.py     Anthropic singleton + cover-letter pipeline
 ├── platforms/             One scraper per platform (remoteok, indeed, wellfound)
-├── telegram_bot.py        Notification gateway
-└── email_parser.py        IMAP response checker
+└── telegram_bot.py        Notification gateway
 
 chrome-extension/          Manifest V3 extension that drives Indeed
 ├── manifest.json
@@ -100,7 +99,6 @@ Optional:
 - `RATE_LIMIT_LETTERS_PER_DAY` (default `50`)
 - `RATE_LIMIT_ENFORCE` (default `false` — soft mode counts but doesn't block)
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
-- `EMAIL_ADDRESS`, `EMAIL_PASSWORD`, `EMAIL_IMAP_SERVER`
 
 ## Local development
 

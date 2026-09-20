@@ -35,7 +35,6 @@ from app.routers import (
     auth,
     billing,
     campaign,
-    email_processor,
     extension,
     jobs,
     profile,
@@ -45,40 +44,16 @@ from app.routers import (
 )
 from config import STALL_WATCH_ENABLED
 
-_EMAIL_POLL_INTERVAL = int(os.getenv("EMAIL_POLL_INTERVAL_SECONDS", "1800"))  # 30 min default
-
-
-async def _email_poll_loop() -> None:
-    from app.db import applications as apps_db
-    from modules.email_parser import check_email_responses
-
-    status_map = {"interview_invite": "interview", "rejected": "rejected", "received": "received"}
-
-    while True:
-        await asyncio.sleep(_EMAIL_POLL_INTERVAL)
-        try:
-            for item in check_email_responses():
-                company = item.get("company", "")
-                new_status = status_map.get(item["email_status"])
-                if not company or not new_status:
-                    continue
-                for app in apps_db.find_by_company_all_users(company):
-                    if app["status"] != new_status:
-                        apps_db.update_status(app["id"], new_status, app["user_id"])
-        except Exception as exc:  # noqa: BLE001
-            print(f"[email_poll] error: {exc}")
-
 
 @asynccontextmanager
 async def lifespan(app_: FastAPI):
-    # Email response-tracking is OFF by default. It was crude (keyword subject matching) and
-    # cross-tenant (find_by_company_all_users mutates every user's apps by company name from
-    # ONE shared inbox), and check_email_responses() did BLOCKING imaplib IO right inside the
-    # event loop — a hung IMAP call could stall the whole API. Set EMAIL_POLL_ENABLED=1 to
-    # bring it back (and move it off the loop first).
-    task = None
-    if os.getenv("EMAIL_POLL_ENABLED", "").lower() in ("1", "true", "yes"):
-        task = asyncio.create_task(_email_poll_loop())
+    # Email response-tracking was removed 2026-09-20. It scanned ONE shared inbox,
+    # classified by subject keywords, and matched applications by company name across
+    # EVERY user — so one recruiter's "unfortunately" could mark strangers' rows
+    # rejected. It had been off behind EMAIL_POLL_ENABLED since 2026-06-29 and was
+    # never turned back on. Its replacement is the owner marking the reply themselves
+    # (PATCH /applications/{id}/status): we cannot read a user's mailbox, and the one
+    # inbox we could read was never theirs.
 
     # Stall watch: "running, but applications aren't growing" — the failure the heartbeat
     # cannot see (app/stall_watch.py). ON by default; it only reports (activity line +
@@ -90,9 +65,8 @@ async def lifespan(app_: FastAPI):
         stall_task = asyncio.create_task(watch_loop())
 
     yield
-    for t in (task, stall_task):
-        if t:
-            t.cancel()
+    if stall_task:
+        stall_task.cancel()
 
 
 app = FastAPI(title="HireDrop API", version="1.0.0", lifespan=lifespan)
@@ -169,7 +143,6 @@ app.include_router(tools.router, prefix="/api/v1")
 app.include_router(activity.router, prefix="/api/v1")
 app.include_router(extension.router, prefix="/api/v1")
 app.include_router(auth.router, prefix="/api/v1")
-app.include_router(email_processor.router, prefix="/api/v1")
 app.include_router(promo.router, prefix="/api/v1")
 app.include_router(billing.router, prefix="/api/v1")
 app.include_router(review.router, prefix="/api/v1")

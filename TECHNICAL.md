@@ -26,14 +26,13 @@
     - [Message Protocol](#message-protocol)
     - [Anti-Detection Techniques](#anti-detection-techniques)
 11. [Telegram Notifications](#telegram-notifications)
-12. [Email Monitoring](#email-monitoring)
-13. [Encryption Module](#encryption-module)
-14. [Frontend (Dashboard & Onboarding)](#frontend-dashboard--onboarding)
-15. [CLI Interface](#cli-interface)
-16. [Deployment](#deployment)
-17. [Environment Variables](#environment-variables)
-18. [Dependencies](#dependencies)
-19. [Known Limitations & TODOs](#known-limitations--todos)
+12. [Encryption Module](#encryption-module)
+13. [Frontend (Dashboard & Onboarding)](#frontend-dashboard--onboarding)
+14. [CLI Interface](#cli-interface)
+15. [Deployment](#deployment)
+16. [Environment Variables](#environment-variables)
+17. [Dependencies](#dependencies)
+18. [Known Limitations & TODOs](#known-limitations--todos)
 
 ---
 
@@ -82,7 +81,6 @@ hiredrop/                          # ~4,500 lines total
 │   ├── filters.py                #    42 lines — Job filtering logic
 │   ├── scraper.py                #    33 lines — Legacy scraper (RemoteOK only, used by CLI)
 │   ├── telegram_bot.py           #    22 lines — Telegram notifications
-│   ├── email_parser.py           #    65 lines — IMAP email checker
 │   ├── encryption.py             #    19 lines — Fernet encryption utilities
 │   │
 │   └── platforms/                # Pluggable scraper system
@@ -310,7 +308,6 @@ app.add_middleware(
 | `GET` | `/` | Dashboard HTML (or onboarding wizard if no `profile.json`) |
 | `GET` | `/api/stats` | Total jobs, total applications, new today |
 | `GET` | `/api/checklist` | Setup completion status (resume, keywords, search) |
-| `GET` | `/api/email-check` | Check IMAP for job-related emails, notify via Telegram |
 | `GET` | `/api/extension/download` | Zip and download chrome-extension folder |
 
 ### Data Storage
@@ -827,41 +824,10 @@ All communication uses `chrome.runtime.sendMessage()` with `type` field.
 
 **Trigger points:**
 1. After `POST /api/find-jobs` — `"HireDrop: {count} new jobs found on {platforms}!"`
-2. After `GET /api/email-check` — `"HireDrop Email: {subject}\nFrom: {sender}"` (for each match)
 
 **Behavior:** Silently fails if not configured (prints warning to console).
 
 **Parse mode:** HTML — supports `<b>`, `<i>`, `<a>` tags in messages.
-
----
-
-## Email Monitoring
-
-**Module:** `modules/email_parser.py` (65 lines)
-
-**Protocol:** IMAP4 over SSL
-
-**Default server:** `imap.gmail.com` (configurable via `EMAIL_IMAP_SERVER`)
-
-### Logic
-
-1. Connect to IMAP server
-2. Login with `EMAIL_ADDRESS` / `EMAIL_PASSWORD`
-3. Search for `UNSEEN` emails in inbox
-4. For each unseen email, check if subject contains any keywords:
-   - `"interview"`
-   - `"application received"`
-   - `"next step"`
-   - `"thank you for applying"`
-5. Uses `BODY.PEEK[]` (does NOT mark emails as read)
-6. Returns matching emails: `{subject, sender, date}`
-
-### Header Decoding
-
-Handles multi-part encoded headers (RFC 2047) with charset detection:
-- Tries declared charset
-- Falls back to UTF-8
-- Uses `errors="replace"` for robustness
 
 ---
 
@@ -966,9 +932,6 @@ This URL is hardcoded in:
 | `ANTHROPIC_API_KEY` | For AI features | `""` | Anthropic API key for cover letter generation |
 | `TELEGRAM_BOT_TOKEN` | For notifications | `""` | Telegram bot token |
 | `TELEGRAM_CHAT_ID` | For notifications | `""` | Telegram chat ID for receiving messages |
-| `EMAIL_ADDRESS` | For email monitoring | `""` | IMAP email address |
-| `EMAIL_PASSWORD` | For email monitoring | `""` | IMAP email password (Gmail: app password) |
-| `EMAIL_IMAP_SERVER` | No | `"imap.gmail.com"` | IMAP server hostname |
 | `ENCRYPTION_KEY` | No | Auto-generated | Fernet encryption key (not actively used) |
 
 ---
