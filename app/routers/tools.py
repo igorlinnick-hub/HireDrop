@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from app.db import applications as apps_db
+from app.db import handbacks as handbacks_db
 from app.db import jobs as jobs_db
 from app.db import screener_cache
 from app.db import usage as usage_db
@@ -275,6 +276,38 @@ def assess_fit_endpoint(req: AssessFitRequest, user=Depends(get_current_user)):
     return result
 
 
+def _match_human_answer(question: str, human: dict[str, str], options: list[str]) -> str | None:
+    """The human's answer for this question, or None.
+
+    Labels drift between the hand-back and the retry — a "(required)" marker appears,
+    whitespace collapses, an asterisk shows up. The same normalisation the answer cache
+    uses handles that, and nothing looser: a near-match on a screener question can put
+    the answer to "3 years of Python?" into "3 years of Java?".
+
+    For a multiple-choice field the stored answer is snapped back to a real option, so
+    an answer saved before the form reworded its choices can't be typed in as free text.
+    """
+    from app.db.screener_cache import _normalise
+
+    want = _normalise(question)
+    if not want:
+        return None
+    for stored_q, stored_a in human.items():
+        if _normalise(stored_q) != want:
+            continue
+        answer = (stored_a or "").strip()
+        if not answer:
+            return None
+        if not options:
+            return answer
+        low = answer.lower()
+        for o in options:
+            if o.strip().lower() == low:
+                return o
+        return None  # the options changed — let the normal path decide
+    return None
+
+
 @router.post("/tools/answer-question")
 def answer_question(req: AnswerQuestionRequest, user=Depends(get_current_user)):
     """Generate an answer for one employer screener question (Loop 4 filler).
@@ -291,6 +324,19 @@ def answer_question(req: AnswerQuestionRequest, user=Depends(get_current_user)):
     slot, or the budget still drains at the old rate and only the bill improves.
     """
     profile = get_profile(user.id)
+
+    # A human's own answer outranks everything — cache and model both. This is the
+    # return leg of the hand-back loop (Igor, 09-21): the filler left a question blank,
+    # the dashboard asked the person, and the job went back into the queue. On this
+    # retry the answer is already here, so the form fills straight through.
+    # Checked before the quota claim for the same reason the cache is: a question we
+    # already have the answer to must not spend a slot.
+    if req.job_id:
+        human = handbacks_db.answers_for_job(user.id, req.job_id)
+        if human:
+            answer = _match_human_answer(req.question, human, req.options)
+            if answer:
+                return {"answer": answer, "from_user": True}
 
     cache_key = screener_cache.build_key(req.question, req.options, profile)
     if cache_key:

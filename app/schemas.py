@@ -38,6 +38,11 @@ class AnswerQuestionRequest(BaseModel):
     options: list[str] = Field(default_factory=list, max_length=60)
     job_title: str = Field("", max_length=300)
     company: str = Field("", max_length=300)
+    # The pool row being applied to, when there is one. Only used to look up answers
+    # the HUMAN already gave for this job on a previous hand-back — a question someone
+    # answered by hand must never be re-derived by a model, and must never come back
+    # with a different answer the second time.
+    job_id: str | None = Field(None, max_length=64)
 
 
 class AssessFitRequest(BaseModel):
