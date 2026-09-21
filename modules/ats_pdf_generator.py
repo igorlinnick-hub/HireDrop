@@ -360,6 +360,31 @@ def _section_block(title: str, styles: dict) -> list:
     ]
 
 
+def skill_key(value: str) -> str:
+    """Match short list items the way a reader does, not the way `==` does.
+
+    "Excel", "excel" and "Excel " are one entry on the page; printing them twice is
+    what makes a generated resume look machine-made. Shared with the skills resume so
+    both documents agree on what counts as the same thing.
+    """
+    import re as _re
+
+    return _re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
+
+
+def dedupe_keeping_order(items: list, seen: set | None = None) -> list:
+    """First occurrence wins; `seen` lets a caller dedupe across several lists."""
+    seen = seen if seen is not None else set()
+    out = []
+    for item in items:
+        key = skill_key(item if isinstance(item, str) else "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
 ATS_STRUCTURE_FIELDS = (
     "name",
     "title",
@@ -389,7 +414,8 @@ def sanitize_structure(raw: dict) -> dict:
     def text_list(v) -> list:
         if not isinstance(v, list):
             return []
-        return [t for t in (text(i) for i in v) if t]
+        # Deduped for the same reason the skills resume is: one entry, printed once.
+        return dedupe_keeping_order([t for t in (text(i) for i in v) if t])
 
     contact_in = raw.get("contact") if isinstance(raw.get("contact"), dict) else {}
     out = {

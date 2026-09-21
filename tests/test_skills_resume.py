@@ -10,7 +10,7 @@ again). Storage is monkeypatched; no network.
 from reportlab.platypus import Paragraph
 
 from app.db import resume as resume_storage
-from modules.skills_resume import build_skills_story
+from modules.skills_resume import build_skills_story, dedupe_skill_groups
 
 SAMPLE = {
     "name": "Jane Doe",
@@ -143,3 +143,75 @@ def test_dial_falls_back_to_original_when_file_missing(monkeypatch):
     # chosen file missing must not 404 an apply in progress
     assert resume_storage.best_signed_url("u", False, default_resume="skills") == "URL-orig"
     assert resume_storage.best_signed_url("u", True, default_resume="ats") == "URL-orig"
+
+
+class TestDuplicateSkills:
+    """Igor, 2026-09-21: after adding skills, the skills resume prints some of them twice.
+
+    The prompt already tells the model "EVERY skill they wrote must appear exactly
+    once", and within one group it mostly complies. What it does not catch is the same
+    skill landing in TWO groups — which is the repetition that reaches the page. An
+    instruction to a model is not a guarantee, so the guarantee is code.
+    """
+
+    def test_the_same_skill_in_two_groups_prints_once(self):
+        out = dedupe_skill_groups(
+            {
+                "skill_groups": [
+                    {"group": "Data & Analytics", "skills": ["Excel", "SQL"]},
+                    {"group": "Reporting", "skills": ["Excel", "Power BI"]},
+                ]
+            }
+        )
+        assert out["skill_groups"][0]["skills"] == ["Excel", "SQL"]
+        assert out["skill_groups"][1]["skills"] == ["Power BI"]
+
+    def test_casing_and_spacing_are_the_same_skill(self):
+        out = dedupe_skill_groups(
+            {"skill_groups": [{"group": "G", "skills": ["Excel", "excel", "EXCEL "]}]}
+        )
+        assert out["skill_groups"][0]["skills"] == ["Excel"]
+
+    def test_the_first_spelling_is_the_one_kept(self):
+        out = dedupe_skill_groups(
+            {"skill_groups": [{"group": "G", "skills": ["Power BI", "power bi"]}]}
+        )
+        assert out["skill_groups"][0]["skills"] == ["Power BI"]
+
+    def test_a_group_emptied_by_dedup_is_dropped(self):
+        # A heading with nothing under it reads as a bug of its own.
+        out = dedupe_skill_groups(
+            {
+                "skill_groups": [
+                    {"group": "Keeps", "skills": ["SQL"]},
+                    {"group": "Emptied", "skills": ["sql"]},
+                ]
+            }
+        )
+        assert [g["group"] for g in out["skill_groups"]] == ["Keeps"]
+
+    def test_certifications_and_languages_get_the_same_pass(self):
+        out = dedupe_skill_groups(
+            {"certifications": ["BLS", "bls"], "languages": ["English", "english"]}
+        )
+        assert out["certifications"] == ["BLS"]
+        assert out["languages"] == ["English"]
+
+    def test_skills_gained_still_repeats_a_skill_listed_above(self):
+        # Deliberate: naming the skill under the job that built it is the section's point.
+        out = dedupe_skill_groups(
+            {
+                "skill_groups": [{"group": "G", "skills": ["Excel"]}],
+                "experience": [{"title": "Analyst", "skills_gained": ["Excel", "Excel", "SQL"]}],
+            }
+        )
+        assert out["experience"][0]["skills_gained"] == ["Excel", "SQL"]
+
+    def test_survives_a_malformed_group(self):
+        out = dedupe_skill_groups(
+            {"skill_groups": ["not a dict", {"group": "G", "skills": ["SQL"]}]}
+        )
+        assert out["skill_groups"] == [{"group": "G", "skills": ["SQL"]}]
+
+    def test_a_resume_without_skills_is_untouched(self):
+        assert dedupe_skill_groups({"name": "Jane"}) == {"name": "Jane"}
