@@ -13,6 +13,9 @@ data/campaign_state.json
 .venv/
 .pytest_cache/
 .coverage
+# Dev-only npm tree for the extension's JS test suite (package.json is private,
+# nothing here ships — the extension loads no npm code). The lockfile IS tracked.
+node_modules/
 
 # Build artifacts
 hiredrop-extension.zip

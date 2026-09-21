@@ -1,0 +1,12 @@
+{
+  "name": "hiredrop-extension-tests",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Dev-only manifest for the Chrome extension's JS test suite. The backend itself is Python — nothing here ships, and the extension loads no npm code.",
+  "scripts": {
+    "test:ext": "node chrome-extension/tests/run-all.js"
+  },
+  "devDependencies": {
+    "jsdom": "^27.0.0"
+  }
+}
