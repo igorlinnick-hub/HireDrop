@@ -37,6 +37,26 @@ _NON_US_RE = re.compile(
     re.I,
 )
 
+# Foreign HUB CITIES that show up in board locations WITHOUT their country ("Bengaluru",
+# "Remote - Pune", "Toronto"). The country regex above never sees them, which is exactly
+# how a "remote" search surfaced India: a scoped-remote row naming only the city sailed
+# through the remote branch below. Same philosophy as _NON_US_RE — top offenders, not a
+# gazetteer. US towns sharing a name (Dublin OH, Melbourne FL, Athens GA…) are protected
+# by the state-hint check in names_foreign_country, not by omission here.
+_NON_US_CITY_RE = re.compile(
+    r"\b(bengaluru|bangalore|hyderabad|pune|mumbai|delhi|chennai|noida|gurgaon|gurugram|"
+    r"kolkata|ahmedabad|toronto|vancouver|montreal|ottawa|london|manchester|edinburgh|"
+    r"berlin|munich|hamburg|paris|amsterdam|dublin|madrid|barcelona|lisbon|warsaw|"
+    r"krakow|kraków|prague|budapest|bucharest|sofia|athens|stockholm|oslo|copenhagen|"
+    r"helsinki|zurich|geneva|vienna|milan|rome|istanbul|tel aviv|dubai|tokyo|osaka|"
+    r"seoul|beijing|shanghai|shenzhen|taipei|hong kong|manila|jakarta|kuala lumpur|"
+    r"bangkok|hanoi|ho chi minh|sydney|melbourne|brisbane|auckland|wellington|"
+    r"s[ãa]o paulo|rio de janeiro|buenos aires|santiago|bogot[áa]|lima|mexico city|"
+    r"monterrey|guadalajara|lagos|nairobi|cape town|johannesburg|kyiv|kiev|tbilisi|"
+    r"yerevan|almaty|tashkent)\b",
+    re.I,
+)
+
 _STATE_CODES = {
     "al": "alabama",
     "ak": "alaska",
@@ -92,6 +112,34 @@ _STATE_CODES = {
 }
 _NAME_TO_CODE = {v: k for k, v in _STATE_CODES.items()}
 
+# "City, ST" is the canonical US shape — a state code right after a comma is a US hint
+# strong enough to clear a foreign-named town (Dublin, OH / Melbourne, FL / Athens, GA).
+# Bare 2-letter matching would be noise ("Remote in India" contains "in"), so the comma
+# anchors it. Full state names count too ("Albuquerque, New Mexico" must not read as
+# Mexico).
+_US_STATE_CODE_HINT_RE = re.compile(r",\s*(" + "|".join(_STATE_CODES) + r")\b", re.I)
+_US_STATE_NAME_HINT_RE = re.compile(
+    r"\b(" + "|".join(re.escape(n) for n in _NAME_TO_CODE) + r")\b", re.I
+)
+
+
+def names_foreign_country(row_location: str) -> bool:
+    """Does this free-text location plainly place the job OUTSIDE the US?
+
+    The country-level question every US-serving surface can ask without knowing the
+    user's city: harvest (don't pool it), the listing (don't show it), the deck/queue
+    (don't swipe/apply it). Conservative on purpose — an unrecognized string returns
+    False and flows through to the finer city/state logic or passes as unknown; this
+    only fires when the text names a non-US country or a known foreign hub city and
+    gives the US no mention at all.
+    """
+    low = " " + (row_location or "").lower() + " "
+    if _US_HINT_RE.search(low) or _US_STATE_CODE_HINT_RE.search(low):
+        return False
+    if _US_STATE_NAME_HINT_RE.search(low):
+        return False
+    return bool(_NON_US_RE.search(low) or _NON_US_CITY_RE.search(low))
+
 
 def parse_user_location(location: str) -> dict:
     """ "Miami, Florida, US" -> {city: "miami", state_code: "fl", state_name: "florida"}.
@@ -107,7 +155,13 @@ def parse_user_location(location: str) -> dict:
             state_name, state_code = bare, _NAME_TO_CODE[bare]
         elif bare in _STATE_CODES:
             state_code, state_name = bare, _STATE_CODES[bare]
-        elif bare not in ("us", "usa", "united states") and city is None:
+        # Coarse enum values are not cities. "remote" IS kept as a pseudo-city on
+        # purpose — it turns the deck filter on, and the verdict's remote branch
+        # handles it before any city compare — but "europe" as a city made every
+        # placeable row on a europe profile read "elsewhere" and emptied the deck.
+        elif bare not in ("us", "usa", "united states", "europe", "anywhere", "worldwide") and (
+            city is None
+        ):
             city = bare
     return {"city": city, "state_code": state_code, "state_name": state_name}
 
@@ -126,7 +180,11 @@ def location_verdict(row_location: str, user: dict) -> str:
 
     if _REMOTE_RE.search(low):
         # Remote fits unless it names a non-US scope and gives the US no mention.
-        if _NON_US_RE.search(low) and not _US_HINT_RE.search(low):
+        # A scope can be a country OR a bare foreign hub city ("Remote - Bengaluru")
+        # — the city shape is how India leaked through a "remote" search (09-21).
+        # names_foreign_country carries the "City, ST" protection, so Remote -
+        # Melbourne, FL stays a fit while Remote - Melbourne reads as Australia.
+        if names_foreign_country(text):
             return "elsewhere"
         return "fits"
 

@@ -111,7 +111,7 @@ def on_search_filter(jobs: list, profile: dict) -> list:
     rule, one place — "what we collect", "what we show" and "what we apply to" cannot
     drift apart again.
     """
-    from modules.job_location import location_verdict, parse_user_location
+    from modules.job_location import location_verdict, names_foreign_country, parse_user_location
     from modules.job_type import matches_job_type
     from modules.platforms.ats_boards import keyword_match
 
@@ -119,13 +119,26 @@ def on_search_filter(jobs: list, profile: dict) -> list:
     wanted_type = (profile.get("job_type") or "").strip() or None
     user_loc = parse_user_location(profile.get("location") or "")
     loc_filter_on = bool(user_loc.get("city") or user_loc.get("state_code"))
+    # Country gate, independent of the city/state filter above. The coarse "usa"/"remote"
+    # enum parses to no city/state, which used to switch the location filter OFF entirely —
+    # and a "remote" search surfaced Bengaluru/India rows from the worldwide boards
+    # (Igor, 09-21). We serve US job seekers; only the explicit "europe" pick opts out.
+    country_gate = _wants_us_jobs(profile)
     return [
         j
         for j in jobs
         if keyword_match(f"{j.get('title', '')} {j.get('location', '')}", keywords)
         and matches_job_type(j.get("job_type"), wanted_type)
+        and (not country_gate or not names_foreign_country(j.get("location")))
         and (not loc_filter_on or location_verdict(j.get("location"), user_loc) != "elsewhere")
     ]
+
+
+def _wants_us_jobs(profile: dict) -> bool:
+    """Every profile except an explicit "europe" pick is a US job seeker — the product,
+    the boards we sweep and the resume filler are all US-shaped. One place, so harvest,
+    listing, deck and queue can never disagree about who the country gate applies to."""
+    return (profile.get("location") or "").strip().lower() != "europe"
 
 
 @router.get("/jobs/ats-queue")
@@ -270,6 +283,13 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
     # and Claude Haiku (Haiku cost ~$0.025/200 jobs) is a better semantic judge.
     already_saved = jobs_db.existing_links(user.id, [j["link"] for j in all_jobs])
     new_jobs = [j for j in all_jobs if j["link"] not in already_saved]
+    # Country gate at COLLECTION (RemoteOK is a worldwide feed — a "remote" search used to
+    # pool Bengaluru/India rows). Before scoring on purpose: never spend model tokens on a
+    # job the user cannot take. Same gate as the deck/queue (see _wants_us_jobs).
+    from modules.job_location import names_foreign_country
+
+    if _wants_us_jobs(profile):
+        new_jobs = [j for j in new_jobs if not names_foreign_country(j.get("location"))]
     # Salary filter runs BEFORE AI scoring (the whole point: don't spend model tokens or
     # an application slot on out-of-range pay). Unlisted salary passes unless the user
     # opted into listed-only — see modules/salary_filter.py.
@@ -352,6 +372,13 @@ def _run_ats_discovery(user_id: str) -> None:
         # write) can save a link between the read above and here.
         already_saved = jobs_db.existing_links(user_id, [j["link"] for j in found])
         new_jobs = [j for j in found if j["link"] not in already_saved]
+        # Country gate at COLLECTION — the 213-board watchlist carries international
+        # offices, and their Bengaluru/Toronto/Berlin rows have no business in a US
+        # user's pool (or in the scoring bill). Same gate as the deck/queue.
+        from modules.job_location import names_foreign_country
+
+        if _wants_us_jobs(profile):
+            new_jobs = [j for j in new_jobs if not names_foreign_country(j.get("location"))]
         new_jobs, _salary_dropped = filter_by_salary(new_jobs, profile)
         if new_jobs:
             new_jobs = score_jobs_batch(new_jobs, profile, resume_text)

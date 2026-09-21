@@ -7,7 +7,7 @@ truthfully — same city, same state, or remote — and everything it cannot pla
 like job_type: silence is not a mismatch.
 """
 
-from modules.job_location import location_verdict, parse_user_location
+from modules.job_location import location_verdict, names_foreign_country, parse_user_location
 
 MIAMI = parse_user_location("Miami, Florida, US")
 
@@ -64,6 +64,81 @@ def test_profile_without_a_city_matches_at_state_level():
     assert fl_only["city"] is None
     assert location_verdict("Orlando, FL", fl_only) == "fits"
     assert location_verdict("Austin, TX", fl_only) == "elsewhere"
+
+
+def test_remote_scoped_to_a_bare_foreign_city_is_elsewhere():
+    # The 09-21 India leak: boards write the hub city WITHOUT the country, and the
+    # remote branch only knew countries — "Remote - Bengaluru" sailed through.
+    assert location_verdict("Remote - Bengaluru", MIAMI) == "elsewhere"
+    assert location_verdict("Remote (Pune)", MIAMI) == "elsewhere"
+    assert location_verdict("Toronto - Remote", MIAMI) == "elsewhere"
+    # …but a US town sharing a foreign name is protected by its "City, ST" shape.
+    assert location_verdict("Remote - Melbourne, FL", MIAMI) == "fits"
+
+
+def test_names_foreign_country_is_the_country_level_gate():
+    # Fires: plain country, scoped remote, bare foreign hub city.
+    for loc in ("India - Bangalore", "Remote (Bulgaria)", "Bengaluru", "Hyderabad, Telangana"):
+        assert names_foreign_country(loc), loc
+    # Never fires: US shapes, US-remote, foreign-named US towns, silence.
+    for loc in (
+        "Remote",
+        "Remote US",
+        "Miami, FL",
+        "Dublin, OH",
+        "Athens, GA",
+        "Albuquerque, New Mexico",
+        "Hybrid",
+        "",
+        None,
+    ):
+        assert not names_foreign_country(loc), loc
+
+
+def test_coarse_remote_profile_still_hides_foreign_rows_in_the_deck():
+    # "remote"/"usa" parse to no city/state, which used to switch the location filter
+    # OFF — the exact hole that put India in a "remote" search (09-21).
+    from unittest.mock import patch
+
+    from app.routers import jobs as jobs_router
+
+    class _User:
+        id = "u1"
+
+    def _row(title, loc):
+        return {
+            "title": title,
+            "location": loc,
+            "platform": "greenhouse",
+            "status": "new",
+            "link": f"https://boards.greenhouse.io/x/jobs/{abs(hash(title))}",
+            "job_type": None,
+        }
+
+    rows = [
+        _row("AI Engineer", "Bengaluru, India"),
+        _row("AI Engineer 2", "Remote - Bengaluru"),
+        _row("AI Engineer 3", "Remote"),
+    ]
+    with (
+        patch.object(jobs_router.jobs_db, "get_jobs", return_value=rows),
+        patch(
+            "app.db.profile.get_profile",
+            return_value={"keywords": ["ai engineer"], "location": "remote"},
+        ),
+    ):
+        out = jobs_router.get_deck(user=_User())
+    assert [c["title"] for c in out["cards"]] == ["AI Engineer 3"]
+
+
+def test_europe_profile_opts_out_of_the_country_gate():
+    from app.routers.jobs import on_search_filter
+
+    rows = [
+        {"title": "AI Engineer", "location": "Berlin, Germany", "job_type": None},
+    ]
+    profile = {"keywords": ["ai engineer"], "location": "europe", "job_type": ""}
+    assert on_search_filter(rows, profile) == rows
 
 
 def test_profile_without_a_location_disables_the_filter_entirely():
