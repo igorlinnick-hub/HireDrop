@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Price the cover-letter model split — Haiku (tap) vs Sonnet (auto) — on the SAME jobs.
+"""Put two cover-letter models side by side on the SAME jobs — cost and text.
 
-Why this exists (Igor, 2026-09-19/21). ai_cover_letter picks its model off
-`profile.submit_mode`: tap gets Haiku, auto gets Sonnet. The reason written in the code
-is "in tap mode the human reads + edits every cover letter before submit, so quality is
-held by the human" — and that stopped being true on 2026-07-25, when the tapalka was
-rebuilt: the swipe now happens BEFORE the letter exists, and the letter is generated in
-the background afterwards. Nobody reads it. So the jobs a human picked personally get the
-cheaper letter, and the ones the machine found get the better one — backwards.
+Written 2026-09-21 to settle whether tap should keep the cheaper letter model. It did
+settle it (it shouldn't — the split is gone, see COVER_LETTER_MODEL), and the script
+stays because the question recurs: any time a cheaper or newer model shows up, this is
+how you find out what it actually costs and what it actually writes.
 
-measure_ai_cost.py can't answer this: it prices ONE letter per job, in whatever mode the
-profile says. To decide whether to unify the models you need both letters for the SAME
-posting — same prompt, same resume — so the only variable is the model.
+measure_ai_cost.py can't answer this: it prices ONE letter per job, with whatever model
+ships. Judging a model swap needs both letters for the SAME posting — same prompt, same
+resume — so the model is the only variable. Edit MODELS below to compare a new pair.
+
+What the first run found, and why the text half matters as much as the numbers: Sonnet
+opened 5 of 8 letters with "Here's a cover letter for Jordan:" and a --- fence, which
+went into the employer's form verbatim. Four such letters were already in the production
+applications table. That bug was invisible to every cost measurement ever run here.
 
 This writes two things:
   * the numbers — measured input/output tokens and dollars per letter, per model, and
@@ -47,6 +49,13 @@ PRICES = {
 # Used only to express the letter delta as a share of the whole — the letter numbers
 # below are measured fresh on every run.
 BASELINE_APP_USD = 0.0129
+
+# Which models to put side by side. Keys are just labels for the report; "tap"/"auto"
+# are kept so the output reads the same as the 09-21 measurement it is compared against.
+MODELS = {
+    "tap": "claude-haiku-4-5-20251001",
+    "auto": "claude-sonnet-4-6",
+}
 
 CALLS: list[dict] = []
 
@@ -105,14 +114,20 @@ def main(path: str, out_path: str = "letter_models.md") -> int:
         jobs = json.load(fh)
     _install_recorder()
     ai_cover_letter.load_resume_text = lambda *a, **k: RESUME
+    original_model = ai_cover_letter.COVER_LETTER_MODEL
 
     rows = []
     pairs = []
     for i, job in enumerate(jobs, 1):
         letters = {}
-        for mode in ("tap", "auto"):
+        for mode, model in MODELS.items():
             mark = len(CALLS)
-            text = ai_cover_letter.generate_cover_letter(job, {**BASE_PROFILE, "submit_mode": mode})
+            # The model is no longer chosen by submit_mode (that split was dropped on
+            # 2026-09-21 — see COVER_LETTER_MODEL). To compare models this now sets the
+            # module constant directly, which is also what makes the script useful for
+            # ANY future candidate model, not just the two that used to be wired to modes.
+            ai_cover_letter.COVER_LETTER_MODEL = model
+            text = ai_cover_letter.generate_cover_letter(job, BASE_PROFILE)
             calls = CALLS[mark:]
             if not calls:
                 print(f"  !! {mode}: no API call recorded (fell back to the template?)")
@@ -136,6 +151,8 @@ def main(path: str, out_path: str = "letter_models.md") -> int:
             f"sonnet ${a['usd']:.5f} ({a['out']:>3} out, {a['chars']:>4}ch)"
         )
 
+    ai_cover_letter.COVER_LETTER_MODEL = original_model
+
     if not rows:
         print("Nothing measured — did the API key resolve?")
         return 1
@@ -148,7 +165,7 @@ def main(path: str, out_path: str = "letter_models.md") -> int:
     print("\n" + "=" * 72)
     print("MEASURED — real usage blocks, both models on the same postings")
     print("=" * 72)
-    for label, key in (("Haiku  (tap today)", "tap"), ("Sonnet (auto today)", "auto")):
+    for label, key in (("Haiku ", "tap"), ("Sonnet", "auto")):
         avg_in = sum(r[key]["in"] for r in rows) / n
         avg_out = sum(r[key]["out"] for r in rows) / n
         avg_ch = sum(r[key]["chars"] for r in rows) / n
@@ -161,7 +178,7 @@ def main(path: str, out_path: str = "letter_models.md") -> int:
     print(f"  letters measured            {n}")
     print(f"  difference per letter       ${delta:.5f}  ({sonnet / haiku:.1f}x)")
     print()
-    print("  What it does to one application:")
+    print("  What the difference is worth per application:")
     print(f"    today (tap, Haiku letter)   ${BASELINE_APP_USD - delta:.4f}  approx")
     print(f"    if tap moved to Sonnet      ${BASELINE_APP_USD:.4f}  = what auto costs now")
     print(f"    delta per application       ${delta:.5f}  ({delta / BASELINE_APP_USD:.1%} of it)")
@@ -184,7 +201,7 @@ def main(path: str, out_path: str = "letter_models.md") -> int:
         )
         for job, letters in pairs:
             fh.write(f"\n---\n\n## {job.get('company', '?')} — {job.get('title', '?')}\n\n")
-            for label, key in (("Haiku (what tap sends today)", "tap"), ("Sonnet (auto)", "auto")):
+            for label, key in (("Haiku", "tap"), ("Sonnet (what ships today)", "auto")):
                 d = letters[key]
                 fh.write(f"### {label} — ${d['usd']:.5f}, {d['out']} output tokens\n\n")
                 fh.write("```\n" + d["text"].strip() + "\n```\n\n")
