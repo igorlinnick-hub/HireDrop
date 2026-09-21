@@ -253,3 +253,34 @@ class TestDuplicateSkills:
 
     def test_a_resume_without_skills_is_untouched(self):
         assert dedupe_skill_groups({"name": "Jane"}) == {"name": "Jane"}
+
+
+def test_ampersands_survive_the_pdf_intact():
+    """reportlab parses mini-XML over every Paragraph, so a bare "&" in someone's own
+    words was read as an entity: live run 2026-09-21 printed "P&L;" and "R&D;" in both
+    resumes, and the ATS resume did it to summaries, bullets and company names too."""
+    import io
+
+    import pdfplumber
+
+    from modules.skills_resume import generate_skills_pdf
+
+    data = {
+        **SAMPLE,
+        "summary": "Ran P&L for R&D.",
+        "skill_groups": [{"group": "Finance & Ops", "skills": ["P&L", "R&D", "AT&T"]}],
+        "experience": [
+            {
+                "title": "Lead",
+                "company": "A&B Co",
+                "dates": "2024",
+                "one_liner": "Owned P&L.",
+                "skills_gained": ["P&L"],
+            }
+        ],
+    }
+    with pdfplumber.open(io.BytesIO(generate_skills_pdf(data))) as pdf:
+        text = pdf.pages[0].extract_text()
+    for expected in ["P&L", "R&D", "AT&T", "A&B Co", "Finance & Ops"]:
+        assert expected in text
+    assert "&;" not in text and "P&L;" not in text and "R&D;" not in text
