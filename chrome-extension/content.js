@@ -1597,7 +1597,12 @@
     // the walk — 84 postings were skipped on "no job title" before this line existed.
     const jobTitle = titleEl?.textContent?.trim() || titleFromDocumentTitle();
     const jobCompany = companyEl?.textContent?.trim() || "";
-    const jobDesc = readJobDescription(descEl).slice(0, 1000);
+    // 3000, matching the ATS path. 1000 was set when this text only fed a prompt the
+    // server clipped anyway; it is now STORED (POST /jobs/describe) and read by three
+    // consumers that clip at their own limits — fit judge 2500, resume tailor 1500,
+    // cover letter 500. At 1000 the tailor was starved of a third of its window for
+    // free: a bigger slice costs one HTTP payload, not one token.
+    const jobDesc = readJobDescription(descEl).slice(0, 3000);
     const jobUrl = window.location.href;
 
     if (!jobTitle) {
@@ -2011,7 +2016,7 @@
 
     const jobTitle = titleEl?.textContent?.trim() || "";
     const jobCompany = companyEl?.textContent?.trim() || "";
-    const jobDesc = descEl?.textContent?.trim().slice(0, 1000) || "";
+    const jobDesc = descEl?.textContent?.trim().slice(0, 3000) || "";  // see the note on the /viewjob path
     const jobUrl = window.location.href;
 
     if (!jobTitle) {
@@ -4248,11 +4253,25 @@
       logBackend(`${label} resume: file input not found`, "error");
     }
 
-    // Screener questions — reuse the generic answerers (Loop 4 core)
-    await fillRadioQuestions();
-    await fillTextQuestions();
-    await fillSelectQuestions();
-    await fillComboboxes();
+    // Screener questions — reuse the generic answerers (Loop 4 core).
+    // These are the quietest 100 seconds in the product: each text answer is an AI
+    // round-trip and every filler carries a human delay, and none of them logged a
+    // thing. Live 09-21 a healthy Greenhouse apply sat silent for 102s between
+    // "resume: attached ✓" and the submit — one second under the E2E driver's stall
+    // threshold, and indistinguishable from a dead run to anyone watching. Say what is
+    // happening: silence that means "working" has to look different from silence that
+    // means "stuck".
+    const screener = {
+      radio: await fillRadioQuestions(),
+      text: await fillTextQuestions(),
+      select: await fillSelectQuestions(),
+      combo: await fillComboboxes(),
+    };
+    const answered = Object.entries(screener)
+      .filter(([, n]) => typeof n === "number" && n > 0)
+      .map(([k, n]) => `${k}×${n}`)
+      .join(" ");
+    logBackend(answered ? `${label}: answered ${answered}` : `${label}: no screener questions`, "info");
     await sleep(humanDelay(1500, 2500));
 
     if (!(await isCampaignRunning())) return;
@@ -4265,6 +4284,7 @@
       // and a throttled background window makes hydration take 30-90s. Poll before giving
       // up so we don't declare "not found" on a form that just hadn't finished rendering
       // (2026-08-04 root-cause: forms bailed before hydrating → todayCount stayed 0).
+      logBackend(`${label}: waiting for the submit button to render (up to 40s)`, "info");
       for (let i = 0; i < 8 && !submitBtn; i++) {
         await waitForFormReady(5000);
         submitBtn = findFormButton();
