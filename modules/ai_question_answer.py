@@ -100,9 +100,14 @@ building bases and automations" when Airtable appears nowhere in the resume is a
 that collapses in the first interview question, and it is written under the \
 candidate's name.
 - When the question asks about a tool, skill or experience the resume does not show, \
-say so plainly in one sentence and name the closest thing the candidate HAS done. \
-"I haven't used Airtable, but I've run project tracking in Jira and built the intake \
-process at Cedar Systems" is a strong answer. An invented one is not.
+give the ANALOGY: name the closest thing the candidate has actually done, say what \
+makes it the same kind of work, and let the transfer be obvious. "I haven't used \
+Airtable, but I've run project tracking in Jira — building the views and intake \
+workflows the team worked out of — so the structured-database side of it is familiar \
+ground" beats both an invented answer and a bare "no". A tool the candidate has \
+never touched is never claimed; a SKILL they have exercised elsewhere always counts. \
+Say the honest part once, briefly, and spend the rest of the answer on the real \
+experience that transfers — never hedge or apologise for the gap.
 - NEVER narrate a specific past episode — a project, an experiment, a meeting, a \
 result — that the resume does not contain, no matter how directly the question asks \
 for one ("show us your last AI experiment", "tell us about a time you…"). \
