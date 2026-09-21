@@ -2123,6 +2123,16 @@ async function handleMessage(msg, sender) {
       // Durable to-do row, read by BOTH the popup block and the dashboard rail badge.
       // The activity line above still carries the story; this carries the STATE — a log
       // line scrolls away and cannot be ticked off (Igor 09-21).
+      // The pool row this job came from — needed so answering the questions can send
+      // it BACK to `approved` (the queue is built from that, and ext 1.8.6 runs
+      // approved rows first). Read before the skip below flips it.
+      let failedJobId = null;
+      try {
+        const q = await chrome.storage.local.get(["atsPlatform", "atsQueue"]);
+        if (q.atsPlatform === "pool" && Array.isArray(q.atsQueue) && q.atsQueue[0]) {
+          failedJobId = q.atsQueue[0].id || null;
+        }
+      } catch {}
       try {
         await apiPost("/handbacks", {
           job_title: f.title || "",
@@ -2131,6 +2141,12 @@ async function handleMessage(msg, sender) {
           platform: f.platform || "",
           reason: f.reason || "",
           steps_done: f.steps_done || 0,
+          // The questions we left blank travel WITH the to-do row now. They were
+          // already collected (collectUnfilledRequired) and already sent to the
+          // activity log; the row that the user actually acts on was the one place
+          // they never reached, so "needs your hands" could not say what it needs.
+          questions: unfilled,
+          job_id: failedJobId,
         });
       } catch { /* best-effort: the walk must advance even if the row didn't land */ }
       try {
@@ -2246,6 +2262,17 @@ async function handleMessage(msg, sender) {
     case "ANSWER_QUESTION": {
       const q = msg.data || {};
       if (!q.question) return { answer: "" };
+      // Which pool row we're filling. The backend uses it to look up an answer the
+      // HUMAN already gave for this job after a hand-back — that answer outranks both
+      // the cache and the model. content.js doesn't have to know about any of this:
+      // the queue head is right here.
+      let jobId = null;
+      try {
+        const st = await chrome.storage.local.get(["atsPlatform", "atsQueue"]);
+        if (st.atsPlatform === "pool" && Array.isArray(st.atsQueue) && st.atsQueue[0]) {
+          jobId = st.atsQueue[0].id || null;
+        }
+      } catch {}
       try {
         const result = await Promise.race([
           apiPost("/tools/answer-question", {
@@ -2253,6 +2280,7 @@ async function handleMessage(msg, sender) {
             options: Array.isArray(q.options) ? q.options.slice(0, 30) : [],
             job_title: q.job_title || "",
             company: q.company || "",
+            job_id: jobId,
           }),
           new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 25000)),
         ]);
