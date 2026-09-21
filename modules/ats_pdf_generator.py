@@ -385,6 +385,23 @@ def dedupe_keeping_order(items: list, seen: set | None = None) -> list:
     return out
 
 
+def esc(value) -> str:
+    """Escape resume text for the mini-XML parser reportlab runs over every Paragraph.
+
+    We pass markup on purpose (`<b>`, `<i>`), so the parser reads the whole string —
+    and an unescaped "&" in a person's own words is read as the start of an entity.
+    "P&L" renders as "P&L;", "R&D" as "R&D;", "Johnson & Johnson" survives only
+    because the space stops the parse. Live run 2026-09-21: Igor's finance skills
+    printed with a trailing semicolon in both resumes, and the same fault hits the
+    ATS resume's summary, bullets and company names — the document employers read.
+
+    Escape the VALUES, never the assembled string: wrapping a line that already
+    carries our own tags would print the tags instead of applying them. The .docx
+    path needs none of this (python-docx escapes when it writes the XML).
+    """
+    return str(value or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 def dedupe_certifications(education: list, certifications: list) -> list:
     """Drop certifications that the education list already names.
 
@@ -544,17 +561,17 @@ def _build_story(data: dict, styles: dict) -> list:
     story = []
 
     # Name
-    name = (data.get("name") or "").upper()
+    name = esc((data.get("name") or "").upper())
     story.append(Paragraph(name, styles["name"]))
 
     # Optional title line
     if data.get("title"):
-        story.append(Paragraph(data["title"], styles["title_line"]))
+        story.append(Paragraph(esc(data["title"]), styles["title_line"]))
 
     # Contact line
     c = data.get("contact") or {}
     contact_parts = [
-        p for p in [c.get("phone"), c.get("email"), c.get("location"), c.get("linkedin")] if p
+        esc(p) for p in [c.get("phone"), c.get("email"), c.get("location"), c.get("linkedin")] if p
     ]
     if contact_parts:
         story.append(Paragraph(" | ".join(contact_parts), styles["contact"]))
@@ -564,7 +581,7 @@ def _build_story(data: dict, styles: dict) -> list:
     # Professional Summary
     if data.get("summary"):
         story.extend(_section_block("Professional Summary", styles))
-        story.append(Paragraph(data["summary"], styles["body"]))
+        story.append(Paragraph(esc(data["summary"]), styles["body"]))
 
     # Core Competencies
     comps = data.get("competencies") or []
@@ -574,26 +591,26 @@ def _build_story(data: dict, styles: dict) -> list:
         chunk_size = 4
         chunks = [comps[i : i + chunk_size] for i in range(0, len(comps), chunk_size)]
         for chunk in chunks:
-            story.append(Paragraph(" | ".join(chunk), styles["competency_row"]))
+            story.append(Paragraph(" | ".join(esc(x) for x in chunk), styles["competency_row"]))
 
     # Professional Experience
     exp = data.get("experience") or []
     if exp:
         story.extend(_section_block("Professional Experience", styles))
         for job in exp:
-            job_title = job.get("title") or ""
+            job_title = esc(job.get("title") or "")
             company = job.get("company") or ""
             location = job.get("location") or ""
             dates = job.get("dates") or ""
 
-            meta_parts = [p for p in [company, location, dates] if p]
+            meta_parts = [esc(p) for p in [company, location, dates] if p]
             header_text = f"<b>{job_title}</b>"
             if meta_parts:
                 header_text += f"  |  {' — '.join(meta_parts)}"
             story.append(Paragraph(header_text, styles["job_title"]))
 
             for bullet in job.get("bullets") or []:
-                bullet_text = bullet.lstrip("-•– ").strip()
+                bullet_text = esc(bullet.lstrip("-•– ").strip())
                 story.append(Paragraph(f"- {bullet_text}", styles["bullet"]))
             story.append(Spacer(1, 3))
 
@@ -603,16 +620,16 @@ def _build_story(data: dict, styles: dict) -> list:
     if edu or certs:
         story.extend(_section_block("Education & Certifications", styles))
         for e in edu:
-            degree = e.get("degree") or ""
+            degree = esc(e.get("degree") or "")
             school = e.get("school") or ""
             year = e.get("year") or ""
-            parts = [p for p in [school, year] if p]
+            parts = [esc(p) for p in [school, year] if p]
             line = f"<b>{degree}</b>"
             if parts:
                 line += f" — {' | '.join(parts)}"
             story.append(Paragraph(line, styles["body"]))
         for cert in certs:
-            story.append(Paragraph(f"<b>{cert}</b>", styles["body"]))
+            story.append(Paragraph(f"<b>{esc(cert)}</b>", styles["body"]))
 
     # Tech Skills
     tech = data.get("tech_skills") or []
@@ -621,13 +638,13 @@ def _build_story(data: dict, styles: dict) -> list:
         chunk_size = 4
         chunks = [tech[i : i + chunk_size] for i in range(0, len(tech), chunk_size)]
         for chunk in chunks:
-            story.append(Paragraph(" | ".join(chunk), styles["competency_row"]))
+            story.append(Paragraph(" | ".join(esc(x) for x in chunk), styles["competency_row"]))
 
     # Languages
     langs = data.get("languages") or []
     if langs:
         story.extend(_section_block("Languages", styles))
-        story.append(Paragraph(" | ".join(langs), styles["body"]))
+        story.append(Paragraph(" | ".join(esc(x) for x in langs), styles["body"]))
 
     return story
 

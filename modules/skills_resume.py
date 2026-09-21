@@ -28,6 +28,7 @@ from modules.ats_pdf_generator import (
     _section_block,
     clean_linkedin_url,
     dedupe_certifications,
+    esc,
     skill_key,
 )
 
@@ -161,8 +162,22 @@ Rules:
   * fix grammar, spelling, capitalization and obvious typos (e.g. "exel" → "Excel",
     "comunication" → "Communication", "managed peoples" → "People Management");
   * keep the candidate's meaning and wording — do NOT rewrite a skill into different
-    words, do NOT merge two of their skills into one, do NOT split one into two;
-  * EVERY skill they wrote must appear exactly once, none dropped;
+    words, do NOT merge two of their skills into one, do NOT invent a qualifier;
+  * they often write in prose, not in a list ("working with code, security, backend
+    and frontend; video editing and writing scripts for the medical niche"). SEPARATE
+    that into one entry per distinct skill, using THEIR words for each: "Code",
+    "Security", "Backend", "Frontend", "Video Editing", "Scriptwriting", "Medical
+    Compliance". A skills section is scanned by keyword — an entry longer than about
+    five words is a sentence, not a skill, and matches nothing;
+  * drop the padding around a skill, never the skill: "development of automations at
+    a professional level" → "Automation Development"; "P&L calculation and other
+    metrics" → "P&L", "Financial Metrics". Context that is a CREDENTIAL, not padding
+    (a named client, a named platform), belongs in the experience section, not inside
+    the skill entry;
+  * write every entry in the language of the resume text, even when they wrote their
+    skills in another language — this resume is read by employers in the resume's
+    market. Translate plainly: a translated skill keeps its meaning, gains nothing;
+  * EVERY skill they wrote must appear, none dropped, none duplicated;
   * do NOT add skills they did not write, not even ones implied by the resume;
   * then sort them into 3-6 named groups a recruiter would search for (e.g.
     "Marketing Automation", "Team Leadership", "Data & Analytics").
@@ -227,12 +242,12 @@ def build_skills_story(data: dict, styles: dict | None = None) -> list:
     styles = styles or _make_styles()
     story = []
 
-    story.append(Paragraph((data.get("name") or "").upper(), styles["name"]))
+    story.append(Paragraph(esc((data.get("name") or "").upper()), styles["name"]))
     if data.get("title"):
-        story.append(Paragraph(data["title"], styles["title_line"]))
+        story.append(Paragraph(esc(data["title"]), styles["title_line"]))
     c = data.get("contact") or {}
     contact_parts = [
-        p for p in [c.get("phone"), c.get("email"), c.get("location"), c.get("linkedin")] if p
+        esc(p) for p in [c.get("phone"), c.get("email"), c.get("location"), c.get("linkedin")] if p
     ]
     if contact_parts:
         story.append(Paragraph(" | ".join(contact_parts), styles["contact"]))
@@ -240,15 +255,15 @@ def build_skills_story(data: dict, styles: dict | None = None) -> list:
 
     if data.get("summary"):
         story.extend(_section_block("Summary", styles))
-        story.append(Paragraph(data["summary"], styles["body"]))
+        story.append(Paragraph(esc(data["summary"]), styles["body"]))
 
     # Skills lead the page — that is the point of this resume style.
     groups = data.get("skill_groups") or []
     if groups:
         story.extend(_section_block("Skills", styles))
         for grp in groups:
-            name = grp.get("group") or ""
-            skills = [s for s in (grp.get("skills") or []) if s]
+            name = esc(grp.get("group") or "")
+            skills = [esc(s) for s in (grp.get("skills") or []) if s]
             if not skills:
                 continue
             story.append(
@@ -259,14 +274,14 @@ def build_skills_story(data: dict, styles: dict | None = None) -> list:
     if exp:
         story.extend(_section_block("Experience", styles))
         for job in exp:
-            meta = [p for p in [job.get("company"), job.get("dates")] if p]
-            header = f"<b>{job.get('title') or ''}</b>"
+            meta = [esc(p) for p in [job.get("company"), job.get("dates")] if p]
+            header = f"<b>{esc(job.get('title') or '')}</b>"
             if meta:
                 header += f"  |  {' — '.join(meta)}"
             story.append(Paragraph(header, styles["job_title"]))
             if job.get("one_liner"):
-                story.append(Paragraph(job["one_liner"], styles["job_meta"]))
-            gained = [s for s in (job.get("skills_gained") or []) if s]
+                story.append(Paragraph(esc(job["one_liner"]), styles["job_meta"]))
+            gained = [esc(s) for s in (job.get("skills_gained") or []) if s]
             if gained:
                 story.append(
                     Paragraph(f"<i>Skills gained:</i> {', '.join(gained)}", styles["job_meta"])
@@ -278,18 +293,18 @@ def build_skills_story(data: dict, styles: dict | None = None) -> list:
     if edu or certs:
         story.extend(_section_block("Education & Certifications", styles))
         for e in edu:
-            parts = [p for p in [e.get("school"), e.get("year")] if p]
-            line = f"<b>{e.get('degree') or ''}</b>"
+            parts = [esc(p) for p in [e.get("school"), e.get("year")] if p]
+            line = f"<b>{esc(e.get('degree') or '')}</b>"
             if parts:
                 line += f" — {' | '.join(parts)}"
             story.append(Paragraph(line, styles["body"]))
         for cert in certs:
-            story.append(Paragraph(f"<b>{cert}</b>", styles["body"]))
+            story.append(Paragraph(f"<b>{esc(cert)}</b>", styles["body"]))
 
     langs = data.get("languages") or []
     if langs:
         story.extend(_section_block("Languages", styles))
-        story.append(Paragraph(" | ".join(langs), styles["body"]))
+        story.append(Paragraph(" | ".join(esc(x) for x in langs), styles["body"]))
 
     return story
 
