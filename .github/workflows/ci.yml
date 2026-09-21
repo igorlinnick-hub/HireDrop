@@ -38,3 +38,20 @@ jobs:
 
       - name: Tests + coverage
         run: pytest tests/
+
+      # The extension's JS suite used to live OUTSIDE CI entirely: this workflow ran
+      # Python only, so three working tests were never checked on a PR and two more had
+      # been broken by a missing dependency (jsdom) with nobody noticing for weeks. The
+      # extension is where the apply engine lives — its tests are the ones that pin the
+      # behaviour a live run would otherwise have to discover.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install JS test deps
+        run: npm ci
+
+      - name: Tests (chrome extension)
+        run: npm run test:ext

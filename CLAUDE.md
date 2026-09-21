@@ -32,9 +32,17 @@ migrations/         SQL; применяет сессия — `supabase db query 
 ```bash
 pytest                 # с покрытием, порог --cov-fail-under=60 (задан в pyproject)
 ruff check . && ruff format --check .
+npm ci && npm run test:ext                    # JS-сьюта расширения (нужен раз: npm ci)
 node --check chrome-extension/background.js   # ДО загрузки в Chrome (см. ниже)
 ../scripts/sync-ext.sh                        # выкатить расширение Игорю
 ```
+
+**JS-тесты расширения в CI с 09-21.** `chrome-extension/tests/*.test.js` гоняются на каждом
+PR (`npm run test:ext` → `tests/run-all.js`, находит файлы сам — регистрировать новый не
+нужно). До этого сьюта жила ВНЕ CI: workflow гонял только Python, поэтому три рабочих теста
+никто не проверял, а два (`consent-gate`, `detection-visibility`) месяцами падали из-за
+отсутствующего `jsdom`. `package.json` в корне `jobflow/` — **dev-only и private**: ничего
+не публикуется, расширение npm-кода не грузит, единственная зависимость нужна только тестам.
 
 ## Грабли, которые уже стоили часов
 
