@@ -12,7 +12,7 @@ back an answer, the model must say so in `gaps` instead of inventing one.
 
 import json
 
-from modules.ai_cover_letter import get_anthropic_client, load_resume_text
+from modules.ai_cover_letter import get_anthropic_client, resume_text_for
 
 INTERVIEW_KIT_MODEL = "claude-sonnet-4-6"
 
@@ -130,7 +130,7 @@ def generate_interview_kit(job: dict, profile: dict | None = None) -> dict | Non
     """
     profile = profile or {}
 
-    resume_text = load_resume_text(profile.get("resume_url"), max_chars=6000)
+    resume_text = resume_text_for(profile, max_chars=6000)
     if not resume_text:
         return None
 

@@ -47,12 +47,12 @@ def app_row():
 
 
 def test_generate_returns_none_without_resume():
-    with patch.object(kit_mod, "load_resume_text", return_value=""):
+    with patch.object(kit_mod, "resume_text_for", return_value=""):
         assert kit_mod.generate_interview_kit({"description": "x"}, {}) is None
 
 
 def test_generate_returns_none_without_job_text():
-    with patch.object(kit_mod, "load_resume_text", return_value="resume"):
+    with patch.object(kit_mod, "resume_text_for", return_value="resume"):
         assert kit_mod.generate_interview_kit({"description": "   "}, {}) is None
 
 

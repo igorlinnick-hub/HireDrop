@@ -11,7 +11,7 @@ reach here, to keep the Anthropic spend down (see project_unit_economics).
 """
 
 from config import ANTHROPIC_API_KEY
-from modules.ai_cover_letter import get_anthropic_client, load_resume_text
+from modules.ai_cover_letter import get_anthropic_client, resume_text_for
 
 # Hard cap so a malicious/huge question can't blow up the prompt or cost.
 _MAX_QUESTION_CHARS = 600
@@ -66,7 +66,7 @@ def answer_screener_question(question, job=None, profile=None, options=None):
     profile = profile or {}
     options = [str(o).strip() for o in (options or []) if str(o).strip()][:_MAX_OPTIONS]
 
-    resume_text = load_resume_text(profile.get("resume_url"))
+    resume_text = resume_text_for(profile)
     name = " ".join(p for p in [profile.get("name", ""), profile.get("last_name", "")] if p).strip()
 
     # The question + job text come from a scraped posting → untrusted. Mark them as

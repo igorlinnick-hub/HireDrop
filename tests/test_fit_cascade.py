@@ -41,7 +41,7 @@ def _run(monkeypatch, replies, *, mode="standard", band=15):
     monkeypatch.setattr(
         ai_fit_judge, "get_anthropic_client", lambda: types.SimpleNamespace(messages=_Messages())
     )
-    monkeypatch.setattr(ai_fit_judge, "load_resume_text", lambda _url: "resume text")
+    monkeypatch.setattr(ai_fit_judge, "resume_text_for", lambda *a, **k: "resume text")
 
     result = ai_fit_judge.assess_fit(
         job={"title": "Project Manager", "company": "Corvant", "description": "d"},
@@ -153,6 +153,6 @@ def test_cascade_off_uses_sonnet_only(monkeypatch):
     monkeypatch.setattr(
         ai_fit_judge, "get_anthropic_client", lambda: types.SimpleNamespace(messages=_Messages())
     )
-    monkeypatch.setattr(ai_fit_judge, "load_resume_text", lambda _url: "resume text")
+    monkeypatch.setattr(ai_fit_judge, "resume_text_for", lambda *a, **k: "resume text")
     ai_fit_judge.assess_fit(job={"title": "t", "company": "c"}, profile={"apply_mode": "standard"})
     assert calls == [SONNET]

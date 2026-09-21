@@ -55,6 +55,41 @@ def load_resume_text(resume_url: str | None = None, max_chars: int = 3000) -> st
     return ""
 
 
+# Below this, a stored structure is too thin to represent the candidate (a half-saved
+# edit, an extraction that captured only a header) and the uploaded PDF is the safer read.
+MIN_STRUCTURE_TEXT = 200
+
+
+def resume_text_for(profile: dict | None, max_chars: int = 3000) -> str:
+    """The text of the resume this user actually sends — not whatever they first uploaded.
+
+    Every AI path that speaks for the candidate (tailoring, cover letters, screener
+    answers, fit judging, the interview kit) has to read the same resume the employer
+    receives. Otherwise a correction the user made in the editor shows up in the PDF
+    and nowhere else, and we keep telling employers the thing they just fixed.
+
+    The dial (profiles.default_resume) decides which resume that is, same as the file
+    we upload at apply time; the stored structure is the authority for the ATS one
+    because it is what the PDF was rendered from.
+    """
+    profile = profile or {}
+    resolved = profile.get("default_resume") or (
+        "ats" if profile.get("ats_approved") else "original"
+    )
+
+    if resolved == "ats" and profile.get("ats_structure"):
+        try:
+            from modules.ats_pdf_generator import structure_to_text
+
+            text = structure_to_text(profile["ats_structure"])
+            if len(text) >= MIN_STRUCTURE_TEXT:
+                return text[:max_chars]
+        except Exception as e:  # never block an application over this
+            print(f"[resume] structure read failed, falling back to the PDF: {e}")
+
+    return load_resume_text(profile.get("resume_url"), max_chars=max_chars)
+
+
 def fallback_template(job, profile=None):
     try:
         with open(TEMPLATE_PATH) as f:
@@ -100,8 +135,8 @@ def generate_cover_letter(job, profile=None):
     if not ANTHROPIC_API_KEY:
         return fallback_template(job, profile)
 
-    resume_url = profile.get("resume_url")
-    resume_text = load_resume_text(resume_url)
+    # Same authority as every other AI path: the resume the user actually sends.
+    resume_text = resume_text_for(profile)
     writing_style = profile.get("writing_style", "")
     system = build_system_prompt(writing_style)
 

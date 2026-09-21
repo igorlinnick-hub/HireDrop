@@ -97,7 +97,7 @@ def test_endpoint_offers_more_than_the_limit_so_the_user_actually_picks(auth_cli
     many = ["a", "b", "c", "d", "e", "f", "g"]
     with (
         patch.object(tools_router, "get_profile", return_value={"apply_mode": "precise"}),
-        patch.object(tools_router, "load_resume_text", return_value="resume"),
+        patch.object(tools_router, "resume_text_for", return_value="resume"),
         patch.object(tools_router, "suggest_roles", return_value=many),
     ):
         body = auth_client.get("/api/v1/tools/suggest-roles").json()
@@ -109,7 +109,7 @@ def test_endpoint_offers_more_than_the_limit_so_the_user_actually_picks(auth_cli
 def test_endpoint_says_none_when_there_is_no_resume_to_read(auth_client):
     with (
         patch.object(tools_router, "get_profile", return_value={"apply_mode": "broad"}),
-        patch.object(tools_router, "load_resume_text", return_value=""),
+        patch.object(tools_router, "resume_text_for", return_value=""),
         patch.object(tools_router, "suggest_roles", return_value=[]),
     ):
         body = auth_client.get("/api/v1/tools/suggest-roles").json()
@@ -123,7 +123,7 @@ def test_endpoint_says_none_when_there_is_no_resume_to_read(auth_client):
 def test_query_mode_overrides_the_saved_one(auth_client):
     with (
         patch.object(tools_router, "get_profile", return_value={"apply_mode": "broad"}),
-        patch.object(tools_router, "load_resume_text", return_value="resume"),
+        patch.object(tools_router, "resume_text_for", return_value="resume"),
         patch.object(tools_router, "suggest_roles", return_value=["marketing manager"]),
     ):
         body = auth_client.get("/api/v1/tools/suggest-roles?mode=precise").json()

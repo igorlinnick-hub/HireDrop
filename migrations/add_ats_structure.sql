@@ -1,0 +1,11 @@
+-- The structured JSON Claude produces when generating the ATS resume. Until now it
+-- was thrown away after rendering, so the only way to fix a mistake in the generated
+-- resume was to send text back through Claude — which costs a daily AI slot and lets
+-- the model rewrite the very correction the user just made.
+--
+-- Keeping it makes an edit a re-render (generate_ats_pdf(data=...) skips the Claude
+-- call entirely): instant, free, and it prints exactly what the user typed.
+--
+-- NULL means "generated before this column existed" — those users get the editor
+-- after their next regenerate, not a silent re-run behind their back.
+alter table profiles add column if not exists ats_structure jsonb;

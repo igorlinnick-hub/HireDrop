@@ -21,6 +21,7 @@ from modules.ats_pdf_generator import (
     generate_ats_docx,
     generate_ats_pdf,
     get_ats_questions,
+    sanitize_structure,
     structure_resume_data,
 )
 
@@ -343,7 +344,11 @@ async def ats_generate(body: dict = None, user=Depends(get_current_user)):
     except Exception as e:
         # DOCX is a bonus format — don't fail the whole request if it can't store
         print(f"[ats] DOCX upload failed (non-fatal): {e}")
-    profile_db.update_ats(user.id, {"ats_resume_url": ats_path})
+    # Keep the structure: it is what makes the resume editable afterwards without
+    # paying Claude again to re-read text we already parsed.
+    profile_db.update_ats(
+        user.id, {"ats_resume_url": ats_path, "ats_structure": sanitize_structure(data)}
+    )
 
     preview_url = resume_storage.signed_download_url_ats(user.id)
     docx_url = resume_storage.signed_download_url_ats_docx(user.id) if docx_path else None
@@ -414,10 +419,83 @@ async def ats_generate_from_text(body: dict, user=Depends(get_current_user)):
         resume_storage.upload_ats_docx(user.id, ats_docx_bytes)
     except Exception as e:
         print(f"[profile] DOCX upload failed (non-fatal): {e}", file=sys.stderr)
-    profile_db.update_ats(user.id, {"ats_resume_url": ats_path})
+    profile_db.update_ats(
+        user.id, {"ats_resume_url": ats_path, "ats_structure": sanitize_structure(data)}
+    )
 
     preview_url = resume_storage.signed_download_url_ats(user.id)
     return {"success": True, "preview_url": preview_url}
+
+
+@router.get("/profile/ats/structure")
+def ats_structure_get(user=Depends(get_current_user)):
+    """The stored structure behind the generated resume — what the editor edits.
+
+    `structure: null` means this user's resume was generated before the structure was
+    kept. We say so instead of silently re-running Claude to reconstruct it: that would
+    spend one of their daily AI slots for something they did not ask for.
+    """
+    profile = profile_db.get_profile(user.id)
+    structure = profile.get("ats_structure")
+    return {
+        "structure": sanitize_structure(structure) if structure else None,
+        "has_ats_resume": bool(profile.get("ats_resume_url")),
+    }
+
+
+@router.put("/profile/ats/structure")
+def ats_structure_put(body: dict, user=Depends(get_current_user)):
+    """Save an edited structure and re-render the PDF + DOCX from it.
+
+    No Claude call and no quota claim: the renderers take `data=` directly, so a
+    correction prints exactly what the user typed instead of being paraphrased by a
+    model on its way back in. That is the whole point — the user is here because the
+    generated resume got something about their own life wrong.
+    """
+    structure = sanitize_structure(body.get("structure") or {})
+    if not structure.get("name"):
+        return JSONResponse(
+            status_code=400, content={"error": "Name is required — it heads the resume."}
+        )
+    if not (structure.get("experience") or structure.get("summary")):
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": "Keep at least a summary or one job — an empty resume can't be sent."
+            },
+        )
+
+    try:
+        ats_pdf_bytes = generate_ats_pdf(data=structure)
+        ats_docx_bytes = generate_ats_docx(data=structure)
+    except Exception as e:
+        print(f"[profile] structure re-render failed: {e}", file=sys.stderr)
+        return JSONResponse(status_code=500, content={"error": "Could not rebuild the resume"})
+
+    ats_path = resume_storage.upload_ats(user.id, ats_pdf_bytes)
+    try:
+        resume_storage.upload_ats_docx(user.id, ats_docx_bytes)
+    except Exception as e:
+        print(f"[profile] DOCX upload failed (non-fatal): {e}", file=sys.stderr)
+
+    # An edit invalidates the score: it was measured on the previous render.
+    profile_db.update_ats(
+        user.id,
+        {
+            "ats_resume_url": ats_path,
+            "ats_structure": structure,
+            "ats_score": None,
+            "ats_issues": [],
+            "ats_checked_at": None,
+        },
+    )
+    _seed_employment_from_resume(user.id, structure)
+
+    return {
+        "success": True,
+        "structure": structure,
+        "preview_url": resume_storage.signed_download_url_ats(user.id),
+    }
 
 
 @router.get("/profile/resume/text")
@@ -748,9 +826,11 @@ def _lazy_tailor_for_job(user, job) -> None:
         if get_tier(user.id, getattr(user, "email", None)) not in ("pro", "premium", "admin"):
             return
         prof = profile_db.get_profile(user.id)
-        from modules.ai_cover_letter import load_resume_text
+        from modules.ai_cover_letter import resume_text_for
 
-        resume_text = load_resume_text(prof.get("resume_url"))
+        # The resume the user stands behind — a correction made in the editor has to
+        # reach the employer, not stop at the preview.
+        resume_text = resume_text_for(prof)
         if not resume_text:
             return
         from modules.ai_resume_tailor import tailor_resume
