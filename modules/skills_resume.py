@@ -27,6 +27,7 @@ from modules.ats_pdf_generator import (
     _make_styles,
     _section_block,
     clean_linkedin_url,
+    skill_key,
 )
 
 # The candidate writes their own skills; we ask for at least this many so the
@@ -47,6 +48,68 @@ def count_skill_items(text: str) -> int:
         return 0
     parts = re.split(r"[,;\n•·|]+|(?<=[a-z])\s+and\s+(?=[A-Za-z])", text)
     return len([p for p in (part.strip(" \t-–—.") for part in parts) if len(p) >= 2])
+
+
+def dedupe_skill_groups(data: dict) -> dict:
+    """Print every skill once, in the first group that claimed it.
+
+    The prompt asks for this ("EVERY skill they wrote must appear exactly once") and
+    the model mostly obliges WITHIN a group — what it does not catch is the same skill
+    landing in two different groups, which is the duplication users actually see. An
+    instruction is not a guarantee, so the guarantee lives here.
+
+    Groups left empty by the pass are dropped: a heading with nothing under it reads
+    as a bug of its own. Certifications, languages and each job's skills_gained get the
+    same treatment; skills_gained is deliberately NOT deduped against the groups above
+    it, because repeating a skill under the job that built it is the point of the section.
+    """
+    if not isinstance(data, dict):
+        return data
+
+    seen: set[str] = set()
+    groups = []
+    for grp in data.get("skill_groups") or []:
+        if not isinstance(grp, dict):
+            continue
+        kept = []
+        for skill in grp.get("skills") or []:
+            key = skill_key(skill)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            kept.append(skill)
+        if kept:
+            groups.append({**grp, "skills": kept})
+    if data.get("skill_groups") is not None:
+        data["skill_groups"] = groups
+
+    for field in ("certifications", "languages"):
+        items = data.get(field)
+        if isinstance(items, list):
+            local: set[str] = set()
+            out = []
+            for item in items:
+                key = skill_key(item)
+                if not key or key in local:
+                    continue
+                local.add(key)
+                out.append(item)
+            data[field] = out
+
+    for job in data.get("experience") or []:
+        if not isinstance(job, dict) or not isinstance(job.get("skills_gained"), list):
+            continue
+        local = set()
+        out = []
+        for skill in job["skills_gained"]:
+            key = skill_key(skill)
+            if not key or key in local:
+                continue
+            local.add(key)
+            out.append(skill)
+        job["skills_gained"] = out
+
+    return data
 
 
 def structure_skills_resume(resume_text: str, answers: list[dict] | None = None) -> dict:
@@ -141,7 +204,7 @@ RESUME TEXT:
         if not data.get("name"):
             lines = [ln.strip() for ln in resume_text.split("\n") if ln.strip()]
             data["name"] = lines[0] if lines else "CANDIDATE"
-        return data
+        return dedupe_skill_groups(data)
     except Exception as e:
         print(f"[skills_resume] Structure extraction failed: {e}")
         return {}

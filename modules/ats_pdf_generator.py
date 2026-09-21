@@ -360,6 +360,153 @@ def _section_block(title: str, styles: dict) -> list:
     ]
 
 
+def skill_key(value: str) -> str:
+    """Match short list items the way a reader does, not the way `==` does.
+
+    "Excel", "excel" and "Excel " are one entry on the page; printing them twice is
+    what makes a generated resume look machine-made. Shared with the skills resume so
+    both documents agree on what counts as the same thing.
+    """
+    import re as _re
+
+    return _re.sub(r"[^a-z0-9]+", " ", (value or "").lower()).strip()
+
+
+def dedupe_keeping_order(items: list, seen: set | None = None) -> list:
+    """First occurrence wins; `seen` lets a caller dedupe across several lists."""
+    seen = seen if seen is not None else set()
+    out = []
+    for item in items:
+        key = skill_key(item if isinstance(item, str) else "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
+ATS_STRUCTURE_FIELDS = (
+    "name",
+    "title",
+    "contact",
+    "summary",
+    "competencies",
+    "experience",
+    "education",
+    "certifications",
+    "languages",
+    "tech_skills",
+)
+
+
+def sanitize_structure(raw: dict) -> dict:
+    """Coerce a client-supplied structure into the shape the renderers expect.
+
+    The editor posts whatever the user typed, so nothing here trusts types: a string
+    where a list belongs would raise deep inside reportlab, at which point the user
+    has lost their edit. Unknown keys are dropped rather than stored — the structure
+    is a rendering contract, not a bag the client can extend.
+    """
+
+    def text(v) -> str:
+        return v.strip() if isinstance(v, str) else ""
+
+    def text_list(v) -> list:
+        if not isinstance(v, list):
+            return []
+        # Deduped for the same reason the skills resume is: one entry, printed once.
+        return dedupe_keeping_order([t for t in (text(i) for i in v) if t])
+
+    contact_in = raw.get("contact") if isinstance(raw.get("contact"), dict) else {}
+    out = {
+        "name": text(raw.get("name")),
+        "title": text(raw.get("title")),
+        "contact": {k: text(contact_in.get(k)) for k in ("phone", "email", "location", "linkedin")},
+        "summary": text(raw.get("summary")),
+        "competencies": text_list(raw.get("competencies")),
+        "experience": [],
+        "education": [],
+        "certifications": text_list(raw.get("certifications")),
+        "languages": text_list(raw.get("languages")),
+        "tech_skills": text_list(raw.get("tech_skills")),
+    }
+
+    for job in raw.get("experience") or []:
+        if not isinstance(job, dict):
+            continue
+        entry = {
+            "title": text(job.get("title")),
+            "company": text(job.get("company")),
+            "location": text(job.get("location")),
+            "dates": text(job.get("dates")),
+            "bullets": text_list(job.get("bullets")),
+        }
+        if any(entry[k] for k in ("title", "company")) or entry["bullets"]:
+            out["experience"].append(entry)
+
+    for e in raw.get("education") or []:
+        if not isinstance(e, dict):
+            continue
+        entry = {
+            "degree": text(e.get("degree")),
+            "school": text(e.get("school")),
+            "year": text(e.get("year")),
+        }
+        if any(entry.values()):
+            out["education"].append(entry)
+
+    return out
+
+
+def structure_to_text(data: dict) -> str:
+    """Flatten the structure back to plain text, in the order the PDF prints it.
+
+    This is what downstream consumers that want text (tailoring, cover letters) should
+    read once a user has corrected their resume: the structure is the authority, so a
+    fix made in the editor has to reach the application, not just the preview.
+    """
+    d = sanitize_structure(data or {})
+    lines: list[str] = []
+
+    if d["name"]:
+        lines.append(d["name"])
+    if d["title"]:
+        lines.append(d["title"])
+    contact = [v for v in d["contact"].values() if v]
+    if contact:
+        lines.append(" | ".join(contact))
+
+    if d["summary"]:
+        lines += ["", "PROFESSIONAL SUMMARY", d["summary"]]
+    if d["competencies"]:
+        lines += ["", "CORE COMPETENCIES", " | ".join(d["competencies"])]
+
+    if d["experience"]:
+        lines += ["", "PROFESSIONAL EXPERIENCE"]
+        for job in d["experience"]:
+            meta = " — ".join(p for p in (job["company"], job["location"], job["dates"]) if p)
+            header = job["title"]
+            if meta:
+                header = f"{header}  |  {meta}" if header else meta
+            if header:
+                lines.append(header)
+            lines += [f"- {b}" for b in job["bullets"]]
+
+    if d["education"] or d["certifications"]:
+        lines += ["", "EDUCATION & CERTIFICATIONS"]
+        for e in d["education"]:
+            rest = " | ".join(p for p in (e["school"], e["year"]) if p)
+            lines.append(f"{e['degree']} — {rest}" if rest else e["degree"])
+        lines += list(d["certifications"])
+
+    if d["tech_skills"]:
+        lines += ["", "TECHNICAL SKILLS", " | ".join(d["tech_skills"])]
+    if d["languages"]:
+        lines += ["", "LANGUAGES", " | ".join(d["languages"])]
+
+    return "\n".join(lines).strip()
+
+
 def _build_story(data: dict, styles: dict) -> list:
     story = []
 

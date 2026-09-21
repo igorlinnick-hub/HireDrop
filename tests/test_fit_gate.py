@@ -29,7 +29,7 @@ def _judge(monkeypatch, *, score, decision, mode="broad"):
     client = types.SimpleNamespace(messages=_Messages())
     monkeypatch.setattr(ai_fit_judge, "ANTHROPIC_API_KEY", "test-key")
     monkeypatch.setattr(ai_fit_judge, "get_anthropic_client", lambda: client)
-    monkeypatch.setattr(ai_fit_judge, "load_resume_text", lambda _url: "resume text")
+    monkeypatch.setattr(ai_fit_judge, "resume_text_for", lambda *a, **k: "resume text")
     result = ai_fit_judge.assess_fit(
         job={"title": "Project Manager", "company": "Corvant", "description": "d"},
         profile={"apply_mode": mode, "keywords": ["project manager"]},

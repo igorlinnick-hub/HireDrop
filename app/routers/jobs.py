@@ -298,10 +298,10 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
     new_jobs, salary_dropped = filter_by_salary(new_jobs, profile)
     resume_text = None
     if new_jobs:
-        from modules.ai_cover_letter import load_resume_text
+        from modules.ai_cover_letter import resume_text_for
         from modules.ai_job_scorer import score_jobs_batch
 
-        resume_text = load_resume_text(profile.get("resume_url"))
+        resume_text = resume_text_for(profile)
         new_jobs = score_jobs_batch(new_jobs, profile, resume_text)
 
     # Resume tailoring is now LAZY (economics #2): it moved out of discovery into
@@ -335,14 +335,14 @@ def _run_ats_discovery(user_id: str) -> None:
     flag. P0: nothing here ever holds an API worker → no more worker-starvation / API 000."""
     from app.db.profile import get_profile
     from data.ats_watchlist import SEED_WATCHLIST
-    from modules.ai_cover_letter import load_resume_text
+    from modules.ai_cover_letter import resume_text_for
     from modules.ai_job_scorer import score_jobs_batch
     from modules.platforms.ats_boards import discover_ats
     from modules.salary_filter import filter_by_salary
 
     try:
         profile = get_profile(user_id)
-        resume_text = load_resume_text(profile.get("resume_url"))
+        resume_text = resume_text_for(profile)
         keywords = profile.get("keywords", [])
 
         # The cap must bound NEW inventory, not everything collected. Measured 09-15: the
@@ -517,10 +517,10 @@ def backfill_ats_scores(user=Depends(get_current_user)):
     change have empty descriptions and near-zero fit scores → best-fit-first is broken.
     Re-fetch their real descriptions, re-score, update in place. Idempotent."""
     from app.db.profile import get_profile
-    from modules.ai_cover_letter import load_resume_text
+    from modules.ai_cover_letter import resume_text_for
 
     profile = get_profile(user.id)
-    resume_text = load_resume_text(profile.get("resume_url"))
+    resume_text = resume_text_for(profile)
     rescored = _backfill_thin_ats_scores(user.id, profile, resume_text)
     return {
         "rescored": rescored,
@@ -592,11 +592,11 @@ def ingest_jobs(req: IngestJobsRequest, user=Depends(get_current_user)):
         # cards was lost.
         try:
             from app.db.profile import get_profile
-            from modules.ai_cover_letter import load_resume_text
+            from modules.ai_cover_letter import resume_text_for
             from modules.ai_job_scorer import score_jobs_batch
 
             profile = get_profile(user.id)
-            score_jobs_batch(scorable, profile, load_resume_text(profile.get("resume_url")))
+            score_jobs_batch(scorable, profile, resume_text_for(profile))
             scored_count = sum(1 for r in scorable if r.get("score") is not None)
         except Exception as e:
             print(f"[ingest] scoring skipped (rows still saved): {e}", file=sys.stderr)

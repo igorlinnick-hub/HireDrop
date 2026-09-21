@@ -214,7 +214,15 @@ def update_ats(user_id: str, data: dict) -> None:
     payload = {
         k: v
         for k, v in data.items()
-        if k in ("ats_score", "ats_issues", "ats_resume_url", "ats_approved", "ats_checked_at")
+        if k
+        in (
+            "ats_score",
+            "ats_issues",
+            "ats_resume_url",
+            "ats_approved",
+            "ats_checked_at",
+            "ats_structure",
+        )
     }
     if payload:
         get_supabase().table("profiles").update(payload).eq("user_id", user_id).execute()

@@ -30,7 +30,7 @@ import json
 import os
 
 from config import ANTHROPIC_API_KEY
-from modules.ai_cover_letter import get_anthropic_client, load_resume_text
+from modules.ai_cover_letter import get_anthropic_client, resume_text_for
 
 _MAX_DESC_CHARS = 2500
 _MAX_Q = 20
@@ -198,7 +198,7 @@ def assess_fit(job=None, profile=None, screener_questions=None):
 
     questions = [str(q).strip() for q in (screener_questions or []) if str(q).strip()][:_MAX_Q]
 
-    resume_text = load_resume_text(profile.get("resume_url"))
+    resume_text = resume_text_for(profile)
     description = (job.get("description") or "")[:_MAX_DESC_CHARS]
     q_block = (
         ("\nScreener questions the employer asks:\n" + "\n".join(f"- {q}" for q in questions))

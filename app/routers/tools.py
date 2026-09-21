@@ -25,7 +25,7 @@ from app.schemas import (
     TemplateRequest,
 )
 from config import RATE_LIMIT_ENFORCE, RATE_LIMIT_LETTERS_PER_DAY
-from modules.ai_cover_letter import generate_cover_letter, load_resume_text
+from modules.ai_cover_letter import generate_cover_letter, resume_text_for
 from modules.ai_fit_judge import assess_fit
 from modules.ai_keyword_normalize import normalize_keywords
 from modules.ai_question_answer import answer_screener_question
@@ -226,7 +226,7 @@ def suggest_roles_endpoint(mode: str | None = None, user=Depends(get_current_use
 
     profile = get_profile(user.id)
     limit = role_limit(mode or profile.get("apply_mode"))
-    resume_text = load_resume_text(profile.get("resume_url"))
+    resume_text = resume_text_for(profile)
     roles = suggest_roles(resume_text, limit=max(ROLE_LIMITS.values()))
     return {
         "roles": roles,
