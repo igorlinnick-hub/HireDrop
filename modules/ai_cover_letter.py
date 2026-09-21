@@ -9,16 +9,32 @@ from config import ANTHROPIC_API_KEY
 
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "..", "templates", "cover_letter.txt")
 
-# Cover-letter model by submit mode (PLAN_VOLUME_CAPTCHA_ECONOMICS.md §3):
-#   auto (default) → Sonnet (strong; no human reviews the letter, so quality must come from the model)
-#   tap            → Haiku (~3x cheaper, measured 2026-09-21: $0.0018 vs $0.0055/letter)
-# NOTE: the original reason for the split — "in tap the human reads + edits the letter
-# before submit" — has been FALSE since the 2026-07-25 instant-tap rebuild: the swipe
-# happens before the letter exists and nobody sees it. The 100/day tap cap it also cited
-# is gone too (TAP_DAILY_LIMIT = 30 = pro's). The split still stands on cost alone; the
-# measurement lives in scripts/measure_letter_models.py. Igor's call, not settled here.
-COVER_LETTER_MODEL_AUTO = "claude-sonnet-4-6"
-COVER_LETTER_MODEL_TAP = "claude-haiku-4-5-20251001"
+# ONE model writes every cover letter (Igor, 2026-09-21). No split by submit mode, no
+# split by fit score.
+#
+# There used to be one: auto got Sonnet, tap got Haiku. Its stated reason — "in tap the
+# human reads + edits the letter before submit, so quality is held by the human" — was
+# FALSE from 2026-07-25, when the instant-tap rebuild moved the swipe BEFORE the letter
+# exists. Nobody has read a tap letter since. The 100/day tap cap it also cited is gone
+# (TAP_DAILY_LIMIT = 30, same as pro). So for two months the jobs a human picked
+# personally got the cheaper letter and the ones the machine found got the better one —
+# backwards, on a justification nobody rechecked.
+#
+# What it was worth, measured on 8 live postings (scripts/measure_letter_models.py):
+# Haiku $0.00180/letter vs Sonnet $0.00553 — 3.1x, but only $0.0037 per application,
+# 29% of one, $3.36/month at the 30/day cap.
+#
+# Choosing by fit score was considered and rejected the same day: a weak-fit posting is
+# exactly where the letter has to do the work, so spending less there is backwards twice
+# over — and a second rule keyed to a score is a second thing that can quietly rot when
+# the scorer's scale moves, which is how the mode split rotted in the first place. If a
+# marginal application isn't worth $0.0055, the fix is not to send it (apply_mode's job),
+# not to send it with a worse letter.
+COVER_LETTER_MODEL = "claude-sonnet-4-6"
+
+# Back-compat aliases: both names were importable and read by tests/scripts.
+COVER_LETTER_MODEL_AUTO = COVER_LETTER_MODEL
+COVER_LETTER_MODEL_TAP = COVER_LETTER_MODEL
 
 _anthropic_client: anthropic.Anthropic | None = None
 
@@ -198,13 +214,8 @@ def generate_cover_letter(job, profile=None):
     writing_style = profile.get("writing_style", "")
     system = build_system_prompt(writing_style)
 
-    # Model by submit mode (PLAN_VOLUME_CAPTCHA_ECONOMICS.md §3): in "tap" mode the human
-    # reads + edits every cover letter before submit, so quality is held by the human and we
-    # generate with the ~10× cheaper Haiku — which is what makes the higher tap-mode daily cap
-    # (100/day) profitable. Full-auto has no human review → keep the stronger Sonnet.
-    # Defaults to "auto"/Sonnet when the field is absent, so this is backward-compatible.
-    submit_mode = (profile.get("submit_mode") or "auto").lower()
-    model = COVER_LETTER_MODEL_TAP if submit_mode == "tap" else COVER_LETTER_MODEL_AUTO
+    # One model, both modes — see COVER_LETTER_MODEL above for why the split was dropped.
+    model = COVER_LETTER_MODEL
 
     description = job.get("description", "Not available")[:500]
 
@@ -228,7 +239,7 @@ Candidate background (from resume):
     try:
         client = get_anthropic_client()
         message = client.messages.create(
-            # Model chosen by submit_mode above (Sonnet full-auto / Haiku tap). Sonnet 4
+            # One model for every letter (COVER_LETTER_MODEL). Sonnet 4
             # (claude-sonnet-4-20250514) reaches end-of-life 2026-06-15; 4.6 is the current default.
             model=model,
             max_tokens=512,

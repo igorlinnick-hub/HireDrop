@@ -143,3 +143,40 @@ def test_does_not_eat_a_sentence_that_merely_starts_with_here_is():
 def test_empty_and_none_are_safe():
     assert strip_preamble("") == ""
     assert strip_preamble(None) is None
+
+
+# ---------------------------------------------------------------------------
+# One model writes every letter (2026-09-21, Igor)
+#
+# The old split gave tap the cheaper model on the reasoning that "the human reads + edits
+# the letter before submit" — false since the 2026-07-25 rebuild, where the swipe happens
+# before the letter exists. For two months the jobs a human picked got the WORSE letter.
+# Measured worth of the split: $0.0037 per application, $3.36/month at the cap.
+#
+# This pins the decision itself, so a future "let's save a bit on weak-fit letters" has to
+# argue with a failing test rather than quietly reintroduce the same class of bug.
+
+
+def test_one_model_for_every_letter():
+    from modules.ai_cover_letter import (
+        COVER_LETTER_MODEL,
+        COVER_LETTER_MODEL_AUTO,
+        COVER_LETTER_MODEL_TAP,
+    )
+
+    assert COVER_LETTER_MODEL_TAP == COVER_LETTER_MODEL_AUTO == COVER_LETTER_MODEL, (
+        "The letter model must not depend on submit mode. If you are re-introducing a "
+        "split, read the comment above COVER_LETTER_MODEL first: the last one ran for two "
+        "months on a reason that had stopped being true."
+    )
+
+
+def test_submit_mode_does_not_reach_the_model_choice():
+    # Belt for the same rule at the call site: generate_cover_letter must not branch on
+    # submit_mode any more. Source check, because the branch is what we're forbidding.
+    import inspect
+
+    from modules import ai_cover_letter
+
+    src = inspect.getsource(ai_cover_letter.generate_cover_letter)
+    assert "submit_mode" not in src, "generate_cover_letter must not read submit_mode"
