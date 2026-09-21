@@ -27,6 +27,7 @@ from modules.ats_pdf_generator import (
     _make_styles,
     _section_block,
     clean_linkedin_url,
+    dedupe_certifications,
     skill_key,
 )
 
@@ -43,10 +44,20 @@ def count_skill_items(text: str) -> int:
     semicolons, newlines and bullet marks — and ignore fragments too short to be
     a skill. This is the number the UI's "7 / 10" counter shows, so the rule lives
     here and is tested rather than guessed at in two places.
+
+    "and" counts as a separator ONLY in a list that has no other one ("excel and
+    word and photoshop"). Once someone has picked a separator, an "and" is part of
+    a skill's NAME, not a break between two: the live run 2026-09-21 counted Igor's
+    12 comma-separated skills as 13 by splitting "Instagram Growth and Automation".
+    Over-counting is the harmful direction — it walks someone past the 10-skill bar
+    with 9, and the bar exists so the grouping has something real to work with.
     """
     if not text:
         return 0
-    parts = re.split(r"[,;\n•·|]+|(?<=[a-z])\s+and\s+(?=[A-Za-z])", text)
+    pattern = r"[,;\n•·|]+"
+    if not re.search(pattern, text):
+        pattern += r"|(?<=[a-z])\s+and\s+(?=[A-Za-z])"
+    parts = re.split(pattern, text)
     return len([p for p in (part.strip(" \t-–—.") for part in parts) if len(p) >= 2])
 
 
@@ -263,7 +274,7 @@ def build_skills_story(data: dict, styles: dict | None = None) -> list:
             story.append(Spacer(1, 3))
 
     edu = data.get("education") or []
-    certs = data.get("certifications") or []
+    certs = dedupe_certifications(edu, data.get("certifications") or [])
     if edu or certs:
         story.extend(_section_block("Education & Certifications", styles))
         for e in edu:
@@ -380,7 +391,7 @@ def generate_skills_docx(data: dict) -> bytes:
                 add_line(f"Skills gained: {', '.join(gained)}", italic=True)
 
     edu = data.get("education") or []
-    certs = data.get("certifications") or []
+    certs = dedupe_certifications(edu, data.get("certifications") or [])
     if edu or certs:
         _docx_section_header(doc, "Education & Certifications")
         for e in edu:

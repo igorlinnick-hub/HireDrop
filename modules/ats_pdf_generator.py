@@ -385,6 +385,38 @@ def dedupe_keeping_order(items: list, seen: set | None = None) -> list:
     return out
 
 
+def dedupe_certifications(education: list, certifications: list) -> list:
+    """Drop certifications that the education list already names.
+
+    Both lists print under one "Education & Certifications" heading, and the
+    structuring model legitimately puts a degree-shaped credential in BOTH — it is
+    education by shape and a certification by name. Live run 2026-09-21 on Igor's
+    resume printed "Google Project Management Certification" on two consecutive
+    lines of a document that goes to employers.
+
+    Matched on the degree text alone, not degree+school+year: the certification
+    string usually carries the year ("… Certification (2023)") while the education
+    row splits it across fields, so the degree is the part reliably common to both.
+    Short credentials are left alone — an 8-character floor keeps "MBA" from
+    swallowing an unrelated "MBA Certification".
+    """
+    keys = [
+        k
+        for k in (
+            skill_key((e or {}).get("degree") if isinstance(e, dict) else e)
+            for e in education or []
+        )
+        if len(k) >= 8
+    ]
+    out = []
+    for cert in certifications or []:
+        ck = skill_key(cert if isinstance(cert, str) else "")
+        if ck and any(ck in k or k in ck for k in keys):
+            continue
+        out.append(cert)
+    return out
+
+
 ATS_STRUCTURE_FIELDS = (
     "name",
     "title",
@@ -492,12 +524,13 @@ def structure_to_text(data: dict) -> str:
                 lines.append(header)
             lines += [f"- {b}" for b in job["bullets"]]
 
-    if d["education"] or d["certifications"]:
+    certs = dedupe_certifications(d["education"], d["certifications"])
+    if d["education"] or certs:
         lines += ["", "EDUCATION & CERTIFICATIONS"]
         for e in d["education"]:
             rest = " | ".join(p for p in (e["school"], e["year"]) if p)
             lines.append(f"{e['degree']} — {rest}" if rest else e["degree"])
-        lines += list(d["certifications"])
+        lines += list(certs)
 
     if d["tech_skills"]:
         lines += ["", "TECHNICAL SKILLS", " | ".join(d["tech_skills"])]
@@ -566,7 +599,7 @@ def _build_story(data: dict, styles: dict) -> list:
 
     # Education & Certifications
     edu = data.get("education") or []
-    certs = data.get("certifications") or []
+    certs = dedupe_certifications(edu, data.get("certifications") or [])
     if edu or certs:
         story.extend(_section_block("Education & Certifications", styles))
         for e in edu:
@@ -761,7 +794,7 @@ def generate_ats_docx(
 
     # Education & Certifications
     edu = data.get("education") or []
-    certs = data.get("certifications") or []
+    certs = dedupe_certifications(edu, data.get("certifications") or [])
     if edu or certs:
         _docx_section_header(doc, "Education & Certifications")
         for e in edu:

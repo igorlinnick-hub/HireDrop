@@ -59,6 +59,38 @@ def test_skills_story_experience_is_compact():
     assert any("Skills gained:" in t and "HubSpot, GA4" in t for t in texts)
 
 
+def test_certification_named_by_education_is_not_printed_twice():
+    """Live run 2026-09-21: "Google Project Management Certification" printed on two
+    consecutive lines of the same section — the model had put it in BOTH arrays."""
+    from modules.ats_pdf_generator import dedupe_certifications
+
+    edu = [
+        {"degree": "B.S. in Economics", "school": "Kharkiv National University", "year": ""},
+        {"degree": "Google Project Management Certification", "school": "Google", "year": "2023"},
+    ]
+    certs = ["Google Project Management Certification (2023)", "HubSpot Inbound (2021)"]
+    assert dedupe_certifications(edu, certs) == ["HubSpot Inbound (2021)"]
+
+    # Short degrees don't swallow unrelated credentials, and nothing is lost when
+    # the two sections genuinely name different things.
+    assert dedupe_certifications([{"degree": "MBA"}], ["MBA Certification"]) == [
+        "MBA Certification"
+    ]
+    assert dedupe_certifications([], certs) == certs
+    assert dedupe_certifications(edu, []) == []
+
+
+def test_skills_story_prints_each_credential_once():
+    data = dict(SAMPLE)
+    data["education"] = [
+        {"degree": "Google Project Management Certification", "school": "Google", "year": "2023"}
+    ]
+    data["certifications"] = ["Google Project Management Certification (2023)"]
+    texts = _texts(build_skills_story(data))
+    hits = [t for t in texts if "Google Project Management Certification" in t]
+    assert len(hits) == 1, f"credential rendered {len(hits)} times: {hits}"
+
+
 # ---------- the dial: best_signed_url(user, ats_approved, default_resume) ----------
 
 
@@ -91,9 +123,15 @@ def test_count_skill_items_counts_what_people_actually_write():
 
     assert count_skill_items("") == 0
     assert count_skill_items("React, TypeScript, Figma") == 3
-    # newlines, bullets, semicolons and a trailing "and" are all separators people use
+    # newlines, bullets and semicolons are all separators people use
     assert count_skill_items("- React\n- Node.js\n- SQL") == 3
-    assert count_skill_items("Excel; PowerPoint; Meta Ads and Google Ads") == 4
+    # "and" separates only when nothing else does
+    assert count_skill_items("excel and word and photoshop") == 3
+    # ...and is part of the NAME once the list has a real separator: Igor's live run
+    # counted 12 comma-separated skills as 13 by splitting "Instagram Growth and
+    # Automation". Over-counting walks someone past the 10-skill bar with 9.
+    assert count_skill_items("Excel; PowerPoint; Meta Ads and Google Ads") == 3
+    assert count_skill_items("Content Strategy, Instagram Growth and Automation") == 2
     # fragments too short to be a skill don't inflate the count
     assert count_skill_items("React, , a, Figma") == 2
 
