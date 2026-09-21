@@ -384,6 +384,74 @@ async function addLog(text, cls) {
 }
 
 // ---------------------------------------------------------------------------
+// Hand-backs — the applications waiting on the user's hands
+// ---------------------------------------------------------------------------
+//
+// The filler hands a job back when a form step refuses it (Indeed's demographic
+// screen is the common one: we never fabricate a protected-class answer, so a page
+// with no "prefer not to say" option cannot be completed by us). The walk moves on
+// immediately — the job is not lost, it is WAITING, and until 09-21 the only place
+// that said so was the activity log and History. Both scroll away.
+//
+// Finishing is the user's own tick: we cannot see the employer's side, so on return
+// we ASK rather than assume. Claiming a submit we did not observe would be exactly
+// the kind of number this product keeps deleting.
+
+// Job we just sent the user off to finish, awaiting their answer on reopen.
+let hbAwaiting = null;
+
+async function renderHandbacks() {
+  const card = $("hb-card");
+  if (!card) return;
+
+  if (hbAwaiting) {
+    card.style.display = "";
+    $("hb-title").textContent = "did you finish it?";
+    $("hb-list").innerHTML =
+      '<div class="hb-ask"><p>' + escapeHtml(hbAwaiting.job_title || "That application") +
+      '</p><button class="hb-yes" id="hb-yes">Sent it</button>' +
+      '<button class="hb-no" id="hb-no">Not yet</button></div>';
+    $("hb-yes").addEventListener("click", async () => {
+      const id = hbAwaiting.id;
+      hbAwaiting = null;
+      await send({ type: "RESOLVE_HANDBACK", id });
+      renderHandbacks();
+    });
+    $("hb-no").addEventListener("click", () => { hbAwaiting = null; renderHandbacks(); });
+    return;
+  }
+
+  const res = await send({ type: "GET_HANDBACKS" });
+  const items = (res && res.handbacks) || [];
+  if (!items.length) { card.style.display = "none"; return; }
+
+  card.style.display = "";
+  $("hb-title").textContent =
+    items.length === 1 ? "1 waiting on you" : items.length + " waiting on you";
+  $("hb-list").innerHTML = items
+    .map((h, i) =>
+      '<div class="hb-item"><div class="hb-job"><b>' +
+      escapeHtml(h.job_title || "Application") + '</b><span>' +
+      escapeHtml(h.company || "") + '</span></div>' +
+      '<button class="hb-go" data-i="' + i + '">Finish</button></div>')
+    .join("");
+
+  $("hb-list").querySelectorAll(".hb-go").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const h = items[Number(btn.dataset.i)];
+      if (!h || !h.url) return;
+      // Opens on the exact screen the filler stopped at — everything before it is
+      // already filled, so this is a question and a Submit, not a re-entry.
+      chrome.tabs.create({ url: h.url });
+      hbAwaiting = h;
+      renderHandbacks();
+    });
+  });
+}
+
+renderHandbacks();
+
+// ---------------------------------------------------------------------------
 // Dashboard button
 // ---------------------------------------------------------------------------
 
