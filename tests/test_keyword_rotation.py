@@ -10,7 +10,7 @@ about to overwrite. These tests pin the properties that make that safe when the 
 their roles between runs.
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -180,3 +180,50 @@ def test_a_run_without_lever_is_untouched(auth_client):
     body = _start(auth_client, ["indeed", "ashby"]).json()
     assert body["filters"]["platforms"] == ["indeed", "ashby"]
     assert body["skipped_platforms"] == []
+
+
+def test_stopping_a_run_keeps_the_cursor_that_says_who_leads_next():
+    """The rotation above is only real if the cursor survives the end of a run.
+
+    It didn't: campaign_db.stop() wiped `filters` to {}, and every run ends in a stop, so
+    /campaign/start always read cursor 0 and always led with role #1 — which is exactly
+    what the 09-19 measurement found (39 of 39 applications on keyword #1). The stop keeps
+    kw_cursor and nothing else: the rest of `filters` describes the run that just ended.
+    """
+    from app.db import campaign as campaign_db
+
+    written: dict = {}
+    fake = MagicMock()
+    fake.table.return_value.upsert.side_effect = lambda row, **_: written.update(row) or fake
+    fake.table.return_value.upsert.return_value = fake
+    fake.execute.return_value = MagicMock(data=[])
+
+    with (
+        patch.object(
+            campaign_db,
+            "get_state",
+            return_value={"filters": {"kw_cursor": 2, "keywords": ["a", "b", "c"]}},
+        ),
+        patch.object(campaign_db, "get_supabase", return_value=fake),
+    ):
+        campaign_db.stop("user-1")
+
+    assert written["running"] is False
+    assert written["filters"] == {"kw_cursor": 2}
+
+
+def test_a_stop_with_no_prior_cursor_is_not_a_crash():
+    from app.db import campaign as campaign_db
+
+    written: dict = {}
+    fake = MagicMock()
+    fake.table.return_value.upsert.side_effect = lambda row, **_: written.update(row) or fake
+    fake.execute.return_value = MagicMock(data=[])
+
+    with (
+        patch.object(campaign_db, "get_state", return_value={"filters": None}),
+        patch.object(campaign_db, "get_supabase", return_value=fake),
+    ):
+        campaign_db.stop("user-1")
+
+    assert written["filters"] == {"kw_cursor": 0}

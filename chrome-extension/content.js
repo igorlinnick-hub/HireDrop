@@ -1369,12 +1369,24 @@
   // navigation, so counting here makes the daily cap + count robust regardless of SW
   // state. background's APPLICATION_SAVED no longer increments (backend save only).
   async function recordLocalApplication(platform) {
-    const s = await chrome.storage.local.get(["todayCount", "platformCounts", "todayDate"]);
+    const s = await chrome.storage.local.get([
+      "todayCount", "platformCounts", "todayDate", "keywordCounts", "kwIndex", "atsPlatform",
+    ]);
     const today = localDay();
     const totalCount = (s.todayDate === today ? (s.todayCount || 0) : 0) + 1;
     const platformCounts = s.todayDate === today ? (s.platformCounts || {}) : {};
     platformCounts[platform] = (platformCounts[platform] || 0) + 1;
-    await chrome.storage.local.set({ todayCount: totalCount, platformCounts, todayDate: today });
+    // Per-keyword ledger behind keywordSubCap: which search phrase this application came
+    // out of. Only the LIVE board search has a phrase — a pool/ATS queue walk (atsPlatform
+    // set) applies to saved rows, and charging the current phrase for those would rotate
+    // the search away from a keyword that never spent anything.
+    const keywordCounts = s.todayDate === today ? (s.keywordCounts || {}) : {};
+    if (!s.atsPlatform) {
+      const bucket = keywordCounts[platform] || (keywordCounts[platform] = {});
+      const ki = String(Math.max(0, s.kwIndex || 0));
+      bucket[ki] = (bucket[ki] || 0) + 1;
+    }
+    await chrome.storage.local.set({ todayCount: totalCount, platformCounts, keywordCounts, todayDate: today });
     return platformCounts[platform];
   }
 
@@ -1383,14 +1395,24 @@
   // claiming "applied" for an application that never left the page is lying to the user
   // (council 2026-08-04: quality above all — no silent half-deaths).
   async function subtractLocalApplication(platform) {
-    const s = await chrome.storage.local.get(["todayCount", "platformCounts", "todayDate"]);
+    const s = await chrome.storage.local.get([
+      "todayCount", "platformCounts", "todayDate", "keywordCounts", "kwIndex", "atsPlatform",
+    ]);
     const today = localDay();
     if (s.todayDate !== today) return;
     const platformCounts = s.platformCounts || {};
     platformCounts[platform] = Math.max(0, (platformCounts[platform] || 0) - 1);
+    // Give the phrase its slot back too, or a blocked submit would quietly shrink this
+    // keyword's share of the cap for the rest of the day.
+    const keywordCounts = s.keywordCounts || {};
+    if (!s.atsPlatform && keywordCounts[platform]) {
+      const ki = String(Math.max(0, s.kwIndex || 0));
+      keywordCounts[platform][ki] = Math.max(0, (keywordCounts[platform][ki] || 0) - 1);
+    }
     await chrome.storage.local.set({
       todayCount: Math.max(0, (s.todayCount || 0) - 1),
       platformCounts,
+      keywordCounts,
     });
   }
 
@@ -1514,6 +1536,17 @@
     if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
       log(`Indeed daily limit reached (${count}/${MAX_APPLICATIONS_PER_PLATFORM}) — trying another platform.`, "ok");
       await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: "indeed", reason: "platform daily cap" });
+      return;
+    }
+
+    // Per-keyword slice of that cap (09-19): rotating only at page boundaries is not
+    // enough, because one results page can hold more Easy Apply cards than the whole
+    // daily cap — phrase #1 walked out with all 15 while "Fitter" was never searched.
+    // Budget spent here → back to the list, which rotates to the next phrase.
+    if (await keywordCapReached("indeed")) {
+      log("This role has had its share of today's Indeed cap — switching role.", "ok");
+      logBackend("Per-keyword cap reached — rotating to the next role", "info");
+      await goBackToIndeedJobList();
       return;
     }
 
@@ -1835,30 +1868,19 @@
     // Confirmed real selector: .job_result_two_pane_v2 wraps each job card
     const wrappers = Array.from(document.querySelectorAll(".job_result_two_pane_v2"));
     if (!wrappers.length) {
-      // Results ran out. Paging on regardless burns ~25s per empty page until the
-      // per-keyword budget (up to 24 pages) is spent — live 08-21 the engine walked a
-      // 5-page result set to page 18 before giving up. Two empty pages in a row is the
-      // end of this keyword; rotate or hand the platform decision to the background.
-      const es = await chrome.storage.local.get("zrEmptyPageStreak");
-      const emptyStreak = (es.zrEmptyPageStreak || 0) + 1;
-      await chrome.storage.local.set({ zrEmptyPageStreak: emptyStreak });
-      log("No job cards found on ZipRecruiter — going to next page", "");
-      logBackend("No ZR cards found on this page", "warn");
-      if (emptyStreak >= 2) {
-        await chrome.storage.local.set({ zrEmptyPageStreak: 0, processedPageStarts: [0] });
-        if (await advanceKeyword()) {
-          logBackend("ZipRecruiter results exhausted for this keyword — next keyword", "info");
-          await goBackToJobList();
-          return;
-        }
-        logBackend("ZipRecruiter results exhausted — no keywords left", "warn");
-        await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: "ziprecruiter", reason: "no more results" });
-        return;
-      }
+      // Results ran out for THIS phrase at this depth. Paging on regardless burns ~25s
+      // per empty page until the budget is spent — live 08-21 the engine walked a 5-page
+      // result set to page 18 before giving up. Deeper laps of the same phrase can only
+      // be emptier, so retire it for this run and let the list nav rotate to the next.
+      // (The old guard waited for two empty pages IN A ROW. Under the breadth walk those
+      // two would be two DIFFERENT phrases, so it would retire the wrong one.)
+      log("No job cards found on ZipRecruiter — trying the next role", "");
+      logBackend("No ZR results for this role — retiring it for this run", "warn");
+      await retireKeyword();
+      // goBackToJobList rotates, or emits PLATFORM_EXHAUSTED when nothing is left.
       await goBackToJobList();
       return;
     }
-    await chrome.storage.local.set({ zrEmptyPageStreak: 0 }); // real results — reset the guard
 
     // Build base search URL (without lk=) for constructing per-job URLs
     const baseUrl = new URL(window.location.href);
@@ -1958,6 +1980,17 @@
     if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
       log(`ZipRecruiter daily limit reached — trying another platform.`, "ok");
       await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: "ziprecruiter", reason: "platform daily cap" });
+      return;
+    }
+
+    // Per-keyword slice of that cap (09-19): rotating only at page boundaries is not
+    // enough, because one results page can hold more Easy Apply cards than the whole
+    // daily cap — phrase #1 walked out with all 15 while "Fitter" was never searched.
+    // Budget spent here → back to the list, which rotates to the next phrase.
+    if (await keywordCapReached("ziprecruiter")) {
+      log("This role has had its share of today's ZipRecruiter cap — switching role.", "ok");
+      logBackend("Per-keyword cap reached — rotating to the next role", "info");
+      await goBackToZipRecruiterJobList();
       return;
     }
 
@@ -3795,14 +3828,85 @@
   // ── keyword rotation ──────────────────────────────────────────────────────
   // Multiple keywords are DISTINCT searches, not one mashed query. Cramming them
   // ("healthcare marketing social media manager project manager ai engineer") returns
-  // junk the fit-gate then skips wholesale. We search ONE phrase at a time, up to
-  // pagesPerKeyword() pages, then rotate to the next keyword (fresh page 1).
-  // The per-keyword page budget scales inversely with keyword count (total ~24 pages,
-  // min 4 each) so a SINGLE keyword still walks deep instead of stopping after 3 pages.
-  async function pagesPerKeyword() {
+  // junk the fit-gate then skips wholesale. We search ONE phrase at a time.
+  //
+  // BREADTH, NOT DEPTH (09-19). The walk used to give keyword #1 pagesPerKeyword() pages
+  // back to back before it ever touched keyword #2 — and the platform cap (15 applications
+  // per board per day) ran out INSIDE that first keyword. Live measure over 84 applications:
+  // 39 of 39 on "Welder", zero on "Fabrication" and "Fitter", with 221 Indeed rows in that
+  // user's pool. Depth is strictly worse here for two reasons:
+  //   1. we ask Indeed for sort=date, so page N is the postings that sit N×10 positions
+  //      OLDER — page 4 of "Welder" is a stale tail, page 1 of "Fitter" is today's head;
+  //   2. the cap is spent before the tail phrases are searched AT ALL, run after run.
+  // So the walk takes ONE page per keyword, rotates through the whole list, then starts a
+  // second lap (page 2 of each). The page budget is unchanged — only the ORDER is. The
+  // cap is sliced the same way (keywordSubCap), because rotating at page boundaries alone
+  // is not enough: a single results page can hold more Easy Apply cards than the whole
+  // daily cap, so phrase #1 would still walk out with all of it.
+  //
+  // Which phrase LEADS a run is the SERVER's call (modules/keyword_rotation — cursor in
+  // campaign_states.filters, applied to the list the dashboard arms us with). The
+  // extension always starts at index 0 of the list it is handed and keeps NO cursor of
+  // its own across runs; two cursors would advance independently and drift.
+  async function keywordList() {
     const d = await chrome.storage.local.get("campaignFilters");
-    const n = (d.campaignFilters?.keywords || []).filter(Boolean).length || 1;
+    return (d.campaignFilters?.keywords || []).filter(Boolean);
+  }
+
+  // Pages per keyword for the whole run (~24 pages total, at least 4 each) — the same
+  // budget as the depth era, now spent one page per LAP instead of back to back. A single
+  // keyword therefore still walks 24 pages deep, exactly as before.
+  async function pagesPerKeyword() {
+    const n = (await keywordList()).length || 1;
     return Math.max(4, Math.floor(24 / n));
+  }
+
+  // The board's daily cap, sliced across the keywords. Floor of 1 so a long list still
+  // applies to something per phrase; one keyword means no slicing at all.
+  async function keywordSubCap() {
+    const n = (await keywordList()).length;
+    if (n <= 1) return MAX_APPLICATIONS_PER_PLATFORM;
+    return Math.max(1, Math.floor(MAX_APPLICATIONS_PER_PLATFORM / n));
+  }
+
+  // Applications filed TODAY per keyword index, per platform — the sub-cap's ledger,
+  // written by recordLocalApplication on the same day-key as platformCounts.
+  async function getKeywordCounts(platform) {
+    const d = await chrome.storage.local.get(["keywordCounts", "todayDate"]);
+    if (d.todayDate !== localDay()) return {};
+    return (d.keywordCounts || {})[platform] || {};
+  }
+
+  async function currentKeywordIndex() {
+    const d = await chrome.storage.local.get(["campaignFilters", "kwIndex"]);
+    const kws = (d.campaignFilters?.keywords || []).filter(Boolean);
+    if (!kws.length) return 0;
+    return Math.min(Math.max(d.kwIndex || 0, 0), kws.length - 1);
+  }
+
+  // True when this phrase has spent its slice of the board cap. The walk rotates instead
+  // of applying — that is the whole point of the slice.
+  async function keywordCapReached(platform) {
+    const kws = await keywordList();
+    if (kws.length <= 1) return false;
+    // A pool / ATS queue walk has no search phrase (recordLocalApplication skips the
+    // ledger for it too), and rotating there would steer the queue walk into a board
+    // search — the 09-13 failure in reverse. The slice governs the live search only.
+    if ((await chrome.storage.local.get("atsPlatform")).atsPlatform) return false;
+    const counts = await getKeywordCounts(platform);
+    const i = String(await currentKeywordIndex());
+    return (counts[i] || 0) >= (await keywordSubCap());
+  }
+
+  // A phrase whose search came back with no results at all: deeper laps of it would be
+  // empty too, so retire it instead of paying a page load per lap to re-learn that.
+  // Per RUN (background clears kwDone at start), not per day.
+  async function retireKeyword() {
+    const i = await currentKeywordIndex();
+    const d = await chrome.storage.local.get("kwDone");
+    const done = d.kwDone || [];
+    if (done.includes(i)) return;
+    await chrome.storage.local.set({ kwDone: [...done, i] });
   }
 
   async function currentSearchPhrase() {
@@ -3814,26 +3918,39 @@
     return [kws[i], ws].filter(Boolean).join(" ");
   }
 
-  // Move to the next keyword, resetting pagination. Returns false when all keywords
-  // are exhausted (caller stops the campaign).
-  async function advanceKeyword() {
-    const d = await chrome.storage.local.get(["campaignFilters", "kwIndex"]);
-    const kws = (d.campaignFilters?.keywords || []).filter(Boolean);
-    const next = (d.kwIndex || 0) + 1;
-    if (!kws.length || next >= kws.length) return false;
-    await chrome.storage.local.set({ kwIndex: next, processedPageStarts: [0] });
-    log(`Keyword done — switching to "${kws[next]}"`, "");
-    logBackend(`Next keyword: ${kws[next]}`, "info");
-    return true;
+  // Rotate to the next phrase that still has something to search, wrapping into the next
+  // lap (= the next page of every phrase). Skips phrases that are retired or have spent
+  // their slice of the cap. Returns false when nothing is left on this board — the caller
+  // turns that into PLATFORM_EXHAUSTED.
+  async function advanceKeyword(platform) {
+    const kws = await keywordList();
+    if (!kws.length) return false;
+    const laps = await pagesPerKeyword();
+    const cap = await keywordSubCap();
+    const counts = await getKeywordCounts(platform);
+    const st = await chrome.storage.local.get(["kwIndex", "kwLap", "kwDone"]);
+    const done = new Set(st.kwDone || []);
+    let i = Math.min(Math.max(st.kwIndex || 0, 0), kws.length - 1);
+    let lap = Math.max(0, st.kwLap || 0);
+    // At most one full pass: starting anywhere in the list, n steps wrap exactly once.
+    for (let step = 0; step < kws.length; step++) {
+      i += 1;
+      if (i >= kws.length) { i = 0; lap += 1; }
+      if (lap >= laps) return false; // page budget spent for every phrase
+      if (done.has(i)) continue;
+      if (kws.length > 1 && (counts[String(i)] || 0) >= cap) continue;
+      await chrome.storage.local.set({ kwIndex: i, kwLap: lap });
+      log(`Keyword done — switching to "${kws[i]}" (page ${lap + 1})`, "");
+      logBackend(`Next keyword: ${kws[i]} (page ${lap + 1})`, "info");
+      return true;
+    }
+    return false; // every phrase is retired or has spent its slice of the cap
   }
 
-  // Next list nav = another page of the SAME keyword, a fresh page-1 of the NEXT
-  // keyword, or "stop" when everything's searched.
-  async function pageOrRotate() {
-    const p = await chrome.storage.local.get("processedPageStarts");
-    const pagesDone = (p.processedPageStarts || [0]).length;
-    if (pagesDone < (await pagesPerKeyword())) return "page";
-    return (await advanceKeyword()) ? "rotated" : "stop";
+  // Every list nav rotates now — one page per keyword, then the next lap. "stop" means
+  // the page budget or the per-keyword caps are spent on this board.
+  async function pageOrRotate(platform) {
+    return (await advanceKeyword(platform)) ? "rotated" : "stop";
   }
 
   async function goBackToJobList() {
@@ -3858,7 +3975,7 @@
     }
 
     // Same keyword's next page, next keyword's page 1, or all-done.
-    const decision = await pageOrRotate();
+    const decision = await pageOrRotate("indeed");
     if (decision === "stop") {
       log("All keywords searched here — switching platform or finishing.", "ok");
       await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: detectPlatform(), reason: "all keywords searched" });
@@ -3889,18 +4006,11 @@
     params.set("iafilter", "1");
     params.set("sort", "date");
 
-    // Indeed paginates via start= (10/page). On a keyword rotate, processedPageStarts was
-    // reset to [0] → start=0 (page 1 of the new search).
-    let nextStart = 0;
-    if (decision === "page") {
-      const processed = await chrome.storage.local.get("processedPageStarts");
-      const starts = processed.processedPageStarts || [0];
-      nextStart = starts[starts.length - 1] + 10;
-      starts.push(nextStart);
-      if (starts.length > 200) starts.splice(0, starts.length - 200);
-      await chrome.storage.local.set({ processedPageStarts: starts });
-    }
-    params.set("start", String(nextStart));
+    // Indeed paginates via start= (10/page). The breadth walk rotated the keyword just
+    // above, so the page number is the LAP, not a per-keyword page counter: lap 0 is
+    // page 1 of every phrase, lap 1 is page 2 of every phrase, and so on.
+    const lapI = Math.max(0, (await chrome.storage.local.get("kwLap")).kwLap || 0);
+    params.set("start", String(lapI * 10));
 
     const url = `https://www.indeed.com/jobs?${params.toString()}`;
     log("Returning to job list...", "");
@@ -3918,7 +4028,7 @@
     }
 
     // Same keyword's next page, next keyword's page 1, or all-done.
-    const decision = await pageOrRotate();
+    const decision = await pageOrRotate("ziprecruiter");
     if (decision === "stop") {
       log("All keywords searched here — switching platform or finishing.", "ok");
       await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: detectPlatform(), reason: "all keywords searched" });
@@ -3939,18 +4049,9 @@
       if (jtMap[filters.job_type]) params.set("employment_type[]", jtMap[filters.job_type]);
     }
 
-    // ZipRecruiter paginates via `page` param (20 jobs per page). On a keyword rotate,
-    // advanceKeyword() reset processedPageStarts to [0] → page 1 of the new search.
-    let page = 1;
-    if (decision === "page") {
-      const processed = await chrome.storage.local.get("processedPageStarts");
-      const starts = processed.processedPageStarts || [0];
-      const nextStart = starts[starts.length - 1] + 20;
-      starts.push(nextStart);
-      if (starts.length > 200) starts.splice(0, starts.length - 200);
-      await chrome.storage.local.set({ processedPageStarts: starts });
-      page = Math.floor(nextStart / 20) + 1;
-    }
+    // ZipRecruiter paginates via `page` (20 jobs a page). Same rule as Indeed above: the
+    // keyword just rotated, so the page number comes from the lap.
+    const page = Math.max(0, (await chrome.storage.local.get("kwLap")).kwLap || 0) + 1;
     if (page > 1) params.set("page", String(page));
 
     const url = `https://www.ziprecruiter.com/jobs-search?${params.toString()}`;
