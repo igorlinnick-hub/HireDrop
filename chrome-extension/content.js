@@ -573,6 +573,18 @@
   // consults it — a full navigation to the ATS thank-you page kills this script's
   // context mid-wait, so the fresh context waking up ON the confirmation page is the
   // normal way a Greenhouse submit ends, not an edge case.
+  // How long the whole run holds for ONE human wall (captcha or a terms gate).
+  //
+  // Was 2h, set when waiting was the only alternative to killing the run. It isn't any
+  // more: these walls are account-wide WITHIN a platform — Indeed's captcha says nothing
+  // about Greenhouse — so the run hands the board on and goes earning applications
+  // elsewhere. Once there is somewhere to go, the honest wait is minutes: the campaign
+  // window sits on the user's screen, so five minutes of silence means they are not at
+  // the machine, and the next 115 minutes change nothing. Nothing is lost — the wall
+  // stays solvable and the board comes back on the next run (Igor, 09-21).
+  const HUMAN_WALL_WAIT_MS = 5 * 60 * 1000;
+  const CONSENT_WAIT_MS = HUMAN_WALL_WAIT_MS;
+
   const POSTAPPLY_URL_HINTS = [
     "/applied", "postapply", "post_apply", "post-apply", "thank-you", "thankyou",
     "/success", "/confirmation", "application-submitted", "applysuccess",
@@ -4936,8 +4948,17 @@
           type: "DETECTION_TRIPPED",
           data: { signal: det.signal, url: window.location.href, phase: detectPhase() },
         });
+        // How long we hold the whole run for one captcha. It used to be 2h, from when
+        // waiting was the ONLY option — back then the alternative was killing the run.
+        // It isn't any more: a captcha is account-wide WITHIN a platform, and Indeed's
+        // says nothing about Greenhouse, so the run can go earn applications elsewhere
+        // and come back to this board next time. Once there is somewhere to go, the
+        // right wait is minutes: the campaign window is on the user's screen, so if
+        // they haven't cleared it in five minutes they are not at the machine, and
+        // another 115 minutes of standing still changes nothing (Igor, 09-21).
+        const CAPTCHA_WAIT_MS = HUMAN_WALL_WAIT_MS;
         const _pauseStart = Date.now();
-        while (Date.now() - _pauseStart < 2 * 60 * 60 * 1000) {
+        while (Date.now() - _pauseStart < CAPTCHA_WAIT_MS) {
           await sleep(8000);
           if (!(await isCampaignRunning())) return; // user stopped it themselves
           if (!isDetected().detected) {
@@ -4949,8 +4970,26 @@
           }
         }
         if (isDetected().detected) {
-          log("CAPTCHA still not cleared after 2h — stopping campaign", "err");
-          await sendMsg({ type: "STOP_CAMPAIGN" });
+          const plat = detectPlatform();
+          log("CAPTCHA not cleared in 5 min — moving on to another platform", "err");
+          logBackend(
+            `${plat} is asking for a captcha and it's still there after 5 minutes — moving on to another platform. ` +
+            "Solve it any time; we'll come back to this board on the next run.",
+            "warn");
+          // Clear the hand-off state: the dashboard's "solve the captcha" CTA must not
+          // outlive the pause it describes — a CTA for a board we already left is the
+          // same class of lie as a campaign that reads "live" after it died (#98).
+          await sendMsg({ type: "DETECTION_CLEARED" });
+          // Hand the walk on the way every other spent platform does. PLATFORM_EXHAUSTED
+          // owns the ledger AND the stop: if this was the only platform left (or a
+          // single-platform run, where switching boards was never consented to), it
+          // stops the campaign itself — so the old behaviour survives exactly where it
+          // was the honest one.
+          await sendMsg({
+            type: "PLATFORM_EXHAUSTED",
+            platform: plat,
+            reason: "captcha not cleared in 5 min",
+          });
           return;
         }
       }
@@ -4981,8 +5020,11 @@
             phase: detectPhase(),
           },
         });
+        // Same clock as the captcha above, same reason: a terms wall is account-wide
+        // within THIS board only, so once we have somewhere else to go, holding the
+        // whole run for two hours buys nothing.
         const _gateStart = Date.now();
-        while (Date.now() - _gateStart < 2 * 60 * 60 * 1000) {
+        while (Date.now() - _gateStart < CONSENT_WAIT_MS) {
           await sleep(8000);
           if (!(await isCampaignRunning())) return; // user stopped it themselves
           if (!detectConsentGate().gated) {
@@ -4993,8 +5035,18 @@
           }
         }
         if (detectConsentGate().gated) {
-          log("Terms still not accepted after 2h — stopping campaign", "err");
-          await sendMsg({ type: "STOP_CAMPAIGN" });
+          const plat = detectPlatform();
+          log("Terms not accepted in 5 min — moving on to another platform", "err");
+          logBackend(
+            `${site} still wants its terms accepted after 5 minutes — moving on to another platform. ` +
+            "Accept them any time; we'll come back to this board on the next run.",
+            "warn");
+          await sendMsg({ type: "DETECTION_CLEARED" });
+          await sendMsg({
+            type: "PLATFORM_EXHAUSTED",
+            platform: plat,
+            reason: "terms not accepted in 5 min",
+          });
           return;
         }
         // Accepting usually navigates or re-renders the page under us, so the phase we
@@ -5024,8 +5076,11 @@
         const name = platformLabel();
         log(`⚠️ Not signed into ${name}. Log in (or create an account) in this window — the campaign resumes automatically once you're in.`, "err");
         await sendMsg({ type: "PLATFORM_LOGIN_REQUIRED", platform: authPlatform, url: window.location.href, host: window.location.hostname });
+        // Third door, same lock as the captcha and the terms gate — and the same answer.
+        // Being signed out of Indeed says nothing about Greenhouse (ATS boards apply as
+        // a guest anyway), so this is a reason to leave the BOARD, not the run.
         const _loginPauseStart = Date.now();
-        while (Date.now() - _loginPauseStart < 2 * 60 * 60 * 1000) {
+        while (Date.now() - _loginPauseStart < HUMAN_WALL_WAIT_MS) {
           await sleep(8000);
           if (!(await isCampaignRunning())) return; // user stopped it themselves
           if (detectPlatformAuth(authPlatform) === "connected") {
@@ -5035,8 +5090,16 @@
           }
         }
         if (detectPlatformAuth(authPlatform) === "logged_out") {
-          log(`Still not signed into ${name} after 2h — stopping campaign`, "err");
-          await sendMsg({ type: "STOP_CAMPAIGN" });
+          log(`Still not signed into ${name} after 5 min — moving on to another platform`, "err");
+          logBackend(
+            `Still signed out of ${name} after 5 minutes — moving on to another platform. ` +
+            "Sign in any time; we'll come back to this board on the next run.",
+            "warn");
+          await sendMsg({
+            type: "PLATFORM_EXHAUSTED",
+            platform: authPlatform,
+            reason: "not signed in after 5 min",
+          });
           return;
         }
       }
