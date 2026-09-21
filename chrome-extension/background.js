@@ -2130,6 +2130,7 @@ async function handleMessage(msg, sender) {
           url: f.url || "",
           platform: f.platform || "",
           reason: f.reason || "",
+          steps_done: f.steps_done || 0,
         });
       } catch { /* best-effort: the walk must advance even if the row didn't land */ }
       try {

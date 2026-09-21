@@ -30,6 +30,10 @@ def add(user_id: str, job: dict) -> dict | None:
         "url": (job.get("url") or "")[:1000],
         "platform": (job.get("platform") or "")[:40],
         "reason": (job.get("reason") or "")[:500],
+        # Screens actually completed before the wall. Bounded because it drives a
+        # progress bar: a bogus 900 would render a lie, and the cap is cheaper than
+        # trusting a client number.
+        "steps_done": max(0, min(int(job.get("steps_done") or 0), 30)),
     }
     res = (
         get_supabase()
@@ -44,7 +48,7 @@ def list_open(user_id: str, limit: int = 20) -> list[dict]:
     res = (
         get_supabase()
         .table("handbacks")
-        .select("id, job_title, company, url, platform, reason, created_at")
+        .select("id, job_title, company, url, platform, reason, steps_done, created_at")
         .eq("user_id", user_id)
         .is_("resolved_at", "null")
         .order("created_at", desc=True)

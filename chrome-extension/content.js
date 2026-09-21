@@ -1468,6 +1468,9 @@
         url: window.location.href,
         title: extra.title || "", company: extra.company || "",
         platform: extra.platform || detectPlatform(),
+        // How many form screens we DID complete. The user's list shows this as
+        // progress, so it must be a count we actually observed — never an estimate.
+        steps_done: Number(extra.steps) || 0,
       },
     });
   }
@@ -3520,7 +3523,9 @@
           // blocking us" and pauses the whole campaign behind a captcha CTA.
           await handBackJob(
             `the form step wouldn't accept our answers — "${classifyFormButton().label || "Continue"}" refused ${stallRounds + 1}× with nothing left to fill`,
-            { title: jobInfo.title, company: jobInfo.company, platform: detectPlatform() });
+            { title: jobInfo.title, company: jobInfo.company, platform: detectPlatform(),
+              // The refusing screen is not a completed step — count the ones before it.
+              steps: Math.max(0, formStepCount - 1) });
           await skipToNextJob();
           return;
         }

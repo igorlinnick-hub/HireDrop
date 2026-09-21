@@ -74,6 +74,7 @@ class HandbackBody(BaseModel):
     url: str = ""
     platform: str = ""
     reason: str = ""
+    steps_done: int = 0
 
 
 @router.get("/handbacks")

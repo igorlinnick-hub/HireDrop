@@ -427,13 +427,21 @@ async function renderHandbacks() {
 
   card.style.display = "";
   $("hb-title").textContent =
-    items.length === 1 ? "1 waiting on you" : items.length + " waiting on you";
+    items.length === 1 ? "1 to finish" : items.length + " to finish";
+  // Progress instead of prose: "almost done" and "start over" are different decisions,
+  // and a percentage answers that in a glance. steps_done is a count we observed; the
+  // remaining screen is the one that refused us, hence done/(done+1).
   $("hb-list").innerHTML = items
-    .map((h, i) =>
-      '<div class="hb-item"><div class="hb-job"><b>' +
-      escapeHtml(h.job_title || "Application") + '</b><span>' +
-      escapeHtml(h.company || "") + '</span></div>' +
-      '<button class="hb-go" data-i="' + i + '">Finish</button></div>')
+    .map((h, i) => {
+      const d = Math.max(0, Number(h.steps_done) || 0);
+      const pct = d > 0 ? Math.round((d / (d + 1)) * 100) : null;
+      return '<div class="hb-item"><div class="hb-job"><b>' +
+        escapeHtml(h.job_title || "Application") + '</b>' +
+        (pct === null ? '<span>' + escapeHtml(h.company || "") + '</span>'
+          : '<div class="hb-bar"><i style="width:' + pct + '%"></i></div>' +
+            '<span>' + pct + '% done</span>') +
+        '</div><button class="hb-go" data-i="' + i + '">Finish</button></div>';
+    })
     .join("");
 
   $("hb-list").querySelectorAll(".hb-go").forEach((btn) => {
