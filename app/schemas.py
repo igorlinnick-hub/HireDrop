@@ -73,6 +73,9 @@ class SearchPrefsUpdate(BaseModel):
     location: str = "remote"
     job_type: str = "full-time"
     platforms: list[str] = ["remoteok"]
+    # None = "not mentioned in this request", so a caller that predates the field
+    # cannot wipe it. "" is a real answer meaning Any, same as job_type.
+    work_setting: str | None = None
 
 
 class CampaignStartRequest(BaseModel):

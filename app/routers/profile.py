@@ -178,6 +178,9 @@ def update_search_prefs(prefs: SearchPrefsUpdate, user=Depends(get_current_user)
         "job_type": prefs.job_type,
         "platforms": prefs.platforms,
     }
+    # Only when the caller said something about it — see SearchPrefsUpdate.
+    if prefs.work_setting is not None:
+        payload["work_setting"] = prefs.work_setting
     updated = profile_db.update_profile(user.id, payload)
     return {"saved": True, "profile": updated}
 
