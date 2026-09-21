@@ -54,12 +54,26 @@ def test_the_adapt_versus_invent_line_is_drawn_in_words():
     assert "traceable to the resume" in p
 
 
-def test_an_absent_tool_gets_a_plain_no_plus_the_nearest_real_thing():
+def test_an_absent_tool_gets_the_ANALOGY_not_a_bare_no():
     # The alternative to inventing must be spelled out, or "answer in the candidate's
-    # favour" fills the vacuum by itself.
-    p = _system_prompt().lower()
-    assert "closest thing" in p
-    assert "haven't used" in p
+    # favour" fills the vacuum by itself. Igor, 09-21: a bare "no" throws away a real
+    # qualification — if the candidate has done the same KIND of work with another
+    # tool, the answer is the analogy. Read live after this change: Airtable →
+    # "I haven't used Airtable, but I've run project tracking and intake workflows in
+    # Jira… the relational, database-driven side is familiar ground"; Asana → the same
+    # move; Kubernetes → an honest no with NO analogy, because a project manager has
+    # no transferable claim on running infrastructure. The rule has to produce both.
+    p = _system_prompt()
+    low = p.lower()
+    assert "ANALOGY" in p, "the analogy must be named as the move, not implied"
+    assert "closest thing" in low
+    assert "haven't used" in low
+    # A tool is never claimed; a skill exercised elsewhere always counts. Both halves,
+    # or the rule collapses into one of the two failure modes.
+    assert "never claimed" in low
+    assert "always counts" in low
+    # And it must not read as an apology — hedging loses the application at the door.
+    assert "never hedge" in low
 
 
 def test_it_still_forbids_ai_tells_and_hedging():
