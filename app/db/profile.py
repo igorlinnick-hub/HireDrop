@@ -125,6 +125,7 @@ def update_profile(user_id: str, data: dict) -> dict:
         "postal_code",
         "current_employer",
         "current_title",
+        "work_setting",
     ):
         if k in data:
             payload[k] = data[k]
