@@ -89,6 +89,31 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .pr-node.active i{background:#fff;border-color:#fff;box-shadow:0 0 0 4px rgba(167,139,250,.3),0 0 12px var(--night-accent2);animation:pulse 1.4s infinite}
 .pr-node.active span{color:#fff;font-weight:700}
 
+/* ── Hand-backs: applications waiting on the human ─────────────────────────
+   The filler hands a job back when a form step refuses it. That used to live only
+   in the activity log and in History — i.e. the ONE thing needing the user's hands
+   was the hardest thing to find (Igor, 09-21). It sits under the process rail
+   because that is where the eye already is while a campaign runs.
+   The pulse is the point: it must read as "waiting on YOU", not as a list. */
+.hb-card{margin-top:12px;padding:11px 12px;border-radius:10px;background:rgba(251,191,36,.10);border:1px solid rgba(251,191,36,.35)}
+.hb-head{display:flex;align-items:center;gap:7px;margin-bottom:8px}
+.hb-dot{width:7px;height:7px;border-radius:50%;background:#fbbf24;flex-shrink:0;animation:hbPulse 1.8s ease-in-out infinite}
+@keyframes hbPulse{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(251,191,36,.55)}50%{opacity:.75;box-shadow:0 0 0 6px rgba(251,191,36,0)}}
+.hb-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:#fbbf24}
+.hb-item{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid rgba(251,191,36,.18)}
+.hb-item:first-of-type{border-top:none}
+.hb-job{flex:1;min-width:0}
+.hb-job b{display:block;font-size:12px;font-weight:600;color:#f3f1ff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hb-job span{display:block;font-size:10.5px;color:#c9c5e2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hb-go{flex-shrink:0;padding:5px 10px;border:none;border-radius:6px;background:#fbbf24;color:#1a1a2e;font-size:11px;font-weight:700;cursor:pointer}
+.hb-go:hover{opacity:.85}
+/* Ask-on-return: we cannot see the employer's side, so finishing is the user's own
+   tick, not something we claim to have verified. */
+.hb-ask{padding:7px 0;border-top:1px solid rgba(251,191,36,.18)}
+.hb-ask p{font-size:11.5px;color:#f3f1ff;margin-bottom:6px}
+.hb-ask button{padding:4px 9px;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;margin-right:6px}
+.hb-yes{background:#0e9f6e;color:#fff}
+.hb-no{background:rgba(255,255,255,.14);color:#f3f1ff}
 .dash-btn{display:block;width:100%;padding:10px;border:none;border-radius:8px;background:var(--btn);color:#fff;font-size:13px;font-weight:600;cursor:pointer;text-align:center;transition:opacity .15s}
 .dash-btn:hover{opacity:.85}
 
@@ -220,6 +245,14 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
       </div>
     </div>
   </div>
+
+    <div class="hb-card" id="hb-card" style="display:none">
+      <div class="hb-head">
+        <span class="hb-dot"></span>
+        <span class="hb-title" id="hb-title">1 waiting on you</span>
+      </div>
+      <div id="hb-list"></div>
+    </div>
 
   <button class="dash-btn" id="btn-dash">Open Dashboard</button>
 </div>

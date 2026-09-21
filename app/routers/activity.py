@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.db import activity as activity_db
 from app.db import campaign as campaign_db
+from app.db import handbacks as handbacks_db
 from app.db.subscriptions import is_admin
 from app.deps import get_current_user
 
@@ -65,6 +66,43 @@ def activity_summary(
     Pass `since` (ISO ts, e.g. campaign started_at) to scope the counts to the CURRENT run
     instead of a rolling 24h window — keeps a prior run's cross-platform noise out of the chips."""
     return activity_db.summary(user.id, window_hours=min(max(window_hours, 1), 168), since=since)
+
+
+class HandbackBody(BaseModel):
+    job_title: str = ""
+    company: str = ""
+    url: str = ""
+    platform: str = ""
+    reason: str = ""
+
+
+@router.get("/handbacks")
+def list_handbacks(user=Depends(get_current_user), limit: int = 20):
+    """This user's unfinished applications — the ones waiting on their hands.
+
+    Read by BOTH the extension popup and the dashboard rail badge. One source on
+    purpose: two surfaces showing different counts for the same to-do is worse than
+    showing none (the "one number, one owner" rule the caps already follow).
+    """
+    return {"handbacks": handbacks_db.list_open(user.id, limit=limit)}
+
+
+@router.post("/handbacks")
+def add_handback(body: HandbackBody, user=Depends(get_current_user)):
+    """The extension reports a job it could not finish. Idempotent per URL."""
+    row = handbacks_db.add(user.id, body.model_dump())
+    return {"ok": True, "handback": row}
+
+
+@router.post("/handbacks/{handback_id}/resolve")
+def resolve_handback(handback_id: str, user=Depends(get_current_user)):
+    """The user says they finished it themselves — drain it from both surfaces.
+
+    We do NOT verify the submit happened: we cannot see the employer's side, and
+    claiming otherwise would be the kind of number this project keeps removing. This
+    is the user's own checkbox, and it is described that way in the UI.
+    """
+    return {"ok": handbacks_db.resolve(user.id, handback_id)}
 
 
 @router.get("/activity/handbacks")

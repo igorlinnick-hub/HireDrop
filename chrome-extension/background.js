@@ -2120,6 +2120,18 @@ async function handleMessage(msg, sender) {
           job_url: f.url || "",
         }
       );
+      // Durable to-do row, read by BOTH the popup block and the dashboard rail badge.
+      // The activity line above still carries the story; this carries the STATE — a log
+      // line scrolls away and cannot be ticked off (Igor 09-21).
+      try {
+        await apiPost("/handbacks", {
+          job_title: f.title || "",
+          company: f.company || "",
+          url: f.url || "",
+          platform: f.platform || "",
+          reason: f.reason || "",
+        });
+      } catch { /* best-effort: the walk must advance even if the row didn't land */ }
       try {
         if (unfilled.length) {
           const s = await chrome.storage.local.get("unfilledLedger");
@@ -2137,6 +2149,26 @@ async function handleMessage(msg, sender) {
       } catch {}
       await advanceAtsQueue();
       return { advanced: true, handedBack: true };
+    }
+
+    // ----- Hand-backs: the jobs waiting on the user's hands (popup block) -----
+    // The popup has no token of its own; the SW is the only API gateway.
+    case "GET_HANDBACKS": {
+      try {
+        const r = await apiGet("/handbacks?limit=5");
+        return { ok: true, handbacks: r.handbacks || [] };
+      } catch (e) {
+        // An unreachable list is NOT an empty list — the popup says so instead of
+        // rendering "nothing waiting" over jobs that are (#113's rule, again).
+        return { ok: false, handbacks: [] };
+      }
+    }
+
+    case "RESOLVE_HANDBACK": {
+      try {
+        await apiPost(`/handbacks/${encodeURIComponent(msg.id)}/resolve`, {});
+        return { ok: true };
+      } catch (e) { return { ok: false }; }
     }
 
     // ----- Cover letter generation -----
