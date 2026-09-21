@@ -15,8 +15,15 @@ SONNET_MODEL = "claude-sonnet-4-6"
 def tailor_resume(job: dict, profile: dict, resume_text: str) -> str:
     """Return a tailored, ATS-optimized version of the resume for this job.
 
-    Does NOT fabricate experience. Reorganizes, reframes, and emphasizes
-    what's already there to match the job's language and ATS keywords.
+    Reorganizes, reframes and renames what is already there to match the job's language.
+    It does NOT add anything the resume doesn't support.
+
+    That distinction had teeth: until 2026-09-21 the prompt ordered "Include ALL of
+    them naturally" about the ATS keyword list, directly above "Do NOT fabricate". The
+    stronger instruction won. A live run on a Field Marketing posting appended
+    "Salesforce, Marketo, ABM campaign coordination" to a project manager's SKILLS line
+    — none of it in the resume — and retitled the person as a Field Marketing Manager.
+    The keyword rule is now explicitly subordinate to the no-invention rule.
     """
     if not ANTHROPIC_API_KEY or not resume_text.strip():
         return ""
@@ -34,10 +41,14 @@ def tailor_resume(job: dict, profile: dict, resume_text: str) -> str:
         ats_section = ""
         if ats_keywords:
             ats_section = f"""
-ATS KEYWORDS TO INCLUDE (extracted from job description — these must appear verbatim or close match in the resume):
+ATS KEYWORDS THE SCANNER LOOKS FOR (extracted from the job description):
 {", ".join(ats_keywords)}
 
-These are the exact terms ATS software will scan for. Include ALL of them naturally in context — do not stuff them awkwardly.
+Use a keyword ONLY where the candidate's own resume already backs it. If the resume
+shows the work under a different name, rename it to the keyword — that is the whole
+point of tailoring. If the resume does NOT show it at all, LEAVE THE KEYWORD OUT.
+A keyword the candidate cannot speak to in an interview costs more than the ATS points
+it earns, and listing a tool they have never opened is a lie on their resume.
 """
 
         prompt = f"""You are an expert resume writer and ATS optimization specialist. Rewrite the candidate's resume to pass ATS screening AND impress the hiring manager for this specific job.
@@ -56,8 +67,15 @@ CANDIDATE'S CURRENT RESUME:
 {resume_text}
 
 RULES — non-negotiable:
-- Do NOT fabricate, invent, or add experience that isn't in the original
-- Do NOT change dates, job titles, companies, or education
+- Do NOT fabricate, invent, or add experience that isn't in the original. This OUTRANKS
+  the keyword list above: when a keyword has no support in the resume, the keyword loses.
+- Never add a TOOL, PLATFORM or PRODUCT NAME (Salesforce, Marketo, SAP, Figma…) that the
+  original resume does not name. This is the most common way a tailored resume turns into
+  a false one, and the interview finds it immediately.
+- Do NOT change dates, job titles, companies, or education — including the headline title
+  at the top. The candidate is not a "Field Marketing Manager" because they applied to be
+  one.
+- Do NOT invent metrics, percentages or team sizes. Keep the numbers the resume gives.
 - DO reorder bullet points to lead with most relevant achievements
 - DO reframe language to mirror the job description's vocabulary
 - DO move the most relevant experience/skills to the top
