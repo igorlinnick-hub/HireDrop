@@ -5,7 +5,7 @@ API call fails. If fallback contains AI-tells or hardcoded names, every
 single application sent in fallback mode burns the user's reputation.
 """
 
-from modules.ai_cover_letter import build_system_prompt, fallback_template
+from modules.ai_cover_letter import build_system_prompt, fallback_template, strip_preamble
 
 # Tells the system prompt explicitly bans (modules/ai_cover_letter.py:53-54)
 AI_TELLS = [
@@ -88,3 +88,58 @@ def test_system_prompt_bans_dashes():
         prompt = build_system_prompt(style)
         assert "em-dash" in prompt.lower()
         assert "--" in prompt
+
+
+# ---------------------------------------------------------------------------
+# The letter must be ONLY the letter (2026-09-21)
+#
+# A model answering "write a cover letter" sometimes answers the request instead of just
+# doing it — "Here's a cover letter for Jordan:" and then the letter inside --- fences.
+# Nothing trimmed that: the router returns the text as-is and content.js types it into the
+# employer's textarea. Measured on the production applications table that day: 4 of 90
+# saved letters opened with "Here's a cover letter for <name>: ---", three of them from
+# one user's September welding applications. Those reached real employers.
+#
+# The system prompt now forbids it; strip_preamble is the belt. These pin BOTH halves —
+# and, just as importantly, that a normal letter comes through untouched.
+
+
+def test_prompt_forbids_preamble_and_fences():
+    prompt = build_system_prompt()
+    assert "NOTHING else" in prompt
+    assert "---" in prompt, "the fence ban must name the fence"
+
+
+def test_strips_announcement_line_and_fences():
+    raw = "Here's a cover letter for Jordan:\n\n---\n\nHi,\n\nI ran delivery at Northwind.\n\nJordan\n\n---"
+    out = strip_preamble(raw)
+    assert out.startswith("Hi,")
+    assert out.endswith("Jordan")
+    assert "Here's a cover letter" not in out
+    assert "---" not in out
+
+
+def test_strips_bare_fences_without_an_announcement():
+    assert strip_preamble("---\nHi,\n\nBody here\n---") == "Hi,\n\nBody here"
+
+
+def test_leaves_a_clean_letter_alone():
+    letter = "Hi there,\n\nI'm a CWB-certified welder based in Mississauga.\n\nJedyn"
+    assert strip_preamble(letter) == letter
+
+
+def test_keeps_a_subject_line():
+    # "Subject: …" is part of the letter, not an announcement about it.
+    assert strip_preamble("Subject: Application\n\nHi,\n\nbody").startswith("Subject: Application")
+
+
+def test_does_not_eat_a_sentence_that_merely_starts_with_here_is():
+    # The announcement shape is a line ENDING in a colon. A real sentence that happens to
+    # begin with "Here is" must survive — mangling a good letter is the worse failure.
+    letter = "Here is what I did at Northwind: I ran delivery for 40 people.\n\nJordan"
+    assert strip_preamble(letter) == letter
+
+
+def test_empty_and_none_are_safe():
+    assert strip_preamble("") == ""
+    assert strip_preamble(None) is None
