@@ -1436,6 +1436,44 @@
   // Council 2026-08-04 "frequency ledger": every field the filler could NOT complete,
   // by label — this is the instrumentation that drives which deterministic handlers to
   // build next (EEO/location/etc). Read via HIREDROP_READ_STORAGE keys:["unfilledLedger"].
+  // ── Title relevance (one rule, one place; fixtures in tests/title-match.test.js) ──
+  //
+  // The cheap gate before the paid ones: a title sharing NO word with any keyword is
+  // skipped before the fit judge and the cover letter are ever called. It exists because
+  // the ATS pool is shared across users — a search for "event manager" walks past
+  // welders and jewellers, and judging those costs real money.
+  //
+  // It compared EXACT words, so "event" never matched "Events" and the gate threw away
+  // the most relevant listings it saw: measured on Igor's 09-20 run, "Director of Special
+  // Events" and "Special Events Assistant" were both dropped unread under the keyword
+  // "event manager". A skip here is invisible in a way a fit-skip is not — the judge
+  // never scored it, so nothing in the log says a good job was passed over.
+  //
+  // Singular/plural is now one word. Deliberately nothing more: no synonyms, no stemming
+  // of "marketing" to "market". "Conference Planner" still doesn't match "event manager",
+  // and that is the honest answer for a WORD filter — semantic judgement is the judge's
+  // job, and it has the whole posting to work with, not three words of a heading.
+  function titleStem(w) {
+    // Short words are left alone: "ops"/"op" and "hr" are not plurals of anything.
+    if (w.length < 5) return w;
+    if (w.endsWith("ies")) return w.slice(0, -3) + "y";   // strategies → strategy
+    if (w.endsWith("ses") || w.endsWith("xes") || w.endsWith("ches") || w.endsWith("shes")) return w.slice(0, -2);
+    if (w.endsWith("s") && !w.endsWith("ss")) return w.slice(0, -1); // events → event
+    return w;
+  }
+
+  function titleMatchesKeywords(title, keywords) {
+    const words = (t) => new Set(
+      String(t || "").toLowerCase().split(/\W+/).filter((w) => w.length > 2).map(titleStem)
+    );
+    const titleWords = words(title);
+    const keywordWords = new Set(
+      (keywords || []).flatMap((phrase) => [...words(phrase)])
+    );
+    if (!keywordWords.size) return true; // no keywords = no filter, same as at harvest
+    return [...keywordWords].some((w) => titleWords.has(w));
+  }
+
   function collectUnfilledRequired() {
     const labels = [];
     const scope = formScope();
@@ -1691,12 +1729,7 @@
       const kwData = await chrome.storage.local.get("campaignFilters");
       const kwList = (kwData.campaignFilters?.keywords || []).filter(Boolean);
       if (!_kwPool && kwList.length > 0) {
-        const titleWords = new Set(jobTitle.toLowerCase().split(/\W+/).filter(w => w.length > 2));
-        const keywordWords = new Set(
-          kwList.flatMap(phrase => phrase.toLowerCase().split(/\W+/).filter(w => w.length > 2))
-        );
-        const relevant = [...keywordWords].some(w => titleWords.has(w));
-        if (!relevant) {
+        if (!titleMatchesKeywords(jobTitle, kwList)) {
           log(`${jobTitle} — title doesn't match keywords, skipping`, "");
           logBackend(`Skip (title mismatch): ${jobTitle} @ ${jobCompany}`, "info");
           await skipToNextJob();
@@ -2082,11 +2115,7 @@
       const kwData = await chrome.storage.local.get("campaignFilters");
       const kwList = (kwData.campaignFilters?.keywords || []).filter(Boolean);
       if (!_kwPool && kwList.length > 0) {
-        const titleWords = new Set(jobTitle.toLowerCase().split(/\W+/).filter((w) => w.length > 2));
-        const keywordWords = new Set(
-          kwList.flatMap((p) => p.toLowerCase().split(/\W+/).filter((w) => w.length > 2))
-        );
-        if (![...keywordWords].some((w) => titleWords.has(w))) {
+        if (!titleMatchesKeywords(jobTitle, kwList)) {
           log(`${jobTitle} — title doesn't match keywords, skipping`, "");
           logBackend(`Skip (title mismatch): ${jobTitle} @ ${jobCompany}`, "info");
           await skipToNextJob();
