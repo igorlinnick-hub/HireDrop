@@ -85,6 +85,23 @@ class TestStructureToText:
     def test_empty_structure_is_empty_not_a_crash(self):
         assert structure_to_text({}) == ""
 
+    def test_a_credential_in_both_lists_is_written_once(self):
+        """This text feeds tailoring and cover letters, and its contract is "the order
+        the PDF prints it" — so it has to drop the duplicate the PDF drops."""
+        data = {
+            **FULL,
+            "education": [
+                {
+                    "degree": "Google Project Management Certification",
+                    "school": "Google",
+                    "year": "2023",
+                }
+            ],
+            "certifications": ["Google Project Management Certification (2023)"],
+        }
+        text = structure_to_text(data)
+        assert text.count("Google Project Management Certification") == 1
+
 
 class TestAuthority:
     def test_ats_dial_with_a_structure_reads_the_structure(self):
