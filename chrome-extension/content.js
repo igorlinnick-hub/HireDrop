@@ -567,6 +567,17 @@
   // Wait for a real signal that the application was actually submitted
   // (Phase 3.2 — Verify submission). Without this, every Submit click was
   // counted as 'applied' even if Indeed showed a captcha, error toast,
+  // Specific path segments only — broad single words like "submitted"/"success"
+  // can appear in intermediate step URLs and cause a false "verified". Module-scope on
+  // purpose: waitForSubmissionConfirmation polls it AND the unknown-phase re-init path
+  // consults it — a full navigation to the ATS thank-you page kills this script's
+  // context mid-wait, so the fresh context waking up ON the confirmation page is the
+  // normal way a Greenhouse submit ends, not an edge case.
+  const POSTAPPLY_URL_HINTS = [
+    "/applied", "postapply", "post_apply", "post-apply", "thank-you", "thankyou",
+    "/success", "/confirmation", "application-submitted", "applysuccess",
+  ];
+
   // or simply did nothing. Returns { verified, signal } for activity log.
   async function waitForSubmissionConfirmation(timeoutMs = 45000, opts = {}) {
     // 45s default (was 20s): in a throttled background window the post-submit thank-you
@@ -598,12 +609,6 @@
       "we'll be in touch",
       "application complete",
       "thanks for your application",
-    ];
-    // Specific path segments only — broad single words like "submitted"/"success"
-    // can appear in intermediate step URLs and cause a false "verified".
-    const POSTAPPLY_URL_HINTS = [
-      "/applied", "postapply", "post_apply", "post-apply", "thank-you", "thankyou",
-      "/success", "/confirmation", "application-submitted", "applysuccess",
     ];
 
     while (Date.now() - start < timeoutMs) {
@@ -5090,6 +5095,40 @@
               // Leave it to warmup; only skip a genuinely broken job page.
               const onHomeRoot = location.pathname === "/" || location.pathname === "";
               if (onHomeRoot) break;
+              // A confirmation page is not a broken job page. phase_ats filled and
+              // submitted; the ATS did a FULL navigation to its thank-you URL, which
+              // killed that script context before it could record anything — and this
+              // re-init woke up on the result. Calling it "couldn't open" recorded a
+              // SENT application as skipped (live 2026-09-21: Amwell GH pick — 19
+              // fields filled, resume attached, browser on /confirmation — logged
+              // "Couldn't open", no applications row, dedup blind to the company).
+              // URL check only: on a cold re-init the URL is the one thing we know.
+              const _path = location.pathname.toLowerCase();
+              if (POSTAPPLY_URL_HINTS.some((h) => _path.includes(h))) {
+                const _q = (await chrome.storage.local.get("atsQueue")).atsQueue || [];
+                const _cur = _q[0] || {};
+                // Unconfirmed, not "applied": the URL says the submit landed, but this
+                // context never saw the form succeed — same honesty rule as phase_ats.
+                if (_cur.title) {
+                  logBackend(`⚠️ Applied (unconfirmed — woke on the confirmation page): ${_cur.title} @ ${_cur.company || "?"}`, "warn");
+                  await sendMsg({
+                    type: "APPLICATION_SAVED",
+                    data: {
+                      job_title: _cur.title, company: _cur.company || "",
+                      platform: detectPlatform() || _cur.platform || "",
+                      job_url: _cur.applyUrl || location.href,
+                      cover_letter: "",
+                      status: "applied_unconfirmed", verified: false,
+                      verify_signal: "reinit-postapply-url",
+                    },
+                  });
+                } else {
+                  // Queue empty/mismatched — still not a skip: say what we saw.
+                  logBackend(`Post-apply page reached (${location.hostname}${_path}) but no queue item to record`, "warn");
+                }
+                await sendMsg({ type: "ATS_JOB_DONE" });
+                break;
+              }
               // Async ATS forms (Ashby/Greenhouse React) render the fields LATE, especially in
               // a throttled background window — detectPhase sees no field yet and would skip a
               // LIVE job as "couldn't open". POLL for hydration (~20s) before giving up; if the
