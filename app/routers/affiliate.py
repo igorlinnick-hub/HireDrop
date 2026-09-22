@@ -1,9 +1,11 @@
 """The affiliate program's front door: applications in, decisions out.
 
-Three surfaces, three audiences:
+Five surfaces, three audiences:
+  POST /affiliate/click        public  — someone opened a ?ref= link (counted, not tracked)
   POST /affiliate/apply        public  — a stranger with a QR code asks for a link
   GET  /affiliate/application  user    — "what happened to my application?"
   POST /admin/affiliates/decide admin  — approve or reject, from the admin board
+  POST /admin/affiliates/issue  admin  — hand a link to someone who never applied
 
 Nothing is automatic. A code is money, and an affiliate program that issues
 codes on request is a program that gets farmed: the whole design is that a
@@ -21,11 +23,13 @@ We do not email applicants (no-user-email rule): the board hands Igor the text
 to send himself, and the applicant can see their own status in the dashboard.
 """
 
+import hashlib
 import hmac
 import os
 import re
 import sys
 import time
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -33,6 +37,7 @@ from pydantic import BaseModel, Field
 from app.db.client import get_supabase
 from app.deps import get_current_user
 from app.disposable_email import is_disposable_email
+from config import FRONTEND_URL
 
 router = APIRouter(tags=["affiliate"])
 
@@ -49,13 +54,17 @@ RESERVED_CODES = frozenset(
 # Railway instance today. Without it this is an open write endpoint.
 _WINDOW_SEC = 3600
 _MAX_PER_IP = 5
+# Clicks are a different shape of traffic: a lecture hall behind one NAT can
+# legitimately scan the same card forty times in a minute. The ceiling is here
+# to stop a script, not a crowd.
+_MAX_CLICKS_PER_IP = 120
 _attempts: dict[str, list[float]] = {}
 
 
-def _rate_limited(key: str) -> bool:
+def _rate_limited(key: str, ceiling: int = _MAX_PER_IP) -> bool:
     now = time.time()
     recent = [t for t in _attempts.get(key, []) if now - t < _WINDOW_SEC]
-    if len(recent) >= _MAX_PER_IP:
+    if len(recent) >= ceiling:
         _attempts[key] = recent
         return True
     recent.append(now)
@@ -161,6 +170,61 @@ def apply(req: ApplicationRequest, request: Request) -> dict:
     return {"status": "received"}
 
 
+class ClickRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=39)
+    landing_page: str = Field(default="", max_length=200)
+    source: str = Field(default="", max_length=60)
+
+
+# Salted so the stored hash cannot be reversed by walking the IPv4 space — with
+# an unsalted digest that is a few minutes of work. Falls back to the service
+# key (server-only, always present) so this endpoint cannot be silently
+# deployed without a salt.
+def _visitor_hash(ip: str, user_agent: str) -> str:
+    salt = os.getenv("AFFILIATE_CLICK_SALT") or os.getenv("SUPABASE_SERVICE_KEY", "")
+    return hashlib.sha256(f"{salt}|{ip}|{user_agent}".encode()).hexdigest()
+
+
+@router.post("/affiliate/click")
+def click(
+    req: ClickRequest,
+    request: Request,
+    user_agent: str | None = Header(default=None, alias="User-Agent"),
+) -> dict:
+    """Count one open of a ?ref= link. Public, fire-and-forget.
+
+    Always answers the same thing. A stranger must not be able to learn which
+    codes exist by watching this endpoint's replies, and the caller is a page
+    that has already rendered — an error here would be noise it cannot act on.
+
+    Print codes (card, stka, stkb) are counted exactly like partner codes: the
+    whole point of separate codes on separate artefacts is comparing them.
+    """
+    code = req.code.strip().lower()
+    if not CODE_RE.match(code) or code in RESERVED_CODES:
+        return {"status": "counted"}
+
+    ip = _client_ip(request)
+    if _rate_limited(f"click:{ip}", _MAX_CLICKS_PER_IP):
+        return {"status": "counted"}
+
+    row = {
+        "code": code,
+        "visitor_hash": _visitor_hash(ip, user_agent or ""),
+        "landing_page": req.landing_page.strip()[:200] or None,
+        "source": req.source.strip()[:60] or None,
+    }
+    try:
+        get_supabase().table("affiliate_clicks").insert(row).execute()
+    except Exception as exc:  # noqa: BLE001
+        # Same visitor, same code, same day — the unique index did its job.
+        text = str(exc)
+        if "affiliate_clicks_unique_day_idx" not in text and "23505" not in text:
+            print(f"[affiliate.click] insert failed: {exc}", file=sys.stderr)
+
+    return {"status": "counted"}
+
+
 @router.get("/affiliate/application")
 def my_application(user=Depends(get_current_user)) -> dict:
     """The signed-in user's own application, if any — so the dashboard can say
@@ -224,11 +288,7 @@ def decide(
         ).eq("id", req.application_id).execute()
         return {"status": "rejected"}
 
-    code = (req.code or app_row["desired_code"]).strip().lower()
-    if not CODE_RE.match(code) or code in RESERVED_CODES:
-        raise HTTPException(status_code=400, detail="Invalid code")
-    if db.table("affiliates").select("id").eq("code", code).limit(1).execute().data:
-        raise HTTPException(status_code=409, detail="That code is already an affiliate")
+    code = _validate_code(req.code or app_row["desired_code"])
 
     update = {
         "status": "approved",
@@ -265,7 +325,155 @@ def decide(
         "code": code,
         # False means the code is reserved and goes live at their signup.
         "live_now": bool(affiliate_id),
-        "link": f"https://hiredrop.io/?ref={code}",
+        "link": _ref_link(code),
+        # Only meaningful when the code is still reserved: the one URL that
+        # turns a reservation into a live link. Sent by Igor, not by us.
+        "invite_url": None if affiliate_id else _invite_link(code, app_row["email"]),
+    }
+
+
+def _ref_link(code: str) -> str:
+    return f"{FRONTEND_URL}/?ref={code}"
+
+
+def _invite_link(code: str, email: str) -> str:
+    """Where to send someone whose code is reserved but who has no account.
+
+    The reservation is redeemed by EMAIL (the trigger in
+    migrations/add_affiliate_applications.sql), so the address is carried in the
+    URL and prefilled — signing up with a different one quietly produces an
+    account with no link, which is the failure a new partner would never
+    diagnose.
+    """
+    return f"{FRONTEND_URL}/signup?affiliate={code}&email={quote(email)}"
+
+
+def _validate_code(code: str) -> str:
+    """Shape, reserved words, and 'already someone else's'. Raises 4xx."""
+    code = code.strip().lower()
+    if not CODE_RE.match(code):
+        raise HTTPException(
+            status_code=400,
+            detail="A link name can use lowercase letters, numbers, dot, dash and underscore.",
+        )
+    if code in RESERVED_CODES:
+        raise HTTPException(status_code=400, detail="That link name is reserved. Pick another.")
+    if get_supabase().table("affiliates").select("id").eq("code", code).limit(1).execute().data:
+        raise HTTPException(status_code=409, detail="That code is already an affiliate")
+    return code
+
+
+class IssueRequest(BaseModel):
+    """Issue a link to someone who never filled the form — the ambassador we
+    approached, not the stranger who found us."""
+
+    email: str = Field(min_length=3, max_length=254)
+    code: str = Field(min_length=2, max_length=39)
+    name: str = Field(default="", max_length=120)
+    commission_pct: float | None = Field(default=None, ge=0, le=100)
+    paypal_email: str = Field(default="", max_length=254)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+@router.post("/admin/affiliates/issue")
+def issue(
+    req: IssueRequest,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+) -> dict:
+    """Mint a link for a named person, account or no account.
+
+    Same two outcomes as an approval, because it is the same mechanism — the
+    only difference is that nobody applied. Deliberately not a shortcut past
+    the paper trail: an approved row lands in affiliate_applications either
+    way, so the board shows every live code and where it came from.
+
+    This is the UI twin of `scripts/affiliate_admin.py issue`, which stays for
+    the terminal. Both go through the same tables; neither is authoritative.
+    """
+    _require_admin_token(x_admin_token)
+
+    email = req.email.strip().lower()
+    if "@" not in email[1:]:
+        raise HTTPException(status_code=400, detail="That email doesn't look right.")
+    code = _validate_code(req.code)
+
+    db = get_supabase()
+
+    # An open application from this person must be decided, not bypassed: two
+    # paths writing the same code is how a partner ends up with two links and
+    # one of them silently dead.
+    existing = (
+        db.table("affiliate_applications")
+        .select("id, status, desired_code")
+        .eq("email", email)
+        .neq("status", "rejected")
+        .limit(1)
+        .execute()
+        .data
+    )
+    if existing:
+        row = existing[0]
+        if row["status"] == "new":
+            raise HTTPException(
+                status_code=409,
+                detail=f"{email} already applied for '{row['desired_code']}' — approve that instead.",
+            )
+        raise HTTPException(
+            status_code=409,
+            detail=f"{email} was already approved for '{row['desired_code']}'.",
+        )
+
+    user_id = _user_id_for_email(email)
+    affiliate_id = None
+    if user_id:
+        insert = {
+            "user_id": user_id,
+            "code": code,
+            "paypal_email": req.paypal_email.strip().lower() or None,
+            "note": req.note or "issued by admin",
+        }
+        if req.commission_pct is not None:
+            insert["commission_pct"] = req.commission_pct
+        try:
+            created = db.table("affiliates").insert(insert).execute().data
+            affiliate_id = created[0]["id"] if created else None
+        except Exception as exc:  # noqa: BLE001
+            # user_id is UNIQUE on affiliates: this account already has a link.
+            print(f"[affiliate.issue] affiliate insert failed: {exc}", file=sys.stderr)
+            raise HTTPException(
+                status_code=409, detail=f"{email} already has an affiliate link."
+            ) from exc
+
+    application = {
+        "email": email,
+        "name": req.name.strip() or email.split("@")[0],
+        "desired_code": code,
+        "paypal_email": req.paypal_email.strip().lower() or None,
+        "source": "issued-by-admin",
+        "status": "approved",
+        "reviewed_at": _now_iso(),
+        "note": req.note,
+    }
+    if affiliate_id:
+        application["affiliate_id"] = affiliate_id
+    try:
+        db.table("affiliate_applications").insert(application).execute()
+    except Exception as exc:  # noqa: BLE001
+        # The affiliate row is what earns money; the paper trail failing must
+        # not undo it. Without an account, though, the reservation IS the row —
+        # losing it means the link never goes live, so that case is fatal.
+        print(f"[affiliate.issue] application row failed: {exc}", file=sys.stderr)
+        if not affiliate_id:
+            raise HTTPException(
+                status_code=500, detail="Could not reserve that code. Try again."
+            ) from exc
+
+    return {
+        "status": "issued",
+        "code": code,
+        "live_now": bool(affiliate_id),
+        "link": _ref_link(code),
+        "invite_url": None if affiliate_id else _invite_link(code, email),
     }
 
 
