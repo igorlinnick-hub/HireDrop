@@ -95,3 +95,15 @@ def test_the_live_log_line_maps_to_the_category():
         activity_db._categorize("⏭️ No job title on this page (/viewjob) — skipping to the next job")
         == "page_unreadable"
     )
+
+
+def test_ats_walk_vocabulary_is_counted():
+    """Live 09-21: the un-nannied ATS run measured opened=0/applied=0 while skipping 44
+    postings on fit — _categorize only knew the native walk's phrases. All three walks'
+    lines must land in the same funnel, and an unconfirmed submit is still a submit."""
+    assert activity_db._categorize("🔍 Reading job posting: X @ Y — checking fit") == "opened"
+    assert activity_db._categorize("Opening job: X @ Y") == "opened"
+    assert activity_db._categorize("⚠️ Applied (unconfirmed): X @ Y") == "applied_unconfirmed"
+    out = _report({"opened": 13, "applied_unconfirmed": 1, "skipped_fit": 12}, minutes=8)
+    assert out["applied"] == 1
+    assert out["applied_unconfirmed"] == 1

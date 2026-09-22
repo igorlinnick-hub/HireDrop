@@ -62,6 +62,11 @@ def _categorize(msg: str) -> str | None:
     m = (msg or "").lower()
     if "✅ applied" in m or m.startswith("applied"):
         return "applied"
+    # The ATS walk's submit line when the confirmation page was seen but not the form's
+    # own success event — a real application (an applications row exists), counted
+    # separately so run_report can name it honestly instead of dropping it to zero.
+    if "applied (unconfirmed" in m:
+        return "applied_unconfirmed"
     if "no resume attached" in m:
         return "skipped_no_resume"
     if "resume upload failed" in m or "not reflected in ui" in m:
@@ -76,7 +81,11 @@ def _categorize(msg: str) -> str | None:
         return "login_required"
     # Outcomes below are what run_report() needs to compute YIELD. The categories above
     # answer "is something wrong"; these answer "where did the time go".
-    if "opening job:" in m or "applying your approved pick" in m:
+    # Three vocabularies for the same funnel step: the native walk says "Opening job:",
+    # the pool walk says "Applying your approved pick", the ATS walk says "Reading job
+    # posting". run_report counted only the first → an ATS run measured opened=0 while
+    # skipping 44 postings on fit (live 09-21, the un-nannied run).
+    if "opening job:" in m or "applying your approved pick" in m or "reading job posting" in m:
         return "opened"
     if "skip (title mismatch)" in m:
         return "skipped_title"
@@ -171,7 +180,10 @@ def run_report(user_id: str, since: str | None = None, window_hours: int = 6) ->
     counts = summary(user_id, window_hours=window_hours, since=since)
     by_type = counts["by_type"]
     opened = by_type.get("opened", 0)
-    applied = by_type.get("applied", 0)
+    # Unconfirmed submits ARE submits (the employer got them); the funnel counts them
+    # and the field below names how many carry that asterisk.
+    applied_unconfirmed = by_type.get("applied_unconfirmed", 0)
+    applied = by_type.get("applied", 0) + applied_unconfirmed
 
     losses = {
         "fit gate": by_type.get("skipped_fit", 0),
@@ -194,6 +206,7 @@ def run_report(user_id: str, since: str | None = None, window_hours: int = 6) ->
         "minutes": minutes,
         "opened": opened,
         "applied": applied,
+        "applied_unconfirmed": applied_unconfirmed,
         "losses": {k: v for k, v in losses.items() if v},
         "minutes_per_application": per_application,
         "applications_per_hour": round(applied / (minutes / 60), 1) if minutes >= 5 else None,
