@@ -103,6 +103,29 @@ STALL_WATCH_INTERVAL_SECS = int(os.getenv("STALL_WATCH_INTERVAL_SECONDS", "300")
 # roughly one form-fill (5-6 min today, see STATUS.md "Троттлинг фонового окна").
 STALL_FIRST_MINUTES = int(os.getenv("STALL_FIRST_MINUTES", "45"))
 STALL_GAP_MINUTES = int(os.getenv("STALL_GAP_MINUTES", "30"))
+# =============================================================================
+# POOL SWEEP — the nightly top-up (app/pool_sweep.py)
+# =============================================================================
+# Until now the job pool only ever grew while someone was using the product: a
+# campaign start, a live board search, or an empty Tap deck. A user who applied
+# yesterday and opens the dashboard today therefore reads the inventory of their
+# LAST session. This sweeps the ATS boards for them overnight instead.
+#
+# Cost is bounded by novelty, not by the schedule: the sweep excludes links we
+# already hold, and scoring — the only paid step, $0.0019/row — runs on new rows
+# only. A saturated pool sweeps for free.
+#
+# The gate is what keeps it honest: only accounts that applied inside
+# POOL_SWEEP_ACTIVE_DAYS are swept, so we never score inventory for someone who
+# left. OFF by default — turn it on with the Railway env var once the first
+# night has been read.
+POOL_SWEEP_ENABLED = os.getenv("POOL_SWEEP_ENABLED", "false").lower() in ("1", "true", "yes")
+POOL_SWEEP_INTERVAL_SECS = int(os.getenv("POOL_SWEEP_INTERVAL_SECONDS", "3600"))
+POOL_SWEEP_ACTIVE_DAYS = int(os.getenv("POOL_SWEEP_ACTIVE_DAYS", "7"))
+# One sweep per account per this many hours, claimed in the activity log so the
+# two uvicorn workers (Procfile) can't both sweep the same user.
+POOL_SWEEP_EVERY_HOURS = int(os.getenv("POOL_SWEEP_EVERY_HOURS", "20"))
+
 # app/ops_watch.py — the two remaining blind spots: 5xx bursts and scrapers that
 # start returning zero on every call without declaring unavailable_reason.
 # Same alert channel as the stall watch: stderr always, ALERT_EMAIL when set.
