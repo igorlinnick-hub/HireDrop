@@ -166,6 +166,32 @@ def keyword_match(text: str, keywords: list[str] | None) -> bool:
     return False
 
 
+# A posting that is not a posting: the "send us your resume for whatever opens later"
+# form every ATS board offers. It has no role, no requirements and nobody reviewing it
+# against a position — applying spends a daily-cap slot, a cover letter (~$0.002) and a
+# tailored resume (~$0.007) on a filing cabinet.
+#
+# They pass the keyword filter for a reason that is not a bug in that filter: it matches
+# on DISTINCTIVE WORDS, so "health care" matches "FOLX **Health** Talent Community",
+# "social media" matches "Vox **Media**", and "care" pulled five physician postings at
+# tia into a marketing profile's queue (live pool, 2026-09-21: 8 such rows, 3 already
+# submitted). Word-level matching is what lifted yield 2 → 207 and stays; this is a
+# separate question — "is this a job at all" — and belongs in its own gate.
+_GENERIC_POOL_RE = _re.compile(
+    r"talent\s+(community|network|pool|bank)|general\s+application|"
+    r"open\s+application|spontaneous\s+application|future\s+(openings?|roles?)|"
+    r"don.?t\s+see\s+(your|a)\s+(dream\s+)?(job|role)|dream\s+job\s+here|"
+    r"join\s+our\s+(talent|network)|introduce\s+yourself|"
+    r"other\s+opportunities|candidate\s+pool",
+    _re.I,
+)
+
+
+def is_generic_talent_pool(title: str) -> bool:
+    """True for "join our talent community" style catch-alls — not a real vacancy."""
+    return bool(_GENERIC_POOL_RE.search(title or ""))
+
+
 # Captcha burden per platform now lives in the single source modules/captcha_profile.py
 # (shared with app/routers/jobs.py so the dashboard/campaign see the same touch labels).
 # Server-side static HTML can't tell v2-checkbox from v3-invisible (widget is client-
@@ -211,7 +237,7 @@ def fetch_greenhouse(token: str, keywords: list[str] | None = None, limit: int =
     for j in jobs:
         title = j.get("title", "")
         loc = (j.get("location") or {}).get("name", "")
-        if not keyword_match(f"{title} {loc}", keywords):
+        if not keyword_match(f"{title} {loc}", keywords) or is_generic_talent_pool(title):
             continue
         url = j.get("absolute_url")
         if not url or not _is_fillable(url):
@@ -238,7 +264,7 @@ def fetch_lever(token: str, keywords: list[str] | None = None, limit: int = 50) 
     for p in data:
         title = p.get("text", "")
         loc = ((p.get("categories") or {}).get("location")) or ""
-        if not keyword_match(f"{title} {loc}", keywords):
+        if not keyword_match(f"{title} {loc}", keywords) or is_generic_talent_pool(title):
             continue
         # applyUrl is the /apply form (what phase_ats fills); hostedUrl is the JD page.
         url = p.get("applyUrl") or (
@@ -272,7 +298,7 @@ def fetch_ashby(token: str, keywords: list[str] | None = None, limit: int = 50) 
             continue
         title = (j.get("title") or "").strip()
         loc = j.get("location") or ""
-        if not keyword_match(f"{title} {loc}", keywords):
+        if not keyword_match(f"{title} {loc}", keywords) or is_generic_talent_pool(title):
             continue
         base = (j.get("applyUrl") or j.get("jobUrl") or "").rstrip("/")
         if not base or not _is_fillable(base):
@@ -331,7 +357,7 @@ def fetch_workday(token: str, keywords: list[str] | None = None, limit: int = 50
     for path, p in posts.items():
         title = (p.get("title") or "").strip()
         loc = p.get("locationsText") or ""
-        if not keyword_match(f"{title} {loc}", keywords):
+        if not keyword_match(f"{title} {loc}", keywords) or is_generic_talent_pool(title):
             continue
         # No description in the list response (a per-job detail call is a separate endpoint);
         # the thin-description backfill / title-based scoring handles it (min_score=0 keeps them).
