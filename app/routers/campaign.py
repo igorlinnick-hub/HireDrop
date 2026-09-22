@@ -26,7 +26,9 @@ from app.db.subscriptions import (
 from app.deps import get_current_user
 from app.disposable_email import is_disposable_email
 from app.schemas import CampaignStartRequest
-from modules.ai_role_suggest import role_limit
+from modules.ai_cover_letter import resume_text_for
+from modules.ai_role_suggest import role_limit, suggest_roles
+from modules.keyword_rotation import clean_keywords, complete_keywords
 from modules.keyword_rotation import rotate as rotate_keywords
 
 router = APIRouter(tags=["campaign"])
@@ -194,7 +196,39 @@ def campaign_start(req: CampaignStartRequest, user=Depends(get_current_user)):
     # The server decides who leads this run and remembers it in the row it is about to
     # overwrite. See modules/keyword_rotation.
     prev_cursor = (campaign_db.get_state(user.id).get("filters") or {}).get("kw_cursor", 0)
-    ordered_keywords, next_cursor = rotate_keywords(req.keywords, prev_cursor)
+    # Thin-input rescue (measured 2026-09-22): a run is only as good as the roles fed in,
+    # and a handful of hand-typed words — one of them off-target — floored a whole run at
+    # zero applies while every gate worked. If the user is below their apply mode's role
+    # budget, top the set up from the résumé (the one source that isn't a blind guess),
+    # bounded by the mode limit so we widen the net without inventing divergent roles.
+    # Defensive + fail-open: an AI hiccup here must never block Start (the whole point is
+    # to help thin accounts, not to add a failure mode to every campaign).
+    run_keywords = list(req.keywords or [])
+    added_from_resume: list[str] = []
+    try:
+        limit = role_limit(profile.get("apply_mode"))
+        if len(clean_keywords(run_keywords)) < limit:
+            resume_text = resume_text_for(profile)
+            if resume_text:
+                suggestions = suggest_roles(resume_text, limit=limit)
+                run_keywords, added_from_resume = complete_keywords(
+                    run_keywords, suggestions, limit
+                )
+    except Exception:  # noqa: BLE001 — Start must survive any suggestion failure
+        run_keywords = list(req.keywords or [])
+        added_from_resume = []
+    if added_from_resume:
+        with contextlib.suppress(Exception):
+            activity_db.write(
+                user.id,
+                "Added "
+                + str(len(added_from_resume))
+                + " role(s) from your résumé to fill the day: "
+                + ", ".join(added_from_resume),
+                level="info",
+                phase="campaign",
+            )
+    ordered_keywords, next_cursor = rotate_keywords(run_keywords, prev_cursor)
     # Lever's apply form is captcha-gated, so an AUTO run cannot finish one. That used to
     # block Start with a modal whose only button was "switch to Tap" — trading the whole
     # auto campaign for one board out of six, a swap nobody asked for (Igor, 09-15).
