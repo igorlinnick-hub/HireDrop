@@ -2,6 +2,7 @@ import os
 import sys
 import threading
 import time
+from datetime import UTC, date, datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
@@ -22,12 +23,54 @@ router = APIRouter(tags=["jobs"])
 
 # Per-user cooldown for the heavy ATS discovery sweep (see find_ats_jobs) — repeated
 # campaign starts within the window reuse the already-populated pool instead of
-# re-scraping ~46 boards. user_id -> unix ts of the last real sweep.
+# re-scraping ~213 boards. user_id -> (search signature, unix ts of the last real sweep).
+#
+# Keyed by the SEARCH, not by the user alone: the dashboard writes prefs the moment a chip
+# is picked (QuickActions.persistChips), and a warm-up sweep now rides on that write. With
+# a time-only cooldown the first chip of a session would spend the window on a half-built
+# search — often before any keyword was saved at all — and the complete search, picked
+# twenty seconds later, would be refused as "ran recently". A new search is a new question
+# and gets its own sweep; the same search re-asked is what the cooldown is for.
 FIND_ATS_COOLDOWN_SECS = 10 * 60
-_FIND_ATS_LAST_RUN: dict[str, float] = {}
+# Floor between sweeps even when the search keeps changing — one moving chip must not turn
+# into a board-sweep per keystroke. The dashboard debounces on top of this (20s of quiet);
+# this is the server-side guarantee, which is the one that holds for every caller.
+NEW_SEARCH_MIN_GAP_SECS = 60
+_FIND_ATS_LAST_RUN: dict[str, tuple[str, float]] = {}
 # Users with a discovery sweep running in a background thread right now — so a second
 # request doesn't spawn a duplicate while the first is still working.
 _FIND_ATS_IN_PROGRESS: set[str] = set()
+
+# Measured 2026-09-22 with scripts/measure_pool_age.py across the whole install: of the 101
+# applications that actually went through, 91% were to postings harvested within 7 days
+# (median 0d, p90 5d) — the engine eats fresh inventory. Meanwhile 22% of the waiting pool
+# was already older than 30 days, and `date_found` only ever breaks a TIE between equal
+# scores (see get_deck's sort), so a stale row with a good score outranks a fresh one with
+# an average score and the walk spends a page load on a posting that closed weeks ago.
+#
+# 45 days is the number the measurement bought, not a guess: it would have blocked ZERO of
+# those 101 applications (a 30-day cap would have blocked one) while holding back 21.7% of
+# the pool. Rows are never deleted — the archive still answers "have we seen this link"
+# and still feeds dedup. The cap only decides what we SHOW and what we APPLY to.
+# Re-run the script before moving this number.
+MAX_POOL_AGE_DAYS = 45
+
+
+def fresh_enough(job: dict, max_age_days: int = MAX_POOL_AGE_DAYS) -> bool:
+    """Is this posting recent enough to still be worth opening?
+
+    Undated rows PASS — the same "unknown passes" rule the location and job_type filters
+    follow: the legacy pool carries rows saved before `date_found` was reliable, and
+    emptying the deck to prove a point is the worse failure.
+    """
+    raw = job.get("date_found")
+    if not raw:
+        return True
+    try:
+        found = date.fromisoformat(str(raw)[:10])
+    except ValueError:
+        return True
+    return (datetime.now(UTC).date() - found).days <= max_age_days
 
 
 def _with_captcha(jobs: list) -> list:
@@ -165,12 +208,19 @@ def get_ats_queue(platform: str, limit: int = 20, user=Depends(get_current_user)
         and (platform == "lever" or is_zero_touch(platform, j.get("company", "")))
     ]
     on_search = on_search_filter(pool, get_profile(user.id))
-    on_search.sort(key=lambda j: j.get("date_found") or "", reverse=True)
-    on_search.sort(key=lambda j: j.get("score") or 0, reverse=True)  # stable: date breaks ties
+    # Age gate (MAX_POOL_AGE_DAYS): the archive keeps the row, the queue does not open it.
+    # Applying to a posting that closed a month ago costs a page load and produces nothing.
+    live = [j for j in on_search if fresh_enough(j)]
+    live.sort(key=lambda j: j.get("date_found") or "", reverse=True)
+    live.sort(key=lambda j: j.get("score") or 0, reverse=True)  # stable: date breaks ties
     return {
-        "jobs": _with_captcha(on_search[: max(1, min(limit, 100))]),
+        "jobs": _with_captcha(live[: max(1, min(limit, 100))]),
         "pool": len(pool),
         "off_search": len(pool) - len(on_search),
+        # Separate from off_search on purpose: "your search matches 40 jobs, 12 of them are
+        # too old to still be open" is a different sentence than "40 don't match your
+        # search", and a queue that silently shrank must never look like a broken one.
+        "stale": len(on_search) - len(live),
     }
 
 
@@ -219,21 +269,27 @@ def get_deck(user=Depends(get_current_user)):
     # backend, so this is city/state/remote honesty, not a miles radius: the radius
     # picker keeps steering the native searches only.
     on_search = on_search_filter(swipeable, profile)
+    # Age gate (MAX_POOL_AGE_DAYS) — the tie-break below could never do this job on its own:
+    # it only orders cards that already scored the same, so a 60-day-old row with score 8
+    # still sat above a fresh row with score 6. The swipe is the user's attention; spending
+    # it on a posting that closed last month is the same waste as applying to one.
+    live = [j for j in on_search if fresh_enough(j)]
     # Best fit first, freshest as the tie-break: `score` is a coarse 0-10 from the Haiku
     # scorer, so whole bands of cards tie and date is what separates a live posting from a
     # six-week-old one. The client interleaves platforms on top of this order.
-    on_search.sort(key=lambda j: j.get("date_found") or "", reverse=True)
-    on_search.sort(key=lambda j: j.get("score") or 0, reverse=True)  # stable: date breaks ties
+    live.sort(key=lambda j: j.get("date_found") or "", reverse=True)
+    live.sort(key=lambda j: j.get("score") or 0, reverse=True)  # stable: date breaks ties
     return {
-        "cards": _with_captcha(on_search),
+        "cards": _with_captcha(live),
         "pool": len(swipeable),
         "off_search": len(swipeable) - len(on_search),
+        "stale": len(on_search) - len(live),
         "keywords": keywords,
         "job_type": wanted_type,
         "location": profile.get("location") or "",
         # How much of the pool predates the job_type write and therefore can't be filtered
         # yet. Without this the type filter looks broken while it is merely uninformed.
-        "untyped_rows": sum(1 for j in on_search if not j.get("job_type")),
+        "untyped_rows": sum(1 for j in live if not j.get("job_type")),
     }
 
 
@@ -399,31 +455,65 @@ def _run_ats_discovery(user_id: str) -> None:
         _FIND_ATS_IN_PROGRESS.discard(user_id)
 
 
+def _search_signature(profile: dict) -> str:
+    """What a sweep is FOR — the search it would collect against.
+
+    Discovery reads the search from the PROFILE, never from the request (see
+    _run_ats_discovery), so this is the honest key for "have we already swept this?".
+    Keywords are order-insensitive: re-arranging chips is the same question.
+    """
+    keywords = ",".join(
+        sorted(k.strip().lower() for k in (profile.get("keywords") or []) if (k or "").strip())
+    )
+    location = (profile.get("location") or "").strip().lower()
+    job_type = (profile.get("job_type") or "").strip().lower()
+    return f"{keywords}|{location}|{job_type}"
+
+
 @router.post("/jobs/find-ats")
 def find_ats_jobs(user=Depends(get_current_user)):
-    """Direct-source discovery from Greenhouse/Lever public board APIs.
+    """Direct-source discovery from the ATS board APIs (Greenhouse/Lever/Ashby).
 
     Kicks off discovery in a BACKGROUND thread and returns IMMEDIATELY — the request
-    worker never blocks on the ~46 board fetches (the old synchronous sweep held a worker
-    for minutes and starved the pool → API 000). The pool fills within ~30s; callers read
-    it via GET /jobs. A 10-min cooldown + an in-progress guard throttle sweeps.
+    worker never blocks on the ~213 board fetches (the old synchronous sweep held a worker
+    for minutes and starved the pool → API 000). The pool fills within ~35s; callers read
+    it via GET /jobs.
+
+    Two throttles, and which one applies depends on WHAT is being asked:
+
+      * same search as the last sweep  → the 10-minute cooldown. Nothing changed, the pool
+        already holds that answer, and re-sweeping would spend its 160 slots on rows we
+        just saved.
+      * a different search             → a 60-second floor only. A changed search is a new
+        question: refusing it is how a warm-up would end up collecting for the keywords the
+        user abandoned twenty seconds ago, and then reporting success.
+
+    IMPORTANT for callers: save the prefs FIRST, then call this. The sweep reads keywords,
+    location and job_type from the stored profile; called before the write lands it sweeps
+    the OLD search and takes the cooldown with it.
     """
+    from app.db.profile import get_profile
+
     now = time.time()
-    last = _FIND_ATS_LAST_RUN.get(user.id, 0.0)
-    if user.id in _FIND_ATS_IN_PROGRESS or now - last < FIND_ATS_COOLDOWN_SECS:
-        remaining = int(FIND_ATS_COOLDOWN_SECS - (now - last))
+    signature = _search_signature(get_profile(user.id))
+    last_signature, last = _FIND_ATS_LAST_RUN.get(user.id, ("", 0.0))
+    same_search = signature == last_signature
+    window = FIND_ATS_COOLDOWN_SECS if same_search else NEW_SEARCH_MIN_GAP_SECS
+    if user.id in _FIND_ATS_IN_PROGRESS or now - last < window:
         return {
             "started": False,
             "cooldown": True,
-            "retry_in_secs": max(0, remaining),
+            "search_changed": not same_search,
+            "retry_in_secs": max(0, int(window - (now - last))),
             "message": "ATS discovery is already running / ran recently — using the existing job pool.",
         }
-    _FIND_ATS_LAST_RUN[user.id] = now
+    _FIND_ATS_LAST_RUN[user.id] = (signature, now)
     _FIND_ATS_IN_PROGRESS.add(user.id)
     threading.Thread(target=_run_ats_discovery, args=(user.id,), daemon=True).start()
     return {
         "started": True,
-        "message": "Discovery is running in the background — new jobs land in your pool within ~30s.",
+        "search_changed": not same_search,
+        "message": "Discovery is running in the background — new jobs land in your pool within ~35s.",
     }
 
 

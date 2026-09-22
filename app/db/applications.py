@@ -127,6 +127,34 @@ def get_for_interview_kit(user_id: str, application_id: str) -> dict | None:
     }
 
 
+def active_user_ids(since_days: int, cap: int = 20_000) -> list[str]:
+    """Accounts that applied to at least one job in the last `since_days`.
+
+    The gate for anything we do FOR a user while they are away (app/pool_sweep.py).
+    "Active" is deliberately measured in applications, not logins: a session that
+    produced nothing is not a user we should be spending scoring money on.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    since = (datetime.now(UTC) - timedelta(days=since_days)).isoformat()
+
+    def build(start: int, end: int):
+        return (
+            get_supabase()
+            .table("applications")
+            .select("user_id, date_applied")
+            .gte("date_applied", since)
+            # Secondary order by id — PostgREST pages by offset, and ties reshuffle
+            # between pages without it (#206): rows get read twice or skipped.
+            .order("date_applied", desc=True)
+            .order("id")
+            .range(start, end)
+        )
+
+    rows = fetch_paged(build, cap)
+    return list(dict.fromkeys(r["user_id"] for r in rows if r.get("user_id")))
+
+
 def count_applications(user_id: str) -> int:
     res = (
         get_supabase()

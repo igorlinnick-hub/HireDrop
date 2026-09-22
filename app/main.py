@@ -42,7 +42,7 @@ from app.routers import (
     review,
     tools,
 )
-from config import STALL_WATCH_ENABLED
+from config import POOL_SWEEP_ENABLED, STALL_WATCH_ENABLED
 
 
 @asynccontextmanager
@@ -64,9 +64,20 @@ async def lifespan(app_: FastAPI):
 
         stall_task = asyncio.create_task(watch_loop())
 
+    # Pool sweep: top up the job pool overnight for accounts that are actually applying,
+    # so a session doesn't open on the inventory of the last one (app/pool_sweep.py).
+    # Gated on activity and claimed per-account in the activity log — see the module.
+    sweep_task = None
+    if POOL_SWEEP_ENABLED:
+        from app.pool_sweep import sweep_loop
+
+        sweep_task = asyncio.create_task(sweep_loop())
+
     yield
     if stall_task:
         stall_task.cancel()
+    if sweep_task:
+        sweep_task.cancel()
 
 
 app = FastAPI(title="HireDrop API", version="1.0.0", lifespan=lifespan)

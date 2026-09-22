@@ -13,9 +13,16 @@ INPUT.
 These tests pin the rule that the queue and the deck are cut the same way.
 """
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 from app.routers import jobs as jobs_router
+
+
+def _days_ago(n: int) -> str:
+    """Relative on purpose — the queue drops postings older than MAX_POOL_AGE_DAYS, so a
+    hard-coded date turns this suite red the day it ages past the cap."""
+    return (datetime.now(UTC).date() - timedelta(days=n)).isoformat()
 
 
 def _row(title, platform="greenhouse", company="c", score=None, status="new", link="https://x/1"):
@@ -27,7 +34,7 @@ def _row(title, platform="greenhouse", company="c", score=None, status="new", li
         "score": score,
         "status": status,
         "link": link,
-        "date_found": "2026-09-01",
+        "date_found": _days_ago(2),
     }
 
 
@@ -104,4 +111,21 @@ def test_cap_cuts_the_tail_best_fit_first():
     assert [j["link"] for j in out["jobs"]] == ["https://x/b", "https://x/c"]
     # pool/off_search describe the WHOLE pool, not the capped page.
     assert out["pool"] == 3
+    assert out["off_search"] == 0
+
+
+def test_the_queue_does_not_open_a_posting_that_has_aged_out():
+    """Same cap as the deck (MAX_POOL_AGE_DAYS), same reason: `date_found` only breaks a
+    tie between EQUAL scores, so a stale row with a good score sat at the head of the walk
+    and spent a page load on a posting that closed weeks ago. Measured 09-22 — 91% of real
+    applications went to postings harvested inside 7 days."""
+    stale = {
+        **_row("Event Manager", score=9, link="https://x/stale"),
+        "date_found": _days_ago(jobs_router.MAX_POOL_AGE_DAYS + 1),
+    }
+    live = {**_row("Event Manager", score=3, link="https://x/live")}
+    out = _queue([stale, live], ["event manager"])
+
+    assert [j["link"] for j in out["jobs"]] == ["https://x/live"]
+    assert out["stale"] == 1
     assert out["off_search"] == 0

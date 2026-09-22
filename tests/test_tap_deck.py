@@ -8,9 +8,17 @@ for "ai engineer". These tests pin the relevance rule, the honesty counters, and
 no-keywords passthrough.
 """
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
 from app.routers import jobs as jobs_router
+
+
+def _days_ago(n: int) -> str:
+    """Dates in these fixtures are RELATIVE on purpose: the deck now drops postings older
+    than MAX_POOL_AGE_DAYS, so any hard-coded date turns the suite red the day it ages
+    past the cap."""
+    return (datetime.now(UTC).date() - timedelta(days=n)).isoformat()
 
 
 def _row(title, platform="greenhouse", score=None, status="new", link="https://x/1"):
@@ -22,7 +30,7 @@ def _row(title, platform="greenhouse", score=None, status="new", link="https://x
         "score": score,
         "status": status,
         "link": link,
-        "date_found": "2026-09-01",
+        "date_found": _days_ago(2),
     }
 
 
@@ -76,8 +84,8 @@ def test_only_swipeable_rows_reach_the_deck():
 def test_best_fit_first_with_the_fresher_posting_breaking_the_tie():
     # score is a coarse 0-10, so whole bands tie; date is what separates a live posting
     # from a six-week-old one.
-    old_tie = {**_row("AI Engineer", score=5, link="https://x/old"), "date_found": "2026-07-29"}
-    new_tie = {**_row("AI Engineer", score=5, link="https://x/new"), "date_found": "2026-09-06"}
+    old_tie = {**_row("AI Engineer", score=5, link="https://x/old"), "date_found": _days_ago(30)}
+    new_tie = {**_row("AI Engineer", score=5, link="https://x/new"), "date_found": _days_ago(1)}
     best = _row("AI Engineer", score=9, link="https://x/best")
     out = _deck([old_tie, new_tie, best], ["ai engineer"])
 
@@ -136,3 +144,36 @@ def test_update_job_status_reports_rows_changed():
     chain.execute.return_value.data = []
     with patch("app.db.jobs.get_supabase", return_value=fake):
         assert jobs_db.update_job_status("u1", "nope", "approved") == 0
+
+
+def test_a_posting_older_than_the_age_cap_never_reaches_the_deck():
+    """Measured 09-22 (scripts/measure_pool_age.py): 91% of real applications went to
+    postings harvested within 7 days, while 22% of the waiting pool was already past 30
+    days. Sorting could not fix that — `date_found` only breaks a tie between EQUAL
+    scores, so a stale row with a good score outranked every fresher card below it."""
+    stale = {
+        **_row("AI Engineer", score=9, link="https://x/stale"),
+        "date_found": _days_ago(jobs_router.MAX_POOL_AGE_DAYS + 1),
+    }
+    live = {
+        **_row("AI Engineer", score=3, link="https://x/live"),
+        "date_found": _days_ago(jobs_router.MAX_POOL_AGE_DAYS - 1),
+    }
+    out = _deck([stale, live], ["ai engineer"])
+
+    assert [c["link"] for c in out["cards"]] == ["https://x/live"]
+    # Counted apart from off_search: "too old to still be open" is a different sentence
+    # than "doesn't match your search", and a deck that shrank must say which happened.
+    assert out["stale"] == 1
+    assert out["off_search"] == 0
+
+
+def test_an_undated_row_still_passes_the_age_cap():
+    """Unknown passes — the same rule location and job_type follow. The legacy pool holds
+    rows saved before date_found was reliable; emptying the deck to prove a point is the
+    worse failure."""
+    undated = {**_row("AI Engineer", score=5, link="https://x/undated"), "date_found": None}
+    out = _deck([undated], ["ai engineer"])
+
+    assert [c["link"] for c in out["cards"]] == ["https://x/undated"]
+    assert out["stale"] == 0
