@@ -156,7 +156,11 @@ def on_search_filter(jobs: list, profile: dict) -> list:
     """
     from modules.job_location import location_verdict, names_foreign_country, parse_user_location
     from modules.job_type import matches_job_type
-    from modules.platforms.ats_boards import is_generic_talent_pool, keyword_match
+    from modules.platforms.ats_boards import (
+        is_generic_talent_pool,
+        keyword_match,
+        names_other_profession,
+    )
 
     keywords = [k for k in (profile.get("keywords") or []) if (k or "").strip()]
     wanted_type = (profile.get("job_type") or "").strip() or None
@@ -175,6 +179,10 @@ def on_search_filter(jobs: list, profile: dict) -> list:
         # because the pool is INSERT-only: 8 such rows were already banked, 3 of them
         # submitted (live, 09-21), and harvest-side filtering never reaches those.
         and not is_generic_talent_pool(j.get("title") or "")
+        # A title that names a trade the user never asked for. Same reason as above:
+        # the judge would skip it anyway, but only after opening the page and paying
+        # for the read — 164 of Igor's 403 queued rows, 5 of a welder's 7.
+        and not names_other_profession(j.get("title") or "", keywords)
         and matches_job_type(j.get("job_type"), wanted_type)
         and (not country_gate or not names_foreign_country(j.get("location")))
         and (not loc_filter_on or location_verdict(j.get("location"), user_loc) != "elsewhere")

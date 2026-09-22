@@ -117,3 +117,43 @@ def test_generic_talent_pools_are_not_vacancies():
     # The gate is independent of the keyword filter: it must not change what matches.
     for title in ("Social Media Manager", "Event Manager, Brand Partnerships"):
         assert keyword_match(title, kws), title
+
+
+def test_distinctive_words_match_words_not_substrings():
+    """Live queues 2026-09-21: "media" inside "Intermediate" put GitLab backend-engineer
+    postings in a marketer's queue, and "mig" inside "Immigration" filled a welder's queue
+    with immigration roles — 5 of his 7. Nothing was submitted (the judge skips them), but
+    each one costs a page open and an AI read."""
+    from modules.platforms.ats_boards import keyword_match
+
+    assert not keyword_match("Intermediate Backend Engineer, EMEA", ["social media"])
+    assert not keyword_match("Immigration Program Manager", ["Mig Welder"])
+    assert not keyword_match(
+        "Senior Software Engineer, MediaWiki Content Platform", ["social media"]
+    )
+    assert not keyword_match("Career Coach", ["health care"])
+    # ...while the matching it was built for is untouched
+    assert keyword_match("Social Media Coordinator", ["social media manager"])
+    assert keyword_match("Paid Media Manager", ["social media"])
+    assert keyword_match("Event Manager, Brand Partnerships", ["event manager"])
+    assert keyword_match("Senior Designers Wanted", ["designer"])  # trailing plural
+
+
+def test_a_trade_you_never_asked_for_is_not_your_job():
+    from modules.platforms.ats_boards import names_other_profession
+
+    marketer = ["social media manager", "content marketing specialist"]
+    # The judge skips these anyway — but only after opening the page and paying for it.
+    assert names_other_profession("Android Engineer, Social", marketer)
+    assert names_other_profession("Senior Data Scientist, Content + Social", marketer)
+    assert names_other_profession("Sr. Business Recruiter, Communications & Marketing", marketer)
+    # Real marketing roles are untouched
+    assert not names_other_profession("Social Media Manager", marketer)
+    assert not names_other_profession("Brand Content Lead", marketer)
+
+    welder = ["Welder", "Mig Welder", "Fabrication", "Fitter"]
+    # A full keyword hit means they asked for exactly this — machinist work is welder work
+    assert not names_other_profession("Prototype Machinist & Fabrication Specialist", welder)
+    # ...and a profession named in their own keywords is theirs
+    assert not names_other_profession("Welder II - Night Shift", welder)
+    assert names_other_profession("Immigration Attorney", welder)
