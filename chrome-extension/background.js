@@ -190,6 +190,75 @@ async function apiPost(path, body, { retry = true } = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Offline resilience — the outbox
+// ---------------------------------------------------------------------------
+// A submit that reached the EMPLOYER but whose /applications/save never reached the
+// backend is the worst kind of loss: the apply happened in the real world and no
+// counter knows it (cap drift + a hole in History). So a report that fails on
+// NETWORK (offline, mid-sleep, DNS) or on a 5xx is queued in chrome.storage and
+// re-sent on the minute tick once the connection is back — never dropped. 4xx
+// responses are NOT queued: the server heard us and said no, and replaying would
+// only hear no again (429 keeps its own stop path in APPLICATION_SAVED).
+// Known edge: if the request LANDED but the response was lost, the retry counts one
+// application twice — rare, visible in History, and better than losing the record.
+
+function isNetworkError(err) {
+  return err instanceof TypeError ||
+    /failed to fetch|networkerror|network changed/i.test((err && err.message) || "");
+}
+
+async function queueOutbox(path, body) {
+  const { outbox } = await chrome.storage.local.get("outbox");
+  const list = Array.isArray(outbox) ? outbox : [];
+  list.push({ path, body, queuedAt: Date.now(), tries: 0 });
+  await chrome.storage.local.set({ outbox: list });
+}
+
+let _outboxFlushing = false;
+async function flushOutbox() {
+  if (_outboxFlushing) return; // one flusher at a time — ticks can overlap a slow retry
+  if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+  const { outbox } = await chrome.storage.local.get("outbox");
+  if (!Array.isArray(outbox) || !outbox.length) return;
+  _outboxFlushing = true;
+  try {
+    const remaining = [];
+    let sent = 0;
+    for (const item of outbox) {
+      try {
+        await apiPost(item.path, item.body);
+        sent += 1;
+      } catch (err) {
+        const retryable = isNetworkError(err) || /API 5\d\d/.test((err && err.message) || "");
+        const tries = (item.tries || 0) + 1;
+        // Bound the queue so one permanently broken item can't grow storage forever:
+        // 48h or 40 attempts (one per minute-tick while online), whichever comes first.
+        const expired = Date.now() - (item.queuedAt || 0) > 48 * 3600 * 1000 || tries >= 40;
+        if (retryable && !expired) {
+          remaining.push({ ...item, tries });
+        } else {
+          await addToActivityLog(
+            `⚠️ Gave up on a queued report (${(err && err.message) || "?"}): ` +
+              `${(item.body && item.body.job_title) || item.path}`,
+            "warn"
+          );
+        }
+      }
+    }
+    await chrome.storage.local.set({ outbox: remaining });
+    if (sent) {
+      await addToActivityLog(
+        `📡 Back online — delivered ${sent} queued application report${sent === 1 ? "" : "s"}.`,
+        "info"
+      );
+    }
+  } finally {
+    _outboxFlushing = false;
+  }
+}
+// end outbox
+
+// ---------------------------------------------------------------------------
 // Profile — fetch from API, cache in chrome.storage.local
 // ---------------------------------------------------------------------------
 
@@ -309,6 +378,22 @@ chrome.runtime.onStartup.addListener(async () => {
 // Badge
 // ---------------------------------------------------------------------------
 
+// Keep the machine awake while a campaign runs. Level "system" = the screen may
+// dim and lock, but the OS won't sleep — which is what killed runs ~30 min after
+// the user walked away. Honest limits: a CLOSED laptop lid still sleeps (hardware;
+// no extension can override it), and this dies with Chrome. Synced from
+// updateBadge() so every path that flips campaignRunning — start, stop, death
+// watch, server stop, cap stop, logout — converges here without each one having to
+// remember to release. requestKeepAwake is idempotent, and re-asserting it on every
+// badge tick self-heals across service-worker restarts.
+function syncKeepAwake(running) {
+  try {
+    if (!chrome.power) return; // permission missing / old Chrome — degrade silently
+    if (running) chrome.power.requestKeepAwake("system");
+    else chrome.power.releaseKeepAwake();
+  } catch { /* power management must never break the campaign */ }
+}
+
 async function updateBadge() {
   const data = await chrome.storage.local.get(["todayCount", "campaignRunning"]);
   const count = data.todayCount || 0;
@@ -316,6 +401,7 @@ async function updateBadge() {
 
   chrome.action.setBadgeText({ text: count > 0 ? String(count) : "" });
   chrome.action.setBadgeBackgroundColor({ color: running ? "#10b981" : "#6c5ce7" });
+  syncKeepAwake(running);
 }
 
 // Create alarms only if they don't exist — SW restarts must not reset timers.
@@ -413,13 +499,45 @@ async function sendExtensionPing() {
   } catch {}
 }
 
+// The ext-ping alarm fires every minute — a much bigger gap between ticks means the
+// machine was ASLEEP (alarms don't tick through sleep). On wake: say so, give the
+// watchdogs a fresh window (their staleness clocks kept "aging" through the sleep, so
+// without this grace atsWalkWatchdog would reload a half-filled form the moment the
+// lid opens), and nudge the campaign tab to resume NOW instead of waiting out the
+// 10-minute native watchdog. The backend flag survives the nap — stall_watch is not a
+// reaper and /extension/ping stamps the heartbeat BEFORE reading should_run.
+const SLEEP_GAP_MS = 3 * 60 * 1000;
+async function detectSleepGap() {
+  const now = Date.now();
+  const d = await chrome.storage.local.get([
+    "lastTickAt", "campaignRunning", "campaignTabId", "atsNavAt", "walkAliveAt",
+  ]);
+  await chrome.storage.local.set({ lastTickAt: now });
+  if (!d.lastTickAt || now - d.lastTickAt < SLEEP_GAP_MS) return;
+  if (!d.campaignRunning) return;
+  const mins = Math.round((now - d.lastTickAt) / 60000);
+  const grace = {};
+  if (d.atsNavAt) grace.atsNavAt = now;
+  if (d.walkAliveAt) grace.walkAliveAt = now;
+  if (Object.keys(grace).length) await chrome.storage.local.set(grace);
+  await addToActivityLog(
+    `💤 The computer was asleep or offline for ~${mins} min — resyncing and resuming.`,
+    "warn"
+  );
+  if (d.campaignTabId) {
+    chrome.tabs.sendMessage(d.campaignTabId, { type: "CAMPAIGN_STARTED" }).catch(() => {});
+  }
+}
+
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === "badge-refresh") updateBadge();
   if (alarm.name === "ext-ping") {
+    detectSleepGap().catch(() => {});
     sendExtensionPing();
     atsWalkWatchdog().catch(() => {});
     nativeWalkWatchdog().catch(() => {});
     tapPoolIdleRefill().catch(() => {});
+    flushOutbox().catch(() => {});
   }
   // sw-keepalive: no-op — waking the SW is enough
 });
@@ -1651,6 +1769,10 @@ async function handleMessage(msg, sender) {
       }
 
       const tabInfo = await chrome.tabs.get(tab.id);
+      // Chrome's Memory Saver discards background tabs it decides are idle — a
+      // discarded automation tab is a zombie: the window is alive (heartbeat happy)
+      // while the walk is gone. Opt this one tab out.
+      chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
       await addToActivityLog(`Automation window ${reusingWindow ? "reused" : "opened"} (tab ${tab.id}) — loading the page…`, "info");
 
       await chrome.storage.local.set({
@@ -1709,6 +1831,14 @@ async function handleMessage(msg, sender) {
         currentJobIndex: 0,
       });
 
+      // Keep-awake itself is asserted by updateBadge() below — but holding a machine
+      // awake SILENTLY is what malware does, so the start of every run says it once.
+      if (chrome.power) {
+        await addToActivityLog(
+          "🔌 Keeping your computer awake while the campaign runs — the screen may dim, but the machine won't sleep. Closing the laptop lid still puts it to sleep.",
+          "info"
+        );
+      }
       updateBadge();
       return { started: true, tabId: tab.id, windowId: tabInfo.windowId };
     }
@@ -1963,27 +2093,40 @@ async function handleMessage(msg, sender) {
       });
       updateBadge();
 
+      const savePayload = {
+        job_title: appData.job_title,
+        company: appData.company || "",
+        platform,
+        job_url: appData.job_url || "",
+        cover_letter: appData.cover_letter || "",
+        status: appData.status || "applied",
+      };
       let serverResult = null;
       try {
-        serverResult = await apiPost("/applications/save", {
-          job_title: appData.job_title,
-          company: appData.company || "",
-          platform,
-          job_url: appData.job_url || "",
-          cover_letter: appData.cover_letter || "",
-          status: appData.status || "applied",
-        });
+        serverResult = await apiPost("/applications/save", savePayload);
       } catch (err) {
         // A 429 on save = a cap (per-platform / daily / free) was hit server-side. The
         // client-side rail normally stops us BEFORE this, but if the local count drifted
         // (e.g. storage cleared mid-day) the backend is the backstop — STOP now so we
         // don't keep firing real submits past the ban-safety cap (2026-08-09 hardening).
         const is429 = /\b429\b/.test(err.message || "");
-        addToActivityLog(
-          `⚠️ Applied but backend save failed (${err.message})` +
-            (is429 ? " — a daily/platform cap was hit; stopping to stay ban-safe." : " — counted locally"),
-          "warn"
-        );
+        const retryable = isNetworkError(err) || /API 5\d\d/.test(err.message || "");
+        if (retryable) {
+          // The submit reached the employer; only the REPORT failed (offline / sleep /
+          // backend blip). Queue it — flushOutbox re-sends on the minute tick once the
+          // network is back, so the cap and History don't silently lose a real apply.
+          await queueOutbox("/applications/save", savePayload);
+          addToActivityLog(
+            `📡 Applied, but the report couldn't reach the server (${err.message}) — queued; it will be delivered when the connection is back.`,
+            "warn"
+          );
+        } else {
+          addToActivityLog(
+            `⚠️ Applied but backend save failed (${err.message})` +
+              (is429 ? " — a daily/platform cap was hit; stopping to stay ban-safe." : " — counted locally"),
+            "warn"
+          );
+        }
         if (is429) {
           await chrome.storage.local.set({ campaignRunning: false });
           try { await apiPost("/campaign/stop", {}); } catch {}

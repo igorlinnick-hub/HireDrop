@@ -353,6 +353,26 @@
     return !!data.campaignRunning;
   }
 
+  // Offline = PAUSE, not failure (same rule as the consent wall). A walk that keeps
+  // clicking with no network burns jobs on fetch errors and looks exactly like a
+  // broken engine. navigator.onLine can lie about HAVING internet, but false reliably
+  // means there is none — good enough to park on. Local log only while parked
+  // (logBackend can't reach the backend by definition); one durable line on reconnect.
+  async function waitForOnline() {
+    if (navigator.onLine) return;
+    const started = Date.now();
+    log("📡 No internet connection — pausing until it's back", "warn");
+    await new Promise((resolve) => {
+      const timer = setInterval(() => {
+        if (navigator.onLine) { clearInterval(timer); resolve(); }
+      }, 3000);
+      window.addEventListener("online", () => { clearInterval(timer); resolve(); }, { once: true });
+    });
+    await sleep(2000); // let the connection settle — fetches right after `online` still fail
+    const mins = Math.max(1, Math.round((Date.now() - started) / 60000));
+    logBackend(`📡 Back online after ~${mins} min offline — resuming the walk`, "info");
+  }
+
   // Phase 5.4 — Session warmup. The pattern "open page → instantly start
   // automating clicks" never happens for a real user. They land on the
   // search page, glance over a few cards, scroll, sometimes scroll back,
@@ -4861,6 +4881,10 @@
   async function runPhase() {
     if (_runPhaseActive) return;
     if (!(await isCampaignRunning())) return;
+    if (!navigator.onLine) {
+      await waitForOnline();
+      if (!(await isCampaignRunning())) return; // Stop may have landed while parked
+    }
     _runPhaseActive = true;
     try {
       await _runPhaseInner();
