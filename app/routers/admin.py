@@ -689,6 +689,19 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
     payouts = _rows("payouts", "affiliate_id, amount_cents, paid_at")
     # The inbox: people asking for a link. Approval is a human decision made
     # on this board (POST /admin/affiliates/decide), never automatic.
+    # Aggregated server-side: click rows are the one table here that outgrows
+    # PostgREST's silent 1000-row ceiling, so counting them in Python would
+    # quietly plateau. Failure degrades to "no clicks column", never to a wrong
+    # number.
+    clicks_by_code: dict[str, dict] = {}
+    try:
+        res = get_supabase().rpc(
+            "affiliate_click_totals", {"p_from": from_ts, "p_to": to_ts}
+        ).execute()
+        clicks_by_code = {r["code"]: r for r in (res.data or [])}
+    except Exception as exc:  # noqa: BLE001
+        print(f"[admin.affiliates] click totals unavailable: {exc}", file=sys.stderr)
+
     applications = _rows(
         "affiliate_applications",
         "id, email, name, desired_code, audience, audience_size, promo_plan, "
@@ -724,6 +737,7 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
                 "code": a.get("code"),
                 "status": a.get("status"),
                 "rate": f"{round(float(a.get('commission_pct') or 0))}%",
+                "clicks": int((clicks_by_code.get(a.get("code")) or {}).get("clicks_total") or 0),
                 "signups": len(mine),
                 "paying": len([r for r in mine if r.get("first_paid_at")]),
                 "earned": _usd(sum(c["amount_cents"] for c in cs if c.get("status") != "reversed")),
@@ -783,6 +797,12 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
                 "Active partners",
                 len([a for a in affiliates if a.get("status") == "active"]),
                 scope="current",
+            ),
+            _metric(
+                "link_opens",
+                "Link opens",
+                sum(int(c.get("clicks_period") or 0) for c in clicks_by_code.values()),
+                description="Unique visitors per day on any ?ref= link, partner codes and printed codes alike.",
             ),
             _metric(
                 "referred_signups",
@@ -880,12 +900,37 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
                 ],
             ),
             _table(
+                "unclaimed_codes",
+                "Codes with traffic and no partner",
+                [
+                    _col("code", "Code"),
+                    _col("clicks", "Opens", "number", "right"),
+                    _col("clicks_period", "This period", "number", "right"),
+                ],
+                # The printed material: ?ref=card vs ?ref=stka vs ?ref=stkb.
+                # Nobody earns from these — they answer "which artefact gets
+                # scanned", which was unanswerable before clicks existed.
+                sorted(
+                    [
+                        {
+                            "code": code,
+                            "clicks": int(c.get("clicks_total") or 0),
+                            "clicks_period": int(c.get("clicks_period") or 0),
+                        }
+                        for code, c in clicks_by_code.items()
+                        if code not in {a.get("code") for a in affiliates}
+                    ],
+                    key=lambda r: -r["clicks"],
+                ),
+            ),
+            _table(
                 "partners",
                 "Partner ledger",
                 [
                     _col("code", "Code"),
                     _col("status", "Status"),
                     _col("rate", "Rate"),
+                    _col("clicks", "Opens", "number", "right"),
                     _col("signups", "Signups", "number", "right"),
                     _col("paying", "Paying", "number", "right"),
                     _col("earned", "Earned", "currency", "right"),
