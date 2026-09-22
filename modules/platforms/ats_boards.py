@@ -150,7 +150,16 @@ def keyword_match(text: str, keywords: list[str] | None) -> bool:
     No keywords -> match everything. Otherwise match on either the FULL keyword phrase
     OR any DISTINCTIVE word of a keyword (generic role words like "manager" are ignored,
     so "social media manager" matches "Social Media Coordinator" etc.). Measured live:
-    lifts Igor's yield from 2 → ~207 relevant postings across the 46-board watchlist."""
+    lifts Igor's yield from 2 → ~207 relevant postings across the 46-board watchlist.
+
+    Distinctive words match as WORDS, not substrings. They used to match anywhere in the
+    text, which is how a marketing profile ended up walking GitLab's "**Inter**media**te**
+    Backend Engineer" postings (media ⊂ Intermediate) and a welder's queue filled with
+    immigration roles (mig ⊂ Immigration): 5 of his 7 queued jobs, and 164 of Igor's 403.
+    Nothing was ever SUBMITTED to those — the fit judge reads the posting and skips them —
+    but each one costs a page open, ~30s and an AI call, and the user watches us open
+    "Software Engineer" for a marketer. The cheap filter must not hand the expensive one
+    work it can reject for free. A trailing plural still matches (designer → designers)."""
     if not keywords:
         return True
     t = (text or "").lower()
@@ -160,10 +169,64 @@ def keyword_match(text: str, keywords: list[str] | None) -> bool:
             continue
         if k in t:
             return True
-        words = _distinctive_words(k)
-        if words and any(w in t for w in words):
-            return True
+        for w in _distinctive_words(k):
+            if _re.search(rf"\b{_re.escape(w)}(s|es)?\b", t):
+                return True
     return False
+
+
+# Professions nobody lands in by accident: a title that names one is that job, and a
+# marketer is not going to be hired as an Android engineer because the role sits in the
+# Social team. Gate only when the keyword matched PARTIALLY — a full keyword hit means
+# the user asked for exactly this ("Fabrication" → "Prototype Machinist & Fabrication
+# Specialist" is a welder's job and stays), and a profession named in their own keywords
+# is theirs to apply to (a nurse searching "nurse" still sees nursing roles).
+_PROFESSION_RE = _re.compile(
+    r"\b(engineer|engineering|developer|programmer|architect|devops|sre|"
+    r"nurse|physician|surgeon|dentist|pharmacist|therapist|veterinarian|"
+    r"attorney|lawyer|paralegal|accountant|bookkeeper|actuary|"
+    r"recruiter|welder|machinist|electrician|plumber|carpenter|mechanic|"
+    r"chef|teacher|professor|scientist|pilot|paramedic)s?\b",
+    _re.I,
+)
+
+
+def names_other_profession(title: str, keywords: list[str] | None) -> bool:
+    """True when the title names a trade the user never asked for."""
+    t = (title or "").lower()
+    kws = [k.strip().lower() for k in (keywords or []) if (k or "").strip()]
+    if any(k in t for k in kws):  # full keyword hit — they asked for exactly this
+        return False
+    m = _PROFESSION_RE.search(t)
+    if not m:
+        return False
+    return not any(m.group(1) in k for k in kws)
+
+
+# A posting that is not a posting: the "send us your resume for whatever opens later"
+# form every ATS board offers. It has no role, no requirements and nobody reviewing it
+# against a position — applying spends a daily-cap slot, a cover letter (~$0.002) and a
+# tailored resume (~$0.007) on a filing cabinet.
+#
+# They pass the keyword filter for a reason that is not a bug in that filter: it matches
+# on DISTINCTIVE WORDS, so "health care" matches "FOLX **Health** Talent Community",
+# "social media" matches "Vox **Media**", and "care" pulled five physician postings at
+# tia into a marketing profile's queue (live pool, 2026-09-21: 8 such rows, 3 already
+# submitted). Word-level matching is what lifted yield 2 → 207 and stays; this is a
+# separate question — "is this a job at all" — and belongs in its own gate.
+_GENERIC_POOL_RE = _re.compile(
+    r"talent\s+(community|network|pool|bank)|general\s+application|"
+    r"open\s+application|spontaneous\s+application|future\s+(openings?|roles?)|"
+    r"don.?t\s+see\s+(your|a)\s+(dream\s+)?(job|role)|dream\s+job\s+here|"
+    r"join\s+our\s+(talent|network)|introduce\s+yourself|"
+    r"other\s+opportunities|candidate\s+pool",
+    _re.I,
+)
+
+
+def is_generic_talent_pool(title: str) -> bool:
+    """True for "join our talent community" style catch-alls — not a real vacancy."""
+    return bool(_GENERIC_POOL_RE.search(title or ""))
 
 
 # Captcha burden per platform now lives in the single source modules/captcha_profile.py
@@ -211,7 +274,11 @@ def fetch_greenhouse(token: str, keywords: list[str] | None = None, limit: int =
     for j in jobs:
         title = j.get("title", "")
         loc = (j.get("location") or {}).get("name", "")
-        if not keyword_match(f"{title} {loc}", keywords):
+        if (
+            not keyword_match(f"{title} {loc}", keywords)
+            or is_generic_talent_pool(title)
+            or names_other_profession(title, keywords)
+        ):
             continue
         url = j.get("absolute_url")
         if not url or not _is_fillable(url):
@@ -238,7 +305,11 @@ def fetch_lever(token: str, keywords: list[str] | None = None, limit: int = 50) 
     for p in data:
         title = p.get("text", "")
         loc = ((p.get("categories") or {}).get("location")) or ""
-        if not keyword_match(f"{title} {loc}", keywords):
+        if (
+            not keyword_match(f"{title} {loc}", keywords)
+            or is_generic_talent_pool(title)
+            or names_other_profession(title, keywords)
+        ):
             continue
         # applyUrl is the /apply form (what phase_ats fills); hostedUrl is the JD page.
         url = p.get("applyUrl") or (
@@ -272,7 +343,11 @@ def fetch_ashby(token: str, keywords: list[str] | None = None, limit: int = 50) 
             continue
         title = (j.get("title") or "").strip()
         loc = j.get("location") or ""
-        if not keyword_match(f"{title} {loc}", keywords):
+        if (
+            not keyword_match(f"{title} {loc}", keywords)
+            or is_generic_talent_pool(title)
+            or names_other_profession(title, keywords)
+        ):
             continue
         base = (j.get("applyUrl") or j.get("jobUrl") or "").rstrip("/")
         if not base or not _is_fillable(base):
@@ -331,7 +406,11 @@ def fetch_workday(token: str, keywords: list[str] | None = None, limit: int = 50
     for path, p in posts.items():
         title = (p.get("title") or "").strip()
         loc = p.get("locationsText") or ""
-        if not keyword_match(f"{title} {loc}", keywords):
+        if (
+            not keyword_match(f"{title} {loc}", keywords)
+            or is_generic_talent_pool(title)
+            or names_other_profession(title, keywords)
+        ):
             continue
         # No description in the list response (a per-job detail call is a separate endpoint);
         # the thin-description backfill / title-based scoring handles it (min_score=0 keeps them).
