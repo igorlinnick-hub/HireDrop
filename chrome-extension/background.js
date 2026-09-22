@@ -735,14 +735,41 @@ function pickNextStage(tried, selected, conns) {
 // an empty one: it looks like work. Returns { queue, pool, offSearch } — offSearch is the
 // honest reason an empty queue is empty, so the campaign can say "your pool holds N, none
 // match your search" instead of a bare "no jobs".
+// How long the walk is willing to wait for a freshly-started sweep, and how often it
+// re-asks. The sweep has a 35s hard deadline server-side (modules/platforms/ats_boards.py
+// _DISCOVER_DEADLINE), so 45s covers it with room for the save; polling means we leave as
+// soon as rows land, not when the timer says so.
+const SWEEP_WAIT_MS = 45_000;
+const SWEEP_POLL_MS = 5_000;
+
 async function buildAtsQueue(platform, perPlatformCap) {
-  try { await apiPost("/jobs/find-ats", {}); } catch (e) { /* discovery best-effort */ }
+  let sweep = null;
+  try { sweep = await apiPost("/jobs/find-ats", {}); } catch (e) { /* discovery best-effort */ }
   const cap = perPlatformCap > 0 ? perPlatformCap : 20;
-  let res = null;
   // No fallback to the unfiltered pool on error: falling back to the archive is exactly
   // the failure this replaced. An honest zero beats a plausible wrong queue.
-  try { res = await apiGet(`/jobs/ats-queue?platform=${encodeURIComponent(platform)}&limit=${cap}`); }
-  catch (e) { return { queue: [], pool: 0, offSearch: 0, error: true }; }
+  const readQueue = async () => {
+    try { return await apiGet(`/jobs/ats-queue?platform=${encodeURIComponent(platform)}&limit=${cap}`); }
+    catch (e) { return null; }
+  };
+  let res = await readQueue();
+  if (!res) return { queue: [], pool: 0, offSearch: 0, error: true };
+  // WAIT FOR THE SWEEP — but only when it can still change this answer. /jobs/find-ats
+  // returns the instant it spawns its thread, and this used to read the queue in the very
+  // next line: on a search whose boards had never been swept (a brand-new account, or the
+  // morning after the keywords changed) the walk therefore built its queue from the pool
+  // as it was BEFORE that search existed, and the rows the sweep saved 30 seconds later
+  // were only picked up by the NEXT run. Waiting costs 35 seconds once; not waiting cost
+  // the whole ATS half of the run.
+  if (sweep && sweep.started && (res.jobs || []).length === 0) {
+    await addToActivityLog("Checking the job boards for your search — this takes about half a minute", "info");
+    const until = Date.now() + SWEEP_WAIT_MS;
+    while (Date.now() < until && (res.jobs || []).length === 0) {
+      await new Promise((r) => setTimeout(r, SWEEP_POLL_MS));
+      const next = await readQueue();
+      if (next) res = next;
+    }
+  }
   // Drop jobs we already applied to (URL or title|company key) — an already-applied job
   // at the queue head used to dead-stop the walk: phase_ats skips it silently and only a
   // real submit advances the queue. Mirrors content.js's dedup (jobDedupKey format).
