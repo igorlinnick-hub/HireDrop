@@ -16,7 +16,7 @@ from app.routers import jobs as jobs_router
 
 def _days_ago(n: int) -> str:
     """Dates in these fixtures are RELATIVE on purpose: the deck now drops postings older
-    than MAX_POOL_AGE_DAYS, so any hard-coded date turns the suite red the day it ages
+    than DECK_MAX_AGE_DAYS, so any hard-coded date turns the suite red the day it ages
     past the cap."""
     return (datetime.now(UTC).date() - timedelta(days=n)).isoformat()
 
@@ -82,9 +82,9 @@ def test_only_swipeable_rows_reach_the_deck():
 
 
 def test_best_fit_first_with_the_fresher_posting_breaking_the_tie():
-    # score is a coarse 0-10, so whole bands tie; date is what separates a live posting
-    # from a six-week-old one.
-    old_tie = {**_row("AI Engineer", score=5, link="https://x/old"), "date_found": _days_ago(30)}
+    # score is a coarse 0-10, so whole bands tie; date is what separates a fresh posting
+    # from one nearing the deck's age cap.
+    old_tie = {**_row("AI Engineer", score=5, link="https://x/old"), "date_found": _days_ago(10)}
     new_tie = {**_row("AI Engineer", score=5, link="https://x/new"), "date_found": _days_ago(1)}
     best = _row("AI Engineer", score=9, link="https://x/best")
     out = _deck([old_tie, new_tie, best], ["ai engineer"])
@@ -146,18 +146,19 @@ def test_update_job_status_reports_rows_changed():
         assert jobs_db.update_job_status("u1", "nope", "approved") == 0
 
 
-def test_a_posting_older_than_the_age_cap_never_reaches_the_deck():
-    """Measured 09-22 (scripts/measure_pool_age.py): 91% of real applications went to
-    postings harvested within 7 days, while 22% of the waiting pool was already past 30
-    days. Sorting could not fix that — `date_found` only breaks a tie between EQUAL
-    scores, so a stale row with a good score outranked every fresher card below it."""
+def test_a_posting_older_than_the_deck_age_cap_never_reaches_the_deck():
+    """The deck's cap is DECK_MAX_AGE_DAYS (14), stricter than the apply cap: a swipe is
+    a promise the freshest-first queue must be able to keep. Measured 09-23
+    (scripts/measure_pool_age.py): 97.1% of the 102 real applications were to postings
+    ≤14 days old. Sorting could not fix that — `date_found` only breaks a tie between
+    EQUAL scores, so a stale row with a good score outranked every fresher card below."""
     stale = {
         **_row("AI Engineer", score=9, link="https://x/stale"),
-        "date_found": _days_ago(jobs_router.MAX_POOL_AGE_DAYS + 1),
+        "date_found": _days_ago(jobs_router.DECK_MAX_AGE_DAYS + 1),
     }
     live = {
         **_row("AI Engineer", score=3, link="https://x/live"),
-        "date_found": _days_ago(jobs_router.MAX_POOL_AGE_DAYS - 1),
+        "date_found": _days_ago(jobs_router.DECK_MAX_AGE_DAYS - 1),
     }
     out = _deck([stale, live], ["ai engineer"])
 
@@ -166,6 +167,21 @@ def test_a_posting_older_than_the_age_cap_never_reaches_the_deck():
     # than "doesn't match your search", and a deck that shrank must say which happened.
     assert out["stale"] == 1
     assert out["off_search"] == 0
+
+
+def test_deck_cap_is_stricter_than_the_apply_cap():
+    """A 15-45 day row is HIDDEN from the deck (approving it would be a dead promise)
+    but still passes the apply-side fresh_enough default — the auto queue may take it
+    when it reaches it on its own; that costs a page load, not a broken promise."""
+    between = {
+        **_row("AI Engineer", score=5, link="https://x/between"),
+        "date_found": _days_ago(jobs_router.DECK_MAX_AGE_DAYS + 1),
+    }
+    out = _deck([between], ["ai engineer"])
+
+    assert out["cards"] == []
+    assert out["stale"] == 1
+    assert jobs_router.fresh_enough(between)  # apply cap (45d) still lets it through
 
 
 def test_an_undated_row_still_passes_the_age_cap():
