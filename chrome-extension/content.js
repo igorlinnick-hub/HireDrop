@@ -38,7 +38,7 @@
 
   (async () => {
     try {
-      const s = await chrome.storage.local.get("campaignCaps");
+      const s = await storageGet("campaignCaps");
       const pp = s.campaignCaps && s.campaignCaps.perPlatform;
       if (typeof pp === "number" && pp > 0) MAX_APPLICATIONS_PER_PLATFORM = pp;
     } catch {}
@@ -153,13 +153,13 @@
     }
     if (status === "unknown") return status; // still indeterminate — don't store noise
     try {
-      const store = await chrome.storage.local.get("platformConnections");
+      const store = await storageGet("platformConnections");
       const conns = store.platformConnections || {};
       // `host` is the record's provenance: background.js drops a logged_out that wasn't
       // read where applying happens, so a search-page guess can never gate a launch.
       conns[platform] = { status, checkedAt: new Date().toISOString(), host: window.location.hostname };
-      await chrome.storage.local.set({ platformConnections: conns });
-      chrome.runtime.sendMessage({ type: "PLATFORM_AUTH", platform, status, host: window.location.hostname }).catch(() => {});
+      await storageSet({ platformConnections: conns });
+      safeSend({ type: "PLATFORM_AUTH", platform, status, host: window.location.hostname });
     } catch { /* storage/runtime unavailable — ignore */ }
     return status;
   }
@@ -204,11 +204,11 @@
   }
 
   function log(text, cls) {
-    chrome.runtime.sendMessage({ type: "LOG", text, cls: cls || "" });
+    safeSend({ type: "LOG", text, cls: cls || "" });
   }
 
   function logBackend(text, level) {
-    chrome.runtime.sendMessage({ type: "LOG_BACKEND", text, level: level || "info" }).catch(() => {});
+    safeSend({ type: "LOG_BACKEND", text, level: level || "info" });
   }
 
   // The engine's clock. A bare setTimeout is the wrong clock for this window: the
@@ -225,6 +225,68 @@
   // The guard that matters: a dying SW fires the callback EARLY with lastError and no
   // response. Resolving on that would cut pauses to ~zero and hammer the page — so only
   // a real {ok} reply may finish the wait ahead of the local timer.
+  // ---------------------------------------------------------------------------
+  // Storage gateway — the orphan guard
+  // ---------------------------------------------------------------------------
+  //
+  // Reloading the extension (an update, a DEV_RELOAD, a manual OFF/ON) orphans this
+  // script in every tab it is already running in. The DOM half keeps going; every
+  // `chrome.*` call throws "Extension context invalidated". With ~110 raw storage calls
+  // in this file, the walk died wherever it happened to be standing and filled the
+  // extension's error console with dozens of identical uncaught throws — noise that made
+  // the red "Errors" badge worthless as a signal (09-22: the console was pages of them).
+  //
+  // So no caller touches chrome.storage directly. An orphan reads as "nothing stored",
+  // which is the honest answer — there is no extension behind this tab any more — and it
+  // is also the SAFE answer: isCampaignRunning() then returns false and the walk stops on
+  // its own terms instead of throwing mid-application.
+  function contextGone() {
+    try {
+      return !chrome.runtime || !chrome.runtime.id;
+    } catch {
+      return true;
+    }
+  }
+
+  async function storageGet(keys) {
+    if (contextGone()) return {};
+    try {
+      return (await chrome.storage.local.get(keys)) || {};
+    } catch {
+      return {}; // invalidated between the check and the call
+    }
+  }
+
+  async function storageSet(obj) {
+    if (contextGone()) return false;
+    try {
+      await chrome.storage.local.set(obj);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function safeSend(msg) {
+    if (contextGone()) return;
+    try {
+      const r = chrome.runtime.sendMessage(msg);
+      if (r && r.catch) r.catch(() => {});
+    } catch {
+      /* invalidated between the check and the call */
+    }
+  }
+
+  async function storageRemove(keys) {
+    if (contextGone()) return false;
+    try {
+      await chrome.storage.local.remove(keys);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function sleep(ms) {
     return new Promise((resolve) => {
       let done = false;
@@ -349,7 +411,7 @@
   }
 
   async function isCampaignRunning() {
-    const data = await chrome.storage.local.get("campaignRunning");
+    const data = await storageGet("campaignRunning");
     return !!data.campaignRunning;
   }
 
@@ -418,8 +480,8 @@
     // solves → cf_clearance set), then navigate to the specific target /viewjob, which now
     // carries cf_clearance and passes. Every job is a canonical link, so we must NOT type a
     // search query (the old auto tail did that and looped the pool on the head job forever).
-    const poolRun = (await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool";
-    const flag = await chrome.storage.local.get("campaignWarmedUp");
+    const poolRun = (await storageGet("atsPlatform")).atsPlatform === "pool";
+    const flag = await storageGet("campaignWarmedUp");
     if (flag.campaignWarmedUp) return;
 
     log("Session warmup — looking around for a few seconds...", "");
@@ -441,10 +503,10 @@
       await sleep(humanDelay(2000, 5000));
     }
     const elapsed = Date.now() - startedAt;
-    await chrome.storage.local.set({ campaignWarmedUp: true });
+    await storageSet({ campaignWarmedUp: true });
 
     // Navigate to the target search URL if we're not already on it.
-    const { campaignTargetUrl } = await chrome.storage.local.get("campaignTargetUrl");
+    const { campaignTargetUrl } = await storageGet("campaignTargetUrl");
 
     // POOL (by-link) mode: campaignTargetUrl is a SPECIFIC job (Indeed /viewjob?jk= or a
     // ZR job page), not a search URL. We warmed on the homepage above; now that cf_clearance
@@ -525,7 +587,7 @@
   }
 
   async function getPlatformCount(platform) {
-    const data = await chrome.storage.local.get(["platformCounts", "todayDate"]);
+    const data = await storageGet(["platformCounts", "todayDate"]);
     const today = localDay();
     if (data.todayDate !== today) return 0;
     const counts = data.platformCounts || {};
@@ -1120,7 +1182,7 @@
     const platform = detectPlatform();
     const cacheKey = `selectors_${platform}`;
     try {
-      const cached = await chrome.storage.local.get([cacheKey, `${cacheKey}_at`]);
+      const cached = await storageGet([cacheKey, `${cacheKey}_at`]);
       const fresh = cached[`${cacheKey}_at`] && Date.now() - cached[`${cacheKey}_at`] < 24 * 3600 * 1000;
       if (fresh && cached[cacheKey]) {
         SELECTORS = cached[cacheKey];
@@ -1129,7 +1191,7 @@
       const resp = await sendMsg({ type: "GET_SELECTORS", platform });
       if (resp?.selectors) {
         SELECTORS = resp.selectors;
-        await chrome.storage.local.set({
+        await storageSet({
           [cacheKey]: resp.selectors,
           [`${cacheKey}_at`]: Date.now(),
         });
@@ -1209,7 +1271,7 @@
     // processed and skip to the next pending job. Using skipToNextJob() (not
     // goBackToJobList) preserves the remaining jobs from the current page scan.
     const urlQ = new URL(window.location.href).searchParams.get("q") || "";
-    const filtersData = await chrome.storage.local.get(["campaignFilters", "pendingJobs", "currentJobIndex"]);
+    const filtersData = await storageGet(["campaignFilters", "pendingJobs", "currentJobIndex"]);
     const kw = filtersData.campaignFilters?.keywords || [];
     if (kw.length && !urlQ.trim()) {
       log("Redirected to empty search — marking failed job and skipping...", "");
@@ -1217,10 +1279,10 @@
       const idx = filtersData.currentJobIndex || 0;
       const failedJob = jobs[idx];
       if (failedJob?.jk) {
-        const seen = await chrome.storage.local.get("processedJobKeys");
+        const seen = await storageGet("processedJobKeys");
         const keys = seen.processedJobKeys || [];
         if (!keys.includes(failedJob.jk)) {
-          await chrome.storage.local.set({ processedJobKeys: [...keys, failedJob.jk].slice(-500) });
+          await storageSet({ processedJobKeys: [...keys, failedJob.jk].slice(-500) });
         }
       }
       await skipToNextJob();
@@ -1249,7 +1311,7 @@
     // Filter for "Easily apply" jobs
     const easyApplyCards = [];
     const alreadyApplied = await getAppliedUrls();
-    const seenKeys = await chrome.storage.local.get("processedJobKeys");
+    const seenKeys = await storageGet("processedJobKeys");
     const processedKeys = new Set(seenKeys.processedJobKeys || []);
 
     for (const card of cards) {
@@ -1296,7 +1358,7 @@
     } catch (_) { /* harvest is best-effort */ }
 
     // Save pending jobs
-    await chrome.storage.local.set({
+    await storageSet({
       pendingJobs: easyApplyCards.map((j) => ({
         title: j.title,
         company: j.company,
@@ -1321,7 +1383,7 @@
   }
 
   async function getAppliedUrls() {
-    const data = await chrome.storage.local.get("appliedUrls");
+    const data = await storageGet("appliedUrls");
     return new Set(data.appliedUrls || []);
   }
 
@@ -1330,7 +1392,7 @@
   async function resolveEmail(profile) {
     if (profile && profile.email) return profile.email;
     try {
-      const { supabase_token } = await chrome.storage.local.get("supabase_token");
+      const { supabase_token } = await storageGet("supabase_token");
       if (supabase_token) {
         const p = JSON.parse(atob(supabase_token.split(".")[1]));
         if (p && p.email) return p.email;
@@ -1340,12 +1402,12 @@
   }
 
   async function addAppliedUrl(url) {
-    const data = await chrome.storage.local.get("appliedUrls");
+    const data = await storageGet("appliedUrls");
     const urls = data.appliedUrls || [];
     urls.push(url);
     // Keep last 500
     if (urls.length > 500) urls.splice(0, urls.length - 500);
-    await chrome.storage.local.set({ appliedUrls: urls });
+    await storageSet({ appliedUrls: urls });
   }
 
   // A URL-independent dedup key. Board job URLs carry volatile params (ZR's lk=,
@@ -1356,7 +1418,7 @@
   }
 
   async function getAppliedJobKeys() {
-    const data = await chrome.storage.local.get("appliedJobKeys");
+    const data = await storageGet("appliedJobKeys");
     return new Set(data.appliedJobKeys || []);
   }
 
@@ -1373,7 +1435,7 @@
   }
 
   async function getHandedBackKeys() {
-    const d = await chrome.storage.local.get(["handedBackKeys", "handedBackDate"]);
+    const d = await storageGet(["handedBackKeys", "handedBackDate"]);
     const today = localDay();
     if (d.handedBackDate !== today) return new Set();
     return new Set(d.handedBackKeys || []);
@@ -1383,21 +1445,21 @@
     const key = jobDedupKey(title, company);
     if (!key || key === "|") return;
     const today = localDay();
-    const d = await chrome.storage.local.get(["handedBackKeys", "handedBackDate"]);
+    const d = await storageGet(["handedBackKeys", "handedBackDate"]);
     const keys = d.handedBackDate === today ? (d.handedBackKeys || []) : [];
     if (!keys.includes(key)) keys.push(key);
     if (keys.length > 500) keys.splice(0, keys.length - 500);
-    await chrome.storage.local.set({ handedBackKeys: keys, handedBackDate: today });
+    await storageSet({ handedBackKeys: keys, handedBackDate: today });
   }
 
   async function addAppliedJobKey(title, company) {
     const key = jobDedupKey(title, company);
     if (!key || key === "|") return;
-    const data = await chrome.storage.local.get("appliedJobKeys");
+    const data = await storageGet("appliedJobKeys");
     const keys = data.appliedJobKeys || [];
     if (!keys.includes(key)) keys.push(key);
     if (keys.length > 1000) keys.splice(0, keys.length - 1000);
-    await chrome.storage.local.set({ appliedJobKeys: keys });
+    await storageSet({ appliedJobKeys: keys });
   }
 
   // Increment the local application count from the CONTENT SCRIPT (not the service
@@ -1406,7 +1468,7 @@
   // navigation, so counting here makes the daily cap + count robust regardless of SW
   // state. background's APPLICATION_SAVED no longer increments (backend save only).
   async function recordLocalApplication(platform) {
-    const s = await chrome.storage.local.get([
+    const s = await storageGet([
       "todayCount", "platformCounts", "todayDate", "keywordCounts", "kwIndex", "atsPlatform",
     ]);
     const today = localDay();
@@ -1423,7 +1485,7 @@
       const ki = String(Math.max(0, s.kwIndex || 0));
       bucket[ki] = (bucket[ki] || 0) + 1;
     }
-    await chrome.storage.local.set({ todayCount: totalCount, platformCounts, keywordCounts, todayDate: today });
+    await storageSet({ todayCount: totalCount, platformCounts, keywordCounts, todayDate: today });
     return platformCounts[platform];
   }
 
@@ -1432,7 +1494,7 @@
   // claiming "applied" for an application that never left the page is lying to the user
   // (council 2026-08-04: quality above all — no silent half-deaths).
   async function subtractLocalApplication(platform) {
-    const s = await chrome.storage.local.get([
+    const s = await storageGet([
       "todayCount", "platformCounts", "todayDate", "keywordCounts", "kwIndex", "atsPlatform",
     ]);
     const today = localDay();
@@ -1446,7 +1508,7 @@
       const ki = String(Math.max(0, s.kwIndex || 0));
       keywordCounts[platform][ki] = Math.max(0, (keywordCounts[platform][ki] || 0) - 1);
     }
-    await chrome.storage.local.set({
+    await storageSet({
       todayCount: Math.max(0, (s.todayCount || 0) - 1),
       platformCounts,
       keywordCounts,
@@ -1694,11 +1756,11 @@
       // concluding the product was broken. After UNREADABLE_STREAK_LIMIT in a row, say
       // so out loud and hand the walk to the next platform (the PLATFORM_EXHAUSTED
       // failover already knows how); Indeed gets retried automatically on the next run.
-      const u = await chrome.storage.local.get("unreadableStreak");
+      const u = await storageGet("unreadableStreak");
       const streak = (u.unreadableStreak || 0) + 1;
-      await chrome.storage.local.set({ unreadableStreak: streak });
+      await storageSet({ unreadableStreak: streak });
       if (streak >= UNREADABLE_STREAK_LIMIT) {
-        await chrome.storage.local.set({ unreadableStreak: 0 });
+        await storageSet({ unreadableStreak: 0 });
         logBackend(
           `⚠️ ${streak} job pages in a row were unreadable — Indeed likely changed its layout. ` +
           "Moving on to another platform so your run keeps producing; we'll fix Indeed on our side.",
@@ -1712,7 +1774,7 @@
     }
     // A readable page breaks the streak: scattered bad postings must never add up to
     // a false "platform broken" verdict over a long healthy run.
-    await chrome.storage.local.set({ unreadableStreak: 0 });
+    await storageSet({ unreadableStreak: 0 });
 
     // Deduplicate by job key (jk= / vjk= in URL).
     // Indeed jk values are alphanumeric, NOT just hex — the original [a-f0-9]+
@@ -1723,7 +1785,7 @@
     // Fallback: deduplicate by URL if no jk present
     const dedupeKey = jobKey || jobUrl.split("?")[0];
     {
-      const seen = await chrome.storage.local.get("processedJobKeys");
+      const seen = await storageGet("processedJobKeys");
       const keys = seen.processedJobKeys || [];
       if (keys.includes(dedupeKey)) {
         log(`${jobTitle} — already processed, skipping`, "");
@@ -1731,7 +1793,7 @@
         await skipToNextJob();
         return;
       }
-      await chrome.storage.local.set({ processedJobKeys: [...keys, dedupeKey].slice(-500) });
+      await storageSet({ processedJobKeys: [...keys, dedupeKey].slice(-500) });
     }
 
     log(`Job: ${jobTitle} @ ${jobCompany}`, "");
@@ -1745,8 +1807,8 @@
     // titles (e.g. "Provider Relations Specialist") from wasting cover-letter calls.
     {
       // Pool swipe run: the user hand-picked this job — keyword title-match must not veto it.
-      const _kwPool = (await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool";
-      const kwData = await chrome.storage.local.get("campaignFilters");
+      const _kwPool = (await storageGet("atsPlatform")).atsPlatform === "pool";
+      const kwData = await storageGet("campaignFilters");
       const kwList = (kwData.campaignFilters?.keywords || []).filter(Boolean);
       if (!_kwPool && kwList.length > 0) {
         if (!titleMatchesKeywords(jobTitle, kwList)) {
@@ -1771,8 +1833,8 @@
       // the gate (you are the filter). AUTO mode runs it and FAILS CLOSED (a judge
       // error/timeout/401 skips — never spray applications under the user's identity
       // when we couldn't verify fit).
-      const _poolRun = (await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool";
-      const reviewMode = (await chrome.storage.local.get("reviewMode")).reviewMode === true;
+      const _poolRun = (await storageGet("atsPlatform")).atsPlatform === "pool";
+      const reviewMode = (await storageGet("reviewMode")).reviewMode === true;
       if (_poolRun) {
         logBackend(`Applying your approved pick: ${jobTitle} @ ${jobCompany}`, "info");
       } else if (reviewMode) {
@@ -1796,7 +1858,7 @@
     }
 
     // Save current job context
-    await chrome.storage.local.set({
+    await storageSet({
       currentJobInfo: { title: jobTitle, company: jobCompany, description: jobDesc, url: jobUrl },
     });
     await recordJobDescription(jobTitle, jobCompany, jobDesc, jobUrl);
@@ -1822,7 +1884,7 @@
       log("Cover letter error: " + e.message, "err");
     }
 
-    await chrome.storage.local.set({ generatedCoverLetter: coverLetter });
+    await storageSet({ generatedCoverLetter: coverLetter });
 
     // Find and click the Apply button — poll up to 8 s for async panel load
     await sleep(humanDelay(1000, 2000));
@@ -1940,7 +2002,7 @@
     await sleep(humanDelay(2000, 3000));
 
     const alreadyApplied = await getAppliedUrls();
-    const seenKeys = await chrome.storage.local.get("processedJobKeys");
+    const seenKeys = await storageGet("processedJobKeys");
     const processedKeys = new Set(seenKeys.processedJobKeys || []);
 
     // Confirmed real selector: .job_result_two_pane_v2 wraps each job card
@@ -2039,7 +2101,7 @@
       }
     } catch (_) { /* harvest is best-effort */ }
 
-    await chrome.storage.local.set({
+    await storageSet({
       pendingJobs: quickApplyJobs,
       currentJobIndex: 0,
     });
@@ -2116,14 +2178,14 @@
         await skipToNextJob();
         return;
       }
-      const seen = await chrome.storage.local.get("processedJobKeys");
+      const seen = await storageGet("processedJobKeys");
       const keys = seen.processedJobKeys || [];
       if (keys.includes(dedupeKey)) {
         log(`${jobTitle} — already processed, skipping`, "");
         await skipToNextJob();
         return;
       }
-      await chrome.storage.local.set({ processedJobKeys: [...keys, dedupeKey].slice(-500) });
+      await storageSet({ processedJobKeys: [...keys, dedupeKey].slice(-500) });
     }
 
     log(`Job: ${jobTitle} @ ${jobCompany}`, "");
@@ -2131,8 +2193,8 @@
     // Keyword relevance check
     {
       // Pool swipe run: the user hand-picked this job — keyword title-match must not veto it.
-      const _kwPool = (await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool";
-      const kwData = await chrome.storage.local.get("campaignFilters");
+      const _kwPool = (await storageGet("atsPlatform")).atsPlatform === "pool";
+      const kwData = await storageGet("campaignFilters");
       const kwList = (kwData.campaignFilters?.keywords || []).filter(Boolean);
       if (!_kwPool && kwList.length > 0) {
         if (!titleMatchesKeywords(jobTitle, kwList)) {
@@ -2185,9 +2247,9 @@
       // External-apply wall guard (Igor 2026-08-15: the campaign must not grind a board
       // that has no native supply — switch boards autonomously). N externals in a row →
       // hand the decision to the background, which fails over or stops.
-      const exd = await chrome.storage.local.get("zrNoBtnStreak");
+      const exd = await storageGet("zrNoBtnStreak");
       const streak = (exd.zrNoBtnStreak || 0) + 1;
-      await chrome.storage.local.set({ zrNoBtnStreak: streak });
+      await storageSet({ zrNoBtnStreak: streak });
       if (streak >= 6) {
         logBackend(`ZipRecruiter: ${streak} external-apply jobs in a row — switching platform`, "warn");
         await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: "ziprecruiter", reason: "external-apply streak" });
@@ -2197,7 +2259,7 @@
       return;
     }
 
-    await chrome.storage.local.set({ zrNoBtnStreak: 0 }); // native supply confirmed — reset the wall guard
+    await storageSet({ zrNoBtnStreak: 0 }); // native supply confirmed — reset the wall guard
 
     // Fit Engine M1
     {
@@ -2206,8 +2268,8 @@
       // the gate (you are the filter). AUTO mode runs it and FAILS CLOSED (a judge
       // error/timeout/401 skips — never spray applications under the user's identity
       // when we couldn't verify fit).
-      const _poolRun = (await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool";
-      const reviewMode = (await chrome.storage.local.get("reviewMode")).reviewMode === true;
+      const _poolRun = (await storageGet("atsPlatform")).atsPlatform === "pool";
+      const reviewMode = (await storageGet("reviewMode")).reviewMode === true;
       if (_poolRun) {
         logBackend(`Applying your approved pick: ${jobTitle} @ ${jobCompany}`, "info");
       } else if (reviewMode) {
@@ -2230,7 +2292,7 @@
       }
     }
 
-    await chrome.storage.local.set({
+    await storageSet({
       currentJobInfo: { title: jobTitle, company: jobCompany, description: jobDesc, url: jobUrl },
     });
     await recordJobDescription(jobTitle, jobCompany, jobDesc, jobUrl);
@@ -2255,7 +2317,7 @@
     } catch (e) {
       log("Cover letter error: " + e.message, "err");
     }
-    await chrome.storage.local.set({ generatedCoverLetter: coverLetter });
+    await storageSet({ generatedCoverLetter: coverLetter });
 
     // Re-find the button: the pane can re-render while the fit judge and the cover
     // letter are being generated, which detaches the node we matched earlier.
@@ -2266,7 +2328,7 @@
       return;
     }
 
-    await chrome.storage.local.set({ zrNoBtnStreak: 0 }); // native supply confirmed — reset the wall guard
+    await storageSet({ zrNoBtnStreak: 0 }); // native supply confirmed — reset the wall guard
     log("Clicking Quick Apply...", "");
     logBackend(`Clicking Quick Apply: ${jobTitle} @ ${jobCompany}`, "info");
     await humanClick(applyBtn2);
@@ -2359,7 +2421,7 @@
   }
 
   async function atsWiringEnabled() {
-    return (await chrome.storage.local.get("atsWiring")).atsWiring === true;
+    return (await storageGet("atsWiring")).atsWiring === true;
   }
 
   // Returns true if it navigated to an ATS (caller must NOT then skipToNextJob).
@@ -2369,7 +2431,7 @@
     if (!url) return false;
     // Mark applied FIRST so returning to the board list can't re-open this same job.
     await addAppliedJobKey(jobTitle, jobCompany);
-    await chrome.storage.local.set({ atsReturnUrl: window.location.href });
+    await storageSet({ atsReturnUrl: window.location.href });
     logBackend(`↗️ External→ATS: ${jobTitle} @ ${jobCompany} — routing to ${url.slice(0, 90)}`, "info");
     await sleep(humanDelay(800, 1500));
     window.location.href = url;
@@ -2379,9 +2441,9 @@
   // Called after phase_ats finishes (any exit) — if we arrived from a board, go back so
   // the campaign continues. No-op for standalone ATS tabs (atsReturnUrl unset).
   async function returnToBoardAfterAts() {
-    const { atsReturnUrl } = await chrome.storage.local.get("atsReturnUrl");
+    const { atsReturnUrl } = await storageGet("atsReturnUrl");
     if (!atsReturnUrl) return;
-    await chrome.storage.local.remove("atsReturnUrl");
+    await storageRemove("atsReturnUrl");
     if (!(await isCampaignRunning())) return;
     logBackend("↩️ Returning to board search after ATS apply", "info");
     await sleep(humanDelay(1500, 3000));
@@ -2603,7 +2665,7 @@
   // Employer-defined screener questions can be any type — comments, name, date.
   // We infer the right value from the label text.
   async function fillTextQuestions() {
-    const storageData = await chrome.storage.local.get(["profile", "currentJobInfo"]);
+    const storageData = await storageGet(["profile", "currentJobInfo"]);
     const profile = storageData.profile || {};
     const jobInfo = storageData.currentJobInfo || {};
     const today = localDay();
@@ -2849,7 +2911,7 @@
   // and salary; AI for ambiguous; first real option as a last resort so a required
   // dropdown can never stall the whole application.
   async function fillSelectQuestions() {
-    const storageData = await chrome.storage.local.get(["profile", "currentJobInfo"]);
+    const storageData = await storageGet(["profile", "currentJobInfo"]);
     const profile = storageData.profile || {};
     const jobInfo = storageData.currentJobInfo || {};
 
@@ -2929,7 +2991,7 @@
   // the role="option" list (often portaled), pick, and click. This is what was
   // stalling the demographic page ("Choose an option to continue").
   async function fillComboboxes() {
-    const storageData = await chrome.storage.local.get(["profile", "currentJobInfo"]);
+    const storageData = await storageGet(["profile", "currentJobInfo"]);
     const profile = storageData.profile || {};
     const jobInfo = storageData.currentJobInfo || {};
 
@@ -3429,7 +3491,7 @@
     logFormDiagnostic();
 
     // Get profile and cover letter
-    const storageData = await chrome.storage.local.get([
+    const storageData = await storageGet([
       "profile",
       "generatedCoverLetter",
       "currentJobInfo",
@@ -3615,7 +3677,7 @@
       // Check if this is the final submit step
       if (action.submit) {
         // Review mode — fill everything but don't submit; report what's filled.
-        const reviewMode = (await chrome.storage.local.get("reviewMode")).reviewMode === true;
+        const reviewMode = (await storageGet("reviewMode")).reviewMode === true;
         if (reviewMode) {
           const nameEl = findFieldBySelectorsOrLabel("firstName") || findFieldBySelectorsOrLabel("fullName");
           const emailEl = findFieldBySelectorsOrLabel("email");
@@ -3824,7 +3886,7 @@
     // signed URL valid for 1h that the content script fetches directly —
     // the Storage URL doesn't need our Bearer token, the signature is the
     // capability.
-    const { currentJobInfo } = await chrome.storage.local.get("currentJobInfo");
+    const { currentJobInfo } = await storageGet("currentJobInfo");
     // Signed-URL fetch is transiently flaky ("No resume on server" x2 then success,
     // live 2026-08-08) — retry with backoff instead of failing the whole application
     // on a storage/token blip. 3 tries covers the observed transient window.
@@ -3865,12 +3927,12 @@
     // Tap swipe-pool (all-platforms): the background walks the approved queue, so a
     // skip/fail on a native board must advance the POOL, not walk the Indeed search
     // list (which would apply un-swiped jobs). Pool-gated → auto mode is unaffected.
-    if ((await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool") {
+    if ((await storageGet("atsPlatform")).atsPlatform === "pool") {
       await sendMsg({ type: "ATS_JOB_DONE" });
       return;
     }
 
-    const data = await chrome.storage.local.get(["pendingJobs", "currentJobIndex"]);
+    const data = await storageGet(["pendingJobs", "currentJobIndex"]);
     const jobs = data.pendingJobs || [];
     const idx = (data.currentJobIndex || 0) + 1;
 
@@ -3881,7 +3943,7 @@
       return;
     }
 
-    await chrome.storage.local.set({ currentJobIndex: idx });
+    await storageSet({ currentJobIndex: idx });
     const nextJob = jobs[idx];
     log(`Next job (${idx + 1}/${jobs.length}): ${nextJob.title}`, "");
 
@@ -3925,7 +3987,7 @@
   // extension always starts at index 0 of the list it is handed and keeps NO cursor of
   // its own across runs; two cursors would advance independently and drift.
   async function keywordList() {
-    const d = await chrome.storage.local.get("campaignFilters");
+    const d = await storageGet("campaignFilters");
     return (d.campaignFilters?.keywords || []).filter(Boolean);
   }
 
@@ -3948,13 +4010,13 @@
   // Applications filed TODAY per keyword index, per platform — the sub-cap's ledger,
   // written by recordLocalApplication on the same day-key as platformCounts.
   async function getKeywordCounts(platform) {
-    const d = await chrome.storage.local.get(["keywordCounts", "todayDate"]);
+    const d = await storageGet(["keywordCounts", "todayDate"]);
     if (d.todayDate !== localDay()) return {};
     return (d.keywordCounts || {})[platform] || {};
   }
 
   async function currentKeywordIndex() {
-    const d = await chrome.storage.local.get(["campaignFilters", "kwIndex"]);
+    const d = await storageGet(["campaignFilters", "kwIndex"]);
     const kws = (d.campaignFilters?.keywords || []).filter(Boolean);
     if (!kws.length) return 0;
     return Math.min(Math.max(d.kwIndex || 0, 0), kws.length - 1);
@@ -3968,7 +4030,7 @@
     // A pool / ATS queue walk has no search phrase (recordLocalApplication skips the
     // ledger for it too), and rotating there would steer the queue walk into a board
     // search — the 09-13 failure in reverse. The slice governs the live search only.
-    if ((await chrome.storage.local.get("atsPlatform")).atsPlatform) return false;
+    if ((await storageGet("atsPlatform")).atsPlatform) return false;
     const counts = await getKeywordCounts(platform);
     const i = String(await currentKeywordIndex());
     return (counts[i] || 0) >= (await keywordSubCap());
@@ -3979,14 +4041,14 @@
   // Per RUN (background clears kwDone at start), not per day.
   async function retireKeyword() {
     const i = await currentKeywordIndex();
-    const d = await chrome.storage.local.get("kwDone");
+    const d = await storageGet("kwDone");
     const done = d.kwDone || [];
     if (done.includes(i)) return;
-    await chrome.storage.local.set({ kwDone: [...done, i] });
+    await storageSet({ kwDone: [...done, i] });
   }
 
   async function currentSearchPhrase() {
-    const d = await chrome.storage.local.get(["campaignFilters", "kwIndex"]);
+    const d = await storageGet(["campaignFilters", "kwIndex"]);
     const kws = (d.campaignFilters?.keywords || []).filter(Boolean);
     const ws = d.campaignFilters?.work_setting === "hybrid" ? "hybrid" : "";
     if (!kws.length) return ws;
@@ -4004,7 +4066,7 @@
     const laps = await pagesPerKeyword();
     const cap = await keywordSubCap();
     const counts = await getKeywordCounts(platform);
-    const st = await chrome.storage.local.get(["kwIndex", "kwLap", "kwDone"]);
+    const st = await storageGet(["kwIndex", "kwLap", "kwDone"]);
     const done = new Set(st.kwDone || []);
     let i = Math.min(Math.max(st.kwIndex || 0, 0), kws.length - 1);
     let lap = Math.max(0, st.kwLap || 0);
@@ -4015,7 +4077,7 @@
       if (lap >= laps) return false; // page budget spent for every phrase
       if (done.has(i)) continue;
       if (kws.length > 1 && (counts[String(i)] || 0) >= cap) continue;
-      await chrome.storage.local.set({ kwIndex: i, kwLap: lap });
+      await storageSet({ kwIndex: i, kwLap: lap });
       log(`Keyword done — switching to "${kws[i]}" (page ${lap + 1})`, "");
       logBackend(`Next keyword: ${kws[i]} (page ${lap + 1})`, "info");
       return true;
@@ -4035,7 +4097,7 @@
     // Tap swipe-pool: an apply here already emitted APPLICATION_SAVED, which advances
     // the pool queue in the background. Don't ALSO navigate to the board search — that
     // would fight the pool walk for the automation tab. Pool-gated → auto unaffected.
-    if ((await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool") return;
+    if ((await storageGet("atsPlatform")).atsPlatform === "pool") return;
 
     const platform = detectPlatform();
     if (platform === "ziprecruiter") return await goBackToZipRecruiterJobList();
@@ -4058,7 +4120,7 @@
       return;
     }
 
-    const data = await chrome.storage.local.get("campaignFilters");
+    const data = await storageGet("campaignFilters");
     const filters = data.campaignFilters || {};
 
     const params = new URLSearchParams();
@@ -4085,7 +4147,7 @@
     // Indeed paginates via start= (10/page). The breadth walk rotated the keyword just
     // above, so the page number is the LAP, not a per-keyword page counter: lap 0 is
     // page 1 of every phrase, lap 1 is page 2 of every phrase, and so on.
-    const lapI = Math.max(0, (await chrome.storage.local.get("kwLap")).kwLap || 0);
+    const lapI = Math.max(0, (await storageGet("kwLap")).kwLap || 0);
     params.set("start", String(lapI * 10));
 
     const url = `https://www.indeed.com/jobs?${params.toString()}`;
@@ -4111,7 +4173,7 @@
       return;
     }
 
-    const data = await chrome.storage.local.get("campaignFilters");
+    const data = await storageGet("campaignFilters");
     const filters = data.campaignFilters || {};
 
     const params = new URLSearchParams();
@@ -4127,7 +4189,7 @@
 
     // ZipRecruiter paginates via `page` (20 jobs a page). Same rule as Indeed above: the
     // keyword just rotated, so the page number comes from the lap.
-    const page = Math.max(0, (await chrome.storage.local.get("kwLap")).kwLap || 0) + 1;
+    const page = Math.max(0, (await storageGet("kwLap")).kwLap || 0) + 1;
     if (page > 1) params.set("page", String(page));
 
     const url = `https://www.ziprecruiter.com/jobs-search?${params.toString()}`;
@@ -4141,18 +4203,18 @@
   // Without this the phase is "unknown" forever and the campaign silently stalls.
   // Loop-guarded: if ZR keeps bouncing us off the search, stop with a clear message.
   async function recoverZipRecruiterPhase() {
-    const st = await chrome.storage.local.get("zrRecoveries");
+    const st = await storageGet("zrRecoveries");
     const n = (st.zrRecoveries || 0) + 1;
     if (n > 4) {
       log("ZipRecruiter kept redirecting away from search — switching platform", "err");
       logBackend("ZipRecruiter redirect loop — switching platform", "warn");
-      await chrome.storage.local.set({ zrRecoveries: 0 });
+      await storageSet({ zrRecoveries: 0 });
       await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: "ziprecruiter", reason: "redirect loop" });
       return;
     }
-    await chrome.storage.local.set({ zrRecoveries: n });
+    await storageSet({ zrRecoveries: n });
 
-    const data = await chrome.storage.local.get("campaignFilters");
+    const data = await storageGet("campaignFilters");
     const filters = data.campaignFilters || {};
     const params = new URLSearchParams();
     // Recovery nav — keep searching the CURRENT keyword (no rotation here).
@@ -4234,7 +4296,7 @@
     // (atsPlatform="pool"), so we DON'T re-run the AI fit check — just apply it. AUTO mode
     // runs the gate and fails closed. (reviewMode is always off now — the swipe is the
     // review — so we key off the pool marker, not reviewMode.)
-    const preApproved = (await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool";
+    const preApproved = (await storageGet("atsPlatform")).atsPlatform === "pool";
     if (preApproved) {
       logBackend(`Applying your approved pick: ${jobTitle} @ ${jobCompany}`, "info");
     } else {
@@ -4261,12 +4323,12 @@
       ]);
       if (cl && cl.letter) coverLetter = cl.letter;
     } catch { /* template fallback */ }
-    await chrome.storage.local.set({
+    await storageSet({
       currentJobInfo: { title: jobTitle, company: jobCompany, description: jobDesc, url: jobUrl },
       generatedCoverLetter: coverLetter,
     });
 
-    const profile = (await chrome.storage.local.get("profile")).profile || {};
+    const profile = (await storageGet("profile")).profile || {};
 
     log(`${label} — filling application...`, "");
     logBackend(`📋 Filling ${label} application: ${jobTitle} @ ${jobCompany}`, "info");
@@ -4369,7 +4431,7 @@
     // Review mode (semi-auto / human-reviews-before-submit): fill everything but do
     // NOT click submit. Report exactly what got filled so the user (or an E2E test)
     // can confirm the form is correct before sending. Nothing is recorded/applied.
-    const reviewMode = (await chrome.storage.local.get("reviewMode")).reviewMode === true;
+    const reviewMode = (await storageGet("reviewMode")).reviewMode === true;
     if (reviewMode) {
       const nameEl = findFieldBySelectorsOrLabel("firstName") || findFieldBySelectorsOrLabel("fullName");
       const emailEl = findFieldBySelectorsOrLabel("email");
@@ -4500,7 +4562,7 @@
   async function awaitReview(review) {
     const id = review.id || review.job_url || String(Date.now());
     try {
-      await chrome.storage.local.set({
+      await storageSet({
         reviewPending: { ...review, id, at: Date.now() },
         reviewDecision: null,
       });
@@ -4515,14 +4577,14 @@
         clearInterval(poll);
         clearTimeout(timer);
         try { if (overlay) overlay.remove(); } catch (_) {}
-        try { chrome.storage.local.remove(["reviewPending", "reviewDecision"]); } catch (_) {}
+        storageRemove(["reviewPending", "reviewDecision"]);
         resolve(choice);
       };
 
       // Poll for a decision made on the dashboard card (approve → submit, skip → skip).
       const poll = setInterval(async () => {
         try {
-          const d = (await chrome.storage.local.get("reviewDecision")).reviewDecision;
+          const d = (await storageGet("reviewDecision")).reviewDecision;
           if (d && d.id === id) finish(d.decision === "approve" ? "submit" : "skip");
         } catch (_) { /* transient */ }
       }, 700);
@@ -4736,9 +4798,9 @@
 
       // Fill whatever this step shows (contact info is usually pre-filled; screeners aren't).
       const emailEl = findFieldBySelectorsOrLabel("email");
-      if (emailEl && !(emailEl.value || "").trim()) await typeValue(emailEl, await resolveEmail((await chrome.storage.local.get("profile")).profile || {}));
+      if (emailEl && !(emailEl.value || "").trim()) await typeValue(emailEl, await resolveEmail((await storageGet("profile")).profile || {}));
       const phoneEl = findFieldBySelectorsOrLabel("phone");
-      if (phoneEl && !(phoneEl.value || "").trim()) await typeValue(phoneEl, ((await chrome.storage.local.get("profile")).profile || {}).phone || "");
+      if (phoneEl && !(phoneEl.value || "").trim()) await typeValue(phoneEl, ((await storageGet("profile")).profile || {}).phone || "");
       // Full universal-filler suite (LinkedIn Easy Apply is SELECT- and combobox-heavy — live
       // recon 2026-08-01: step 1 had 2 SELECTs + 1 text input). Same set phase_ats uses.
       await fillRadioQuestions();
@@ -4792,7 +4854,7 @@
       if (!(await isCampaignRunning())) return;
     }
     if (!cards.length) { log("LinkedIn job list didn't load", "warn"); return; }
-    const dd = await chrome.storage.local.get("linkedinDoneIds");
+    const dd = await storageGet("linkedinDoneIds");
     const doneIds = new Set(dd.linkedinDoneIds || []);
     for (const c of cards) {
       if (!/easy apply/i.test(c.textContent || "")) continue; // only Easy Apply cards
@@ -4802,7 +4864,7 @@
       // Mark done BEFORE navigating so a re-scan advances to the next Easy Apply job instead
       // of re-opening this one (v2 multi-job walk; harmless for v1's single job).
       doneIds.add(id);
-      await chrome.storage.local.set({ linkedinDoneIds: Array.from(doneIds).slice(-200) });
+      await storageSet({ linkedinDoneIds: Array.from(doneIds).slice(-200) });
       log(`Opening an Easy Apply job (${id})…`, "");
       window.location.href = `https://www.linkedin.com/jobs/view/${id}/`;
       return;
@@ -4904,7 +4966,7 @@
     // applications reach the employer but the backend 429s the save — invisible spend +
     // ban risk. campaignCaps.dailyTotal comes from the backend (app/db/subscriptions.py).
     {
-      const c = await chrome.storage.local.get(["campaignCaps", "todayCount", "todayDate"]);
+      const c = await storageGet(["campaignCaps", "todayCount", "todayDate"]);
       const today = localDay();
       const total = c.todayDate === today ? (c.todayCount || 0) : 0;
       const dailyTotal = (c.campaignCaps && c.campaignCaps.dailyTotal > 0) ? c.campaignCaps.dailyTotal : 30;
@@ -4929,7 +4991,7 @@
     const det = isDetected();
     // Page is clean → reset the CF reload cap so a later genuine (transient) challenge gets
     // its full 2 retries instead of inheriting a stale count.
-    if (!det.detected) { chrome.storage.local.set({ cfReloadCount: 0 }).catch(() => {}); }
+    if (!det.detected) { storageSet({ cfReloadCount: 0 }).catch(() => {}); }
     if (det.detected) {
       // Cloudflare JS challenge ("Just a moment") — auto-resolves in 3-5s,
       // no user action needed. Wait silently up to 15s before escalating.
@@ -4951,15 +5013,15 @@
         // content-script context: without a persistent cap a mis-detected passive signal
         // becomes an INFINITE reload loop (page reloads → fresh context → re-detect →
         // reload…), which is exactly how the pool froze on a clean /viewjob (2026-07-28).
-        const _cf = await chrome.storage.local.get("cfReloadCount");
+        const _cf = await storageGet("cfReloadCount");
         const cfCount = _cf.cfReloadCount || 0;
         if (cfCount < 2) {
-          await chrome.storage.local.set({ cfReloadCount: cfCount + 1 });
+          await storageSet({ cfReloadCount: cfCount + 1 });
           log(`Cloudflare didn't resolve in 60s — reloading tab (try ${cfCount + 1}/2)...`, "");
           window.location.reload();
           await sleep(15000);
           if (!isDetected().detected) {
-            await chrome.storage.local.set({ cfReloadCount: 0 });
+            await storageSet({ cfReloadCount: 0 });
             log("Cloudflare resolved after reload — continuing", "ok");
             return;
           }
@@ -4985,14 +5047,14 @@
         // here too so phase_ats still FILLS the form — its REAL hCaptcha is caught at submit
         // (phase_ats notifies the user, #72), not at this pre-fill gate.
         logBackend(`🔓 Passive reCAPTCHA on ${detectPlatform()} — zero-touch, continuing (no human needed)`, "info");
-      } else if ((await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool") {
+      } else if ((await storageGet("atsPlatform")).atsPlatform === "pool") {
         // POOL (tap) mode: the automation window runs in the BACKGROUND — the user isn't
         // watching it, so a "solve the captcha in this window" hand-off is a dead end. A pool
         // job still CF-challenged after the auto-resolve + reload attempts is a dead / fake /
         // blocked posting (live 2026-07-28: a seeded fake jk `fedcba…` CF-looped the pool
         // forever). Skip it and advance to the next pick instead of parking for 2h.
         logBackend(`⏭️ Skipping (verification wall / dead posting) — moving to your next pick`, "warn");
-        await chrome.storage.local.set({ cfReloadCount: 0 }).catch(() => {});
+        await storageSet({ cfReloadCount: 0 }).catch(() => {});
         await skipToNextJob();
         return;
       } else {
@@ -5162,7 +5224,7 @@
 
     // Reaching a known phase means we're on track — clear the ZR recovery counter.
     if (phase !== "unknown") {
-      chrome.storage.local.set({ zrRecoveries: 0 }).catch(() => {});
+      storageSet({ zrRecoveries: 0 }).catch(() => {});
     }
 
     try {
@@ -5173,7 +5235,7 @@
           // dead/invalid posting to the SERP (live-test 2026-07-27: viewjob →
           // /jobs?q=&l=remote&vjk=…). Running phase1 would walk the search and apply
           // jobs the user never swiped — the exact footgun. Skip the item instead.
-          if ((await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool") {
+          if ((await storageGet("atsPlatform")).atsPlatform === "pool") {
             logBackend("Posting looks closed (Indeed sent us to search) — skipping to your next pick", "warn");
             await sendMsg({ type: "ATS_JOB_DONE" });
             break;
@@ -5201,7 +5263,7 @@
         default:
           // Unknown page. Pool swipe run: never "recover" into a board SEARCH (that
           // walk applies un-swiped jobs) — skip this queue item and advance the pool.
-          if ((await chrome.storage.local.get("atsPlatform")).atsPlatform === "pool") {
+          if ((await storageGet("atsPlatform")).atsPlatform === "pool") {
             if (await isCampaignRunning()) {
               // EXCEPT the warm-landing homepage: for Indeed/ZR pool jobs background opens
               // the platform HOMEPAGE first (to pass Cloudflare), then sessionWarmup
@@ -5221,7 +5283,7 @@
               // URL check only: on a cold re-init the URL is the one thing we know.
               const _path = location.pathname.toLowerCase();
               if (POSTAPPLY_URL_HINTS.some((h) => _path.includes(h))) {
-                const _q = (await chrome.storage.local.get("atsQueue")).atsQueue || [];
+                const _q = (await storageGet("atsQueue")).atsQueue || [];
                 const _cur = _q[0] || {};
                 // Unconfirmed, not "applied": the URL says the submit landed, but this
                 // context never saw the form succeed — same honesty rule as phase_ats.
@@ -5277,7 +5339,7 @@
           // true (board root, no form). Without advancing, the walk STALLS on it and re-inits
           // forever → applied=0 (live 2026-07-31 on reddit?error=true). Skip + advance the queue.
           {
-            const _atsP = (await chrome.storage.local.get("atsPlatform")).atsPlatform;
+            const _atsP = (await storageGet("atsPlatform")).atsPlatform;
             if ((_atsP === "greenhouse" || _atsP === "lever" || _atsP === "ashby") && (await isCampaignRunning())) {
               logBackend(`Skipping (posting closed/errored on ${location.hostname}) — next job`, "warn");
               await sendMsg({ type: "ATS_JOB_DONE" });
@@ -5293,10 +5355,7 @@
       }
     } catch (err) {
       log(`Error in ${phase} phase: ${err.message}`, "err");
-      chrome.runtime.sendMessage({
-        type: "STEP_FAILED",
-        data: { phase, error: err.message },
-      });
+      safeSend({ type: "STEP_FAILED", data: { phase, error: err.message } });
       // Try to recover by skipping to next job
       await sleep(humanDelay(3000, 5000));
       await skipToNextJob();
@@ -5439,7 +5498,7 @@
   // every 2.5 s while this page is open. background.js only sends to backend
   // when campaignRunning is true, so this is a no-op outside campaigns.
   const _screenshotPing = setInterval(() => {
-    chrome.runtime.sendMessage({ type: "CAPTURE_SCREENSHOT" }).catch(() => {});
+    safeSend({ type: "CAPTURE_SCREENSHOT" });
   }, 300);
   // `pagehide`, not `unload`: some ATS hosts (Greenhouse) block `unload` via
   // Permissions-Policy, which spams a console violation on every job page. pagehide

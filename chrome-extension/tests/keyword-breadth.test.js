@@ -36,6 +36,10 @@ function makeSandbox(store) {
     localDay: () => "2026-09-19",
     log: () => {},
     logBackend: () => {},
+    // The block under test reads storage through the orphan-guard gateway now; the
+    // gateway itself lives outside the sliced region, so shim it straight onto the fake.
+    storageGet: (keys) => box.chrome.storage.local.get(keys),
+    storageSet: (patch) => box.chrome.storage.local.set(patch),
     chrome: {
       storage: {
         local: {
