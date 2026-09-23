@@ -27,6 +27,7 @@ Usage (from jobflow/, venv active, SUPABASE_* + ANTHROPIC_API_KEY exported):
 
 import argparse
 import asyncio
+import contextlib
 import os
 import re
 import sys
@@ -202,7 +203,125 @@ async def fill_greenhouse(page, form, profile: dict, job: dict, resume_path: str
             log(f"  · {label[:60]} → {answer[:60]}")
         except Exception as exc:  # noqa: BLE001 — one odd widget must not kill the walk
             log(f"  ! field #{i} failed: {exc}")
+
+    unfilled += await fill_comboboxes(page, form, profile, job)
     return unfilled
+
+
+async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
+    """Greenhouse's required dropdowns are react-select comboboxes, not <select>.
+
+    Live 09-23: the Zocdoc form's three required questions ("sub-department", "job
+    level", "remote or hybrid") are rendered as `[role=combobox]` inputs. The <select>
+    sweep above never saw them, they stayed empty, the submit was refused — and the run
+    still recorded an application. This fills them the way content.js does: focus the
+    combobox, read the options the menu renders, ask the answerer to pick one, click it.
+    """
+    missed: list[str] = []
+    boxes = form.locator('[role="combobox"], [class*="select__control"] input')
+    for i in range(await boxes.count()):
+        box = boxes.nth(i)
+        try:
+            if not await box.is_visible():
+                continue
+            label = await box.evaluate(
+                "e => { const w = e.closest('div[class*=select], .field, fieldset') || e.parentElement;"
+                " const l = (e.labels && e.labels[0]) || (w && w.querySelector('label'));"
+                " return (l && l.textContent) || e.getAttribute('aria-label') || ''; }"
+            )
+            label = re.sub(r"\s+", " ", label or "").replace("*", "").strip()
+            if not label:
+                continue
+            # Already answered? react-select renders the choice as singleValue text.
+            chosen = await box.evaluate(
+                "e => { const w = e.closest('div[class*=select]');"
+                " const v = w && w.querySelector('[class*=singleValue]');"
+                " return v ? v.textContent.trim() : ''; }"
+            )
+            if chosen:
+                continue
+            await box.click()
+            await page.wait_for_timeout(600)
+            opts = page.locator('[class*="select__option"], [role="option"]')
+            texts = [
+                re.sub(r"\s+", " ", (await opts.nth(j).inner_text()) or "").strip()
+                for j in range(min(await opts.count(), 40))
+            ]
+            texts = [t for t in texts if t and not re.match(r"^select", t, re.I)]
+            if not texts:
+                missed.append(label)
+                await page.keyboard.press("Escape")
+                continue
+            answer = answer_screener_question(
+                label,
+                job={
+                    "title": job.get("title"),
+                    "company": job.get("company"),
+                    "description": job.get("description") or "",
+                },
+                profile=profile,
+                options=texts,
+            )
+            if not answer:
+                missed.append(label)
+                await page.keyboard.press("Escape")
+                continue
+            # The answerer returns one option verbatim; fall back to the closest match
+            # rather than typing free text into a closed list.
+            target = (
+                answer
+                if answer in texts
+                else next((t for t in texts if answer.lower() in t.lower()), None)
+            )
+            if not target:
+                missed.append(label)
+                await page.keyboard.press("Escape")
+                continue
+            await opts.nth(texts.index(target)).click()
+            await page.wait_for_timeout(300)
+            log(f"  ▾ {label[:60]} → {target[:60]}")
+        except Exception as exc:  # noqa: BLE001
+            log(f"  ! combobox #{i} failed: {exc}")
+    return missed
+
+
+async def submit_outcome(page, form) -> tuple[bool, str]:
+    """(sent, why) — POSITIVE proof only.
+
+    The employer either received it or did not; "probably" is not a state we may write
+    to the database. Proof is one of: the board navigated to its confirmation URL, or
+    the application form itself is gone from the page. Visible validation errors are
+    proof of the opposite. Anything else is NOT SENT, on purpose.
+    """
+    with contextlib.suppress(Exception):  # no navigation = the normal in-place GH submit
+        await page.wait_for_url(re.compile(r"confirmation|thank|success"), timeout=25000)
+        return True, "confirmation url"
+    await page.wait_for_timeout(6000)
+
+    errors = page.locator(
+        '[class*="error"]:visible, [role="alert"]:visible, text=/This field is required/i'
+    )
+    try:
+        n_err = await errors.count()
+    except Exception:  # noqa: BLE001
+        n_err = 0
+    if n_err:
+        try:
+            first = re.sub(r"\s+", " ", (await errors.first.inner_text()) or "").strip()[:60]
+        except Exception:  # noqa: BLE001
+            first = ""
+        return False, f"form refused it: {n_err} validation error(s) — {first}"
+
+    try:
+        if await form.count() == 0 or not await form.is_visible():
+            return True, "form gone after submit"
+    except Exception:  # noqa: BLE001 — a detached form is exactly the success case
+        return True, "form detached after submit"
+
+    body = (await page.inner_text("body")).lower()
+    if "your application" in body and ("received" in body or "submitted" in body):
+        return True, "confirmation text"
+    return False, "no proof of sending (form still on screen)"
 
 
 async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> None:
@@ -293,19 +412,33 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
             await browser.close()
             return
         await submit.first.click()
-        try:
-            await page.wait_for_url(re.compile(r"confirmation|thank"), timeout=30000)
-            confirmed = True
-        except Exception:  # noqa: BLE001
-            await page.wait_for_timeout(8000)
-            body = (await page.inner_text("body")).lower()
-            confirmed = ("thank" in body) or ("received" in body) or ("submitted" in body)
+        confirmed, why = await submit_outcome(page, form)
         await page.screenshot(
             path=os.path.join(SHOTS, f"{job['id']}-after-submit.png"), full_page=True
         )
-        log(f"submit outcome: {'CONFIRMED' if confirmed else 'UNCONFIRMED'} — {page.url}")
+        log(f"submit outcome: {'CONFIRMED' if confirmed else 'NOT SENT'} ({why}) — {page.url}")
 
-        status = "applied" if confirmed else "applied_unconfirmed"
+        if not confirmed:
+            # NOT SENT is not a weaker kind of applied — it is a hand-back. Live 09-23
+            # recorded a Zocdoc application the employer never received (three required
+            # comboboxes were empty, the page simply re-rendered with validation errors)
+            # because the old detector matched the word "submitted" in the button label.
+            # A row written without proof of sending makes silent failure look like work.
+            get_supabase().table("activity_log").insert(
+                {
+                    "user_id": user_id,
+                    "level": "warn",
+                    "phase": "night-shift",
+                    "message": (
+                        f"🌙 Night shift could NOT send: {job['title']}"
+                        f" @ {job.get('company', '?')} — {why}. Nothing recorded as applied."
+                    ),
+                }
+            ).execute()
+            await browser.close()
+            return
+
+        status = "applied"
         jobs_db.mark_applied_by_link(user_id, job["link"], status)
         apps_db.save_application(
             user_id=user_id,
