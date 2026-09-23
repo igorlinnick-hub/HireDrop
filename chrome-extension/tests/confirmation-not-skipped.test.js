@@ -79,5 +79,19 @@ check("records it as applied_unconfirmed", /status: "applied_unconfirmed"/.test(
 check("advances the queue after recording", /ATS_JOB_DONE/.test(confBlock));
 check("leaves the branch before reaching the skip", /\n\s*break;/.test(confBlock));
 
+// The letter reached the employer; only the RECORD was lost. Writing "" here made a
+// sent-with-letter application indistinguishable in the database from one sent without
+// (live: 2 of a0775013's 3 empty-letter rows came through this branch — Amwell 09-21,
+// Glossier 07-19). The letter is in storage; recover it instead of recording a blank.
+check("recovers the cover letter from storage", /generatedCoverLetter/.test(confBlock),
+  "this branch must read the stored letter, not write an empty string");
+check("does not hard-code an empty cover_letter", !/cover_letter:\s*""/.test(confBlock),
+  'cover_letter: "" is the bug — a sent letter recorded as none');
+// The key holds the LAST generation, so it belongs to this row only if it was generated
+// for the job the queue head names. Without the guard a re-init on someone else's
+// confirmation page would attach the wrong employer's letter.
+check("guards the letter against a mismatched job", /currentJobInfo/.test(confBlock),
+  "must confirm the stored letter was generated for this queue item");
+
 console.log(failures ? `\n${failures} FAILED` : "\nall passed");
 process.exit(failures ? 1 : 0);
