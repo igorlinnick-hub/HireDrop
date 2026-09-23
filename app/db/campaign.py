@@ -142,8 +142,15 @@ def get_state(user_id: str) -> dict:
             "filters": s.get("filters") or {},
             "started_at": s.get("started_at"),
             "last_ping_at": s.get("last_ping_at"),
+            "ext_version": s.get("ext_version"),
         }
-    return {"running": False, "filters": {}, "started_at": None, "last_ping_at": None}
+    return {
+        "running": False,
+        "filters": {},
+        "started_at": None,
+        "last_ping_at": None,
+        "ext_version": None,
+    }
 
 
 def get_effective_state(user_id: str) -> dict:
@@ -228,6 +235,35 @@ def touch_ping(user_id: str) -> None:
             .table("campaign_states")
             .update({"last_ping_at": datetime.now(UTC).isoformat()})
             .eq("user_id", user_id)
+            .execute()
+        )
+
+
+def record_ext_version(user_id: str, version: str) -> None:
+    """Persist which extension build this user's browser runs (from /extension/ping).
+
+    The store-published version lags the repo silently — users sat on 1.8.3 for weeks
+    while the repo was 12 releases ahead, and the only trace was a substring inside
+    activity-log lines (09-23, Antonia). The ping already carries the version (every
+    build back to 1.8.3 sends it), so persisting it makes the fleet's spread a query.
+
+    Best-effort like touch_ping, and the caller only invokes it on a version CHANGE, so
+    the steady state adds zero writes per ping. Upsert, not update: a user who installed
+    the extension but never started a campaign has no row yet, and their build matters
+    exactly then (an outdated extension can be WHY they never got a run to work).
+    """
+    with contextlib.suppress(Exception):
+        (
+            get_supabase()
+            .table("campaign_states")
+            .upsert(
+                {
+                    "user_id": user_id,
+                    "ext_version": version,
+                    "ext_version_at": datetime.now(UTC).isoformat(),
+                },
+                on_conflict="user_id",
+            )
             .execute()
         )
 
