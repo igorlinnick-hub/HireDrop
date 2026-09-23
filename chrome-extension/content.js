@@ -5288,14 +5288,26 @@
                 // Unconfirmed, not "applied": the URL says the submit landed, but this
                 // context never saw the form succeed — same honesty rule as phase_ats.
                 if (_cur.title) {
-                  logBackend(`⚠️ Applied (unconfirmed — woke on the confirmation page): ${_cur.title} @ ${_cur.company || "?"}`, "warn");
+                  // The letter went to the employer — this context just never saw it.
+                  // Every generation path stores it (with currentJobInfo alongside), and
+                  // the normal report branch reads the same key; writing "" here made a
+                  // sent-with-letter application indistinguishable in the database from
+                  // one sent without (live: Amwell 09-21, Glossier 07-19, both GH).
+                  // Guarded by currentJobInfo: the key holds the LAST generation, so it
+                  // is only ours if it was generated for the job the queue head names.
+                  const _st = await storageGet(["generatedCoverLetter", "currentJobInfo"]);
+                  const _for = _st.currentJobInfo || {};
+                  const _sameJob = _for.title && _cur.title
+                    && _for.title.trim().toLowerCase() === _cur.title.trim().toLowerCase();
+                  const _letter = _sameJob ? (_st.generatedCoverLetter || "") : "";
+                  logBackend(`⚠️ Applied (unconfirmed — woke on the confirmation page): ${_cur.title} @ ${_cur.company || "?"}${_letter ? "" : " (letter not recovered)"}`, "warn");
                   await sendMsg({
                     type: "APPLICATION_SAVED",
                     data: {
                       job_title: _cur.title, company: _cur.company || "",
                       platform: detectPlatform() || _cur.platform || "",
                       job_url: _cur.applyUrl || location.href,
-                      cover_letter: "",
+                      cover_letter: _letter,
                       status: "applied_unconfirmed", verified: false,
                       verify_signal: "reinit-postapply-url",
                     },
