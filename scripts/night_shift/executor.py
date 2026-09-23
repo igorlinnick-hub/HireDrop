@@ -63,10 +63,7 @@ def pick_jobs(user_id: str, job_url: str | None) -> list[dict]:
     just ended there."""
     sb = get_supabase()
     q = sb.table("jobs").select("*").eq("user_id", user_id).eq("platform", "greenhouse")
-    if job_url:
-        q = q.eq("link", job_url)
-    else:
-        q = q.eq("status", "new")
+    q = q.eq("link", job_url) if job_url else q.eq("status", "new")
     rows = q.limit(60).execute().data or []
     if not rows:
         raise SystemExit("no matching greenhouse job in this user's pool")
@@ -161,7 +158,9 @@ async def fill_greenhouse(page, form, profile: dict, job: dict, resume_path: str
                 continue
             tag = (await el.evaluate("e => e.tagName")).lower()
             typ = ((await el.get_attribute("type")) or "").lower()
-            cur = (await el.input_value()) if tag != "select" else (await el.evaluate("e => e.value"))
+            cur = (
+                (await el.input_value()) if tag != "select" else (await el.evaluate("e => e.value"))
+            )
             if cur:
                 continue
             label = await el.evaluate(
@@ -268,7 +267,9 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
         if unfilled:
             log(f"required-but-empty: {unfilled}")
             if live and REQUIRED_EMPTY_IS_FATAL:
-                log("LIVE ABORTED — a required field has no honest answer (hand-back, not a guess).")
+                log(
+                    "LIVE ABORTED — a required field has no honest answer (hand-back, not a guess)."
+                )
                 await browser.close()
                 return
 
