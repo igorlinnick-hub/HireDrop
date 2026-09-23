@@ -62,7 +62,10 @@ def cmd_preflight(args) -> None:
         print(f"        .venv/bin/python scripts/affiliate_admin.py issue <email> --code {code}")
         sys.exit(1)
 
-    line(OK if aff["status"] == "active" else BAD, f"affiliate row: status={aff['status']}, rate={aff['commission_pct']}%")
+    line(
+        OK if aff["status"] == "active" else BAD,
+        f"affiliate row: status={aff['status']}, rate={aff['commission_pct']}%",
+    )
     if aff["status"] != "active":
         # Only 'active' codes are matched by the attribution trigger — a pending
         # or banned partner produces a signup with no referral row at all.
@@ -111,8 +114,10 @@ def cmd_verify(args) -> None:
     )
     if not profiles:
         line(BAD, "no profile carries this ref — the link never reached signup")
-        print("        Cause is client-side: first-touch cookie missing, a different\n"
-              "        browser profile, or they signed up before opening the link.")
+        print(
+            "        Cause is client-side: first-touch cookie missing, a different\n"
+            "        browser profile, or they signed up before opening the link."
+        )
         sys.exit(1)
     line(OK, f"{len(profiles)} profile(s) attributed to this code")
 
@@ -127,8 +132,10 @@ def cmd_verify(args) -> None:
     )
     if not referrals:
         line(BAD, "attributed, but NO referral row — the trigger did not fire")
-        print("        Check link_referral_from_attribution in migrations/add_affiliates.sql;\n"
-              "        it only matches affiliates with status='active'.")
+        print(
+            "        Check link_referral_from_attribution in migrations/add_affiliates.sql;\n"
+            "        it only matches affiliates with status='active'."
+        )
         sys.exit(1)
     paying = [r for r in referrals if r.get("first_paid_at")]
     line(OK, f"{len(referrals)} referral(s), {len(paying)} marked as paying")
@@ -136,7 +143,9 @@ def cmd_verify(args) -> None:
     # 3. commission — Stripe's invoice.paid became money owed
     commissions = (
         db.table("commissions")
-        .select("id, stripe_invoice_id, gross_cents, amount_cents, commission_pct, status, created_at")
+        .select(
+            "id, stripe_invoice_id, gross_cents, amount_cents, commission_pct, status, created_at"
+        )
         .eq("affiliate_id", aff["id"])
         .order("created_at", desc=True)
         .execute()
@@ -144,12 +153,16 @@ def cmd_verify(args) -> None:
         or []
     )
     if not commissions:
-        line(BAD, "referral exists but NO commission — no invoice.paid arrived, or it did not accrue")
-        print("        Check, in this order:\n"
-              "          * did the payment actually succeed in Stripe?\n"
-              "          * is the webhook endpoint subscribed to invoice.paid (not just\n"
-              "            checkout.session.completed)?\n"
-              "          * did the Railway logs show '[affiliate]' on that delivery?\n")
+        line(
+            BAD, "referral exists but NO commission — no invoice.paid arrived, or it did not accrue"
+        )
+        print(
+            "        Check, in this order:\n"
+            "          * did the payment actually succeed in Stripe?\n"
+            "          * is the webhook endpoint subscribed to invoice.paid (not just\n"
+            "            checkout.session.completed)?\n"
+            "          * did the Railway logs show '[affiliate]' on that delivery?\n"
+        )
         sys.exit(1)
 
     for c in commissions:
@@ -180,7 +193,12 @@ def cmd_clicks(args) -> None:
     """Did the counter actually record the opens? Also the print A/B: card vs stickers."""
     db = get_supabase()
     now = datetime.now(UTC).isoformat()
-    rows = db.rpc("affiliate_click_totals", {"p_from": "1970-01-01T00:00:00Z", "p_to": now}).execute().data or []
+    rows = (
+        db.rpc("affiliate_click_totals", {"p_from": "1970-01-01T00:00:00Z", "p_to": now})
+        .execute()
+        .data
+        or []
+    )
     if not rows:
         print("\n  No link opens recorded yet.\n")
         return

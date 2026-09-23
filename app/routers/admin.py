@@ -695,9 +695,11 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
     # number.
     clicks_by_code: dict[str, dict] = {}
     try:
-        res = get_supabase().rpc(
-            "affiliate_click_totals", {"p_from": from_ts, "p_to": to_ts}
-        ).execute()
+        res = (
+            get_supabase()
+            .rpc("affiliate_click_totals", {"p_from": from_ts, "p_to": to_ts})
+            .execute()
+        )
         clicks_by_code = {r["code"]: r for r in (res.data or [])}
     except Exception as exc:  # noqa: BLE001
         print(f"[admin.affiliates] click totals unavailable: {exc}", file=sys.stderr)
