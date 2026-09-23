@@ -64,7 +64,7 @@ def pick_jobs(user_id: str, job_url: str | None) -> list[dict]:
     sb = get_supabase()
     q = sb.table("jobs").select("*").eq("user_id", user_id).eq("platform", "greenhouse")
     q = q.eq("link", job_url) if job_url else q.eq("status", "new")
-    rows = q.limit(60).execute().data or []
+    rows = q.limit(200).execute().data or []
     if not rows:
         raise SystemExit("no matching greenhouse job in this user's pool")
     # Prefer GH-HOSTED apply pages (job-boards.greenhouse.io — the form lives right on
@@ -228,7 +228,7 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
         page = await ctx.new_page()
 
         job = form = None
-        for cand in candidates[:12]:  # bounded walk — this is a one-job MVP, not a sweep
+        for cand in candidates[:40]:  # bounded walk — this is a one-job MVP, not a sweep
             log(f"try: {cand['title']} @ {cand.get('company', '?')}\n     {cand['link']}")
             try:
                 await page.goto(cand["link"], wait_until="domcontentloaded", timeout=45000)
@@ -238,7 +238,16 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
             await page.wait_for_timeout(3000)
             form = await find_application_form(page)
             if form is None:
-                log(f"  skip (no application form on {page.url})")
+                # GH answers a closed posting with a redirect to the board root
+                # (`?error=true`) — bury the row so no run re-opens this corpse. Live
+                # 09-23: the twelve freshest candidates were ALL dead; without burial
+                # every future walk pays the same twelve page-loads first. Only in
+                # auto-pick mode: an explicit --job-url misfire must not retire a row.
+                if not job_url and ("error=true" in page.url or "/jobs/" not in page.url):
+                    n = jobs_db.mark_dead_link(user_id, cand["link"])
+                    log(f"  skip (dead posting — retired {n} pool row(s))")
+                else:
+                    log(f"  skip (no application form on {page.url})")
                 continue
             # The same fit bar the extension applies — the SERVER side of one engine.
             # A live submit that skips the judge would send the LCSW postings this
