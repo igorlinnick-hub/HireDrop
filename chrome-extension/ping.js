@@ -6,6 +6,11 @@
 //   HIREDROP_READ_STORAGE  → read chrome.storage.local keys, post HIREDROP_STORAGE_DATA back (debug)
 //   HIREDROP_TEST_ARM_ATS  → (test-only, review-mode-gated) set campaignRunning so an open
 //                            Greenhouse/Lever tab runs phase_ats without a real campaign
+// Marker read by background.js healPingBridges(): it lives in this extension's ISOLATED
+// world, so a later chrome.scripting probe can tell "this tab already has the bridge"
+// from "this tab got no content script at all" and only inject into the latter.
+window.__hdPingReady = true;
+
 window.addEventListener("message", function (e) {
   if (e.source !== window || !e.data) return;
 

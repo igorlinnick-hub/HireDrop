@@ -375,6 +375,68 @@ chrome.runtime.onStartup.addListener(async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Bridge self-heal
+// ---------------------------------------------------------------------------
+
+// A dashboard tab with no ping.js is a dead end the user cannot diagnose: the extension
+// is installed, enabled and heartbeating, but THIS tab answers no PING — so the Start
+// gate reads "not installed" and points at an install page for something already
+// running. Igor hit exactly this on 2026-09-22: /dashboard was silent while
+// /dashboard/campaign in the next window answered instantly.
+//
+// How a tab ends up bridge-less: Chrome injects declarative content scripts only at page
+// load, and a page that loads WHILE the extension is re-registering (the DEV_RELOAD path
+// reloads the tab 4s later; an update or a browser-start race does the same) gets
+// nothing. Once missed, it is missed for the life of that tab.
+//
+// So inject it ourselves. Two triggers, because neither covers the other's case:
+//   - every service-worker start sweeps tabs that are already open;
+//   - tabs.onUpdated catches a tab that loads DURING or after that sweep.
+//
+// The probe is what keeps this safe to run often: ping.js sets `window.__hdPingReady` in
+// this extension's isolated world, so a tab that already has the bridge (even an ORPHANED
+// one — that case has its own handling in the dashboard banner) is skipped and never ends
+// up with two listeners answering one message.
+async function tabHasBridge(tabId) {
+  const [hit] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => window.__hdPingReady === true,
+  });
+  return !!(hit && hit.result);
+}
+
+async function healPingBridge(tabId) {
+  if (!chrome.scripting) return; // permission missing / old Chrome — degrade silently
+  try {
+    if (await tabHasBridge(tabId)) return;
+    await chrome.scripting.executeScript({ target: { tabId }, files: ["ping.js"] });
+    console.log("[HireDrop] re-injected ping.js into tab", tabId);
+  } catch {
+    /* tab closed, still loading, or not injectable — the next trigger retries */
+  }
+}
+
+async function healPingBridges() {
+  if (!chrome.scripting) return;
+  try {
+    const tabs = await chrome.tabs.query({ url: "https://hiredrop.io/*" });
+    for (const t of tabs) if (t.id != null) await healPingBridge(t.id);
+  } catch {
+    /* no tabs permission / query failed — nothing to heal, nothing to report */
+  }
+}
+
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  if (info.status !== "complete") return;
+  if (!tab || !tab.url || tab.url.indexOf("https://hiredrop.io/") !== 0) return;
+  healPingBridge(tabId);
+});
+
+// Top-level, not inside onInstalled/onStartup: chrome.runtime.reload() (DEV_RELOAD) fires
+// NEITHER of those, and that reload is precisely when tabs lose their bridge.
+healPingBridges();
+
+// ---------------------------------------------------------------------------
 // Badge
 // ---------------------------------------------------------------------------
 
