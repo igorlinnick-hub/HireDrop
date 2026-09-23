@@ -55,6 +55,19 @@ _FIND_ATS_IN_PROGRESS: set[str] = set()
 # Re-run the script before moving this number.
 MAX_POOL_AGE_DAYS = 45
 
+# The deck's own, stricter cap. A swipe is a PROMISE — "approve this and we'll apply" — and
+# the queue always eats freshest-first, so an approved 20-day-old card loses to every new
+# arrival and the promise quietly never lands (a welder's 4 approved rows from 09-02 sat
+# for three weeks; part of those postings had closed by the time the flag bug freed them).
+# Applying is different from swiping: the auto queue may still take a 15-45d row it reaches
+# on its own (that costs a page load, not a broken promise), so MAX_POOL_AGE_DAYS stays 45.
+#
+# 14 is measured, not guessed (scripts/measure_pool_age.py, 2026-09-23, whole install):
+# 97.1% of the 102 real applications were to postings ≤14 days old (a 14d cap would have
+# blocked 3). It does hide 38% of the waiting pool from the deck — but those are exactly
+# the cards whose approval the queue would not honor. Re-run the script before moving it.
+DECK_MAX_AGE_DAYS = 14
+
 
 def fresh_enough(job: dict, max_age_days: int = MAX_POOL_AGE_DAYS) -> bool:
     """Is this posting recent enough to still be worth opening?
@@ -281,11 +294,12 @@ def get_deck(user=Depends(get_current_user)):
     # backend, so this is city/state/remote honesty, not a miles radius: the radius
     # picker keeps steering the native searches only.
     on_search = on_search_filter(swipeable, profile)
-    # Age gate (MAX_POOL_AGE_DAYS) — the tie-break below could never do this job on its own:
-    # it only orders cards that already scored the same, so a 60-day-old row with score 8
-    # still sat above a fresh row with score 6. The swipe is the user's attention; spending
-    # it on a posting that closed last month is the same waste as applying to one.
-    live = [j for j in on_search if fresh_enough(j)]
+    # Age gate — the deck's own DECK_MAX_AGE_DAYS (14), stricter than the apply cap (45),
+    # because a swipe is a promise the freshest-first queue must be able to keep (see the
+    # constant's comment). The tie-break below could never do this job on its own: it only
+    # orders cards that already scored the same, so a 60-day-old row with score 8 still sat
+    # above a fresh row with score 6.
+    live = [j for j in on_search if fresh_enough(j, DECK_MAX_AGE_DAYS)]
     # Best fit first, freshest as the tie-break: `score` is a coarse 0-10 from the Haiku
     # scorer, so whole bands of cards tie and date is what separates a live posting from a
     # six-week-old one. The client interleaves platforms on top of this order.
