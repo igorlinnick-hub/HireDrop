@@ -6,6 +6,11 @@
 //   HIREDROP_READ_STORAGE  → read chrome.storage.local keys, post HIREDROP_STORAGE_DATA back (debug)
 //   HIREDROP_TEST_ARM_ATS  → (test-only, review-mode-gated) set campaignRunning so an open
 //                            Greenhouse/Lever tab runs phase_ats without a real campaign
+// Marker read by background.js healPingBridges(): it lives in this extension's ISOLATED
+// world, so a later chrome.scripting probe can tell "this tab already has the bridge"
+// from "this tab got no content script at all" and only inject into the latter.
+window.__hdPingReady = true;
+
 window.addEventListener("message", function (e) {
   if (e.source !== window || !e.data) return;
 
@@ -60,6 +65,7 @@ window.addEventListener("message", function (e) {
 
   if (typeof e.data === "object" && e.data.type === "HIREDROP_READ_STORAGE") {
     const keys = e.data.keys || ["supabase_token", "supabase_refresh_token", "profile"];
+    try {
     chrome.storage.local.get(keys, function (data) {
       const redacted = {};
       for (const k of keys) {
@@ -72,6 +78,11 @@ window.addEventListener("message", function (e) {
       }
       window.postMessage({ type: "HIREDROP_STORAGE_DATA", data: redacted }, "*");
     });
+    } catch (ex) {
+      // Orphaned content script (extension reloaded under this tab) — same handling as
+      // every other branch here; an uncaught throw only spams the error console.
+      window.postMessage({ type: "HIREDROP_STORAGE_DATA", data: {}, error: "context_invalidated" }, "*");
+    }
   }
 
   if (typeof e.data === "object" && e.data.type === "HIREDROP_START_CAMPAIGN") {
