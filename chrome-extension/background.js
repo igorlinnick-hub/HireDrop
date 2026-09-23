@@ -1066,13 +1066,34 @@ async function buildApprovedAtsQueue(perPlatformCap, opts) {
   }
   const dd = await chrome.storage.local.get(["poolDoneUrls", "tapNativePool"]);
   const doneUrls = new Set(dd.poolDoneUrls || []);
-  // Native by-link (Indeed verified, ZR pending) only under the tapNativePool flag:
-  // Indeed's SmartApply last step doesn't complete in the throttled background window, so
-  // leaving it in the default pool burned every run on non-completing Indeed jobs and
-  // never reached the ATS submitters (2026-08-04: todayCount stayed 0 all night).
+  // Native by-link: Indeed is VERIFIED and rides in the pool by default; ZipRecruiter is
+  // PENDING and stays behind the tapNativePool flag until its by-link path is proven.
+  //
+  // This line used to gate BOTH behind the flag, which contradicted the comment on
+  // POOL_NATIVE_VERIFIED twelve lines up ("Always in pool") and cost a real user four
+  // applications. On 2026-08-04 Indeed was pulled from the default pool because
+  // "SmartApply's last step doesn't complete in the throttled background window" —
+  // every slot went to non-completing Indeed jobs and todayCount stayed 0 all night.
+  // Two things about that reason, measured 2026-09-22:
+  //   · Indeed submits fine. 77 Indeed applications are recorded, 71 of them AFTER the
+  //     flag went off, the most recent 2026-09-21. Those went through the NATIVE walk
+  //     (search -> job page -> apply). The flag never gated Indeed's ability to submit —
+  //     only the BY-LINK entry into that same apply flow.
+  //   · "The last step doesn't complete" is the exact symptom #217 fixed: a confirmation
+  //     page was being read as a broken job page instead of a finished submit. The
+  //     submit was landing; the walk didn't believe it.
+  // The cost of being wrong was one paying user (a welder) whose four approved Indeed
+  // cards sat unsent from 09-02, while 87% of his pool is Indeed and the ATS boards hold
+  // almost no welding jobs. The server's queue offered them (TAP_APPLY_PLATFORMS includes
+  // indeed) and the executor silently dropped them — the dashboard promised, the run
+  // didn't deliver.
+  //
+  // If Indeed by-link turns out to still stall, the honest move is NOT to hide it again:
+  // it is to name it on the card before the user swipes. A deck that deals cards we
+  // cannot play is the bug; an empty counter is just its symptom.
   const poolPlatforms = dd.tapNativePool === true
     ? ATS_PLATFORMS.concat(POOL_NATIVE_VERIFIED, POOL_NATIVE_PENDING)
-    : ATS_PLATFORMS;
+    : ATS_PLATFORMS.concat(POOL_NATIVE_VERIFIED);
   // Caller-supplied exclusions — an auto run drops Lever (its submit needs a human at the
   // captcha), so those approvals wait for a tap run instead of stalling an unattended one.
   const skip = (opts && opts.skipPlatforms) || [];
@@ -1085,6 +1106,21 @@ async function buildApprovedAtsQueue(perPlatformCap, opts) {
     if (!url || doneUrls.has(url)) continue;
     out.push({ id: j.id, applyUrl: url, title: j.title || "", company: j.company || "", platform: j.platform });
   }
+  // ZERO-TOUCH FIRST, natives after — the actual lesson of 2026-08-04.
+  //
+  // That night's failure is usually described as "Indeed doesn't complete", but the thing
+  // that made it cost a whole run was the ORDER: native jobs sat at the head of the queue,
+  // each stalled one consumed a slot, and the walk never reached the Greenhouse/Ashby rows
+  // behind them that submit reliably. todayCount stayed 0 not because nothing could be
+  // submitted, but because nothing submittable was ever reached.
+  //
+  // Sorting by proven completion instead of by insertion order makes that impossible:
+  // whatever happens to the native tail, the zero-touch head has already gone out. It also
+  // means re-admitting a native platform can never again cost more than the leftover slots.
+  // Stable within each group — the server's own ordering (freshness, score) is preserved.
+  const rank = (p) => (ATS_PLATFORMS.includes(p) ? 0 : 1);
+  out.sort((a, b) => rank(a.platform) - rank(b.platform));
+
   // perPlatformCap is the server's now (payload.cap_per_platform) — kept as an argument so
   // callers don't change, and honoured here only as a belt in case an old build calls in.
   const cap = perPlatformCap > 0 ? perPlatformCap : 15;
