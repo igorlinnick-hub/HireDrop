@@ -364,9 +364,17 @@ def extension_ping(body: ExtensionPingBody, user=Depends(get_current_user)):
     # Return the backend's authoritative campaign flag so the extension can honor a Stop
     # even if the dashboard's postMessage stop was dropped (e.g. orphaned content script).
     try:
-        should_run = bool(campaign_db.get_state(user.id)["running"])
+        state = campaign_db.get_state(user.id)
+        should_run = bool(state["running"])
     except Exception:
+        state = None
         should_run = True  # fail-open: never stop a campaign on a state-read hiccup
+    # Persist which build is talking, only when it changed (steady state: zero extra
+    # writes). The in-memory _ext_status copy dies with the worker; this one is the
+    # durable source for /tools/ext-versions — store rollouts lag the repo silently,
+    # and the lag must be visible without grepping activity logs (09-23, ext 1.8.3).
+    if body.version and (state is None or state.get("ext_version") != body.version):
+        campaign_db.record_ext_version(user.id, body.version)
     return {"ok": True, "should_run": should_run}
 
 

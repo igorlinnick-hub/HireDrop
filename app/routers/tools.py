@@ -392,6 +392,69 @@ def stall_scan(user=Depends(get_current_user)):
     }
 
 
+@router.get("/tools/ext-versions")
+def ext_versions(user=Depends(get_current_user)):
+    """Admin-only: which extension builds the fleet actually runs, vs the repo's latest.
+
+    Born 09-23: a user's "bug" (the scary 'Campaign stopped' card) was ext 1.8.3 from the
+    store while the repo was at 1.8.15 — 12 releases of fixes never left the building, and
+    the only way to see it was grepping 'resuming (ext …)' out of one user's activity log.
+    This makes the store lag a number: versions → user counts, plus who is behind.
+
+    `ext_version` lands on the first /extension/ping after this deploy; 'unknown' rows are
+    users whose extension hasn't pinged since (or was never installed).
+    """
+    if not is_admin(getattr(user, "email", None)):
+        raise HTTPException(status_code=403, detail="admin_only")
+    import json
+
+    from app.db.client import fetch_paged, get_supabase
+
+    latest = None
+    with contextlib.suppress(Exception):
+        manifest = os.path.join(
+            os.path.dirname(__file__), "..", "..", "chrome-extension", "manifest.json"
+        )
+        with open(manifest) as f:
+            latest = json.load(f).get("version")
+
+    rows = fetch_paged(
+        lambda start, end: (
+            get_supabase()
+            .table("campaign_states")
+            .select("user_id, ext_version, ext_version_at, last_ping_at, running")
+            .order("user_id")
+            .range(start, end)
+        ),
+        limit=10_000,
+    )
+
+    versions: dict[str, dict] = {}
+    for r in rows:
+        v = r.get("ext_version") or "unknown"
+        d = versions.setdefault(v, {"users": 0, "running_now": 0, "last_seen": None})
+        d["users"] += 1
+        d["running_now"] += bool(r.get("running"))
+        seen = r.get("ext_version_at")
+        if seen and (d["last_seen"] is None or seen > d["last_seen"]):
+            d["last_seen"] = seen
+
+    def _key(v: str):  # numeric semver ordering, newest first; 'unknown' sinks to the end
+        try:
+            return (0, [-int(p) for p in v.split(".")])
+        except ValueError:
+            return (1, [])
+
+    return {
+        "latest_in_repo": latest,
+        "versions": {v: versions[v] for v in sorted(versions, key=_key)},
+        "users_behind": sum(
+            d["users"] for v, d in versions.items() if v != "unknown" and v != latest
+        ),
+        "users_unknown": versions.get("unknown", {}).get("users", 0),
+    }
+
+
 @router.get("/tools/run-report")
 def run_report(window_hours: int = 6, user=Depends(get_current_user)):
     """What YOUR last run produced, and where the time went — not whether it was alive.
