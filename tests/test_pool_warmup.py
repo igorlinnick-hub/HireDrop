@@ -84,10 +84,11 @@ def test_chips_moving_faster_than_the_floor_do_not_sweep_per_keystroke():
     assert not thread.called
 
 
-def test_a_city_change_is_the_same_search_because_collection_is_location_blind():
-    """discover_ats has no location parameter, so a city change collects nothing new —
-    treating it as a fresh search reset the cooldown and reported a sweep that only
-    re-walked the same boards into the dedup."""
+def test_a_city_change_is_the_same_search_because_it_walks_the_same_boards():
+    """A city only re-ranks which of the same supply fills the cap (discover_ats
+    user_location) — the boards and keywords walked are identical, so treating it as
+    a fresh search reset the cooldown and reported a sweep that mostly re-collected
+    into the dedup."""
     _call({"keywords": ["event manager"], "location": "miami", "job_type": "full-time"})
     jobs_router._FIND_ATS_LAST_RUN[_User.id] = (
         jobs_router._FIND_ATS_LAST_RUN[_User.id][0],
