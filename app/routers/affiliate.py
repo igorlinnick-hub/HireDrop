@@ -110,12 +110,44 @@ class ApplicationRequest(BaseModel):
     website: str = Field(default="", max_length=200)
 
 
+def _email_of_caller(authorization: str | None) -> str | None:
+    """The signed-in caller's address, or None if this is a stranger.
+
+    Optional on purpose: a missing, malformed or expired token must not turn
+    into a 401 here — it only means nobody is signed in, and the form is still
+    reachable that way. Verifies the JWT the same way app/deps.py does rather
+    than calling that dependency, which is async and would drag this endpoint
+    (and its blocking Supabase calls) onto the event loop.
+    """
+    if not authorization or not authorization.startswith("Bearer "):
+        return None
+    token = authorization.split(" ", 1)[1]
+    if token.startswith("hd_"):
+        return None  # extension key — never the source of a web form
+    try:
+        res = get_supabase().auth.get_user(token)
+        user = getattr(res, "user", None)
+        return (getattr(user, "email", "") or "").lower() or None
+    except Exception:  # noqa: BLE001 — an unusable token is a stranger, not an error
+        return None
+
+
 @router.post("/affiliate/apply")
-def apply(req: ApplicationRequest, request: Request) -> dict:
+def apply(
+    req: ApplicationRequest,
+    request: Request,
+    authorization: str | None = Header(default=None),
+) -> dict:
     """Accept an application. Public — no account required.
 
     Returns the same shape for "stored" and "you already applied", so this
     endpoint can't be used to check whether an email is in the program.
+
+    A SIGNED-IN applicant is bound to their own address, whatever the body says.
+    The approved code attaches to an account by email, so a mismatch produces an
+    approved partner whose link belongs to no account — invisible from every
+    screen they can reach. The form marks the field read-only, but that is a
+    courtesy in a browser; this is the rule.
     """
     if req.website:
         # Silent success: telling a bot it was caught only teaches the bot.
@@ -124,7 +156,7 @@ def apply(req: ApplicationRequest, request: Request) -> dict:
     if _rate_limited(f"ip:{_client_ip(request)}"):
         raise HTTPException(status_code=429, detail="Too many applications from here. Try later.")
 
-    email = req.email.strip().lower()
+    email = _email_of_caller(authorization) or req.email.strip().lower()
     if "@" not in email[1:]:
         raise HTTPException(status_code=400, detail="That email doesn't look right.")
     if is_disposable_email(email):
@@ -434,6 +466,9 @@ def issue(
     """
     _require_admin_token(x_admin_token)
 
+    # The admin's own address is irrelevant here: they are issuing a link FOR
+    # someone else, so the body is the authority. (The signed-in binding
+    # belongs to /affiliate/apply, where the applicant is the caller.)
     email = req.email.strip().lower()
     if "@" not in email[1:]:
         raise HTTPException(status_code=400, detail="That email doesn't look right.")

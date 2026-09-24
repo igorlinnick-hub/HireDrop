@@ -316,3 +316,72 @@ def test_resend_needs_an_approved_application(client, db, admin_env, mail):
     res = client.post(f"{API}/admin/affiliates/resend", json={"code": "ghost"}, headers=ADMIN)
     assert res.status_code == 404
     assert mail == []
+
+
+# --------------------------------------------- the code must land on an account
+
+
+def test_a_signed_in_applicant_cannot_apply_as_someone_else(client, db):
+    """The browser marks the email read-only; that is a courtesy. This is the
+    rule: an approved code attaches to an account BY EMAIL, so a body claiming
+    a different address would produce an approved partner whose link belongs to
+    no account — and no screen they can reach would ever say so."""
+    with patch("app.routers.affiliate._email_of_caller", return_value="lauren@uni.edu"):
+        res = client.post(
+            f"{API}/affiliate/apply",
+            json={
+                "name": "Lauren",
+                "email": "someone-else@evil.com",
+                "desired_code": "lauren",
+            },
+            headers={"Authorization": "Bearer jwt-of-lauren"},
+        )
+    assert res.status_code == 200, res.text
+    (row,) = inserts(db.log, "affiliate_applications")
+    assert row["email"] == "lauren@uni.edu"
+
+
+def test_a_stranger_still_applies_with_the_address_they_typed(client, db):
+    """No token is not an error — the form is reachable signed out, and that
+    path stays open (the invite email pins the address instead)."""
+    res = client.post(
+        f"{API}/affiliate/apply",
+        json={"name": "Luca", "email": "Luca@Uni.edu", "desired_code": "luca"},
+    )
+    assert res.status_code == 200, res.text
+    (row,) = inserts(db.log, "affiliate_applications")
+    assert row["email"] == "luca@uni.edu"  # normalised, as the column requires
+
+
+def test_a_broken_token_is_treated_as_a_stranger_not_an_error(client, db):
+    """An expired session must not turn applying into a 401 dead end."""
+    with patch("app.routers.affiliate.get_supabase") as sb:
+        sb.return_value.auth.get_user.side_effect = RuntimeError("expired")
+        assert mod._email_of_caller("Bearer stale-jwt") is None
+    res = client.post(
+        f"{API}/affiliate/apply",
+        json={"name": "Luca", "email": "luca@uni.edu", "desired_code": "luca2"},
+        headers={"Authorization": "Bearer stale-jwt"},
+    )
+    assert res.status_code == 200
+
+
+def test_an_extension_key_is_never_the_author_of_a_web_form(client, db):
+    assert mod._email_of_caller("Bearer hd_something") is None
+    assert mod._email_of_caller(None) is None
+    assert mod._email_of_caller("Basic abc") is None
+
+
+def test_issuing_uses_the_body_email_not_the_admins(client, db, admin_env):
+    """The admin is issuing a link FOR someone. Binding it to the caller — the
+    rule that is right on /affiliate/apply — would hand every partner's link to
+    whoever pressed the button."""
+    with patch("app.routers.affiliate._user_id_for_email", return_value=None):
+        res = client.post(
+            f"{API}/admin/affiliates/issue",
+            json={"email": "lauren@uni.edu", "code": "lauren"},
+            headers={**ADMIN, "Authorization": "Bearer igors-own-jwt"},
+        )
+    assert res.status_code == 200, res.text
+    (app_row,) = inserts(db.log, "affiliate_applications")
+    assert app_row["email"] == "lauren@uni.edu"
