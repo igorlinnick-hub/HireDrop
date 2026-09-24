@@ -164,6 +164,36 @@
     return status;
   }
 
+  // Login state was only ever re-checked on a full content-script load, so a
+  // session that appeared or died WITHOUT a navigation — Indeed's SPA login, or
+  // a logout landing in an open tab — kept the stale status until the user
+  // happened to browse the platform again ("Connect didn't work, later it said
+  // Connected", Igor 09-23). Watch the live page instead: re-detect on a slow
+  // interval and on tab focus (coming back from the login tab is exactly the
+  // moment the answer changes). Report only a DEFINITIVE answer that differs
+  // from the stored one, so the storage write and PLATFORM_AUTH stay rare.
+  function watchPlatformAuth() {
+    const platform = detectPlatform();
+    if (platform !== "indeed" && platform !== "ziprecruiter") return;
+    let busy = false;
+    const recheck = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const status = detectPlatformAuth(platform);
+        if (status !== "unknown") {
+          const store = await storageGet("platformConnections");
+          const prev = (store.platformConnections || {})[platform];
+          if (!prev || prev.status !== status) await reportPlatformAuth();
+        }
+      } catch { /* storage/runtime unavailable — ignore */ }
+      busy = false;
+    };
+    setInterval(() => { if (!document.hidden) recheck(); }, 45_000);
+    window.addEventListener("focus", recheck);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) recheck(); });
+  }
+
   // The new description block ships its own <style> INSIDE the node, so a plain
   // textContent starts with "@layer htmlContent { /* … */ }" — stylesheet text that
   // would travel to the backend and into the cover-letter prompt as if it were the job
@@ -5439,6 +5469,8 @@
       // connection status). Runs FIRST — before the selectors fetch — so a slow or
       // failing backend round-trip can never block login detection. Fire-and-forget.
       reportPlatformAuth();
+      // …and keep it fresh while the tab lives (SPA logins, expiring sessions).
+      watchPlatformAuth();
 
       let campaignOn = await isCampaignRunning();
       // Only the campaign's OWN tab may automate. Chrome restores the previous session's
