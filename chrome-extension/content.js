@@ -1893,28 +1893,10 @@
     });
     await recordJobDescription(jobTitle, jobCompany, jobDesc, jobUrl);
 
-    // Generate cover letter
-    let coverLetter = "";
-    log("Generating cover letter...", "");
-    try {
-      const clRes = await Promise.race([
-        sendMsg({
-          type: "GENERATE_COVER_LETTER",
-          data: { job_title: jobTitle, company: jobCompany, description: jobDesc },
-        }),
-        sleep(15000).then(() => ({ error: "timeout" })),
-      ]);
-      if (clRes && clRes.letter) {
-        coverLetter = clRes.letter;
-        log("Cover letter generated", "ok");
-      } else {
-        log("Cover letter generation failed — will use template", "");
-      }
-    } catch (e) {
-      log("Cover letter error: " + e.message, "err");
-    }
-
-    await storageSet({ generatedCoverLetter: coverLetter });
+    // The cover letter is written later, and only if the apply form actually asks for
+    // one (ensureCoverLetter, called from the form filler). Indeed's wizard has never
+    // shown a cover-letter step in 214 measured form loads, so generating here charged
+    // us for a letter that had nowhere to go — and then History displayed it as sent.
 
     // Find and click the Apply button — poll up to 8 s for async panel load
     await sleep(humanDelay(1000, 2000));
@@ -2327,27 +2309,8 @@
     });
     await recordJobDescription(jobTitle, jobCompany, jobDesc, jobUrl);
 
-    // Generate cover letter
-    let coverLetter = "";
-    log("Generating cover letter...", "");
-    try {
-      const clRes = await Promise.race([
-        sendMsg({
-          type: "GENERATE_COVER_LETTER",
-          data: { job_title: jobTitle, company: jobCompany, description: jobDesc },
-        }),
-        sleep(15000).then(() => ({ error: "timeout" })),
-      ]);
-      if (clRes && clRes.letter) {
-        coverLetter = clRes.letter;
-        log("Cover letter generated", "ok");
-      } else {
-        log("Cover letter generation failed — will use template", "");
-      }
-    } catch (e) {
-      log("Cover letter error: " + e.message, "err");
-    }
-    await storageSet({ generatedCoverLetter: coverLetter });
+    // No cover letter here either — see ensureCoverLetter: it is written by the form
+    // filler, and only when the form shows a field for it.
 
     // Re-find the button: the pane can re-render while the fit judge and the cover
     // letter are being generated, which detaches the node we matched earlier.
@@ -2691,6 +2654,109 @@
     return filled;
   }
 
+  // ── The cover letter: written when a form ASKS for one, not before ──────────────
+  //
+  // Measured 2026-09-23 (scripts/measure_letter_delivery.py, whole install): we generated
+  // a letter on every application — 103 of 107 rows carry one — and typed it into a form
+  // ONCE in 274 steps. Indeed never asks (its wizard is modular, and a cover-letter module
+  // has not appeared in 214 form loads), while Greenhouse asks in 267 of the 320 schemas
+  // we hold, behind a chooser the filler never opened. So we were paying for a letter the
+  // employer never saw AND showing it in History as part of what we sent.
+  //
+  // Both halves are fixed here: generate lazily (the field is proof somebody asked) and
+  // fill the field wherever it exists. `coverLetterFor` pins the text to a job so the key
+  // can never hand the previous job's letter to this one.
+  // Deliberately strict. "Why do you want to work here?" is a screener question the
+  // answerer handles well; pasting a whole letter into it reads as a form-filler bot.
+  const LETTER_LABEL_RE = /cover\s*letter|motivation(al)? letter/i;
+
+  function coverLetterKeyFor(jobInfo) {
+    const info = jobInfo || {};
+    return `${(info.url || "").trim()}|${(info.title || "").trim().toLowerCase()}`;
+  }
+
+  // Returns the letter for the job we are applying to RIGHT NOW, generating it once.
+  // Never throws: a form that asks for a letter must still be submittable if the model
+  // is down — the template fallback (profile.writing_style) is what we had before.
+  async function ensureCoverLetter() {
+    const st = await storageGet(["generatedCoverLetter", "coverLetterFor", "currentJobInfo", "profile"]);
+    const jobInfo = st.currentJobInfo || {};
+    const key = coverLetterKeyFor(jobInfo);
+    if (st.generatedCoverLetter && st.coverLetterFor === key) return st.generatedCoverLetter;
+
+    let letter = "";
+    logBackend(`✍️ Writing a cover letter — this form asks for one (${jobInfo.title || "this job"})`, "info");
+    try {
+      const res = await Promise.race([
+        sendMsg({
+          type: "GENERATE_COVER_LETTER",
+          data: { job_title: jobInfo.title || "", company: jobInfo.company || "", description: jobInfo.description || "" },
+        }),
+        sleep(15000).then(() => ({ error: "timeout" })),
+      ]);
+      if (res && res.letter) letter = res.letter;
+    } catch (e) {
+      log("Cover letter error: " + e.message, "err");
+    }
+    if (!letter) {
+      letter = (st.profile || {}).writing_style || "";
+      logBackend("Cover letter generation failed — using your saved template", "warn");
+    }
+    // Stored against the job it was written for: the confirmation-page re-init (#238)
+    // and the History record both read this key on a cold context.
+    await storageSet({ generatedCoverLetter: letter, coverLetterFor: key });
+    return letter;
+  }
+
+  // Greenhouse (and Ashby) hide the textarea behind a chooser — "Attach", "Dropbox",
+  // "Google Drive", "Enter manually" — so the field is REAL but invisible until clicked.
+  // That is why 267 of 320 schemas carry a Cover Letter question while only 9 of 51 live
+  // form loads ever showed a textarea. Reveal it, then fill it.
+  async function revealCoverLetterField() {
+    const scope = formScope();
+    const direct = findFieldBySelectorsOrLabel("coverLetter");
+    if (direct) return direct;
+    const triggers = Array.from(scope.querySelectorAll('button, [role="button"], a')).filter((b) => {
+      if (!b.offsetParent) return false;
+      const t = (b.textContent || "").trim().toLowerCase();
+      // "Enter manually" / "Write" / "Paste" — never "Attach"/"Upload": a file chooser
+      // opens an OS dialog that would hang the run with nobody there to dismiss it.
+      return /enter manually|type manually|write( it)? (here|manually)|paste/.test(t);
+    });
+    for (const btn of triggers) {
+      // Only inside the cover-letter block: the same chooser exists for the resume.
+      const block = btn.closest("[class*='field' i], [class*='question' i], fieldset, div");
+      const blockText = (block?.textContent || "").toLowerCase();
+      if (!/cover\s*letter/.test(blockText)) continue;
+      await humanClick(btn);
+      await sleep(humanDelay(400, 900));
+      const revealed = findFieldBySelectorsOrLabel("coverLetter")
+        || Array.from(scope.querySelectorAll("textarea")).find((t) => t.offsetParent && !(t.value || "").trim() && LETTER_LABEL_RE.test(getFieldLabel(t) || blockText));
+      if (revealed) return revealed;
+    }
+    return null;
+  }
+
+  // Fill the cover-letter field if this form has one. Returns "" when the form has no
+  // such field — the honest answer for Indeed, and what the application row then records.
+  async function fillCoverLetterIfAsked(label) {
+    let el = null;
+    try { el = await revealCoverLetterField(); } catch { /* a missing chooser must not kill the fill */ }
+    if (!el) {
+      logBackend(`${label || platformLabel()}: no cover-letter field on this form — none written`, "info");
+      return "";
+    }
+    if ((el.value || "").trim()) return el.value;
+    const letter = await ensureCoverLetter();
+    if (!letter) return "";
+    quickSet(el, letter);
+    await sleep(humanDelay(800, 1600));
+    // Durable on purpose: "the letter reached the form" is exactly the fact we could not
+    // answer for three months, and the run log is where the next measurement reads it.
+    logBackend(`${label || platformLabel()}: cover letter filled (${letter.length} chars) ✓`, "info");
+    return letter;
+  }
+
   // Fill required text/textarea screener fields that are empty.
   // Employer-defined screener questions can be any type — comments, name, date.
   // We infer the right value from the label text.
@@ -2809,6 +2875,13 @@
         value = profile.notice_period || "2 weeks";
       } else if (/(english|language).*(level|proficien|fluen)/i.test(label) && !isTextarea) {
         value = profile.english_level || "Fluent";
+      } else if (LETTER_LABEL_RE.test(rawLabel)) {
+        // The cover letter is not an open screener question: it already exists (or is
+        // written on demand), and letting it fall through to the AI branch below charged
+        // us a SECOND model call and answered "Cover Letter" as if it were a question —
+        // a short screener reply instead of the letter written for this job.
+        value = await ensureCoverLetter();
+        if (!value) continue;
       } else if (/(sponsor|visa\b|h-?1b|immigration case)/i.test(label)) {
         // Knockout — never guess in free text either. Explicit profile only, else AI/hand-back.
         if (profile.needs_sponsorship === true) value = "Yes";
@@ -3524,11 +3597,17 @@
     const storageData = await storageGet([
       "profile",
       "generatedCoverLetter",
+      "coverLetterFor",
       "currentJobInfo",
     ]);
     const profile = storageData.profile || {};
-    const coverLetter = storageData.generatedCoverLetter || profile.writing_style || "";
     const jobInfo = storageData.currentJobInfo || {};
+    // Empty until a field asks for it (see the cover-letter step below). It used to be
+    // pre-loaded from storage, which is how a letter nobody typed still reached the
+    // application row — and History showed it as part of what the employer received.
+    let coverLetter = storageData.coverLetterFor === coverLetterKeyFor(jobInfo)
+      ? (storageData.generatedCoverLetter || "")
+      : "";
 
     let formStepCount = 0;
     const maxSteps = 20; // Safety: don't loop forever (some jobs have 10+ steps)
@@ -3604,12 +3683,16 @@
         filledAny = true; filled.push("phone");
       }
 
-      // Cover letter
+      // Cover letter — written on demand, only because this step showed a field for it.
       const clEl = findFieldBySelectorsOrLabel("coverLetter");
       if (clEl && !(clEl.value || "").trim()) {
-        quickSet(clEl, coverLetter);
-        await sleep(humanDelay(1200, 2200));
-        filledAny = true; filled.push("cover");
+        const _letter = await ensureCoverLetter();
+        if (_letter) {
+          quickSet(clEl, _letter);
+          coverLetter = _letter;
+          await sleep(humanDelay(1200, 2200));
+          filledAny = true; filled.push("cover");
+        }
       }
 
       // Resume upload
@@ -4343,20 +4426,14 @@
 
     await recordJobDescription(jobTitle, jobCompany, jobDesc, jobUrl);
 
-    // Cover letter
-    logBackend(`✍️ Writing a tailored cover letter — ${jobTitle} @ ${jobCompany}`, "info");
-    let coverLetter = "";
-    try {
-      const cl = await Promise.race([
-        sendMsg({ type: "GENERATE_COVER_LETTER", data: { job_title: jobTitle, company: jobCompany, description: jobDesc } }),
-        sleep(15000).then(() => ({ error: "timeout" })),
-      ]);
-      if (cl && cl.letter) coverLetter = cl.letter;
-    } catch { /* template fallback */ }
+    // The letter is NOT written here any more — it is written if and when this form asks
+    // for one (fillCoverLetterIfAsked below). Writing it upfront cost a model call on
+    // every ATS application and, since nothing ever typed it into the form, bought
+    // nothing but a row in History claiming the employer had read it.
     await storageSet({
       currentJobInfo: { title: jobTitle, company: jobCompany, description: jobDesc, url: jobUrl },
-      generatedCoverLetter: coverLetter,
     });
+    let coverLetter = "";
 
     const profile = (await storageGet("profile")).profile || {};
 
@@ -4416,6 +4493,12 @@
       logBackend(`${label} resume: file input not found`, "error");
     }
 
+    // Cover letter — AFTER the resume, BEFORE the screener answers. Greenhouse hides the
+    // textarea behind an "Enter manually" chooser, so this reveals it first; on Lever the
+    // field is open and fills directly. If the form has no such field (Indeed's wizard
+    // never shows one) nothing is written and nothing is charged.
+    coverLetter = await fillCoverLetterIfAsked(label);
+
     // Screener questions — reuse the generic answerers (Loop 4 core).
     // These are the quietest 100 seconds in the product: each text answer is an AI
     // round-trip and every filler carries a human delay, and none of them logged a
@@ -4435,6 +4518,16 @@
       .map(([k, n]) => `${k}×${n}`)
       .join(" ");
     logBackend(answered ? `${label}: answered ${answered}` : `${label}: no screener questions`, "info");
+    // The screener filler can reach a cover-letter field this step missed (a label our
+    // chooser search didn't recognise). It writes through ensureCoverLetter, so storage
+    // is the one place that knows whether a letter was actually produced for this job —
+    // read it back rather than recording "" over a letter the employer received.
+    if (!coverLetter) {
+      const _st = await storageGet(["generatedCoverLetter", "coverLetterFor"]);
+      if (_st.coverLetterFor === coverLetterKeyFor({ url: jobUrl, title: jobTitle })) {
+        coverLetter = _st.generatedCoverLetter || "";
+      }
+    }
     await sleep(humanDelay(1500, 2500));
 
     if (!(await isCampaignRunning())) return;
