@@ -2577,10 +2577,26 @@
     let filled = 0;
 
     for (const r of radios) {
-      if (seen.has(r.name)) continue;
-      seen.add(r.name);
+      // Nameless radios (React-controlled groups) can't be keyed by name — key each
+      // element individually; once one in the scope is picked, the checked-guard
+      // below skips the rest.
+      const key = r.name || r;
+      if (seen.has(key)) continue;
+      seen.add(key);
 
-      const group = Array.from(document.querySelectorAll(`input[name="${r.name}"]`));
+      // `[name=""]` matches nothing, so a nameless radio made group = [] and
+      // group[0].closest(...) threw — crashing the whole form fill. Fall back to
+      // the enclosing fieldset/radiogroup, or the input alone.
+      let group;
+      if (r.name) {
+        group = Array.from(document.querySelectorAll(`input[name="${r.name}"]`));
+      } else {
+        const scope = r.closest("fieldset, [role='radiogroup'], [role='group']");
+        group = scope
+          ? Array.from(scope.querySelectorAll('input[type="radio"]')).filter((o) => !o.name)
+          : [r];
+        if (!group.length) group = [r];
+      }
       if (group.some((o) => o.checked)) continue; // already answered
 
       // Determine which option to pick
@@ -3856,6 +3872,11 @@
           });
           if (choice !== "submit") {
             logBackend(`⏭️ Skipped by you: ${jobInfo.title} @ ${jobInfo.company}`, "info");
+            // A user skip must still advance the walk (mirrors phase_ats): a bare
+            // return left the form open with the campaign "running" — detectPhase()
+            // keeps answering "form", the phase observer only fires on CHANGE, so
+            // nothing ever moved again.
+            await skipToNextJob();
             return;
           }
           logBackend(`👍 You approved — submitting: ${jobInfo.title} @ ${jobInfo.company}`, "ok");
@@ -3879,6 +3900,15 @@
           const rz = findResumeInput();
           if (rz && !rz.files?.length && !document.body.textContent.includes("resume.pdf")) {
             logBackend(`⏭️ Skipped (no resume attached): ${jobInfo.title} @ ${jobInfo.company} — not submitting a resume-less application`, "error");
+            // Honest outcome = hand back with a reason + advance (same channel as the
+            // stall guard above; phase_ats does the same on its resume guard). A bare
+            // return here dead-stopped a "running" campaign on the open form.
+            await handBackJob(
+              "resume didn't attach (required) — not submitting a resume-less application",
+              { title: jobInfo.title, company: jobInfo.company, platform: detectPlatform(),
+                // The blocked submit screen is not a completed step.
+                steps: Math.max(0, formStepCount - 1) });
+            await skipToNextJob();
             return;
           }
         }
