@@ -205,3 +205,99 @@ def test_issue_refuses_a_reserved_word(client, db, admin_env):
         headers=ADMIN,
     )
     assert res.status_code == 400
+
+
+# ------------------------------------------------------- the approval email
+
+
+@pytest.fixture
+def mail():
+    """Patch the sender; returns the list of (to, subject, html) it was given."""
+    sent: list = []
+
+    def fake(to, subject, html):
+        sent.append((to, subject, html))
+        return True
+
+    with patch("app.routers.affiliate.send_email", side_effect=fake):
+        yield sent
+
+
+def test_approval_emails_the_partner_their_link(client, db, admin_env, mail):
+    db.tables["affiliate_applications"] = [
+        {"id": "app_1", "status": "new", "desired_code": "lauren",
+         "email": "lauren@uni.edu", "name": "Lauren Diaz"}
+    ]
+    with patch("app.routers.affiliate._user_id_for_email", return_value="user_1"):
+        res = client.post(
+            f"{API}/admin/affiliates/decide",
+            json={"application_id": "app_1", "approve": True},
+            headers=ADMIN,
+        )
+    assert res.status_code == 200, res.text
+    assert res.json()["emailed"] is True
+    (to, subject, html) = mail[0]
+    assert to == "lauren@uni.edu"
+    assert "hiredrop.io/?ref=lauren" in html or "/?ref=lauren" in html
+    # Account exists, so the link is live — no invite, and nothing that tells
+    # them to go create an account they already have.
+    assert "signup?affiliate" not in html
+
+
+def test_a_reserved_code_is_emailed_the_invite_not_the_dashboard(client, db, admin_env, mail):
+    """Without an account the link earns nothing until they sign up with THAT
+    address — so that is the one thing the email has to lead with."""
+    db.tables["affiliate_applications"] = [
+        {"id": "app_1", "status": "new", "desired_code": "newbie",
+         "email": "new@uni.edu", "name": ""}
+    ]
+    with patch("app.routers.affiliate._user_id_for_email", return_value=None):
+        res = client.post(
+            f"{API}/admin/affiliates/decide",
+            json={"application_id": "app_1", "approve": True},
+            headers=ADMIN,
+        )
+    assert res.json()["live_now"] is False
+    html = mail[0][2]
+    assert "affiliate=newbie" in html and "email=new%40uni.edu" in html
+
+
+def test_rejection_sends_nothing(client, db, admin_env, mail):
+    """Silence is deliberate: a rejection is a conversation, not a notification."""
+    db.tables["affiliate_applications"] = [
+        {"id": "app_1", "status": "new", "desired_code": "nope", "email": "n@uni.edu", "name": "N"}
+    ]
+    res = client.post(
+        f"{API}/admin/affiliates/decide",
+        json={"application_id": "app_1", "approve": False},
+        headers=ADMIN,
+    )
+    assert res.status_code == 200
+    assert mail == []
+
+
+def test_a_failed_send_does_not_undo_the_approval(client, db, admin_env):
+    """The link is already real when the email goes out. Losing the email must
+    cost the partner a resend, not their code."""
+    db.tables["affiliate_applications"] = [
+        {"id": "app_1", "status": "new", "desired_code": "lauren",
+         "email": "lauren@uni.edu", "name": "Lauren"}
+    ]
+    with (
+        patch("app.routers.affiliate._user_id_for_email", return_value="user_1"),
+        patch("app.routers.affiliate.send_email", return_value=False),
+    ):
+        res = client.post(
+            f"{API}/admin/affiliates/decide",
+            json={"application_id": "app_1", "approve": True},
+            headers=ADMIN,
+        )
+    assert res.status_code == 200
+    assert res.json()["emailed"] is False
+    assert inserts(db.log, "affiliates")  # the affiliate row still exists
+
+
+def test_resend_needs_an_approved_application(client, db, admin_env, mail):
+    res = client.post(f"{API}/admin/affiliates/resend", json={"code": "ghost"}, headers=ADMIN)
+    assert res.status_code == 404
+    assert mail == []
