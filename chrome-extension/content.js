@@ -2854,7 +2854,11 @@
         // Qatar?" with "Miami" (6 required text questions across the 320 schemas; the
         // other 43 substring hits are selects, which never reach this chain).
         value = profile.city || profile.location || "Remote";
-      } else if (/\b(current|most recent|present)\b.*\b(employer|company|job title|title|position|role)\b/i.test(label)
+      // "recent"/"last" without "most": Indeed's own labels read "Recent job title" /
+      // "Recent employer" (live 09-23, three Fieldhouse hand-backs) — the old pattern
+      // required "most recent" and skipped them entirely, and at <20 chars they never
+      // reached the AI branch either, so the step validated against blanks.
+      } else if (/\b(current|most recent|recent|last|present)\b.*\b(employer|company|job title|title|position|role)\b/i.test(label)
                  && !/^(are|do|does|did|have|has|is|was|were|would|will|may|can|should)\b/i.test(label)
                  && !/how (are|do|did)|using|why|describe|reflect|scope/i.test(label)) {
         // Current employment. The single biggest hand-back cause on real forms: 12 of the
