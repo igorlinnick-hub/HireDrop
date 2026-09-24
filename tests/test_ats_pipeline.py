@@ -175,6 +175,105 @@ def test_discover_ats_exclude_applies_to_the_topup_pass(monkeypatch):
     assert not known & {j["apply_url"] for j in out}
 
 
+def _fake_gh_four_locations(token, keywords=None, limit=50):
+    """One board, four location shapes: elsewhere / unknown / remote / the user's city."""
+    import modules.platforms.ats_boards as ab
+
+    rows = [
+        ("Berlin role", "Berlin, Germany"),
+        ("No-loc role", ""),
+        ("Remote role", "Remote - US"),
+        ("Miami role", "Miami, FL"),
+    ]
+    return [
+        ab._job(t, token, f"https://job-boards.greenhouse.io/{token}/jobs/{i}", loc, "greenhouse")
+        for i, (t, loc) in enumerate(rows)
+    ]
+
+
+def test_discover_ats_ranks_by_user_location_fits_then_unknown_then_elsewhere(monkeypatch):
+    """Option (b): boards already send each job's location text — with a city in the
+    profile, the return order is fits-or-remote → unknown → elsewhere, so the cap slots
+    go to placeable rows first. Elsewhere rows are NOT dropped (read-time filters
+    re-apply anyway) — Berlin is still returned, just last."""
+    import modules.platforms.ats_boards as ab
+
+    monkeypatch.setitem(ab._FETCHERS, "greenhouse", _fake_gh_four_locations)
+    out = ab.discover_ats([("figma", "greenhouse")], cap=10, user_location="Miami, Florida")
+    assert [j["title"] for j in out] == [
+        "Remote role",  # remote fits; stable within the fits band (fetch order kept)
+        "Miami role",
+        "No-loc role",  # unknown stays a middle answer, not a miss
+        "Berlin role",  # elsewhere still fills leftover slots
+    ]
+
+
+def test_discover_ats_cap_slots_go_to_fitting_rows_first(monkeypatch):
+    import modules.platforms.ats_boards as ab
+
+    monkeypatch.setitem(ab._FETCHERS, "greenhouse", _fake_gh_four_locations)
+    out = ab.discover_ats([("figma", "greenhouse")], cap=2, user_location="Miami, Florida")
+    assert {j["title"] for j in out} == {"Remote role", "Miami role"}
+
+
+def test_discover_ats_empty_user_location_is_a_noop(monkeypatch):
+    """Behavior guard: no location (or a coarse value that parses to no city/state) must
+    reproduce today's zero-touch-first order byte-for-byte."""
+    import modules.platforms.ats_boards as ab
+
+    def fake_gh(token, keywords=None, limit=50):
+        return _fake_gh_four_locations(token)
+
+    def fake_lv(token, keywords=None, limit=50):
+        return [
+            ab._job("LV Berlin", token, f"https://jobs.lever.co/{token}/1/apply", "Berlin", "lever")
+        ]
+
+    monkeypatch.setitem(ab._FETCHERS, "greenhouse", fake_gh)
+    monkeypatch.setitem(ab._FETCHERS, "lever", fake_lv)
+    boards = [("acme", "lever"), ("figma", "greenhouse")]
+
+    baseline = ab.discover_ats(boards, cap=10)
+    for coarse in ("", None, "usa", "united states"):
+        assert ab.discover_ats(boards, cap=10, user_location=coarse) == baseline
+    # and the baseline is still the old contract: zero-touch first
+    assert baseline[0]["platform"] == "greenhouse"
+    assert baseline[-1]["platform"] == "lever"
+
+
+def test_discover_ats_local_high_touch_beats_elsewhere_zero_touch(monkeypatch):
+    """Location is the PRIMARY slot key: a fitting Lever (high-touch) row must win the
+    slot over a plainly-elsewhere Greenhouse (zero-touch) row, or abundant zero-touch
+    elsewhere supply would still starve the local rows the sweep was asked to prefer."""
+    import modules.platforms.ats_boards as ab
+
+    def fake_gh(token, keywords=None, limit=50):
+        return [
+            ab._job(
+                "GH Berlin",
+                token,
+                f"https://job-boards.greenhouse.io/{token}/jobs/1",
+                "Berlin, Germany",
+                "greenhouse",
+            )
+        ]
+
+    def fake_lv(token, keywords=None, limit=50):
+        return [
+            ab._job(
+                "LV Miami", token, f"https://jobs.lever.co/{token}/1/apply", "Miami, FL", "lever"
+            )
+        ]
+
+    monkeypatch.setitem(ab._FETCHERS, "greenhouse", fake_gh)
+    monkeypatch.setitem(ab._FETCHERS, "lever", fake_lv)
+
+    out = ab.discover_ats(
+        [("figma", "greenhouse"), ("acme", "lever")], cap=1, user_location="Miami, Florida"
+    )
+    assert [j["title"] for j in out] == ["LV Miami"]
+
+
 # ---------- jobs enrichment: /jobs tags + orders zero-touch first (feeds the queue) ----------
 
 

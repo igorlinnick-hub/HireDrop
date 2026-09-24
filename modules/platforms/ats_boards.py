@@ -25,6 +25,8 @@ import requests
 
 from modules.captcha_profile import TOUCH_RANK as _TOUCH_RANK
 from modules.captcha_profile import captcha_touch as _captcha_touch_pt
+from modules.job_location import location_verdict as _location_verdict
+from modules.job_location import parse_user_location as _parse_user_location
 from modules.job_type import detect_job_type
 
 # `?content=true` makes the Greenhouse board API include each job's full description
@@ -433,6 +435,7 @@ def discover_ats(
     keywords: list[str] | None = None,
     cap: int = 100,
     exclude: set[str] | None = None,
+    user_location: str | None = None,
 ) -> list[dict]:
     """Pull live jobs across a watchlist of (token, platform) companies, keyword-filtered.
 
@@ -450,6 +453,13 @@ def discover_ats(
     away each time. Skipping known urls here makes the cap bound NEW inventory instead, so
     the pool walks out to the watchlist's real supply over a few sweeps at unchanged
     per-sweep cost (~$0.0019/row scored, so ~$0.30 a sweep).
+
+    `user_location` = the profile's free-text location. Boards already send each job's
+    location text; when the user's names a city/state, the cap slots prefer rows that fit
+    it or are remote, then unknown, then elsewhere — the same read-time verdict the
+    deck/queue apply (modules/job_location). Elsewhere rows are NOT dropped: they still
+    take leftover slots (read-time filters re-apply anyway). No usable location = the
+    old zero-touch-first order, byte-for-byte.
     """
     import concurrent.futures
     from collections import deque
@@ -501,11 +511,23 @@ def discover_ats(
         ex.shutdown(wait=False)
 
     # Zero-touch first (the concurrent gather loses the input ordering), then dedup + cap.
-    collected.sort(
-        key=lambda j: _TOUCH_RANK.get(
-            _captcha_touch(j.get("company", ""), j.get("platform", "")), 1
+    # With a usable user location the PRIMARY key is the location verdict — a local or
+    # remote row must win a slot over a plainly-elsewhere one even across touch bands,
+    # or 200 zero-touch elsewhere rows would still starve the local supply the sweep was
+    # asked to prefer. Activation rule mirrors on_search_filter: only a parsed city/state
+    # turns it on, so coarse values ("usa", "europe", empty) keep today's order exactly.
+    _user_loc = _parse_user_location(user_location or "")
+    _loc_on = bool(_user_loc.get("city") or _user_loc.get("state_code"))
+    _loc_rank = {"fits": 0, "unknown": 1, "elsewhere": 2}
+
+    def _slot_key(j: dict) -> tuple[int, int]:
+        loc = _loc_rank[_location_verdict(j.get("location", ""), _user_loc)] if _loc_on else 0
+        return (
+            loc,
+            _TOUCH_RANK.get(_captcha_touch(j.get("company", ""), j.get("platform", "")), 1),
         )
-    )
+
+    collected.sort(key=_slot_key)
     # PER-PLATFORM QUOTA so an abundant platform can't starve a scarce one. With ~185 GH
     # postings and a global cap of 120, pure zero-touch-first ordering filled every slot
     # with Greenhouse and Lever NEVER entered the pool (live 2026-07-29: lever stayed 0

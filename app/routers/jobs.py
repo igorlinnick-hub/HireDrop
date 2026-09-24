@@ -442,7 +442,16 @@ def _run_ats_discovery(user_id: str) -> None:
             known = set()
 
         try:
-            found = discover_ats(SEED_WATCHLIST, keywords, cap=160, exclude=known)
+            # Location steers which of the (supply > cap) candidates win the 160 slots —
+            # fits/remote first, elsewhere last — using the job location text the boards
+            # already return. See discover_ats.
+            found = discover_ats(
+                SEED_WATCHLIST,
+                keywords,
+                cap=160,
+                exclude=known,
+                user_location=profile.get("location"),
+            )
         except Exception as e:
             print(f"[find-ats bg] discovery failed: {e}", file=sys.stderr)
             found = []
@@ -488,11 +497,13 @@ def _search_signature(profile: dict) -> str:
     _run_ats_discovery), so this is the honest key for "have we already swept this?".
     Keywords are order-insensitive: re-arranging chips is the same question.
 
-    Location is deliberately NOT in the key: collection is location-blind (discover_ats
-    has no location parameter), so a city change would reset the cooldown, walk the same
-    boards with the same keywords, and report a "new search" that collects nothing new.
-    The one location value collection DOES read is the "europe" pick, via the country
-    gate — so the derived gate is in the key, the raw city string is not.
+    Location is deliberately NOT in the key: the city only re-RANKS which of the same
+    supply fills the cap slots first (discover_ats), it does not change which boards or
+    keywords are walked — so a city change would reset the cooldown, re-walk the same
+    boards, and mostly re-collect into the dedup. Successive sweeps walk the whole
+    supply in anyway (exclude=known). The one location value that DOES change what is
+    collected is the "europe" pick, via the country gate — so the derived gate is in
+    the key, the raw city string is not.
     """
     keywords = ",".join(
         sorted(k.strip().lower() for k in (profile.get("keywords") or []) if (k or "").strip())
