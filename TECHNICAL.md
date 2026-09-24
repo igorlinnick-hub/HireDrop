@@ -267,7 +267,6 @@ app.add_middleware(
 |--------|------|-------------|
 | `POST` | `/api/cover-letter` | Generate cover letter for a specific job by `job_id` |
 | `POST` | `/api/cover-letter-preview` | Generate sample cover letter from keywords (used by extension) |
-| `POST` | `/api/cover-letter-template` | Save custom fallback template to `templates/cover_letter.txt` |
 
 #### Applications
 

@@ -52,10 +52,6 @@ class AssessFitRequest(BaseModel):
     screener_questions: list[str] = Field(default_factory=list, max_length=40)
 
 
-class TemplateRequest(BaseModel):
-    template: str
-
-
 class ApplicationSaveRequest(BaseModel):
     job_title: str
     company: str

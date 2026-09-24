@@ -23,7 +23,6 @@ from app.schemas import (
     AssessFitRequest,
     CoverLetterRequest,
     LetterPreviewRequest,
-    TemplateRequest,
 )
 from config import RATE_LIMIT_ENFORCE, RATE_LIMIT_LETTERS_PER_DAY
 from modules.ai_cover_letter import generate_cover_letter, resume_text_for
@@ -33,8 +32,6 @@ from modules.ai_question_answer import answer_screener_question
 from modules.ai_role_suggest import ROLE_LIMITS, role_limit, suggest_roles
 
 router = APIRouter(tags=["tools"])
-
-TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "templates")
 
 
 def _claim_ai_slot(user) -> None:
@@ -361,14 +358,6 @@ def answer_question(req: AnswerQuestionRequest, user=Depends(get_current_user)):
     elif cache_key:
         screener_cache.put(user.id, cache_key, req.question, answer)
     return {"answer": answer, "cached": False}
-
-
-@router.post("/tools/cover-letter-template")
-def save_letter_template(req: TemplateRequest, user=Depends(get_current_user)):
-    os.makedirs(TEMPLATES_DIR, exist_ok=True)
-    with open(os.path.join(TEMPLATES_DIR, "cover_letter.txt"), "w") as f:
-        f.write(req.template)
-    return {"saved": True}
 
 
 @router.get("/tools/stall-scan")

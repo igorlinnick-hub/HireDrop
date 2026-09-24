@@ -6,6 +6,7 @@ Five surfaces, three audiences:
   GET  /affiliate/application  user    — "what happened to my application?"
   POST /admin/affiliates/decide admin  — approve or reject, from the admin board
   POST /admin/affiliates/issue  admin  — hand a link to someone who never applied
+  POST /admin/affiliates/resend admin  — send that approval email again
 
 Nothing is automatic. A code is money, and an affiliate program that issues
 codes on request is a program that gets farmed: the whole design is that a
@@ -38,12 +39,18 @@ from app.db.client import get_supabase
 from app.deps import get_current_user
 from app.disposable_email import is_disposable_email
 from config import FRONTEND_URL
+from modules.email_sender import affiliate_approved_html, send_email
 
 router = APIRouter(tags=["affiliate"])
 
 # Same shape the affiliates table enforces — rejected here so the applicant
 # sees a useful message instead of a database error.
 CODE_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{1,38}$")
+
+# Mirrors affiliates.commission_pct's DEFAULT in migrations/add_affiliates.sql.
+# Only used to tell the partner what they were promised when the admin left the
+# rate blank — the row itself is still written by the database default.
+DEFAULT_RATE = 30.0
 
 # Reserved words: these read as official and would let a partner impersonate us.
 RESERVED_CODES = frozenset(
@@ -320,11 +327,20 @@ def decide(
 
     db.table("affiliate_applications").update(update).eq("id", req.application_id).execute()
 
+    emailed = _send_approval_email(
+        app_row["email"],
+        app_row.get("name") or "",
+        code,
+        bool(affiliate_id),
+        req.commission_pct if req.commission_pct is not None else DEFAULT_RATE,
+    )
+
     return {
         "status": "approved",
         "code": code,
         # False means the code is reserved and goes live at their signup.
         "live_now": bool(affiliate_id),
+        "emailed": emailed,
         "link": _ref_link(code),
         # Only meaningful when the code is still reserved: the one URL that
         # turns a reservation into a live link. Sent by Igor, not by us.
@@ -346,6 +362,32 @@ def _invite_link(code: str, email: str) -> str:
     diagnose.
     """
     return f"{FRONTEND_URL}/signup?affiliate={code}&email={quote(email)}"
+
+
+def _send_approval_email(email: str, name: str, code: str, live_now: bool, rate: float) -> bool:
+    """Tell the partner their link exists. The one email this program sends.
+
+    Approving someone and then asking Igor to copy-paste a message is the step
+    that quietly does not happen at 1am, and a partner who never hears back is
+    a partner we spent a decision on for nothing. Rejections stay silent on
+    purpose — that one is a conversation, not a notification.
+
+    Never fatal: the link is already real when this runs, so a failed send is
+    reported (the board falls back to handing over the text) and nothing is
+    rolled back.
+    """
+    try:
+        html = affiliate_approved_html(
+            name=name,
+            code=code,
+            link=_ref_link(code),
+            invite_url=None if live_now else _invite_link(code, email),
+            rate=round(float(rate)),
+        )
+        return send_email(email, "Your HireDrop affiliate link is ready", html)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[affiliate] approval email failed for {email}: {exc}", file=sys.stderr)
+        return False
 
 
 def _validate_code(code: str) -> str:
@@ -468,13 +510,62 @@ def issue(
                 status_code=500, detail="Could not reserve that code. Try again."
             ) from exc
 
+    emailed = _send_approval_email(
+        email,
+        req.name,
+        code,
+        bool(affiliate_id),
+        req.commission_pct if req.commission_pct is not None else DEFAULT_RATE,
+    )
+
     return {
         "status": "issued",
         "code": code,
         "live_now": bool(affiliate_id),
+        "emailed": emailed,
         "link": _ref_link(code),
         "invite_url": None if affiliate_id else _invite_link(code, email),
     }
+
+
+class ResendRequest(BaseModel):
+    code: str = Field(min_length=2, max_length=39)
+
+
+@router.post("/admin/affiliates/resend")
+def resend(
+    req: ResendRequest,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+) -> dict:
+    """Send the approval email again. People lose emails; a partner should not
+    have to ask twice, and the alternative is Igor retyping the link by hand."""
+    _require_admin_token(x_admin_token)
+    code = req.code.strip().lower()
+    db = get_supabase()
+
+    live = (
+        db.table("affiliates").select("id, commission_pct").eq("code", code).limit(1).execute().data
+    )
+    app_rows = (
+        db.table("affiliate_applications")
+        .select("email, name, desired_code, status")
+        .eq("desired_code", code)
+        .eq("status", "approved")
+        .limit(1)
+        .execute()
+        .data
+    )
+    if not app_rows:
+        raise HTTPException(
+            status_code=404, detail=f"No approved application for '{code}' to email about."
+        )
+    row = app_rows[0]
+
+    rate = float(live[0]["commission_pct"]) if live else DEFAULT_RATE
+    emailed = _send_approval_email(row["email"], row.get("name") or "", code, bool(live), rate)
+    if not emailed:
+        raise HTTPException(status_code=502, detail="Resend rejected the send — check the logs.")
+    return {"status": "sent", "to": row["email"], "live_now": bool(live)}
 
 
 def _now_iso() -> str:
