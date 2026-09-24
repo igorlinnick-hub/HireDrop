@@ -95,20 +95,19 @@ def test_profile_returns_fields(auth_client):
     assert "platforms" in body
 
 
-def test_cover_letter_template_saves(auth_client):
-    from unittest.mock import mock_open
+def test_cover_letter_template_endpoint_is_gone(auth_client):
+    """POST /tools/cover-letter-template was removed 2026-09-24, not just gated.
 
-    m = mock_open()
-    with (
-        patch("app.routers.tools.os.makedirs"),
-        patch("builtins.open", m),
-    ):
-        res = auth_client.post(
-            "/api/v1/tools/cover-letter-template",
-            json={"template": "Dear {company}, applying for {title}. {name}"},
-        )
-    assert res.status_code == 200
-    assert res.json()["saved"] is True
+    It wrote ONE global templates/cover_letter.txt with no user scoping, and
+    fallback_template() rendered that text into OTHER users' cover letters on any
+    AI outage — cross-tenant stored-content injection. Nothing called it (no
+    dashboard, no extension), so the fallback template is repo-owned now.
+    """
+    res = auth_client.post(
+        "/api/v1/tools/cover-letter-template",
+        json={"template": "Dear {company}, applying for {title}. {name}"},
+    )
+    assert res.status_code == 404
 
 
 def test_cover_letter_endpoint(auth_client):

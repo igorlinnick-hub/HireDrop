@@ -543,7 +543,9 @@ def resend(
     code = req.code.strip().lower()
     db = get_supabase()
 
-    live = db.table("affiliates").select("id, commission_pct").eq("code", code).limit(1).execute().data
+    live = (
+        db.table("affiliates").select("id, commission_pct").eq("code", code).limit(1).execute().data
+    )
     app_rows = (
         db.table("affiliate_applications")
         .select("email, name, desired_code, status")

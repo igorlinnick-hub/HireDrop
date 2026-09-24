@@ -225,8 +225,13 @@ def mail():
 
 def test_approval_emails_the_partner_their_link(client, db, admin_env, mail):
     db.tables["affiliate_applications"] = [
-        {"id": "app_1", "status": "new", "desired_code": "lauren",
-         "email": "lauren@uni.edu", "name": "Lauren Diaz"}
+        {
+            "id": "app_1",
+            "status": "new",
+            "desired_code": "lauren",
+            "email": "lauren@uni.edu",
+            "name": "Lauren Diaz",
+        }
     ]
     with patch("app.routers.affiliate._user_id_for_email", return_value="user_1"):
         res = client.post(
@@ -248,8 +253,13 @@ def test_a_reserved_code_is_emailed_the_invite_not_the_dashboard(client, db, adm
     """Without an account the link earns nothing until they sign up with THAT
     address — so that is the one thing the email has to lead with."""
     db.tables["affiliate_applications"] = [
-        {"id": "app_1", "status": "new", "desired_code": "newbie",
-         "email": "new@uni.edu", "name": ""}
+        {
+            "id": "app_1",
+            "status": "new",
+            "desired_code": "newbie",
+            "email": "new@uni.edu",
+            "name": "",
+        }
     ]
     with patch("app.routers.affiliate._user_id_for_email", return_value=None):
         res = client.post(
@@ -280,8 +290,13 @@ def test_a_failed_send_does_not_undo_the_approval(client, db, admin_env):
     """The link is already real when the email goes out. Losing the email must
     cost the partner a resend, not their code."""
     db.tables["affiliate_applications"] = [
-        {"id": "app_1", "status": "new", "desired_code": "lauren",
-         "email": "lauren@uni.edu", "name": "Lauren"}
+        {
+            "id": "app_1",
+            "status": "new",
+            "desired_code": "lauren",
+            "email": "lauren@uni.edu",
+            "name": "Lauren",
+        }
     ]
     with (
         patch("app.routers.affiliate._user_id_for_email", return_value="user_1"),

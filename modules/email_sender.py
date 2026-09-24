@@ -120,7 +120,10 @@ def affiliate_approved_html(
             "with a different one leaves the link unattached."
         )
     else:
-        action_url, action_label = f"{link.split('/?ref=')[0]}/dashboard/affiliate", "Open your dashboard &rarr;"
+        action_url, action_label = (
+            f"{link.split('/?ref=')[0]}/dashboard/affiliate",
+            "Open your dashboard &rarr;",
+        )
         action_note = (
             "It's live now, and it's already attached to your HireDrop account. "
             "Your opens, referrals and earnings are on your Affiliate page."

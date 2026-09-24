@@ -16,8 +16,11 @@ Mac юзера» — отвергнут Игорем 09-23: крышку зак�
 - **Greenhouse: reCAPTCHA Enterprise в SCORE-режиме** — `grecaptcha.enterprise.execute(key,
   {action:"apply_to_job"})`, `recaptcha.net/recaptcha/enterprise.js`. **Челленджа нет и
   «решать» нечего**: токен выдаётся всегда, но несёт оценку 0.1–0.9. Оценку ЗАРАБАТЫВАЮТ
-  репутацией IP + fingerprint + поведением. Низкий score → GH молча принимает форму и
-  роняет заявку в спам — **отказа мы не увидим**. Это главный риск лейна.
+  репутацией IP + fingerprint + поведением.
+  ✅ **Поправка 09-23 (разведка):** низкий score НЕ означает тихий дроп. По доке GH
+  («Invisible reCAPTCHA») он эскалирует на **код из почты**: сабмит отвечает **428**, на
+  странице появляются `#security-input-0..7` и `security_code_recipient`. Провал **видимый
+  и считаемый** — отсюда метрика P2. Раньше здесь стояло «отказа мы не увидим» — неверно.
 - **Payload сабмита** — `job_application` + csrf + fingerprint + `jobApplicationRequestToken`
   + recaptcha-токен ⇒ чистый HTTP-POST хрупок и палевен. **Основной путь — Playwright**.
 - **Ashby**: два reCAPTCHA site-key на живой странице, GraphQL-интроспекция закрыта.
