@@ -702,38 +702,51 @@
     "/success", "/confirmation", "application-submitted", "applysuccess",
   ];
 
+  const SUCCESS_TEXTS = [
+    "application submitted",
+    "thanks for applying",
+    "successfully applied",
+    "application sent",
+    "you've applied",
+    "you have applied",
+    "we've received your application",
+    // High-specificity signals from Indeed's real post-apply confirmation page —
+    // added after ground-truth showed the 8s window produced false negatives
+    // (real submissions marked unverified because the confirmation rendered later).
+    "the following items were sent",
+    "your application has been submitted",
+    "application has been sent",
+    "has been submitted to",
+    "we've sent your application",
+    // ATS thank-you wording (Greenhouse / Ashby / Lever confirmation pages)
+    "application received",
+    "thank you for your interest",
+    "thank you for applying",
+    "your application to",
+    "submission received",
+    "we'll be in touch",
+    "application complete",
+    "thanks for your application",
+  ];
+
   // or simply did nothing. Returns { verified, signal } for activity log.
   async function waitForSubmissionConfirmation(timeoutMs = 45000, opts = {}) {
     // 45s default (was 20s): in a throttled background window the post-submit thank-you
     // page renders LATE — the old 20s window marked real submits "unconfirmed" (2026-08-04).
     const start = Date.now();
     const startUrl = window.location.href;
-    const SUCCESS_TEXTS = [
-      "application submitted",
-      "thanks for applying",
-      "successfully applied",
-      "application sent",
-      "you've applied",
-      "you have applied",
-      "we've received your application",
-      // High-specificity signals from Indeed's real post-apply confirmation page —
-      // added after ground-truth showed the 8s window produced false negatives
-      // (real submissions marked unverified because the confirmation rendered later).
-      "the following items were sent",
-      "your application has been submitted",
-      "application has been sent",
-      "has been submitted to",
-      "we've sent your application",
-      // ATS thank-you wording (Greenhouse / Ashby / Lever confirmation pages)
-      "application received",
-      "thank you for your interest",
-      "thank you for applying",
-      "your application to",
-      "submission received",
-      "we'll be in touch",
-      "application complete",
-      "thanks for your application",
-    ];
+    // opts.baselineText: page text the caller snapshotted BEFORE the triggering click.
+    // A success phrase counts only if it is NOT already in the baseline — Greenhouse/
+    // Lever/Ashby render the job description on the apply page itself, and its boiler-
+    // plate ("thank you for your interest", "we'll be in touch") "verified" a
+    // validation-blocked submit on the first beat. Callers must pass it; if one
+    // doesn't, snapshot NOW — a fast confirmation may then baseline itself away and
+    // come back unverified, which is the acceptable direction (applied_unconfirmed).
+    // A false verified is not.
+    const baseline = (opts.baselineText !== undefined
+      ? opts.baselineText
+      : (document.body.textContent || "")
+    ).toLowerCase();
 
     while (Date.now() - start < timeoutMs) {
       const url = window.location.href;
@@ -746,7 +759,7 @@
       }
       const bodyText = (document.body.textContent || "").toLowerCase();
       for (const phrase of SUCCESS_TEXTS) {
-        if (bodyText.includes(phrase)) {
+        if (bodyText.includes(phrase) && !baseline.includes(phrase)) {
           return { verified: true, signal: `text:${phrase.slice(0, 30)}` };
         }
       }
@@ -3526,7 +3539,13 @@
   // application was filed and never recorded (no count, no dedup → duplicate-apply risk).
   // So after every non-submit click, ask the PAGE whether the application went through.
   function jobLooksApplied() {
-    const scope = document.querySelector('[data-testid="right-pane"]') || document;
+    // Scoped to the selected job's own pane ONLY. The old `|| document` fallback
+    // matched ANY visible button starting "Applied" — including OTHER jobs' cards in
+    // the same results list — and confirmed the current job off a neighbour's badge.
+    // No pane on screen → answer "not applied": a missed real badge costs one
+    // re-visit; a false positive records an application that never happened, forever.
+    const scope = document.querySelector('[data-testid="right-pane"]');
+    if (!scope) return false;
     for (const b of scope.querySelectorAll("button, [role='button']")) {
       if (b.offsetParent === null) continue;
       const t = ((b.textContent || "") + " " + (b.getAttribute("aria-label") || ""))
@@ -3537,13 +3556,37 @@
       .test((scope.textContent || "").slice(0, 5000));
   }
 
-  async function detectSilentSubmission(timeoutMs = 9000) {
+  async function detectSilentSubmission(timeoutMs = 9000, baselineText) {
     const start = Date.now();
+    // Pre-click page text from the caller — same contract as
+    // waitForSubmissionConfirmation: phrases already on screen before the click can
+    // never confirm. Snapshot now as the defensive fallback.
+    const baseline = (baselineText !== undefined
+      ? baselineText
+      : (document.body.textContent || "")
+    ).toLowerCase();
     while (Date.now() - start < timeoutMs) {
-      // Still a form on screen → we're mid-flow, not done.
-      if (visibleApplyDialogs().some((d) => d.querySelector("input, textarea, select"))) return null;
+      const dlgs = visibleApplyDialogs();
+      // A dialog WITH fields on screen → we're mid-flow, not done.
+      if (dlgs.some((d) => d.querySelector("input, textarea, select"))) return null;
+      if (dlgs.length) {
+        // A field-less dialog is ZR's transient bare [Close]-only shell between steps
+        // — still mid-flow. Scanning past it used to read the page BEHIND the modal
+        // and "confirm" text that was always there. The one signal accepted here is
+        // the dialog ITSELF announcing success; otherwise wait for it to re-mount
+        // with fields (→ mid-flow) or close (→ page checks below).
+        const dlgText = dlgs.map((d) => d.textContent || "").join(" ").toLowerCase();
+        const phrase = SUCCESS_TEXTS.find((p) => dlgText.includes(p) && !baseline.includes(p));
+        if (phrase) return `text:${phrase.slice(0, 30)}`;
+        await sleep(500);
+        continue;
+      }
+      // Dialog-less mid-flow (Indeed SmartApply renders steps as full PAGES, no
+      // [role=dialog]): the apply form is still on screen, so the page is not a
+      // confirmation — don't scan it for success wording.
+      if (isFormVisible()) return null;
       if (jobLooksApplied()) return "applied-badge";
-      const conf = await waitForSubmissionConfirmation(1200);
+      const conf = await waitForSubmissionConfirmation(1200, { baselineText: baseline });
       if (conf.verified) return conf.signal;
       await sleep(500);
     }
@@ -3849,13 +3892,15 @@
           await addAppliedJobKey(jobInfo.title, jobInfo.company);
           await recordLocalApplication(detectPlatform());
 
+          // Pre-click snapshot: success wording already on this page must not verify.
+          const baselineText = document.body.textContent || "";
           if (shouldMisclick()) await performMisclick(submitBtn);
           await humanClick(submitBtn);
 
           // Wait for a real signal the platform accepted the submission.
           // Without this, every Submit click was counted as 'applied' —
           // captcha, error toasts, or silent failures all looked the same.
-          const result = await waitForSubmissionConfirmation(45000);
+          const result = await waitForSubmissionConfirmation(45000, { baselineText });
 
           const currentPlatform = detectPlatform();
           if (result.verified) {
@@ -3918,6 +3963,9 @@
           return;
         }
         const sigBefore = formSignature();
+        // Pre-click snapshot for the silent-submit check below: text that was on the
+        // page BEFORE this Continue can never count as its confirmation.
+        const baselineText = document.body.textContent || "";
         await humanClick(navBtn);
         // Wait for the NEXT step to actually render (signature change) rather than a flat
         // sleep — ZipRecruiter re-mounts its modal, and acting on the old beat made phase3
@@ -3943,7 +3991,7 @@
         // post-apply page that also carries a "Continue…" button. With no button on screen
         // (the shape a real silent submit leaves behind) we keep the full window.
         const nextStepShowing = !!classifyFormButton().btn;
-        const silent = await detectSilentSubmission(nextStepShowing ? 2500 : 9000);
+        const silent = await detectSilentSubmission(nextStepShowing ? 2500 : 9000, baselineText);
         if (silent) {
           log(`Applied (verified ${silent}): ${jobInfo.title} @ ${jobInfo.company}`, "ok");
           await recordSubmittedApplication(jobInfo, coverLetter, silent);
@@ -4626,10 +4674,13 @@
     await addAppliedUrl(jobUrl);
     await addAppliedJobKey(jobTitle, jobCompany);
     await recordLocalApplication(platform);
+    // Pre-click snapshot: ATS pages carry the job description (with thank-you-ish
+    // boilerplate) on the apply page itself — it must not verify the submit.
+    const baselineText = document.body.textContent || "";
     if (shouldMisclick()) await performMisclick(submitBtn);
     await humanClick(submitBtn);
 
-    const result = await waitForSubmissionConfirmation(45000, { submitBtn });
+    const result = await waitForSubmissionConfirmation(45000, { submitBtn, baselineText });
     // VALIDATION-BLOCKED detection (council 2026-08-04, honesty fix): no confirmation AND
     // we're still on the same page with the same submit button AND required fields remain
     // empty / error text present → the form NEVER left the page. We optimistically counted
