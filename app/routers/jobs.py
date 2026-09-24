@@ -487,13 +487,19 @@ def _search_signature(profile: dict) -> str:
     Discovery reads the search from the PROFILE, never from the request (see
     _run_ats_discovery), so this is the honest key for "have we already swept this?".
     Keywords are order-insensitive: re-arranging chips is the same question.
+
+    Location is deliberately NOT in the key: collection is location-blind (discover_ats
+    has no location parameter), so a city change would reset the cooldown, walk the same
+    boards with the same keywords, and report a "new search" that collects nothing new.
+    The one location value collection DOES read is the "europe" pick, via the country
+    gate — so the derived gate is in the key, the raw city string is not.
     """
     keywords = ",".join(
         sorted(k.strip().lower() for k in (profile.get("keywords") or []) if (k or "").strip())
     )
-    location = (profile.get("location") or "").strip().lower()
+    country_gate = "us" if _wants_us_jobs(profile) else "any"
     job_type = (profile.get("job_type") or "").strip().lower()
-    return f"{keywords}|{location}|{job_type}"
+    return f"{keywords}|{country_gate}|{job_type}"
 
 
 @router.post("/jobs/find-ats")
@@ -514,9 +520,9 @@ def find_ats_jobs(user=Depends(get_current_user)):
         question: refusing it is how a warm-up would end up collecting for the keywords the
         user abandoned twenty seconds ago, and then reporting success.
 
-    IMPORTANT for callers: save the prefs FIRST, then call this. The sweep reads keywords,
-    location and job_type from the stored profile; called before the write lands it sweeps
-    the OLD search and takes the cooldown with it.
+    IMPORTANT for callers: save the prefs FIRST, then call this. The sweep reads keywords
+    and job_type from the stored profile; called before the write lands it sweeps the OLD
+    search and takes the cooldown with it.
     """
     from app.db.profile import get_profile
 
