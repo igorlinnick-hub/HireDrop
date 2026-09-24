@@ -84,14 +84,46 @@ def test_chips_moving_faster_than_the_floor_do_not_sweep_per_keystroke():
     assert not thread.called
 
 
-def test_location_and_job_type_are_part_of_the_search():
+def test_a_city_change_is_the_same_search_because_collection_is_location_blind():
+    """discover_ats has no location parameter, so a city change collects nothing new —
+    treating it as a fresh search reset the cooldown and reported a sweep that only
+    re-walked the same boards into the dedup."""
     _call({"keywords": ["event manager"], "location": "miami", "job_type": "full-time"})
     jobs_router._FIND_ATS_LAST_RUN[_User.id] = (
         jobs_router._FIND_ATS_LAST_RUN[_User.id][0],
         jobs_router._FIND_ATS_LAST_RUN[_User.id][1] - (jobs_router.NEW_SEARCH_MIN_GAP_SECS + 1),
     )
 
-    out, _ = _call({"keywords": ["event manager"], "location": "austin", "job_type": "full-time"})
+    out, thread = _call(
+        {"keywords": ["event manager"], "location": "austin", "job_type": "full-time"}
+    )
+    assert out["started"] is False
+    assert out["cooldown"] is True
+    assert out["search_changed"] is False
+    assert not thread.called
+
+
+def test_crossing_the_europe_gate_is_a_new_search():
+    """The one location value collection reads: "europe" flips the country gate."""
+    _call({"keywords": ["event manager"], "location": "miami"})
+    jobs_router._FIND_ATS_LAST_RUN[_User.id] = (
+        jobs_router._FIND_ATS_LAST_RUN[_User.id][0],
+        jobs_router._FIND_ATS_LAST_RUN[_User.id][1] - (jobs_router.NEW_SEARCH_MIN_GAP_SECS + 1),
+    )
+
+    out, _ = _call({"keywords": ["event manager"], "location": "europe"})
+    assert out["started"] is True
+    assert out["search_changed"] is True
+
+
+def test_job_type_is_part_of_the_search():
+    _call({"keywords": ["event manager"], "job_type": "full-time"})
+    jobs_router._FIND_ATS_LAST_RUN[_User.id] = (
+        jobs_router._FIND_ATS_LAST_RUN[_User.id][0],
+        jobs_router._FIND_ATS_LAST_RUN[_User.id][1] - (jobs_router.NEW_SEARCH_MIN_GAP_SECS + 1),
+    )
+
+    out, _ = _call({"keywords": ["event manager"], "job_type": "part-time"})
     assert out["started"] is True
 
 

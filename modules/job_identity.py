@@ -25,6 +25,33 @@ _APPLY_TAILS = {"apply", "application", "applications", "apply-now"}
 # A token this short is not an id — matching on it would sweep in unrelated rows.
 _MIN_TOKEN = 6
 
+# Query params that are KNOWN tracking noise — the only ones safe to strip. Anything not
+# listed is kept: boards we don't know may carry the posting id in a query param (Taleo
+# ?job=, ADP ?jobId=, ZipRecruiter ?jid=), and dropping it would collapse different
+# postings into one key — the exact wrong-row heal this module exists to prevent.
+_TRACKING_PARAMS = {
+    "from",
+    "ref",
+    "referer",
+    "referrer",
+    "source",
+    "src",
+    "trk",
+    "gclid",
+    "fbclid",
+    "msclkid",
+    "mc_cid",
+    "mc_eid",
+    "gh_src",
+    "lever-origin",
+    "lever-source",
+}
+
+
+def _is_tracking_param(key: str) -> bool:
+    k = key.lower()
+    return k in _TRACKING_PARAMS or k.startswith("utm_")
+
 
 def job_identity(url: str) -> str | None:
     """The board's posting id for `url`, or None when the URL carries no stable id.
@@ -76,6 +103,42 @@ def _looks_like_a_posting_id(tail: str) -> bool:
     if tail.isdigit():
         return True
     return bool(re.fullmatch(r"[0-9a-f]{8,}(?:-[0-9a-f]{4,}){0,4}", tail))
+
+
+def normalized_link(url: str) -> str | None:
+    """Canonical spelling of a job URL — the fallback key when the board exposes no
+    posting id. Lowercases the host, drops www., strips apply tails and the trailing
+    slash, and removes ONLY known tracking noise: unknown query params (sorted) and
+    route-like fragments stay in the key, because on unknown boards they may BE the
+    posting id. Only EXACT equality of two normalized links may count as a match:
+    anything fuzzier (title similarity, prefix match) would mark unrelated rows
+    applied, which is worse than missing a twin.
+    """
+    if not url or not isinstance(url, str):
+        return None
+    try:
+        parsed = urlparse(url.strip())
+    except Exception:  # noqa: BLE001 — a malformed URL has no canonical spelling
+        return None
+    host = (parsed.hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if not host:
+        return None
+    segments = [s for s in (parsed.path or "").split("/") if s and s.lower() not in _APPLY_TAILS]
+    query = parse_qs(parsed.query or "")
+    kept = sorted((k, v[0]) for k, v in query.items() if v and v[0] and not _is_tracking_param(k))
+    out = host
+    if segments:
+        out += "/" + "/".join(segments)
+    if kept:
+        out += "?" + "&".join(f"{k}={v}" for k, v in kept)
+    # A bare word anchor (#top, #main-content) is page furniture; anything with more
+    # structure (hash routing like #/jobs/123) can name the posting — keep it.
+    fragment = (parsed.fragment or "").strip()
+    if fragment and not re.fullmatch(r"[A-Za-z][A-Za-z_-]*", fragment):
+        out += "#" + fragment
+    return out
 
 
 def same_posting(a: str, b: str) -> bool:

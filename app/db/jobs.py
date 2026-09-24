@@ -255,16 +255,34 @@ def mark_applied_by_link(user_id: str, url: str, status: str = "applied") -> int
     the same URL (job-boards vs boards, ?gh_jid, /application) writes a second row and
     leaves the swiped one `approved` forever — re-queued every run, and double-applied on
     a browser profile whose local dedup set is empty. Identity comes from the board's
-    posting id (modules.job_identity), never from the URL string.
+    posting id (modules.job_identity) when the URL carries one; slug URLs without an id
+    fall back to exact normalized-link equality — never anything fuzzier.
     """
-    from modules.job_identity import job_identity
+    from modules.job_identity import job_identity, normalized_link
 
     token = job_identity(url)
-    if not token:
-        return 0
-    # The id itself narrows the read; job_identity then confirms each candidate, so a
-    # substring collision (an id that happens to appear inside another URL) can't match.
-    needle = token.split(":", 1)[1]
+    if token:
+        # The id itself narrows the read; job_identity then confirms each candidate, so
+        # a substring collision (an id inside another URL) can't match.
+        needle = token.split(":", 1)[1]
+
+        def confirms(link: str) -> bool:
+            return job_identity(link) == token
+
+    else:
+        # Slug URL, no posting id: heal only rows whose normalized link (lowercase host,
+        # apply tails / trailing slash / tracking query stripped) is EXACTLY the same.
+        # A host-only URL or a slug too short to narrow the read is not safe to heal.
+        norm = normalized_link(url)
+        if not norm or "/" not in norm:
+            return 0
+        needle = norm.rsplit("?", 1)[0].rsplit("/", 1)[-1]
+        if len(needle) < 6:
+            return 0
+
+        def confirms(link: str) -> bool:
+            return normalized_link(link) == norm
+
     try:
         res = (
             get_supabase()
@@ -280,7 +298,7 @@ def mark_applied_by_link(user_id: str, url: str, status: str = "applied") -> int
     ids = [
         r["id"]
         for r in (res.data or [])
-        if r.get("status") in ("new", "approved") and job_identity(r.get("link")) == token
+        if r.get("status") in ("new", "approved") and confirms(r.get("link"))
     ]
     if not ids:
         return 0
