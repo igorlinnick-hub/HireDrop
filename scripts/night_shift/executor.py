@@ -285,17 +285,69 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
     return missed
 
 
-async def submit_outcome(page, form) -> tuple[bool, str]:
-    """(sent, why) — POSITIVE proof only.
+class SubmitWatch:
+    """Records the submit XHR's status code so a run can say WHY it failed.
+
+    P2 of the lane. Greenhouse runs reCAPTCHA Enterprise in score mode, and the recon
+    of 09-23 corrected the assumption this executor was built on: a low score does NOT
+    make Greenhouse drop the application silently. Per their own docs it escalates —
+    "a user may be asked to submit a code from their email" — and the submit answers
+    428 while the page grows `#security-input-0..7` fields. That makes our reputation
+    MEASURABLE from the run itself: no target board, no calibration key, no solver.
+
+    So the run classifies four outcomes, not two, and the counter of `captcha_code`
+    per hundred submits is the number that decides whether we ever pay for proxies.
+
+    Deliberately a SYNC listener: it only reads `status`/`url` off the response, which
+    needs no await. Reading the body would need one, and a handler that awaits inside
+    a page event is how you deadlock a submit we only get to make once.
+    """
+
+    # Analytics and error reporting also POST during a submit; none of them are the form.
+    _NOISE = re.compile(
+        r"google-analytics|googletagmanager|segment|sentry|datadog|doubleclick|hotjar"
+    )
+
+    def __init__(self) -> None:
+        self.status: int | None = None
+        self.url: str = ""
+
+    def attach(self, page) -> None:
+        page.on("response", self._on_response)
+
+    def _on_response(self, response) -> None:
+        # Telemetry must never break a live submit — we only get to make it once.
+        with contextlib.suppress(Exception):
+            if response.request.method != "POST":
+                return
+            url = response.url
+            if self._NOISE.search(url):
+                return
+            if not re.search(r"application|submit|apply", url, re.I):
+                return
+            # Keep the LAST matching POST: Greenhouse pre-flights the upload before the
+            # real submit, and it is the final one that carries the verdict.
+            self.status = response.status
+            self.url = url
+
+
+async def submit_outcome(page, form, watch: "SubmitWatch | None" = None) -> tuple[bool, str, str]:
+    """(sent, why, outcome) — POSITIVE proof only.
 
     The employer either received it or did not; "probably" is not a state we may write
     to the database. Proof is one of: the board navigated to its confirmation URL, or
     the application form itself is gone from the page. Visible validation errors are
     proof of the opposite. Anything else is NOT SENT, on purpose.
+
+    `outcome` is the P2 classification: sent | invalid | captcha_code | unknown. The
+    order of the checks below is itself load-bearing — VALIDATION IS CHECKED FIRST,
+    because our own unfilled-field bug (live 09-23, Zocdoc) produces a refusal that
+    would otherwise be filed under "captcha", and a reputation metric poisoned by our
+    own bugs is worse than no metric.
     """
     with contextlib.suppress(Exception):  # no navigation = the normal in-place GH submit
         await page.wait_for_url(re.compile(r"confirmation|thank|success"), timeout=25000)
-        return True, "confirmation url"
+        return True, "confirmation url", "sent"
     await page.wait_for_timeout(6000)
 
     errors = page.locator(
@@ -310,18 +362,36 @@ async def submit_outcome(page, form) -> tuple[bool, str]:
             first = re.sub(r"\s+", " ", (await errors.first.inner_text()) or "").strip()[:60]
         except Exception:  # noqa: BLE001
             first = ""
-        return False, f"form refused it: {n_err} validation error(s) — {first}"
+        return False, f"form refused it: {n_err} validation error(s) — {first}", "invalid"
+
+    # Only now: the email-verification escalation. Either the page grew the code boxes
+    # or the submit XHR answered 428 — both mean "Greenhouse wants a human here".
+    code_ui = 0
+    with contextlib.suppress(Exception):
+        code_ui = await page.locator(
+            '#security-input-0, [id^="security-input"], input[name*="security_code"]'
+        ).count()
+    if code_ui or (watch and watch.status == 428):
+        return (
+            False,
+            f"Greenhouse asked for an emailed verification code (score too low; http {watch.status if watch else '?'})",
+            "captcha_code",
+        )
 
     try:
         if await form.count() == 0 or not await form.is_visible():
-            return True, "form gone after submit"
+            return True, "form gone after submit", "sent"
     except Exception:  # noqa: BLE001 — a detached form is exactly the success case
-        return True, "form detached after submit"
+        return True, "form detached after submit", "sent"
 
     body = (await page.inner_text("body")).lower()
     if "your application" in body and ("received" in body or "submitted" in body):
-        return True, "confirmation text"
-    return False, "no proof of sending (form still on screen)"
+        return True, "confirmation text", "sent"
+    return (
+        False,
+        f"no proof of sending (form still on screen, http {watch.status if watch else '?'})",
+        "unknown",
+    )
 
 
 async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> None:
@@ -411,12 +481,14 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
             log("LIVE ABORTED — no submit button found")
             await browser.close()
             return
+        watch = SubmitWatch()
+        watch.attach(page)  # armed BEFORE the click — the verdict rides the submit XHR
         await submit.first.click()
-        confirmed, why = await submit_outcome(page, form)
+        confirmed, why, outcome = await submit_outcome(page, form, watch)
         await page.screenshot(
             path=os.path.join(SHOTS, f"{job['id']}-after-submit.png"), full_page=True
         )
-        log(f"submit outcome: {'CONFIRMED' if confirmed else 'NOT SENT'} ({why}) — {page.url}")
+        log(f"submit outcome: {outcome.upper()} — {why} | http {watch.status} | {page.url}")
 
         if not confirmed:
             # NOT SENT is not a weaker kind of applied — it is a hand-back. Live 09-23
@@ -429,9 +501,13 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
                     "user_id": user_id,
                     "level": "warn",
                     "phase": "night-shift",
+                    # The outcome word is machine-countable on purpose: `outcome=captcha_code`
+                    # per hundred submits IS the reputation metric (P2), and `outcome=invalid`
+                    # separates our own filling bugs from Greenhouse's judgement of us.
                     "message": (
-                        f"🌙 Night shift could NOT send: {job['title']}"
-                        f" @ {job.get('company', '?')} — {why}. Nothing recorded as applied."
+                        f"🌙 Night shift could NOT send [outcome={outcome} http={watch.status}]:"
+                        f" {job['title']} @ {job.get('company', '?')} — {why}."
+                        " Nothing recorded as applied."
                     ),
                 }
             ).execute()
@@ -456,8 +532,8 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
                 "level": "info",
                 "phase": "night-shift",
                 "message": (
-                    f"🌙 Night shift applied (server): {job['title']}"
-                    f" @ {job.get('company', '?')} [{status}]"
+                    f"🌙 Night shift applied (server) [outcome=sent http={watch.status}]:"
+                    f" {job['title']} @ {job.get('company', '?')} [{status}]"
                 ),
             }
         ).execute()
