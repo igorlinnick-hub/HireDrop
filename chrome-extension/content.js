@@ -2832,7 +2832,14 @@
     // "Continue" 20 times against an unchanged form before giving up. A visible, empty,
     // labelled question inside the apply form is a question we must answer.
     const scope = formScope();
-    const inputs = Array.from(scope.querySelectorAll('input[type="text"], input[type="number"], textarea'))
+    // Typed inputs count too. text/number/textarea was the whole list, so a field the
+    // site declared as date/tel/email/url was invisible to the filler no matter how
+    // well its label matched — live 09-23: Mach 1 Stores' "today's date" stayed blank,
+    // the step validated against it, and "Continue" was refused 3× into a hand-back.
+    // localDay() already returns YYYY-MM-DD, which is exactly what input[type=date] wants.
+    const inputs = Array.from(scope.querySelectorAll(
+      'input[type="text"], input[type="number"], input[type="date"], ' +
+      'input[type="tel"], input[type="email"], input[type="url"], textarea'))
       .filter(el => {
         if (!el.offsetParent || el.value.trim()) return false;
         if (el.type === "hidden" || el.readOnly || el.disabled) return false;
