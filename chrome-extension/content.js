@@ -998,6 +998,9 @@
         'input[autocomplete="tel"]',
       ],
       coverLetter: [
+        // Greenhouse's revealed field is id="cover_letter_text" with NO name and a label
+        // that reads "Enter manually" — verified on live zocdoc + affirm forms 2026-09-25.
+        'textarea[id*="cover_letter" i]',
         'textarea[name*="coverletter" i]',
         'textarea[name*="cover_letter" i]',
         'textarea[name*="message" i]',
@@ -2745,22 +2748,40 @@
     const scope = formScope();
     const direct = findFieldBySelectorsOrLabel("coverLetter");
     if (direct) return direct;
-    const triggers = Array.from(scope.querySelectorAll('button, [role="button"], a')).filter((b) => {
+    // Greenhouse names the trigger: data-testid="cover_letter-text" (the resume's is
+    // resume-text), stable across boards — live zocdoc + affirm, 2026-09-25. Try it first,
+    // then fall back to reading the buttons.
+    const byTestId = Array.from(scope.querySelectorAll('[data-testid*="cover_letter" i], [data-testid*="coverletter" i]'))
+      .filter((b) => b.offsetParent && /text|manual|write/i.test(b.getAttribute("data-testid") || ""));
+    const byText = Array.from(scope.querySelectorAll('button, [role="button"], a')).filter((b) => {
       if (!b.offsetParent) return false;
       const t = (b.textContent || "").trim().toLowerCase();
       // "Enter manually" / "Write" / "Paste" — never "Attach"/"Upload": a file chooser
       // opens an OS dialog that would hang the run with nobody there to dismiss it.
       return /enter manually|type manually|write( it)? (here|manually)|paste/.test(t);
     });
-    for (const btn of triggers) {
-      // Only inside the cover-letter block: the same chooser exists for the resume.
-      const block = btn.closest("[class*='field' i], [class*='question' i], fieldset, div");
-      const blockText = (block?.textContent || "").toLowerCase();
-      if (!/cover\s*letter/.test(blockText)) continue;
+    for (const btn of [...byTestId, ...byText]) {
+      // Only inside the cover-letter block: the same chooser exists for the resume. Walk
+      // UP until an ancestor actually names the field — closest("div") stopped at the
+      // button's own wrapper, whose text is just "Enter manually", so every real
+      // Greenhouse trigger was rejected (live: 6 forms, "no cover-letter field", 09-24).
+      let block = btn, blockText = "";
+      for (let hop = 0; hop < 6 && block; hop++) {
+        blockText = (block.textContent || "").toLowerCase();
+        if (/cover\s*letter/.test(blockText)) break;
+        block = block.parentElement;
+      }
+      const named = (btn.getAttribute("data-testid") || "").toLowerCase().includes("cover")
+        || /cover\s*letter/.test(blockText);
+      if (!named) continue;
       await humanClick(btn);
       await sleep(humanDelay(400, 900));
+      // The revealed textarea's own label reads "Enter manually", so the label test can
+      // never identify it — take an empty visible textarea from inside the block we just
+      // proved is the cover-letter one.
       const revealed = findFieldBySelectorsOrLabel("coverLetter")
-        || Array.from(scope.querySelectorAll("textarea")).find((t) => t.offsetParent && !(t.value || "").trim() && LETTER_LABEL_RE.test(getFieldLabel(t) || blockText));
+        || (block && Array.from(block.querySelectorAll("textarea")).find((t) => t.offsetParent && !(t.value || "").trim()))
+        || Array.from(scope.querySelectorAll("textarea")).find((t) => t.offsetParent && !(t.value || "").trim() && LETTER_LABEL_RE.test(getFieldLabel(t)));
       if (revealed) return revealed;
     }
     return null;
@@ -2768,9 +2789,18 @@
 
   // Fill the cover-letter field if this form has one. Returns "" when the form has no
   // such field — the honest answer for Indeed, and what the application row then records.
-  async function fillCoverLetterIfAsked(label) {
+  async function fillCoverLetterIfAsked(label, waitMs = 0) {
     let el = null;
-    try { el = await revealCoverLetterField(); } catch { /* a missing chooser must not kill the fill */ }
+    // ATS forms hydrate late: on a cold load the chooser is not in the DOM yet, and a
+    // single look concluded "no field" on a form that has one (caught 2026-09-25 running
+    // the real function against live Greenhouse pages — same URL missed cold, found warm).
+    // Native wizards pass waitMs=0: Indeed has no such field to wait for.
+    const deadline = Date.now() + Math.max(0, waitMs);
+    do {
+      try { el = await revealCoverLetterField(); } catch { /* a missing chooser must not kill the fill */ }
+      if (el || Date.now() >= deadline) break;
+      await sleep(1000);
+    } while (!el);
     if (!el) {
       logBackend(`${label || platformLabel()}: no cover-letter field on this form — none written`, "info");
       return "";
@@ -4579,7 +4609,9 @@
     // textarea behind an "Enter manually" chooser, so this reveals it first; on Lever the
     // field is open and fills directly. If the form has no such field (Indeed's wizard
     // never shows one) nothing is written and nothing is charged.
-    coverLetter = await fillCoverLetterIfAsked(label);
+    // 6s ceiling: the resume step above already polls up to 30s for hydration, so this is
+    // the tail case, not the common one — and it is only ever paid when no field is found.
+    coverLetter = await fillCoverLetterIfAsked(label, 6000);
 
     // Screener questions — reuse the generic answerers (Loop 4 core).
     // These are the quietest 100 seconds in the product: each text answer is an AI

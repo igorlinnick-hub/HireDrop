@@ -52,19 +52,31 @@ check("revealCoverLetterField() exists", !!REVEAL);
 
 const FIXTURES = [
   {
-    name: "Greenhouse — textarea behind the 'Enter manually' chooser",
-    html: `<form>
-             <div class="field"><label>Resume</label>
-               <button type="button">Attach</button><button type="button">Enter manually</button></div>
-             <div class="field" id="cl"><label for="cl_t">Cover Letter</label>
-               <button type="button" id="manual">Enter manually</button></div>
-           </form>`,
-    // The chooser swaps in the textarea — modelled by the click handler below.
+    // VERBATIM from a live form (job-boards.greenhouse.io/zocdoc/jobs/7974986, captured
+    // 2026-09-25). The first version of this fixture was invented, and it passed while
+    // the real thing failed on six live forms: the trigger's nearest div reads only
+    // "Enter manually", so a closest("div") block check rejected every real Greenhouse
+    // field. Fixtures for this are copied, not imagined.
+    name: "Greenhouse — the real chooser markup",
+    html: `<div class="field-wrapper"><div role="group" aria-labelledby="upload-label-cover_letter" class="file-upload">
+             <div id="upload-label-cover_letter" class="label upload-label">Cover Letter</div>
+             <div class="file-upload__wrapper"><div class="button-container">
+               <div class="secondary-button"><div>
+                 <button type="button" class="btn btn--pill">Attach</button>
+                 <input id="cover_letter" class="visually-hidden" type="file">
+               </div></div>
+               <div class="secondary-button"><button type="button" data-testid="cover_letter-dropbox">Dropbox</button></div>
+               <div class="secondary-button"><div>
+                 <button type="button" id="manual" data-testid="cover_letter-text">Enter manually</button>
+                 <label class="visually-hidden" for="cover_letter_text">Enter manually</label>
+               </div></div>
+             </div></div></div></div>`,
+    // Clicking swaps in the textarea Greenhouse actually renders: id cover_letter_text,
+    // no name, and a label that says "Enter manually" — useless for matching.
     onClick: (doc) => {
       const ta = doc.createElement("textarea");
-      ta.id = "cl_t";
-      ta.name = "cover_letter";
-      doc.getElementById("cl").appendChild(ta);
+      ta.id = "cover_letter_text";
+      doc.querySelector(".file-upload").appendChild(ta);
     },
     expect: true,
   },
@@ -82,8 +94,17 @@ const FIXTURES = [
   },
   {
     name: "the resume chooser is NOT mistaken for the letter's",
-    html: `<form><div class="field"><label>Resume</label>
-             <button type="button">Enter manually</button></div></form>`,
+    html: `<div class="field-wrapper"><div role="group" class="file-upload">
+             <div class="label upload-label">Resume/CV</div>
+             <div class="secondary-button"><div>
+               <button type="button" id="manual" data-testid="resume-text">Enter manually</button>
+               <label class="visually-hidden" for="resume_text">Enter manually</label>
+             </div></div></div></div>`,
+    onClick: (doc) => {
+      const ta = doc.createElement("textarea");
+      ta.id = "resume_text";
+      doc.querySelector(".file-upload").appendChild(ta);
+    },
     expect: false,
   },
 ];
@@ -106,7 +127,8 @@ const FIXTURES = [
       window,
       formScope: () => doc,
       findFieldBySelectorsOrLabel: () => {
-        const ta = doc.querySelector('textarea[name*="cover" i], textarea[id*="cover" i], textarea[name*="comments" i]');
+        // Mirrors SELECTORS.fields.coverLetter in content.js.
+        const ta = doc.querySelector('textarea[id*="cover_letter" i], textarea[name*="cover_letter" i], textarea[name*="comments" i]');
         return ta && !ta.value.trim() ? ta : null;
       },
       getFieldLabel: (el) => {
