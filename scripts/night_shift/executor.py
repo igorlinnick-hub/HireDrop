@@ -43,8 +43,10 @@ from app.db import jobs as jobs_db  # noqa: E402
 from app.db import resume as resume_storage  # noqa: E402
 from app.db.client import get_supabase  # noqa: E402
 from app.db.profile import get_profile  # noqa: E402
+from app.db.subscriptions import check_can_apply, increment_free_apps  # noqa: E402
 from modules.ai_fit_judge import assess_fit  # noqa: E402
 from modules.ai_question_answer import answer_screener_question  # noqa: E402
+from modules.job_identity import job_identity, normalized_link  # noqa: E402
 
 SHOTS = os.path.join(os.path.dirname(__file__), "shots")
 
@@ -104,6 +106,27 @@ def download_resume(user_id: str, profile: dict) -> str:
     return path
 
 
+def already_applied(user_id: str, link: str) -> bool:
+    """Has this user already applied to this posting, by the SERVER's record?
+
+    Identity, not string equality: the same Greenhouse posting reaches the pool as
+    `boards.greenhouse.io/x/jobs/123`, `job-boards.greenhouse.io/x/jobs/123?gh_jid=123`
+    and with tracking params, so comparing URLs literally misses the duplicate that
+    matters. job_identity() reduces all of them to one key — the same reduction
+    /campaign/queue uses to stop the extension re-applying.
+    """
+    target = job_identity(link) or (normalized_link(link) or link)
+    try:
+        applied = apps_db.applied_job_urls(user_id)
+    except Exception as exc:  # noqa: BLE001
+        # Fail CLOSED: if we cannot tell whether this was already sent, do not send it.
+        # A skipped job costs one slot; a duplicate costs the user's credibility with an
+        # employer, which is the thing the product exists to protect.
+        log(f"  ! dedup lookup failed ({exc}) — refusing to apply blind")
+        return True
+    return any((job_identity(url) or (normalized_link(url) or url)) == target for url in applied)
+
+
 async def find_application_form(page):
     """The actual application form, or None. NEVER fill outside it — dry-run #1 typed
     an AI answer into a careers-site SEARCH BOX because the pool link redirected to a
@@ -159,9 +182,20 @@ async def fill_greenhouse(page, form, profile: dict, job: dict, resume_path: str
                 continue
             tag = (await el.evaluate("e => e.tagName")).lower()
             typ = ((await el.get_attribute("type")) or "").lower()
-            cur = (
-                (await el.input_value()) if tag != "select" else (await el.evaluate("e => e.value"))
-            )
+            # "Already answered?" is a different question for a tickbox than for a text
+            # field. input_value() on a checkbox/radio returns its VALUE ("on", "Yes",
+            # "I don't wish to answer") regardless of whether anyone ticked it — so the
+            # `if cur: continue` below used to skip every consent box and every EEO radio
+            # before their label was even read, and they never reached the hand-back list
+            # either. A required unticked consent then passed the pre-submit gate.
+            if typ in ("checkbox", "radio"):
+                cur = "ticked" if await el.is_checked() else ""
+            else:
+                cur = (
+                    (await el.input_value())
+                    if tag != "select"
+                    else (await el.evaluate("e => e.value"))
+                )
             if cur:
                 continue
             label = await el.evaluate(
@@ -197,7 +231,14 @@ async def fill_greenhouse(page, form, profile: dict, job: dict, resume_path: str
             if tag == "select":
                 await el.select_option(label=answer)
             elif typ in ("checkbox", "radio"):
-                continue  # GH custom radios are rare; leave for the hand-back list
+                # Never tick a box on the user's behalf from a generated answer: these are
+                # consents, certifications and EEO declarations, where a wrong tick is a
+                # false statement made in their name. Hand it back instead — and do it
+                # honestly, which the old `continue` did not (it claimed the hand-back
+                # list, then never appended to it).
+                if required:
+                    unfilled.append(label)
+                continue
             else:
                 await el.fill(answer)
             log(f"  · {label[:60]} → {answer[:60]}")
@@ -243,11 +284,18 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
             await box.click()
             await page.wait_for_timeout(600)
             opts = page.locator('[class*="select__option"], [role="option"]')
-            texts = [
-                re.sub(r"\s+", " ", (await opts.nth(j).inner_text()) or "").strip()
+            # Keep each option's REAL position in the menu next to its text. Filtering a
+            # flat list and then clicking `opts.nth(texts.index(target))` clicks a
+            # different option than the one chosen: drop the "Select one…" row and every
+            # survivor shifts up by one, so "Onsite" picks "Hybrid" — and the log still
+            # prints the answer we meant. Silent, and the employer gets an answer the
+            # user never gave. Pairs make the position immune to filtering.
+            pairs = [
+                (j, re.sub(r"\s+", " ", (await opts.nth(j).inner_text()) or "").strip())
                 for j in range(min(await opts.count(), 40))
             ]
-            texts = [t for t in texts if t and not re.match(r"^select", t, re.I)]
+            pairs = [(j, t) for j, t in pairs if t and not re.match(r"^select", t, re.I)]
+            texts = [t for _, t in pairs]
             if not texts:
                 missed.append(label)
                 await page.keyboard.press("Escape")
@@ -277,9 +325,23 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
                 missed.append(label)
                 await page.keyboard.press("Escape")
                 continue
-            await opts.nth(texts.index(target)).click()
+            await opts.nth(pairs[texts.index(target)][0]).click()
             await page.wait_for_timeout(300)
-            log(f"  ▾ {label[:60]} → {target[:60]}")
+            # Read back what the widget actually holds — clicking is not choosing, and a
+            # log line that reports our intent instead of the field's state is how a wrong
+            # answer reaches an employer looking correct in the transcript.
+            settled = ""
+            with contextlib.suppress(Exception):
+                settled = await box.evaluate(
+                    "e => { const w = e.closest('div[class*=select]');"
+                    " const v = w && w.querySelector('[class*=singleValue]');"
+                    " return v ? v.textContent.trim() : ''; }"
+                )
+            if settled and target.lower() not in settled.lower():
+                missed.append(label)
+                log(f"  ! {label[:50]}: wanted {target[:30]!r}, widget holds {settled[:30]!r}")
+                continue
+            log(f"  ▾ {label[:60]} → {settled or target}")
         except Exception as exc:  # noqa: BLE001
             log(f"  ! combobox #{i} failed: {exc}")
     return missed
@@ -378,11 +440,23 @@ async def submit_outcome(page, form, watch: "SubmitWatch | None" = None) -> tupl
             "captcha_code",
         )
 
+    # "The form vanished" is necessary but NOT sufficient. A posting that closed between
+    # page load and submit answers non-2xx and redirects to the board root (?error=true) —
+    # the form is gone there too, and the old code filed that as a sent application. So a
+    # vanished form only counts when the submit XHR we watched did not say otherwise.
+    http_ok = watch is None or watch.status is None or 200 <= watch.status < 300
     try:
-        if await form.count() == 0 or not await form.is_visible():
-            return True, "form gone after submit", "sent"
-    except Exception:  # noqa: BLE001 — a detached form is exactly the success case
-        return True, "form detached after submit", "sent"
+        gone = await form.count() == 0 or not await form.is_visible()
+    except Exception:  # noqa: BLE001 — a detached form means the document moved on
+        gone = True
+    if gone and http_ok:
+        return True, f"form gone after submit (http {watch.status if watch else 'n/a'})", "sent"
+    if gone:
+        return (
+            False,
+            f"form gone but the board answered http {watch.status} — not a submission",
+            "unknown",
+        )
 
     body = (await page.inner_text("body")).lower()
     if "your application" in body and ("received" in body or "submitted" in body):
@@ -448,6 +522,16 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
                     f" {str(verdict.get('reason') or '')[:80]}"
                 )
                 continue
+            # ALREADY APPLIED? The pool row's own status is not the answer. The same
+            # posting arrives under several spellings (harvest vs browser query strings),
+            # so a row created AFTER an application still reads `new`; and --job-url
+            # bypasses the status filter entirely, which makes a re-run — a retry after a
+            # crash, a repeated test — send the employer a SECOND real application.
+            # The server already knows better: applied_job_urls + job_identity is the
+            # same answer /campaign/queue uses to keep the extension honest.
+            if already_applied(user_id, cand["link"]):
+                log("  skip (already applied to this posting — server's own record)")
+                continue
             log(f"  fit {verdict.get('fit_score')} — proceeding")
             job = cand
             break
@@ -479,6 +563,33 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
         submit = form.locator('button[type="submit"], button:has-text("Submit application")')
         if not await submit.count():
             log("LIVE ABORTED — no submit button found")
+            await browser.close()
+            return
+
+        # THE CAP IS THE BACKEND'S, AND THIS PATH HAS TO ASK IT TOO.
+        # Until now the night shift wrote `applications` rows straight through the
+        # service_role client, so the only real gate in the product — check_can_apply
+        # behind POST /applications/save, which counts today's rows and 429s the 31st —
+        # never saw a server-side submit. One writer obeyed the 30/day, 15/platform,
+        # free-taste and expired-subscription limits; the other did not know they existed.
+        # Asked HERE, immediately before the click: the answer must be as fresh as
+        # possible, since the extension may have been applying on the user's machine
+        # while this walk was reading forms.
+        gate = check_can_apply(user_id, "greenhouse", profile.get("email"))
+        if not gate.get("allowed"):
+            log(f"LIVE ABORTED — cap reached: {gate.get('reason')}")
+            with contextlib.suppress(Exception):
+                get_supabase().table("activity_log").insert(
+                    {
+                        "user_id": user_id,
+                        "level": "info",
+                        "phase": "night-shift",
+                        "message": (
+                            f"🌙 Night shift stood down [outcome=capped]: {gate.get('reason')}"
+                            f" ({gate.get('used_today')}/{gate.get('daily_limit')} today)."
+                        ),
+                    }
+                ).execute()
             await browser.close()
             return
         watch = SubmitWatch()
@@ -526,6 +637,13 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
             platform="greenhouse",
             job_url=job["link"],
         )
+        # The lifetime free-taste counter lives beside the daily cap and is advanced by
+        # POST /applications/save, which this path bypasses. Without this a free user's
+        # night submits would never count toward FREE_APP_LIMIT — the gate would stay
+        # open forever for exactly the applications nobody is watching.
+        if gate.get("tier") == "free":
+            with contextlib.suppress(Exception):
+                increment_free_apps(user_id)
         get_supabase().table("activity_log").insert(
             {
                 "user_id": user_id,
