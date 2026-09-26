@@ -4738,20 +4738,39 @@
       return;
     }
 
-    // LEVER hCaptcha — we do NOT solve captchas (compliance/ban-safety); we NOTIFY the user.
-    // The form is already FILLED above. GH's invisible reCAPTCHA auto-solves (zero-touch), so
-    // this fires ONLY on a real interactive challenge (isDetected signal = hcaptcha iframe).
-    // The old path treated any GH/Lever captcha as "passive — continuing" and fake-submitted
-    // into the unsolved hCaptcha → silent fail (Lever = 0 applies ever). Now: send the
-    // dashboard "solve the captcha" notification and DON'T submit. Advance the pool so the
-    // walk isn't frozen; the notification carries the job so the user finishes it themselves.
-    // (Refinement for later — preserve the fill instead of advancing — is a UX call for Igor.)
+    // LEVER hCaptcha — we do NOT solve captchas (compliance/ban-safety), so this job is
+    // HANDED BACK. The form is already FILLED above. GH's invisible reCAPTCHA auto-solves
+    // (zero-touch), so this fires ONLY on a real interactive challenge (isDetected signal =
+    // hcaptcha iframe). The oldest path treated any GH/Lever captcha as "passive — continuing"
+    // and fake-submitted into the unsolved hCaptcha → silent fail (Lever = 0 applies ever).
+    //
+    // The next one swung to NOTIFY: DETECTION_TRIPPED — the channel that means "the walk is
+    // parked and a human is about to clear this wall" — plus ATS_JOB_DONE on the very next
+    // line. Every part of that was wrong (audit 09-25, findings 3+5):
+    //   · ATS_JOB_DONE navigates THIS tab to the next card (advanceAtsQueue → navigatePoolNext
+    //     → chrome.tabs.update), so the filled form is destroyed. "We filled it — open it and
+    //     press submit yourself" pointed at a page that no longer exists: a claim about state
+    //     that does not survive;
+    //   · DETECTION_TRIPPED persists captchaWaiting, and its clearers are the in-page pause
+    //     loops / Start / Stop — none of which happen here — so the flag outlived the wall,
+    //     begged the user for a posting the run had abandoned, and muted the watchdogs;
+    //   · and the job itself was written off with no reason: ATS_JOB_DONE PATCHes status
+    //     "skipped" silently, and only in a pool run.
+    // handBackJob is the channel this path always wanted, and the one the rest of phase_ats
+    // already uses for "this one can't be finished by us": it records the REASON + the unfilled
+    // labels, files the durable to-do row the popup block and the dashboard rail read, flips the
+    // pool job out of `approved` so it never re-queues, and advances the walk — the intentional
+    // advance (#72) survives, only the pause claim goes. It writes no hand-off flag, so nothing
+    // here can mute a watchdog or leave a banner standing over a posting we left behind. One
+    // channel on purpose: the second wording (the old 🧩 logBackend line) repeated the same
+    // "заполнено, открой и submit" promise the record had already broken.
     if (platform === "lever") {
       const _det = isDetected();
       if (/hcaptcha/i.test(_det.signal || "")) {
-        logBackend(`🧩 Lever: ${jobTitle} @ ${jobCompany} — заполнено, нужна ВАША капча. Открой Lever и submit (капчу не решаем за тебя).`, "warn");
-        await sendMsg({ type: "DETECTION_TRIPPED", data: { signal: _det.signal, url: jobUrl, phase: "form", job_title: jobTitle, company: jobCompany, needs_captcha: true } });
-        await sendMsg({ type: "ATS_JOB_DONE" }); // notify + advance; don't fake-submit, don't freeze the pool
+        await handBackJob(
+          `Lever asks for a human captcha at submit (${_det.signal}) — we don't solve those, so nothing was sent. Apply by hand if you want this one`,
+          { title: jobTitle, company: jobCompany, platform }
+        );
         return;
       }
     }
@@ -5205,6 +5224,69 @@
     return "unknown";
   }
 
+  // ---------------------------------------------------------------------------
+  // Retiring a human hand-off: the CLEAN PAGE is the authority, not this context
+  // ---------------------------------------------------------------------------
+  //
+  // A full-page wall is cleared by a TOP-LEVEL NAVIGATION back to the original URL — a
+  // Cloudflare managed challenge (#challenge-form / #challenge-running), Indeed's
+  // "Security Check", DataDome, the challenge|security-check|blocked urls. That navigation
+  // destroys this content-script context — which this file already says out loud a few
+  // lines below, where it explains why cfReloadCount has to live in chrome.storage
+  // ("window.location.reload() destroys this content-script context"). Both exits from the
+  // captcha pause and both from the terms pause run INSIDE that dying context, so the one
+  // case where the human actually SOLVED the wall was the one case where DETECTION_CLEARED
+  // never fired. And nothing else retired it: content.js never touched captchaWaiting at
+  // all, and in background.js only DETECTION_CLEARED / START / STOP / the 401 self-stop
+  // ever write it back to null. The fresh context re-inits and the walk resumes with the
+  // flag still set, so two things then run on a lie for the rest of the run (audit 09-25,
+  // finding 2): the dashboard keeps telling the user to solve a wall that is already gone,
+  // and nativeWalkWatchdog — which returns early while captchaWaiting is set, on purpose,
+  // so it never reloads a tab under a human mid-captcha — stays muted, so a genuine freeze
+  // gets no reload and no honest stop ("running" while nothing walks).
+  //
+  // So clearing is state-driven now: whichever context observes a page with NO wall on it
+  // retires the hand-off, INCLUDING one freshly injected after the challenge navigation.
+  // Three guards keep it quiet and keep a LIVE pause safe. We only speak when a hand-off is
+  // actually recorded, so this is silent on every ordinary page of the walk. We speak only
+  // after the page has been wall-free across a settle, so a challenge mid-render is not
+  // mistaken for a solved one. And background.js accepts the report only from the tab that
+  // RAISED the wall (DETECTION_TRIPPED stamps captchaWaiting.tabId), so a human still parked
+  // at the wall in the automation window is never declared done because some other tab
+  // happens to look clean.
+  // One detector read says "no wall on this page at this millisecond" — it does NOT say
+  // "the human is finished". A managed challenge repaints as it works (#challenge-form is
+  // replaced by #challenge-running), an hCaptcha iframe needs a beat to lay out, and
+  // isDetected() only counts boxes it can measure at ≥24x24 (see its own note), so a
+  // challenge mid-render reads as clean. Retiring on that single read is the sharp edge of
+  // this whole mechanism: it would pull the "your turn" banner out from under a human who
+  // is still solving, and — worse for invariant 5 — un-mute nativeWalkWatchdog for the very
+  // tab they are working in, so the next tick could reload their half-solved challenge.
+  // So the clean page has to HOLD STILL: read, wait, read again, and only then speak.
+  const WALL_CLEAR_SETTLE_MS = 5000;
+
+  // Both walls ride ONE hand-off record, so the page is clean only when NEITHER is present:
+  // a Cloudflare challenge that resolved into an Accept-Terms modal has not finished asking
+  // for hands.
+  function anyHumanWallPresent() {
+    return isDetected().detected || detectConsentGate().gated;
+  }
+
+  async function reportCleanPageIfHandoffPending() {
+    const { captchaWaiting } = await storageGet("captchaWaiting");
+    if (!captchaWaiting) return false;
+    if (anyHumanWallPresent()) return false;
+    await sleep(WALL_CLEAR_SETTLE_MS);
+    if (anyHumanWallPresent()) return false;
+    // The pause may have ended some other way while we waited (Stop, the watchdog's honest
+    // stop, the run moving on). Reporting about a record that is already gone would put a
+    // "campaign resumed" line in the feed of a run nobody resumed.
+    const after = await storageGet("captchaWaiting");
+    if (!after.captchaWaiting) return false;
+    const res = await sendMsg({ type: "WALL_LOOKS_CLEAR", url: window.location.href });
+    return !!(res && res.cleared);
+  }
+
   let _runPhaseActive = false;
 
   async function runPhase() {
@@ -5258,7 +5340,13 @@
     const det = isDetected();
     // Page is clean → reset the CF reload cap so a later genuine (transient) challenge gets
     // its full 2 retries instead of inheriting a stale count.
-    if (!det.detected) { storageSet({ cfReloadCount: 0 }).catch(() => {}); }
+    if (!det.detected) {
+      storageSet({ cfReloadCount: 0 }).catch(() => {});
+      // …and a clean page is also the proof that a human wall got cleared. See
+      // reportCleanPageIfHandoffPending(): the wall that resolves by navigation kills
+      // the context that was waiting for it, so this is the only place that can tell.
+      await reportCleanPageIfHandoffPending();
+    }
     if (det.detected) {
       // Cloudflare JS challenge ("Just a moment") — auto-resolves in 3-5s,
       // no user action needed. Wait silently up to 15s before escalating.
