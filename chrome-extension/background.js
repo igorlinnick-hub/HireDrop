@@ -128,6 +128,20 @@ async function refreshAccessToken() {
 let _auth401Streak = 0;
 const AUTH_401_SELF_STOP = 5;
 
+/**
+ * A human hand-off belongs to a RUNNING campaign. Every stop path must drop it,
+ * or the dashboard keeps showing "Campaign paused — solve the captcha in the
+ * automation window" over a run that is already over — and for a closed window,
+ * over a window that no longer exists. Only STOP_CAMPAIGN and START_CAMPAIGN used
+ * to clear it, so the five paths that bypass them (window/tab closed, the
+ * server-authoritative stop, the watchdog's own stop, the idle auto-stop) left the
+ * banner standing until the dashboard's 2h stale-guard expired. That guard is the
+ * last resort, not the mechanism (audit 09-25, docs/reviews/2026-09-25-captcha-resume-audit.md).
+ */
+async function clearHumanHandoff() {
+  await chrome.storage.local.set({ captchaWaiting: null });
+}
+
 async function noteAuth401() {
   _auth401Streak++;
   if (_auth401Streak < AUTH_401_SELF_STOP) return;
@@ -519,6 +533,7 @@ async function sendExtensionPing() {
     // stays the backend's TTL (#98/#107/#111) — this only clears OUR local copy.
     if (data.campaignRunning && !windowAlive) {
       await chrome.storage.local.set({ campaignRunning: false });
+      await clearHumanHandoff();
       await addToActivityLog(
         "⏹ Campaign window is gone (laptop closed or Chrome quit) — the run ended. Press Start when you're back.",
         "warn"
@@ -553,6 +568,7 @@ async function sendExtensionPing() {
         // application. Every stop must name itself.
         await addToActivityLog("⏹ Stopped by the server: the backend says this campaign is no longer running.", "warn");
         await chrome.storage.local.set({ campaignRunning: false, currentJob: null });
+        await clearHumanHandoff();
         const { campaignTabId } = await chrome.storage.local.get("campaignTabId");
         if (campaignTabId) detachDebugger(campaignTabId).catch(() => {});
         updateBadge();
@@ -1323,6 +1339,7 @@ async function nativeWalkWatchdog() {
   // Two reloads and still nothing. Stop honestly instead of leaving a green "running"
   // badge over a dead walk (the zombie shape of #98, from the other end).
   await chrome.storage.local.set({ campaignRunning: false, walkNudges: 0 });
+  await clearHumanHandoff();
   await addToActivityLog(
     `⏹ Watchdog: the walk stayed silent through two reloads (${mins} min) — stopping the campaign so it isn't "running" while nothing happens. Start it again anytime.`,
     "warn"
@@ -1359,6 +1376,7 @@ async function tapPoolIdleRefill() {
     if (!d.poolIdleSince) { await chrome.storage.local.set({ poolIdleSince: Date.now() }); return; }
     if (Date.now() - d.poolIdleSince > IDLE_STOP_MS) {
       await chrome.storage.local.set({ campaignRunning: false });
+      await clearHumanHandoff();
       await chrome.storage.local.remove(["poolIdleSince", "atsNavAt", "atsNavTries"]);
       await addToActivityLog("Campaign auto-stopped after 2h idle (no new swipes) — start again anytime.", "ok");
       try { await apiPost("/campaign/stop", {}); } catch {}
@@ -2046,7 +2064,7 @@ async function handleMessage(msg, sender) {
     case "PLATFORM_EXHAUSTED": {
       const ex = await chrome.storage.local.get([
         "campaignRunning", "campaignFilters", "campaignTabId", "triedPlatforms", "platformConnections",
-        "platformFailover",
+        "platformFailover", "atsPlatform", "poolLeadMode",
       ]);
       if (!ex.campaignRunning) return { ok: true, stopped: true };
       const NAMES = {
@@ -2054,6 +2072,23 @@ async function handleMessage(msg, sender) {
         greenhouse: "Greenhouse", lever: "Lever", ashby: "Ashby",
       };
       const curPlat = msg.platform || "unknown";
+      // A TAP run never falls through to a board walk. A wall on one approved card
+      // (a consent gate or a login wall in the background window) used to arrive here
+      // and be treated like an exhausted board: the handler would drop `atsPlatform`
+      // and navigate to the next board, and from that moment `_poolRun` and
+      // `reviewMode` are both false — the run starts AUTO-SUBMITTING jobs nobody
+      // swiped, and tapPoolIdleRefill (which requires atsPlatform === "pool") never
+      // picks up later swipes again. START_CAMPAIGN refuses to build that walk for a
+      // tap run on purpose; this is the same rule for the same reason, applied where
+      // the run is already going. Go idle in the pool instead — swipe more and the
+      // idle refill resumes it.
+      if (ex.atsPlatform === "pool" && ex.poolLeadMode === "tap") {
+        await addToActivityLog(
+          `${NAMES[curPlat] || curPlat} needs a human (${msg.reason || "blocked"}) — staying on the jobs ` +
+          `you swiped instead of searching the boards. Swipe more and we'll keep applying.`,
+          "warn");
+        return { ok: true, stayedInPool: true };
+      }
       // Single-platform runs (launch modal "Pick one platform") never switch boards:
       // the user consented to THIS board only. Stop out loud with the road back —
       // "offer the fix, not the exit". Missing key (run started pre-1.8.2) = failover on.
@@ -2765,6 +2800,7 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
       campaignRunning: false,
       campaignTabId: null,
       currentJob: null,
+      captchaWaiting: null,
     });
     try { await apiPost("/campaign/stop", {}); } catch {}
     updateBadge();
@@ -2783,6 +2819,7 @@ chrome.windows.onRemoved.addListener(async (windowId) => {
       campaignTabId: null,
       campaignWindowId: null,
       currentJob: null,
+      captchaWaiting: null,
     });
     try { await apiPost("/campaign/stop", {}); } catch {}
     updateBadge();
