@@ -139,25 +139,31 @@ const WALL = { url: "https://www.indeed.com/viewjob?jk=abc", site: "Indeed", kin
 
   // --- content: WHEN the clean page speaks ---------------------------------------------
   const reportFn = slice(CONTENT, "async function reportCleanPageIfHandoffPending(", "  ");
+  const wallPresentFn = slice(CONTENT, "function anyHumanWallPresent(", "  ");
+  const settleConst = (CONTENT.match(/const WALL_CLEAR_SETTLE_MS = [^;]+;/) || [])[0];
   check("content.js has reportCleanPageIfHandoffPending()", !!reportFn,
     "before this, content.js never read or wrote captchaWaiting at all");
+  check("…and asks BOTH detectors through anyHumanWallPresent()", !!wallPresentFn && !!settleConst,
+    "one record carries both walls; see wall-clear-needs-confirmation.test.js");
 
-  async function runReport({ captchaWaiting, gated }) {
+  async function runReport({ captchaWaiting, gated, detected }) {
     const sent = [];
     const sandbox = {
       storageGet: async () => (captchaWaiting ? { captchaWaiting } : {}),
       detectConsentGate: () => ({ gated: !!gated, label: gated ? "Accept" : "" }),
+      isDetected: () => ({ detected: !!detected, signal: detected ? "dom:#challenge-form" : "" }),
+      sleep: async () => {}, // the settle itself is exercised in wall-clear-needs-confirmation
       sendMsg: async (msg) => { sent.push(msg); return { cleared: true }; },
       window: { location: { href: "https://www.indeed.com/viewjob?jk=abc" } },
       console,
     };
     vm.createContext(sandbox);
-    vm.runInContext(`${reportFn}\nglobalThis.__call = () => reportCleanPageIfHandoffPending();`, sandbox);
+    vm.runInContext(`${settleConst}\n${wallPresentFn}\n${reportFn}\nglobalThis.__call = () => reportCleanPageIfHandoffPending();`, sandbox);
     const out = await sandbox.__call();
     return { out, sent };
   }
 
-  if (reportFn) {
+  if (reportFn && wallPresentFn) {
     {
       const { out, sent } = await runReport({ captchaWaiting: { ...WALL }, gated: false });
       check("a fresh context on a clean page reports the wall gone",
@@ -186,7 +192,8 @@ const WALL = { url: "https://www.indeed.com/viewjob?jk=abc", site: "Indeed", kin
       campaignRunning: true,
       campaignTabId: 7,
       captchaWaiting: { url: "https://www.indeed.com/viewjob?jk=abc", site: "Indeed",
-                        signal: "dom:#challenge-form", kind: "captcha", at: Date.now() },
+                        signal: "dom:#challenge-form", kind: "captcha", at: Date.now(),
+                        tabId: 7 },
     };
     const bgBox = { chrome: { storage: { local: {
       async get(keys) { const o = {}; for (const k of [].concat(keys)) if (k in store) o[k] = store[k]; return o; },
@@ -198,14 +205,16 @@ const WALL = { url: "https://www.indeed.com/viewjob?jk=abc", site: "Indeed", kin
     const ctxBox = {
       storageGet: async () => (store.captchaWaiting ? { captchaWaiting: store.captchaWaiting } : {}),
       detectConsentGate: () => ({ gated: false, label: "" }),
-      // The freshly injected context IS the campaign tab — the challenge navigated the same
-      // tab, so the tab id never changed.
+      isDetected: () => ({ detected: false, signal: "" }),
+      sleep: async () => {},
+      // The freshly injected context IS the tab that raised the wall — the challenge
+      // navigated the same tab, so the tab id never changed.
       sendMsg: async (msg) => (msg.type === "WALL_LOOKS_CLEAR" ? bgBox.__retire(7) : null),
       window: { location: { href: "https://www.indeed.com/viewjob?jk=abc" } },
       console,
     };
     vm.createContext(ctxBox);
-    vm.runInContext(`${reportFn}\nglobalThis.__report = () => reportCleanPageIfHandoffPending();`, ctxBox);
+    vm.runInContext(`${settleConst}\n${wallPresentFn}\n${reportFn}\nglobalThis.__report = () => reportCleanPageIfHandoffPending();`, ctxBox);
 
     check("the hand-off is standing before the walk resumes", !!store.captchaWaiting);
     const cleared = await ctxBox.__report();
@@ -221,12 +230,15 @@ const WALL = { url: "https://www.indeed.com/viewjob?jk=abc", site: "Indeed", kin
   check("background routes WALL_LOOKS_CLEAR through the tab-gated function",
     /case "WALL_LOOKS_CLEAR":\s*\n\s*return await retireHumanHandoffFromCleanPage\(sender && sender\.tab && sender\.tab\.id\)/.test(BG),
     "clearing it without checking the sender tab re-opens the trap in check 2");
-  const watchdog = slice(BG, "async function nativeWalkWatchdog() {", "");
-  check("found nativeWalkWatchdog", !!watchdog);
-  check("nativeWalkWatchdog still parks on a hand-off it can vouch for",
-    !!watchdog && /^\s*if \(.*captchaWaiting.*\) return;$/m.test(watchdog),
-    "invariant 5: this fix closes the SOURCE of the stale flag — it must not delete the " +
-    "guard that keeps a tab from being reloaded under a human solving a captcha right now");
+  check("the reporting tab is matched against the stamped raiser, not the roaming pointer",
+    !!retireFn && /captchaWaiting\.tabId/.test(retireFn),
+    "campaignTabId moves with the walk — see wall-clear-needs-confirmation.test.js");
+  // Invariant 5 — the watchdog must not reload a tab under a human mid-captcha — used to be
+  // asserted here as /^\s*if \(.*captchaWaiting.*\) return;$/m over the sliced watchdog. That
+  // line was worthless: a skeptic sliced the PRE-fix function out of 490a02e and the same
+  // regex matched it, so this file was green whether the mute was bounded, unbounded, or
+  // arithmetically unreachable. It is now MEASURED — both sides of every window, against the
+  // shipped function over a fake chrome.storage — in tests/native-watchdog-mutes.test.js.
 
   console.log(failures ? `\n${failures} FAILED` : "\nall passed");
   process.exit(failures ? 1 : 0);

@@ -137,9 +137,19 @@ const AUTH_401_SELF_STOP = 5;
  * server-authoritative stop, the watchdog's own stop, the idle auto-stop) left the
  * banner standing until the dashboard's 2h stale-guard expired. That guard is the
  * last resort, not the mechanism (audit 09-25, docs/reviews/2026-09-25-captcha-resume-audit.md).
+ *
+ * All THREE keys, not just the wall. reviewPending / reviewDecision ride the same "your turn"
+ * surface — ReviewPanel.tsx renders reviewPending with no stale guard of its own — so a stop
+ * path that dropped only captchaWaiting still left a review card asking for a decision on a
+ * run that was over: the same lie, one key over. STOP_CAMPAIGN has always cleared all three
+ * (see its set(), ~:2330); every path that came through here cleared one of them. Safe on the
+ * resume callers too (DETECTION_CLEARED, the clean-page retire): those fire only with a wall
+ * recorded, and the wall branch runs BEFORE the fill that awaits a review, in the same tick —
+ * a recorded wall and a live review cannot coexist on the campaign tab. Dead today (reviewMode
+ * is hard-off at START_CAMPAIGN) — the leak was in the mechanism, not in the feature.
  */
 async function clearHumanHandoff() {
-  await chrome.storage.local.set({ captchaWaiting: null });
+  await chrome.storage.local.set({ captchaWaiting: null, reviewPending: null, reviewDecision: null });
 }
 
 /**
@@ -157,16 +167,42 @@ async function clearHumanHandoff() {
  * Now the clean page is the authority: content.js reports WALL_LOOKS_CLEAR from whatever
  * context sees a wall-free page, including one freshly injected after the navigation.
  * The tab check is what keeps invariant 5 intact — a LIVE pause must stay protected. The
- * tab parked at the wall reports nothing (its page is still detected), and no OTHER tab
- * may retire the hand-off on its behalf, so a human mid-captcha in the automation window
- * is never declared done because a tab somewhere else looks fine.
+ * tab parked at the wall reports nothing (its page is still detected, and it has to stay
+ * clean across a settle — see content.js reportCleanPageIfHandoffPending), and no OTHER
+ * tab may retire the hand-off on its behalf, so a human mid-captcha in the automation
+ * window is never declared done because a tab somewhere else looks fine.
+ *
+ * That check has to be a PIN, not a pointer. The first shape of it compared the reporting
+ * tab against campaignTabId — but background.js rewrites campaignTabId as the walk roams
+ * (the board hand-off, a re-opened window), so it only ever proved "you are the walk's tab
+ * at this instant". DETECTION_TRIPPED now stamps the raising tab into the record, and that
+ * id is the one that must match.
  */
 async function retireHumanHandoffFromCleanPage(tabId) {
   const d = await chrome.storage.local.get(["campaignRunning", "campaignTabId", "captchaWaiting"]);
   // Not running, or no hand-off recorded: nothing to retire. Silent on purpose — the walk
   // passes clean pages constantly and none of them is an event.
   if (!d.campaignRunning || !d.captchaWaiting) return { cleared: false };
-  if (!tabId || !d.campaignTabId || tabId !== d.campaignTabId) return { cleared: false, otherTab: true };
+  if (!tabId) return { cleared: false, otherTab: true };
+  // Records written before the stamp existed carry no tabId — fall back to the old
+  // campaignTabId comparison for those, so a run that was already parked at a wall when
+  // the extension updated isn't left with a flag nothing on earth can retire.
+  const owner = d.captchaWaiting.tabId;
+  let mustBe = typeof owner === "number" ? owner : d.campaignTabId;
+  // …and the pin must not outlive the tab it pins. A wall whose tab is GONE (the human closed
+  // it, the automation window was re-opened, the challenge finished in a popup and took its
+  // opener with it) holds nobody: invariant 5 protects a LIVE human, and there is no human in
+  // a destroyed tab. Before this escape the pin was strictly narrower than the campaignTabId
+  // comparison it replaced — that record could never be retired again, so the dashboard begged
+  // for a wall nobody could reach until the 2h stale-guard expired, which is exactly the
+  // last-resort-as-mechanism the audit refuses. Same probe the two watchdogs use for a closed
+  // automation tab (:1470, :1537). Only then may the walk's current tab speak for it.
+  if (typeof owner === "number" && owner !== tabId) {
+    let ownerAlive = true;
+    try { await chrome.tabs.get(owner); } catch { ownerAlive = false; }
+    if (!ownerAlive) mustBe = d.campaignTabId;
+  }
+  if (!mustBe || tabId !== mustBe) return { cleared: false, otherTab: true };
   await clearHumanHandoff();
   // One hand-off record carries both walls, so name the one the user was actually asked
   // to clear — sending "human check cleared" for an Accept-Terms modal reads as a
@@ -1354,18 +1390,32 @@ async function atsWalkWatchdog() {
 // captchaWaiting stands until the run ends — "running" over a walk that does nothing, with
 // no reload and no honest stop. So: mute only while the hand-off is YOUNGER than the pause
 // it describes.
-//   · a captcha / terms / login wall waits HUMAN_WALL_WAIT_MS = 5 min (content.js:697) —
-//     already SHORTER than the 10 min of silence below, so this mute exists for the
-//     overlap, not for the whole pause;
-//   · a tap review waits 30 min before failing safe to "skip" (content.js awaitReview) —
-//     that one genuinely outlasts the silence window, so it keeps its own longer mute.
 // Both writers stamp their record (captchaWaiting.at, reviewPending.at,
 // platformConnections[p].checkedAt); a record with no timestamp cannot be vouched for as a
 // LIVE pause, so it counts as stale.
+//
+// A mute window must be measured from the same instant the SILENCE is, or it is dead code.
+// The first version wasn't: it read "the pause (5 min) + 3 min grace", and the mute is only
+// ever consulted after NATIVE_WATCHDOG_SILENT_MS of silence — from the same zero, because
+// DETECTION_TRIPPED stamps captchaWaiting.at and then calls addToActivityLog, which
+// refreshes walkAliveAt on the next line (see addToActivityLog's set(), ~:803). The two
+// windows never overlapped: by the time the mute was read every hand-off was already 10+ min
+// old, i.e. ALWAYS "stale", so the live-captcha protection had been removed rather than
+// bounded — the watchdog withdrew the "your turn" CTA and reloaded the tab under a human
+// mid-challenge. It stayed invisible only because Indeed/ZR walls are same-origin: the
+// re-injected content script re-stamps .at through a fresh DETECTION_TRIPPED. That accident
+// ends the moment a wall lands on a host outside manifest.matches (a vendor interstitial, or
+// LinkedIn — which phase3_linkedinForm hands off for and which is not in matches at all).
+// So each window is now PAUSE + SILENCE, which is strictly longer than the silence it guards:
+//   · a captcha / terms / login wall waits HUMAN_WALL_PAUSE_MS = 5 min (content.js:697), so
+//     it is muted for 15 min — a human still at the wall at minute 12 keeps their work, and
+//     at minute 15 the flag is provably a leftover and the walk gets its reload;
+//   · a tap review waits 30 min before failing safe to "skip" (content.js awaitReview).
 const NATIVE_WATCHDOG_SILENT_MS = 10 * 60 * 1000;
-const HANDOFF_GRACE_MS = 3 * 60 * 1000;
-const WALL_MUTE_MS = 5 * 60 * 1000 + HANDOFF_GRACE_MS;    // mirrors content.js HUMAN_WALL_WAIT_MS
-const REVIEW_MUTE_MS = 30 * 60 * 1000 + HANDOFF_GRACE_MS; // mirrors awaitReview's fail-safe timeout
+const HUMAN_WALL_PAUSE_MS = 5 * 60 * 1000;  // mirrors content.js HUMAN_WALL_WAIT_MS (:697)
+const TAP_REVIEW_PAUSE_MS = 30 * 60 * 1000; // mirrors awaitReview's fail-safe timeout
+const WALL_MUTE_MS = HUMAN_WALL_PAUSE_MS + NATIVE_WATCHDOG_SILENT_MS;
+const REVIEW_MUTE_MS = TAP_REVIEW_PAUSE_MS + NATIVE_WATCHDOG_SILENT_MS;
 
 /** Is this hand-off record a pause that can still be live, or a leftover? */
 function handoffIsLive(rec, windowMs) {
@@ -1408,7 +1458,9 @@ async function nativeWalkWatchdog() {
   // flag is a leftover, not a human.
   if (handoffIsLive(d.captchaWaiting, WALL_MUTE_MS)) return;
   if (handoffIsLive(d.reviewPending, REVIEW_MUTE_MS)) return;
-  const staleHandoff = !!d.captchaWaiting;
+  // Either "your turn" surface can be the leftover: past the two guards above, neither the
+  // wall record nor the review card can still be vouched for as a live pause.
+  const staleHandoff = !!d.captchaWaiting || !!d.reviewPending;
   // A "logged out" record only speaks for the board THIS walk is on, and only while the
   // human could still be at that wall. Read across ALL platforms over 2h it disarmed the
   // watchdog with nothing to do with the run: logoutIsTrustworthy trusts every non-Indeed
@@ -2766,16 +2818,22 @@ async function handleMessage(msg, sender) {
       // for a challenge that isn't there — so the copy follows data.kind. Older content
       // scripts don't send the field; undefined keeps the captcha wording.
       const isTerms = data.kind === "terms";
-      // A THIRD shape, and the only one where nobody is parked: the walk filled the form,
-      // met a challenge it will not solve, and MOVED ON (Lever hCaptcha, content.js
-      // phase_ats, #72). The old code gave it the captcha treatment — captchaWaiting plus
-      // "solve it and the campaign resumes automatically" — while ATS_JOB_DONE, sent on the
-      // next line, marked the job skipped and navigated the same tab away. So the banner
-      // promised a resume for a posting the run had already written off, and because this
-      // path never sends DETECTION_CLEARED the flag outlived the wall for the whole run,
-      // muting nativeWalkWatchdog (its `if (d.captchaWaiting || d.reviewPending) return;`
-      // is unconditional) and the dashboard's 12-min idle alarm. Audit
-      // 09-25, findings 3+5 (docs/reviews/2026-09-25-captcha-resume-audit.md).
+      // TWO, and only two. Every hand-off on this channel means the same thing — SOMEONE IS
+      // PARKED AT A WALL AND THE WALK IS WAITING — which is what earns it a persisted
+      // captchaWaiting, a "your turn" banner and a watchdog mute. A third kind was tried here
+      // ("left_for_you", for the Lever hCaptcha that fills the form and moves on) and it was
+      // the wrong shape: nobody is parked on that path, the tab has already navigated away, and
+      // a record on this key mutes the only backstop a native walk has. That path goes through
+      // handBackJob now (content.js phase_ats, audit 09-25 findings 3+5,
+      // docs/reviews/2026-09-25-captcha-resume-audit.md) — reason, durable to-do row, job
+      // flipped out of `approved`, walk advanced, no flag. So: anything that is NOT a pause
+      // does not belong on this channel.
+      // It can still ARRIVE on it, which is why the kind is still READ here instead of
+      // deleted: a service-worker update swaps background.js instantly, but a content script
+      // already injected into an open tab keeps running the OLD file until that tab navigates
+      // (the same fact this repo keeps re-learning about reloads — see content.js on
+      // cfReloadCount). So for one tab-lifetime after this ships, a pre-repair content script
+      // can still send kind:"left_for_you" from the Lever branch, and it is refused below.
       const leftForYou = data.kind === "left_for_you";
       // Name the actual platform (captchas fire on ZR/Greenhouse/Lever too, not just Indeed).
       const site = platformDisplayNameFromUrl(data.url);
@@ -2785,20 +2843,22 @@ async function handleMessage(msg, sender) {
       try {
         await apiPost("/activity", {
           message: leftForYou
-            ? `Left for you (${data.signal}) on ${data.url} — form filled, walk moved on`
+            ? `Captcha we don't solve (${data.signal}) on ${data.url} — not sent, walk moved on`
             : isTerms
             ? `Consent wall (${data.signal}) on ${data.url}`
             : `Detection tripped (${data.signal}) on ${data.url}`,
-          // leftForYou is not a run failure: the walk kept going. Filing it as an error
-          // would inflate the error count and hijack `last_error_msg`, same reason as terms.
+          // A captcha that parks a human IS an error-level event. A terms modal is not — the
+          // site is doing something normal — and neither is a legacy left_for_you: the walk
+          // kept going and the posting is recorded as a hand-back by the path below. Filing
+          // either as an error inflates the run's error count and hijacks `last_error_msg`
+          // on the dashboard. The `|| leftForYou` was dropped when this mirror moved above
+          // the early return during the repair round; a re-verifier caught it.
           level: isTerms || leftForYou ? "warn" : "error",
           phase: "detection",
           metadata: { signal: data.signal, page_phase: data.phase, url: data.url, kind: data.kind || "captcha" },
         });
       } catch {}
-      const askLine = leftForYou
-        ? `${site} wants a human captcha. We filled the form and moved on — open ${data.url} and press submit yourself. The campaign keeps running.`
-        : isTerms
+      const askLine = isTerms
         ? `${site} is asking you to accept its terms. ${data.action || "Open the automation window and accept them"} — the campaign resumes automatically.`
         : `${site} is asking you to verify you're human. Open the automation window, solve it, and the campaign resumes automatically.`;
       // Persist the hand-off so the popup (GET_STATUS) and the dashboard live
@@ -2810,43 +2870,61 @@ async function handleMessage(msg, sender) {
       // `kind`/`action` are the seam the dashboard banner reads to swap its own wording
       // (website lane).
       //
-      // leftForYou writes NO flag: there is no pause to survive, and a flag whose three
-      // documented clearers can none of them fire on that path is a permanent lie plus a
-      // permanent mute. It CLEARS instead — the walk has already navigated this tab to the
-      // next job, so any hand-off still standing belongs to a page nobody is looking at.
-      // (clearHumanHandoff is the same one every stop path uses, 490a02e.) The honest
-      // "finish it yourself" state rides the activity log and the notification below, which
-      // both carry the URL; no gating key, so the watchdogs keep watching.
+      // The retired kind is REFUSED HERE, before anything is written, and it leaves by the
+      // door rather than by branching the write below. Reading the kind without acting on it
+      // was the shape this handler was left in mid-repair: the const was back (a legacy
+      // content script can still send it, see above) but the write had gone unconditional, so
+      // a legacy message filed a full captcha hand-off — exactly the banner-over-an-abandoned-
+      // posting plus unclearable watchdog mute this whole path exists to delete. Nobody is
+      // parked on that path: ATS_JOB_DONE/handBackJob has already navigated that tab to the
+      // next card. Note what this does NOT do: it does not clear an existing record. This
+      // message says nothing about whatever wall some other tab may be holding a human at
+      // (invariant 5), and the honest "finish it yourself" state for the posting itself rides
+      // the hand-back row that the new content script files instead.
       if (leftForYou) {
-        await clearHumanHandoff();
-      } else {
-        await chrome.storage.local.set({
-          captchaWaiting: {
-            url: data.url,
-            site,
-            signal: data.signal,
-            kind: isTerms ? "terms" : "captcha",
-            action: data.action || null,
-            at: Date.now(),
-          },
-        });
+        await addToActivityLog(
+          `✋ ${site} wants a human captcha — that one was not sent: ${data.url}`, "warn");
+        return { handled: true, filed: false };
       }
+      // From here down the message IS a human pause, so the write is unconditional — and that
+      // is the point. The round that tried the third kind branched this very write
+      // (`if (leftForYou) clearHumanHandoff() else set(...)`); when that kind moved to
+      // handBackJob the `const` went and the three reads of it stayed. `leftForYou` is not a
+      // global, so EVERY DETECTION_TRIPPED threw a ReferenceError right here — and the
+      // listener swallows a rejection into `{ error }` (background.js:1601), so it threw
+      // SILENTLY: a live captcha or consent wall persisted no hand-off, wrote no local log
+      // line and raised no notification, leaving the human at a wall nothing had told them
+      // about (invariants 1+2).
+      await chrome.storage.local.set({
+        captchaWaiting: {
+          url: data.url,
+          site,
+          signal: data.signal,
+          kind: isTerms ? "terms" : "captcha",
+          action: data.action || null,
+          at: Date.now(),
+          // WHICH tab is holding the human. retireHumanHandoffFromCleanPage() used to
+          // compare the reporting tab against campaignTabId, but that key is a moving
+          // pointer — every board hand-off and every re-open rewrites it as the walk
+          // roams — so the comparison only proved "you are the walk's tab right now",
+          // not "you are the tab that raised this wall". Pinning the raiser here is what
+          // makes invariant 5 checkable: nobody but this tab may declare this wall gone.
+          tabId: (sender && sender.tab && sender.tab.id) || null,
+        },
+      });
       // Local log so the popup shows it without waiting for a refresh.
       await addToActivityLog(
-        leftForYou
-          ? `🧩 ${site} needs your captcha — we filled it and moved on: ${data.url}`
-          : isTerms
+        isTerms
           ? `⏸ ${site} wants its terms accepted — campaign paused`
           : `⚠️ ${site} asked for a human check — campaign paused`,
-        isTerms || leftForYou ? "warn" : "err"
+        isTerms ? "warn" : "err"
       );
       // System notification so the user sees this even if the popup is closed.
       try {
         await chrome.notifications.create({
           type: "basic",
           iconUrl: "icons/icon128.png",
-          // "paused" would be the same lie as the banner — the leftForYou run never stopped.
-          title: leftForYou ? "HireDrop left one for you" : "HireDrop paused — action needed",
+          title: "HireDrop paused — action needed",
           message: askLine,
         });
       } catch {}
