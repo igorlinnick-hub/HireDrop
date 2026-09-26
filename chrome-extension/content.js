@@ -2810,10 +2810,20 @@
     if (!letter) return "";
     quickSet(el, letter);
     await sleep(humanDelay(800, 1600));
+    // READ IT BACK before claiming anything. quickSet returns true for "I assigned and
+    // dispatched", not "the value stuck": a component that owns its own state can revert
+    // the assignment on the next render. Claiming success here without looking would
+    // rebuild the exact lie this whole path exists to remove — a durable "filled ✓" line
+    // and an applications row saying the employer received a letter that isn't in the form.
+    const landed = (el.value || "").trim();
+    if (!landed) {
+      logBackend(`${label || platformLabel()}: cover letter did NOT stick in the field — not recording it as sent`, "warn");
+      return "";
+    }
     // Durable on purpose: "the letter reached the form" is exactly the fact we could not
     // answer for three months, and the run log is where the next measurement reads it.
-    logBackend(`${label || platformLabel()}: cover letter filled (${letter.length} chars) ✓`, "info");
-    return letter;
+    logBackend(`${label || platformLabel()}: cover letter filled (${landed.length} chars) ✓`, "info");
+    return landed;
   }
 
   // Fill required text/textarea screener fields that are empty.
@@ -2871,7 +2881,17 @@
       } else if (label.includes("phone") || PHONE_I18N_RE.test(rawLabel)) {
         value = profile.phone || "";
       } else if (label.includes("salary") || label.includes("compensation") || label.includes("pay") || label.includes("wage")) {
-        value = profile.desired_salary || "65000";
+        // NEVER invent a number here. This used to read `profile.desired_salary || "65000"`,
+        // and `desired_salary` exists nowhere — not in the profiles table (only salary_min /
+        // salary_max / salary_listed_only, which belong to the job FILTER and are not even
+        // returned by get_profile), not in the schema, not in any UI. So every user, at every
+        // level, told employers they expect 65000 — a figure with no source, shown back to
+        // them nowhere. salary_min is not a substitute: the user set it to filter which jobs
+        // to see, not to state an expectation, and reusing it would make the filter a second
+        // authority over something it never claimed to answer.
+        // No source => leave it blank: validation blocks the step and the question goes back
+        // to the human through the hand-back loop, which is the designed answer to "unknown".
+        continue;
       } else if (label.includes("year") || label.includes("experience") || label.includes("how many") || label.includes("how long")) {
         // Only treat as a numeric "years" field for short inputs — an open textarea
         // asking about experience wants prose, which the AI branch handles below.

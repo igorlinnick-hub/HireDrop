@@ -54,6 +54,19 @@ SHOTS = os.path.join(os.path.dirname(__file__), "shots")
 # submit — better a hand-back than an invented visa status (memory: adapt-not-invent).
 REQUIRED_EMPTY_IS_FATAL = True
 
+# Voluntary self-identification questions, and the neutral way out of them. We decline
+# these on principle rather than let a model infer a person's gender or race from a CV.
+_DEMOGRAPHIC_Q = re.compile(
+    r"gender|race|ethnic|sexual orientation|lgbt|transgender|disability|veteran"
+    r"|self.?identif|demographic|pronoun",
+    re.I,
+)
+_DECLINE_OPT = re.compile(
+    r"don'?t wish|do not wish|decline|prefer not|rather not|not to (?:answer|disclose)"
+    r"|no answer|not wish to (?:answer|identify)",
+    re.I,
+)
+
 
 def log(msg: str) -> None:
     print(msg, flush=True)
@@ -171,8 +184,15 @@ async def fill_greenhouse(page, form, profile: dict, job: dict, resume_path: str
 
     # Custom questions: every labelled control that is still empty — INSIDE the form.
     unfilled: list[str] = []
+    # react-select renders its search box as a plain <input type=text role=combobox>, so
+    # this sweep used to type a free-text answer straight into a CLOSED LIST before
+    # fill_comboboxes got there (live 09-25: "Sexual Orientation → This is a personal
+    # question unrelated to my qualifications…" typed into a dropdown's search field).
+    # Every such field was answered twice, paying for two AI calls and risking a
+    # half-typed filter. Comboboxes belong to fill_comboboxes; leave them alone here.
     controls = form.locator(
-        "input:not([type=file]):not([type=hidden]):not([type=search]), textarea, select"
+        "input:not([type=file]):not([type=hidden]):not([type=search])"
+        ':not([role="combobox"]):not([class*="select__input"]), textarea, select'
     )
     n = await controls.count()
     for i in range(n):
@@ -262,6 +282,7 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
     boxes = form.locator('[role="combobox"], [class*="select__control"] input')
     for i in range(await boxes.count()):
         box = boxes.nth(i)
+        label = ""
         try:
             if not await box.is_visible():
                 continue
@@ -281,9 +302,33 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
             )
             if chosen:
                 continue
-            await box.click()
+
+            # Close whatever menu is still hanging open before touching this one.
+            # Live 09-25 (Amplitude): the disability dropdown's menu stayed open and
+            # physically covered the next combobox — Playwright retried the click for
+            # 30 seconds and gave up, and every question after it stayed blank. An open
+            # menu is also why scoping matters below: two menus open at once means the
+            # page-wide option locator reads someone else's answers.
+            with contextlib.suppress(Exception):
+                if await page.locator('[class*="select__menu"]').count():
+                    await page.keyboard.press("Escape")
+                    await page.wait_for_timeout(200)
+
+            await box.click(timeout=8000)
             await page.wait_for_timeout(600)
-            opts = page.locator('[class*="select__option"], [role="option"]')
+
+            # Scope the options to THIS combobox's own menu. react-select ids its options
+            # `react-select-<input id>-option-N`, so the input's id is the key. A
+            # page-wide locator would happily hand us the options of a different
+            # question — the same class of silent wrong-answer bug as the index shift.
+            box_id = (await box.get_attribute("id")) or ""
+            opts = (
+                page.locator(f'[id^="react-select-{box_id}-option"]')
+                if box_id
+                else page.locator('[class*="select__option"], [role="option"]')
+            )
+            if box_id and not await opts.count():
+                opts = page.locator('[class*="select__menu"] [class*="select__option"]')
             # Keep each option's REAL position in the menu next to its text. Filtering a
             # flat list and then clicking `opts.nth(texts.index(target))` clicks a
             # different option than the one chosen: drop the "Select one…" row and every
@@ -296,6 +341,26 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
             ]
             pairs = [(j, t) for j, t in pairs if t and not re.match(r"^select", t, re.I)]
             texts = [t for _, t in pairs]
+
+            # DEMOGRAPHIC QUESTIONS ARE NOT OURS TO ANSWER. These are voluntary
+            # self-identification (EEO/OFCCP): gender, race, orientation, disability,
+            # veteran status. Live 09-25 the model read the résumé and declared
+            # "Gender Identity → Male" — probably right, and still a statement about a
+            # person made by a machine that was never told it. Every such form offers a
+            # decline option; taking it is the one answer that claims nothing, cannot be
+            # held against the candidate, and remains the user's to change. It also
+            # skips an AI call.
+            if texts and _DEMOGRAPHIC_Q.search(label):
+                decline = next((t for t in texts if _DECLINE_OPT.search(t)), None)
+                if decline:
+                    await opts.nth(pairs[texts.index(decline)][0]).click(timeout=8000)
+                    await page.wait_for_timeout(250)
+                    with contextlib.suppress(Exception):
+                        if await page.locator('[class*="select__menu"]').count():
+                            await page.keyboard.press("Escape")
+                    log(f"  ▾ {label[:50]} → {decline[:40]} (declined on purpose)")
+                    continue
+
             if not texts:
                 missed.append(label)
                 await page.keyboard.press("Escape")
@@ -325,8 +390,13 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
                 missed.append(label)
                 await page.keyboard.press("Escape")
                 continue
-            await opts.nth(pairs[texts.index(target)][0]).click()
+            await opts.nth(pairs[texts.index(target)][0]).click(timeout=8000)
             await page.wait_for_timeout(300)
+            # Leave no menu open behind us — the next combobox has to be clickable.
+            with contextlib.suppress(Exception):
+                if await page.locator('[class*="select__menu"]').count():
+                    await page.keyboard.press("Escape")
+                    await page.wait_for_timeout(150)
             # Read back what the widget actually holds — clicking is not choosing, and a
             # log line that reports our intent instead of the field's state is how a wrong
             # answer reaches an employer looking correct in the transcript.
@@ -343,7 +413,16 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
                 continue
             log(f"  ▾ {label[:60]} → {settled or target}")
         except Exception as exc:  # noqa: BLE001
-            log(f"  ! combobox #{i} failed: {exc}")
+            # A combobox that blew up is UNANSWERED, and the pre-submit gate has to hear
+            # about it: the Amplitude run swallowed nine failures and still offered the
+            # form as fillable. Also clear the menu, or this failure cascades into every
+            # question below it.
+            short = str(exc).split("\n")[0][:90]
+            log(f"  ! combobox #{i} failed: {short}")
+            with contextlib.suppress(Exception):
+                await page.keyboard.press("Escape")
+            if label:
+                missed.append(label)
     return missed
 
 

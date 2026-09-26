@@ -174,6 +174,38 @@ const FIXTURES = [
     /LETTER_LABEL_RE\.test\(rawLabel\)[\s\S]{0,400}?value = await ensureCoverLetter\(\)/.test(SRC),
     "the screener branch is gone — this is the second model call we removed",
   );
+  // ---- a claim of delivery must be read back from the field --------------------------
+  const fillFn = slice("fillCoverLetterIfAsked") || "";
+  check(
+    "the letter is read back out of the field before we claim it was filled",
+    /const landed = \(el\.value \|\| ""\)\.trim\(\);/.test(fillFn)
+      && /if \(!landed\)[\s\S]{0,200}?return ""/.test(fillFn),
+    "quickSet returns true for 'assigned and dispatched', not 'the value stuck' — a "
+      + "component that owns its state can revert it, and we would log proof of a letter "
+      + "that is not in the form",
+  );
+  check(
+    "the recorded letter is the text the field actually holds",
+    /return landed;/.test(fillFn) && !/logBackend\([^)]*letter\.length/.test(fillFn),
+    "the applications row would carry what we meant to send, not what the form holds",
+  );
+
+  // ---- no invented value may be sent under the user's name ---------------------------
+  // Comments are stripped first: this file's own explanation quotes the removed literal,
+  // and a check that reads prose instead of code fails for the wrong reason.
+  const CODE = SRC.replace(/^\s*\/\/.*$/gm, "");
+  check(
+    "no hardcoded salary is sent as the user's expectation",
+    !/desired_salary\s*\|\|\s*"\d+"/.test(CODE),
+    "profile.desired_salary exists in no table, schema or UI, so a literal default is a "
+      + "number the user never stated and never sees",
+  );
+  check(
+    "an unanswerable salary question is handed back, not guessed",
+    /label\.includes\("salary"\)[\s\S]{0,400}?continue;/.test(CODE),
+    "the branch must fall through to the hand-back loop instead of filling something",
+  );
+
   const labelRe = /const LETTER_LABEL_RE = (\/.*\/i);/.exec(SRC);
   check(
     "'why do you want to work here?' stays a screener question",
