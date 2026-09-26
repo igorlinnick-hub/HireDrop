@@ -44,6 +44,7 @@ from app.db import resume as resume_storage  # noqa: E402
 from app.db.client import get_supabase  # noqa: E402
 from app.db.profile import get_profile  # noqa: E402
 from app.db.subscriptions import check_can_apply, increment_free_apps  # noqa: E402
+from modules.ai_cover_letter import generate_cover_letter  # noqa: E402
 from modules.ai_fit_judge import assess_fit  # noqa: E402
 from modules.ai_question_answer import answer_screener_question  # noqa: E402
 from modules.job_identity import job_identity, normalized_link  # noqa: E402
@@ -151,7 +152,9 @@ async def find_application_form(page):
     return None
 
 
-async def fill_greenhouse(page, form, profile: dict, job: dict, resume_path: str) -> list[str]:
+async def fill_greenhouse(
+    page, form, profile: dict, job: dict, resume_path: str
+) -> tuple[list[str], str]:
     """Fill the Greenhouse application form (scope = the form only)."""
     name = (profile.get("name") or "").strip()
     last = (profile.get("last_name") or "").strip()
@@ -260,13 +263,116 @@ async def fill_greenhouse(page, form, profile: dict, job: dict, resume_path: str
                     unfilled.append(label)
                 continue
             else:
+                # A one-word answer is a datum, not a sentence: the model returned
+                # "Igor." for Preferred First Name, and a trailing full stop inside a
+                # name box is the kind of thing a recruiter reads as carelessness.
+                if " " not in answer.strip():
+                    answer = answer.strip().rstrip(".")
                 await el.fill(answer)
             log(f"  · {label[:60]} → {answer[:60]}")
         except Exception as exc:  # noqa: BLE001 — one odd widget must not kill the walk
             log(f"  ! field #{i} failed: {exc}")
 
     unfilled += await fill_comboboxes(page, form, profile, job)
-    return unfilled
+    letter = await fill_cover_letter(page, form, profile, job)
+    return unfilled, letter
+
+
+async def fill_cover_letter(page, form, profile: dict, job: dict) -> str:
+    """Write the letter INTO the form, and only if the form asks for one. Returns the
+    text actually typed, or "" when this posting has no cover-letter field.
+
+    Lazy on purpose (the product rule from PR #240): no field ⇒ no model call, no text
+    recorded. Measured 09-23, the letter used to be written for nearly every application
+    and reached a form once in 274 attempts — paying for prose nobody read.
+
+    The Greenhouse traps below are not guesses; they cost PR #248 a full lane:
+      * the field is hidden behind an "Enter manually" trigger, `data-testid`
+        `cover_letter-text`;
+      * walking up with closest("div") finds only the button's own wrapper, whose text
+        is "Enter manually" — so the block test fails and every real trigger is rejected
+        (six live forms reported "no cover-letter field");
+      * the revealed textarea is `id=cover_letter_text` with NO name, and its label also
+        reads "Enter manually", so it can only be found by id or by being the empty
+        textarea inside the block we already proved is the letter's.
+    "Attach"/"Upload" is never clicked: a file chooser opens an OS dialog, and at 3am
+    there is nobody to dismiss it.
+    """
+    field = form.locator('textarea[id*="cover_letter" i], textarea[name*="cover" i]')
+    if not await field.count():
+        # ONLY the "enter manually" trigger. Greenhouse renders the letter block as four
+        # buttons — Attach, Dropbox, Google Drive, Enter manually — and the first three
+        # hand control to somebody else: a file chooser is an OS dialog, Dropbox and
+        # Drive are OAuth popups. At 3am there is nobody to dismiss any of them. Live
+        # 09-25 on this very form, a filter that only excluded "attach|upload" clicked
+        # Dropbox, counted the block as opened, and no textarea ever came back. The
+        # extension has always matched the testid suffix instead; so do we.
+        trigger = form.locator(
+            '[data-testid$="-text" i][data-testid*="cover" i], [data-testid*="cover_letter_text" i]'
+        )
+        if not await trigger.count():
+            trigger = form.get_by_role(
+                "button", name=re.compile(r"^\s*(enter|type)\s+manually|paste|write", re.I)
+            )
+        opened = False
+        for k in range(min(await trigger.count(), 6)):
+            btn = trigger.nth(k)
+            with contextlib.suppress(Exception):
+                if not await btn.is_visible():
+                    continue
+                # Prove this trigger belongs to the COVER LETTER block, not the résumé's
+                # identical chooser — walk up until an ancestor actually names the field.
+                named = await btn.evaluate(
+                    "e => { const t=(e.getAttribute('data-testid')||'').toLowerCase();"
+                    " if (t.includes('cover')) return true;"
+                    " let n=e; for (let h=0; h<6 && n; h++) {"
+                    "   if (/cover\\s*letter/i.test(n.textContent||'')) return true; n=n.parentElement; }"
+                    " return false; }"
+                )
+                if not named:
+                    continue
+                await btn.click(timeout=8000)
+                await page.wait_for_timeout(1500)
+                opened = True
+                break
+        if not opened:
+            log("  ✉ no cover-letter field on this form — none written (honest zero)")
+            return ""
+        # Greenhouse hydrates the revealed textarea late; give it room before deciding.
+        for _ in range(6):
+            field = form.locator('textarea[id*="cover_letter" i], textarea[name*="cover" i]')
+            if await field.count():
+                break
+            await page.wait_for_timeout(1000)
+        if not await field.count():
+            log("  ✉ clicked the trigger but no textarea appeared — letter NOT delivered")
+            return ""
+
+    letter = ""
+    with contextlib.suppress(Exception):
+        letter = generate_cover_letter(
+            {
+                "title": job.get("title"),
+                "company": job.get("company"),
+                "description": job.get("description") or "",
+                "link": job.get("link"),
+            },
+            profile,
+        )
+    if not letter:
+        log("  ✉ letter generation returned nothing — leaving the field empty")
+        return ""
+    await field.first.fill(letter)
+    # Read it back: a textarea that silently refused the text would otherwise be recorded
+    # in History as a letter the employer never saw.
+    typed = ""
+    with contextlib.suppress(Exception):
+        typed = await field.first.input_value()
+    if not typed.strip():
+        log("  ✉ field would not take the text — letter NOT delivered")
+        return ""
+    log(f"  ✉ cover letter delivered ({len(typed)} chars)")
+    return typed
 
 
 async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
@@ -619,7 +725,7 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
             await browser.close()
             return
 
-        unfilled = await fill_greenhouse(page, form, profile, job, resume_path)
+        unfilled, letter = await fill_greenhouse(page, form, profile, job, resume_path)
 
         shot = os.path.join(SHOTS, f"{job['id']}-filled.png")
         await page.screenshot(path=shot, full_page=True)
@@ -709,7 +815,7 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
         apps_db.save_application(
             user_id=user_id,
             job_id=job["id"],
-            cover_letter="",
+            cover_letter=letter,
             status=status,
             job_title=job["title"],
             company=job.get("company") or "",
