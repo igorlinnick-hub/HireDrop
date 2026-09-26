@@ -48,6 +48,7 @@ from modules.ai_cover_letter import generate_cover_letter  # noqa: E402
 from modules.ai_fit_judge import assess_fit  # noqa: E402
 from modules.ai_question_answer import answer_screener_question  # noqa: E402
 from modules.job_identity import job_identity, normalized_link  # noqa: E402
+from modules.job_location import location_verdict, parse_user_location  # noqa: E402
 
 SHOTS = os.path.join(os.path.dirname(__file__), "shots")
 
@@ -139,6 +140,53 @@ def already_applied(user_id: str, link: str) -> bool:
         log(f"  ! dedup lookup failed ({exc}) — refusing to apply blind")
         return True
     return any((job_identity(url) or (normalized_link(url) or url)) == target for url in applied)
+
+
+async def knockout_answers(form) -> list[str]:
+    """Questions whose own answer disqualifies this candidate, as the form now stands.
+
+    A screener that asks "are you located in X / can you work from our office / do you
+    have N years" is not a preference — it is the employer's filter, and answering "no"
+    is an application they will reject on sight. We answer honestly (we never claim a
+    location or a credential the résumé does not support), so the right move is to not
+    spend the slot at all.
+
+    Read from the widgets AFTER filling, not from our intent: what matters is what the
+    employer would receive.
+    """
+    hard = re.compile(
+        r"are you (?:currently )?(?:located|based|living)|able to (?:work|commute|relocate)"
+        r"|do you (?:have|possess).{0,40}(?:years|experience|degree|license|certification)"
+        r"|legally (?:authorized|eligible)|eligible to work|willing to relocate"
+        r"|can you (?:work|start|commute)",
+        re.I,
+    )
+    negative = re.compile(r"^\s*(no|nope|n/a|not\b|i am not|i'm not|i do not|i don't)\b", re.I)
+    out: list[str] = []
+    with contextlib.suppress(Exception):
+        blocks = form.locator('div[class*="select"]:has([class*="singleValue"])')
+        for i in range(min(await blocks.count(), 40)):
+            blk = blocks.nth(i)
+            pair = await blk.evaluate(
+                "e => { const l = e.closest('div')&&e.closest('div').querySelector('label');"
+                " const w = e.querySelector('[class*=singleValue]');"
+                " let q = l ? l.textContent : '';"
+                " if (!q) { let n = e; for (let h=0; h<5 && n; h++) {"
+                "   const lab = n.querySelector && n.querySelector('label');"
+                "   if (lab && lab.textContent.trim()) { q = lab.textContent; break; } n = n.parentElement; } }"
+                " return [q||'', w ? w.textContent : '']; }"
+            )
+            question = re.sub(r"\s+", " ", (pair[0] or "")).replace("*", "").strip()
+            answer = re.sub(r"\s+", " ", (pair[1] or "")).strip()
+            if not question or not answer:
+                continue
+            # "Do you require sponsorship? → No" is a POSITIVE for the candidate: the
+            # negative only disqualifies when the question asks for something we lack.
+            if re.search(r"sponsor|visa", question, re.I):
+                continue
+            if hard.search(question) and negative.match(answer):
+                out.append(f"{question[:90]} → {answer[:30]}")
+    return out
 
 
 async def find_application_form(page):
@@ -660,6 +708,7 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
         admin = get_supabase().auth.admin.get_user_by_id(user_id)
         profile["email"] = admin.user.email if admin and admin.user else ""
     candidates = pick_jobs(user_id, job_url)
+    user_loc = parse_user_location(profile.get("location") or "")
     resume_path = download_resume(user_id, profile)
     log(f"resume: {resume_path} | candidates: {len(candidates)}")
 
@@ -700,13 +749,26 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
             # The same fit bar the extension applies — the SERVER side of one engine.
             # A live submit that skips the judge would send the LCSW postings this
             # user's résumé can never pass (dry-run #4 landed on exactly one).
-            verdict = assess_fit(job=cand, profile=profile)
-            if verdict.get("decision") != "apply":
+            # CHEAP, CERTAIN CHECKS BEFORE THE PAID ONE. Location and "did we already
+            # send this" are free and deterministic; the fit judge is a model call. They
+            # used to run in the opposite order, so every job we were going to reject on
+            # geography was still judged first, at full price.
+
+            # THE POOL IS AN ARCHIVE, NOT A QUEUE. Its rows were harvested without the
+            # user's location in the sweep, so the filter must be applied again HERE, at
+            # submit time — the dashboard already does exactly this when it shows the
+            # deck. Live 09-26, Igor caught it: an on-site/hybrid San Francisco role was
+            # picked for a candidate in Honolulu with a 10-mile radius, and the fit judge
+            # still scored it 72. That application spends a daily slot on a certain
+            # rejection and tells the employer we did not read their posting.
+            where = location_verdict(cand.get("location") or "", user_loc)
+            if where == "elsewhere":
                 log(
-                    f"  skip (fit {verdict.get('fit_score')}):"
-                    f" {str(verdict.get('reason') or '')[:80]}"
+                    f"  skip (location: {cand.get('location')!r}"
+                    f" is outside {profile.get('location')})"
                 )
                 continue
+
             # ALREADY APPLIED? The pool row's own status is not the answer. The same
             # posting arrives under several spellings (harvest vs browser query strings),
             # so a row created AFTER an application still reads `new`; and --job-url
@@ -717,7 +779,12 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
             if already_applied(user_id, cand["link"]):
                 log("  skip (already applied to this posting — server's own record)")
                 continue
-            log(f"  fit {verdict.get('fit_score')} — proceeding")
+
+            fit = assess_fit(job=cand, profile=profile)
+            if fit.get("decision") != "apply":
+                log(f"  skip (fit {fit.get('fit_score')}): {str(fit.get('reason') or '')[:80]}")
+                continue
+            log(f"  fit {fit.get('fit_score')} — proceeding")
             job = cand
             break
         if job is None:
@@ -726,6 +793,30 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
             return
 
         unfilled, letter = await fill_greenhouse(page, form, profile, job, resume_path)
+
+        # KNOCKOUT: the form asked a hard requirement and our honest answer was "no".
+        # Sending anyway spends a daily slot on a guaranteed rejection and tells the
+        # employer we did not read their posting. Live 09-26 (Igor): an SF hybrid role
+        # asked "are you currently located in the Bay Area and able to work from our
+        # office?", the honest answer was No — and the run was about to submit.
+        knocked = await knockout_answers(form)
+        if knocked:
+            log(f"KNOCKOUT — the form's own requirement rules this candidate out: {knocked[0]}")
+            if live:
+                with contextlib.suppress(Exception):
+                    get_supabase().table("activity_log").insert(
+                        {
+                            "user_id": user_id,
+                            "level": "info",
+                            "phase": "night-shift",
+                            "message": (
+                                f"🌙 Night shift stood down [outcome=knockout]: {job['title']}"
+                                f" @ {job.get('company', '?')} — {knocked[0]}"
+                            ),
+                        }
+                    ).execute()
+                await browser.close()
+                return
 
         shot = os.path.join(SHOTS, f"{job['id']}-filled.png")
         await page.screenshot(path=shot, full_page=True)
