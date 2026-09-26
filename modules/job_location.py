@@ -33,7 +33,21 @@ _NON_US_RE = re.compile(
     r"finland|netherlands|belgium|switzerland|austria|italy|greece|turkey|israel|"
     r"india|pakistan|china|japan|korea|singapore|philippines|vietnam|thailand|"
     r"indonesia|malaysia|australia|new zealand|nigeria|kenya|egypt|south africa|"
-    r"ukraine|georgia \(country\)|armenia|kazakhstan)\b",
+    r"ukraine|georgia \(country\)|armenia|kazakhstan|"
+    # Added 09-26 after "Chile, Remote" passed as a fit for a Honolulu candidate and
+    # sorted FIRST by freshness — the auto-pick would have applied to it. Same hole the
+    # India leak came through (09-21): the remote branch trusts this list, so a country
+    # missing here becomes a "remote job anywhere" for a US-only user. US towns that
+    # share these names (Peru IN, Panama City FL, Santiago…) stay safe on the state-hint
+    # check above, which is why bare collision-prone names like Lebanon and Cuba are
+    # still deliberately absent.
+    r"chile|peru|uruguay|paraguay|bolivia|ecuador|venezuela|guatemala|honduras|"
+    r"nicaragua|costa rica|panama|el salvador|dominican republic|"
+    r"czech republic|czechia|hungary|slovakia|slovenia|croatia|serbia|bosnia|"
+    r"lithuania|latvia|estonia|belarus|moldova|cyprus|malta|iceland|luxembourg|"
+    r"united arab emirates|uae|dubai|abu dhabi|saudi arabia|qatar|kuwait|bahrain|oman|"
+    r"taiwan|hong kong|bangladesh|sri lanka|nepal|myanmar|cambodia|laos|"
+    r"morocco|tunisia|algeria|ghana|tanzania|uganda|ethiopia|senegal|rwanda|zimbabwe)\b",
     re.I,
 )
 

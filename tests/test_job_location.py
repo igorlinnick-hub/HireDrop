@@ -166,3 +166,41 @@ def test_profile_without_a_location_disables_the_filter_entirely():
     ):
         out = jobs_router.get_deck(user=_User())
     assert [c["title"] for c in out["cards"]] == ["AI Engineer"]
+
+
+def test_foreign_remote_does_not_pass_as_a_fit():
+    """ "Chile, Remote" scored as a fit for a Honolulu candidate and, being the freshest
+    row, would have been the one the night shift applied to (live 09-26).
+
+    The remote branch trusts _NON_US_RE: a country missing from that list turns into
+    "remote, therefore anywhere" for a US-only user — the same hole the India leak came
+    through in September. These are the additions, checked in both directions.
+    """
+    honolulu = parse_user_location("Honolulu, Hawaii, US")
+    for text in (
+        "Chile, Remote",
+        "Remote - Chile",
+        "Remote - Peru",
+        "Remote, Costa Rica",
+        "Dubai, UAE",
+        "Remote - Taiwan",
+        "Remote - Croatia",
+        "Remote - Czechia",
+    ):
+        assert names_foreign_country(text), text
+        assert location_verdict(text, honolulu) == "elsewhere", text
+
+
+def test_us_towns_named_after_countries_are_still_american():
+    """The price of a longer country list is false positives on US place names, so the
+    state-hint guard carries more weight now: Peru IN, Panama City FL and Santiago CA
+    are American towns and must never read as foreign."""
+    for text in (
+        "Peru, IN",
+        "Panama City, FL",
+        "Santiago, CA",
+        "Lebanon, PA",
+        "Cuba, MO",
+    ):
+        assert not names_foreign_country(text), text
+    assert location_verdict("Peru, IN", parse_user_location("Peru, Indiana, US")) == "fits"
