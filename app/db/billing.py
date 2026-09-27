@@ -54,13 +54,17 @@ def downgrade(user_id: str) -> None:
     ).eq("user_id", user_id).execute()
 
 
-def mark_event_processed(event_id: str, event_type: str) -> bool:
-    """Record a Stripe event id for idempotency. Returns True if this is the FIRST
-    time we've seen it (→ process it), False if already processed (→ skip: dedup).
+def claim_event(event_id: str, event_type: str) -> bool:
+    """Claim a Stripe event for processing. True = we are the first to see it (→ do
+    the work), False = someone already has it (→ skip: dedup).
 
-    Stripe delivers at-least-once, so this stops a re-delivered event from double-
-    granting. Fails OPEN (returns True) if the bookkeeping insert errors — better to
-    risk a rare re-process than to silently drop a real payment event.
+    The row is a CLAIM, not a receipt. Stripe delivers at-least-once, so the claim is
+    what stops a re-delivery from double-granting — but it must not outlive a FAILED
+    handler, or the event is eaten forever (Stripe never retries a 200, and a manual
+    resend lands in the dedup branch). `release_event` is the other half of the pair.
+
+    Fails OPEN (returns True) if the bookkeeping insert errors — better to risk a rare
+    re-process (grants and commissions are idempotent) than to drop a real payment event.
     """
     try:
         res = (
@@ -79,3 +83,22 @@ def mark_event_processed(event_id: str, event_type: str) -> bool:
 
         print(f"[billing] event dedup check failed for {event_id}: {e}", file=sys.stderr)
         return True
+
+
+def release_event(event_id: str) -> None:
+    """Drop a claim so a Stripe retry can process the event after all.
+
+    Called when the handler failed. Without it the claim doubled as a receipt: one
+    failed handler swallowed the event permanently — the first invoice's affiliate
+    commission was lost (no second invoice inside the 60-day attribution window) and a
+    payer stayed on `free` until someone edited the database by hand (audit 09-25,
+    docs/reviews/2026-09-25-verify-hypotheses.md).
+    """
+    try:
+        get_supabase().table("stripe_events").delete().eq("event_id", event_id).execute()
+    except Exception as e:
+        import sys
+
+        # The claim stays, so Stripe's retry will dedup and the event is lost. Loud on
+        # purpose: this is the one failure here that costs money.
+        print(f"[billing] COULD NOT RELEASE event {event_id}: {e}", file=sys.stderr)

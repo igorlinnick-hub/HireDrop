@@ -57,9 +57,18 @@ def stripe_mock():
 @pytest.fixture
 def billing_db_mock():
     fake = MagicMock()
-    fake.mark_event_processed.return_value = True  # default: first delivery
+    fake.claim_event.return_value = True  # default: first delivery, claim is ours
     with patch("app.routers.billing.billing_db", fake):
         yield fake
+
+
+@pytest.fixture(autouse=True)
+def clean_billing_row():
+    """Default for every test here: the profile carries no Stripe ids (first-timer).
+    Tests about a returning subscriber patch _billing_row again, which wins.
+    """
+    with patch("app.routers.billing._billing_row", return_value={}):
+        yield
 
 
 def make_event(etype: str, obj: dict, event_id: str = "evt_1"):
@@ -114,6 +123,92 @@ def test_checkout_returns_session_url(auth_client, stripe_mock, fake_user, monke
     assert kwargs["line_items"] == [{"price": "price_w", "quantity": 1}]
 
 
+def test_checkout_reuses_an_existing_customer(auth_client, stripe_mock, monkeypatch):
+    # One customer per user is what keeps every invoice and subscription inside ONE
+    # portal session. A fresh customer each time is how a first subscription became
+    # invisible — and uncancellable — for the user.
+    monkeypatch.setitem(PLANS["weekly"], "price_id", "price_w")
+    stripe_mock.checkout.Session.create.return_value.url = "https://checkout.stripe.com/c/x"
+    with patch("app.routers.billing._billing_row", return_value={"stripe_customer_id": "cus_1"}):
+        r = auth_client.post(f"{API}/billing/checkout", json={"plan": "weekly"})
+
+    assert r.status_code == 200
+    kwargs = stripe_mock.checkout.Session.create.call_args.kwargs
+    assert kwargs["customer"] == "cus_1"
+    assert "customer_email" not in kwargs  # Stripe rejects both together
+
+
+def test_checkout_sends_email_only_when_there_is_no_customer_yet(
+    auth_client, stripe_mock, fake_user, monkeypatch
+):
+    monkeypatch.setitem(PLANS["weekly"], "price_id", "price_w")
+    stripe_mock.checkout.Session.create.return_value.url = "https://checkout.stripe.com/c/x"
+    r = auth_client.post(f"{API}/billing/checkout", json={"plan": "weekly"})
+    assert r.status_code == 200
+    kwargs = stripe_mock.checkout.Session.create.call_args.kwargs
+    assert kwargs["customer_email"] == fake_user.email
+    assert "customer" not in kwargs
+
+
+def test_checkout_409_when_already_subscribed(auth_client, stripe_mock, monkeypatch):
+    # The dashboard hides the plan buttons from subscribers, but only if /stats answered.
+    # When that read fails the buttons show — and a second checkout means two charges a
+    # month with the first subscription unreachable from the portal.
+    monkeypatch.setitem(PLANS["weekly"], "price_id", "price_w")
+    stripe_mock.Subscription.retrieve.return_value = {"id": "sub_1", "status": "active"}
+    with patch(
+        "app.routers.billing._billing_row",
+        return_value={"stripe_customer_id": "cus_1", "stripe_subscription_id": "sub_1"},
+    ):
+        r = auth_client.post(f"{API}/billing/checkout", json={"plan": "weekly"})
+
+    assert r.status_code == 409
+    assert r.json()["error"] == "already_subscribed"
+    stripe_mock.checkout.Session.create.assert_not_called()
+
+
+def test_checkout_409_covers_a_card_stripe_is_still_retrying(auth_client, stripe_mock, monkeypatch):
+    # past_due is still a billing relationship: Stripe keeps retrying the card.
+    monkeypatch.setitem(PLANS["weekly"], "price_id", "price_w")
+    stripe_mock.Subscription.retrieve.return_value = {"id": "sub_1", "status": "past_due"}
+    with patch(
+        "app.routers.billing._billing_row",
+        return_value={"stripe_customer_id": "cus_1", "stripe_subscription_id": "sub_1"},
+    ):
+        r = auth_client.post(f"{API}/billing/checkout", json={"plan": "weekly"})
+    assert r.status_code == 409
+
+
+def test_checkout_proceeds_after_a_cancelled_subscription(auth_client, stripe_mock, monkeypatch):
+    # A churned user must be able to come back — the guard is against DOUBLE billing,
+    # not against subscribing again.
+    monkeypatch.setitem(PLANS["weekly"], "price_id", "price_w")
+    stripe_mock.Subscription.retrieve.return_value = {"id": "sub_1", "status": "canceled"}
+    stripe_mock.checkout.Session.create.return_value.url = "https://checkout.stripe.com/c/x"
+    with patch(
+        "app.routers.billing._billing_row",
+        return_value={"stripe_customer_id": "cus_1", "stripe_subscription_id": "sub_1"},
+    ):
+        r = auth_client.post(f"{API}/billing/checkout", json={"plan": "weekly"})
+
+    assert r.status_code == 200
+    assert stripe_mock.checkout.Session.create.call_args.kwargs["customer"] == "cus_1"
+
+
+def test_checkout_not_blocked_when_stripe_cannot_be_asked(auth_client, stripe_mock, monkeypatch):
+    # Unverifiable ≠ subscribed. Blocking here would lock out someone who needs to pay;
+    # the reused customer still keeps both subscriptions inside one portal.
+    monkeypatch.setitem(PLANS["weekly"], "price_id", "price_w")
+    stripe_mock.Subscription.retrieve.side_effect = RuntimeError("stripe down")
+    stripe_mock.checkout.Session.create.return_value.url = "https://checkout.stripe.com/c/x"
+    with patch(
+        "app.routers.billing._billing_row",
+        return_value={"stripe_customer_id": "cus_1", "stripe_subscription_id": "sub_1"},
+    ):
+        r = auth_client.post(f"{API}/billing/checkout", json={"plan": "weekly"})
+    assert r.status_code == 200
+
+
 def test_checkout_502_when_stripe_errors(auth_client, stripe_mock, monkeypatch):
     monkeypatch.setitem(PLANS["weekly"], "price_id", "price_w")
     stripe_mock.checkout.Session.create.side_effect = RuntimeError("stripe down")
@@ -141,7 +236,7 @@ def test_webhook_duplicate_event_is_skipped(client, stripe_mock, billing_db_mock
     stripe_mock.Webhook.construct_event.return_value = make_event(
         "checkout.session.completed", {"client_reference_id": "u1", "customer": "cus_1"}
     )
-    billing_db_mock.mark_event_processed.return_value = False  # already seen
+    billing_db_mock.claim_event.return_value = False  # claimed by an earlier delivery
     r = client.post(f"{API}/billing/webhook", content=b"{}")
     assert r.status_code == 200
     assert r.json()["duplicate"] is True
@@ -256,7 +351,10 @@ def test_webhook_subscription_deleted_downgrades(client, stripe_mock, billing_db
     billing_db_mock.downgrade.assert_called_once_with("u1")
 
 
-def test_webhook_unknown_customer_is_acked(client, stripe_mock, billing_db_mock):
+def test_webhook_unknown_customer_asks_for_re_delivery(client, stripe_mock, billing_db_mock):
+    # "No user for this customer" is usually ORDER, not a stranger: the event overtook
+    # the checkout that writes stripe_customer_id. Acking it (the old behaviour) burned
+    # the event — Stripe never retries a 200 and a manual resend dedups.
     stripe_mock.Webhook.construct_event.return_value = make_event(
         "customer.subscription.deleted", {"id": "sub_1", "customer": "cus_unknown"}
     )
@@ -264,8 +362,49 @@ def test_webhook_unknown_customer_is_acked(client, stripe_mock, billing_db_mock)
 
     r = client.post(f"{API}/billing/webhook", content=b"{}")
 
-    assert r.status_code == 200
+    assert r.status_code == 503
+    assert r.json()["error"] == "unresolved_customer"
+    billing_db_mock.release_event.assert_called_once_with("evt_1")
     billing_db_mock.downgrade.assert_not_called()
+
+
+def test_webhook_stops_asking_once_retries_cannot_help(client, stripe_mock, billing_db_mock):
+    # After the window a customer really is foreign; keep the claim so Stripe stops
+    # re-delivering (and stops alerting on a failing endpoint).
+    from datetime import UTC, datetime, timedelta
+
+    old_ts = int((datetime.now(tz=UTC) - timedelta(days=3)).timestamp())
+    ev = make_event("invoice.paid", {"customer": "cus_stranger", "id": "in_1"})
+    ev["created"] = old_ts
+    stripe_mock.Webhook.construct_event.return_value = ev
+    billing_db_mock.find_user_by_customer.return_value = None
+
+    r = client.post(f"{API}/billing/webhook", content=b"{}")
+
+    assert r.status_code == 200
+    assert r.json()["unresolved"] is True
+    billing_db_mock.release_event.assert_not_called()
+
+
+def test_webhook_first_invoice_survives_arriving_before_checkout(
+    client, stripe_mock, billing_db_mock
+):
+    """The money case this policy exists for: invoice.paid lands before
+    checkout.session.completed has linked the customer, so the user can't be resolved.
+    The old code marked the event done and returned 200 — the FIRST invoice's affiliate
+    commission was gone, and no second invoice arrives inside the 60-day attribution
+    window to replace it."""
+    stripe_mock.Webhook.construct_event.return_value = make_event(
+        "invoice.paid", {"customer": "cus_1", "id": "in_1", "amount_paid": 900}
+    )
+    billing_db_mock.find_user_by_customer.return_value = None
+
+    with patch("app.routers.billing.affiliates_db") as aff:
+        r = client.post(f"{API}/billing/webhook", content=b"{}")
+
+    assert r.status_code == 503  # → Stripe re-delivers, by then the link exists
+    billing_db_mock.release_event.assert_called_once_with("evt_1")
+    aff.accrue_from_invoice.assert_not_called()
 
 
 def test_webhook_survives_real_stripe_sdk_objects(client, billing_db_mock, monkeypatch):
@@ -306,8 +445,13 @@ def test_webhook_survives_real_stripe_sdk_objects(client, billing_db_mock, monke
     assert billing_db_mock.grant.call_args.args[1] == "pro"
 
 
-def test_webhook_handler_error_still_acks(client, stripe_mock, billing_db_mock):
-    # Never 500 a webhook on our own logic error — Stripe would hammer retries.
+def test_webhook_handler_error_returns_5xx_and_releases_the_claim(
+    client, stripe_mock, billing_db_mock
+):
+    # Inverted on purpose (audit 09-25). The old rule was "never 500 a webhook", which
+    # meant Stripe was told everything was fine while the grant never happened: the payer
+    # sat on `free` until someone edited the database. A 5xx buys ~3 days of retries, and
+    # releasing the claim is what lets a retry actually redo the work.
     stripe_mock.Webhook.construct_event.return_value = make_event(
         "checkout.session.completed",
         {"client_reference_id": "u1", "customer": "cus_1", "subscription": "sub_1"},
@@ -316,5 +460,42 @@ def test_webhook_handler_error_still_acks(client, stripe_mock, billing_db_mock):
 
     r = client.post(f"{API}/billing/webhook", content=b"{}")
 
+    assert r.status_code == 500
+    assert r.json()["error"] == "handler_failed"
+    billing_db_mock.release_event.assert_called_once_with("evt_1")
+
+
+def test_webhook_link_customer_failure_is_retried_not_swallowed(
+    client, stripe_mock, billing_db_mock
+):
+    """The worst single failure in the whole money path: link_customer throws, so
+    stripe_customer_id is never written and EVERY later event for that customer is
+    unresolvable. It has to come back."""
+    stripe_mock.Webhook.construct_event.return_value = make_event(
+        "checkout.session.completed",
+        {"client_reference_id": "u1", "customer": "cus_1", "subscription": "sub_1"},
+    )
+    billing_db_mock.link_customer.side_effect = RuntimeError("supabase down")
+
+    r = client.post(f"{API}/billing/webhook", content=b"{}")
+
+    assert r.status_code == 500
+    billing_db_mock.release_event.assert_called_once_with("evt_1")
+
+
+def test_webhook_successful_event_keeps_its_claim(
+    client, stripe_mock, billing_db_mock, monkeypatch
+):
+    # The other half of the invariant: a handled event must NOT be released, or the next
+    # delivery of it would grant twice.
+    monkeypatch.setitem(PLANS["weekly"], "price_id", "price_w")
+    stripe_mock.Webhook.construct_event.return_value = make_event(
+        "checkout.session.completed",
+        {"client_reference_id": "u1", "customer": "cus_1", "subscription": "sub_1"},
+    )
+    stripe_mock.Subscription.retrieve.return_value = SUB_ACTIVE
+
+    r = client.post(f"{API}/billing/webhook", content=b"{}")
+
     assert r.status_code == 200
-    assert r.json()["received"] is True
+    billing_db_mock.release_event.assert_not_called()
