@@ -226,3 +226,49 @@ def location_verdict(row_location: str, user: dict) -> str:
     ):
         return "elsewhere"
     return "unknown"
+
+
+# ── Work setting ───────────────────────────────────────────────────────────────────
+# The profile's `work_setting` (remote | hybrid | onsite, ''/None = any) is a second axis
+# beside geography, and until 09-27 nothing on the server read it. Geography alone let an
+# office role in the user's own city through for someone who asked for remote only — the
+# location matches, the arrangement does not.
+#
+# The rule (Igor): remote = anywhere; hybrid / on-site = only the chosen place and radius.
+# The second half is what location_verdict already enforces, so the only NEW narrowing is
+# for a remote-only user: a posting that names a place and never says remote is an
+# on-site posting, and they did not ask for one. A remote posting passes every setting —
+# it is workable from wherever the user is, which is the whole point of "anywhere".
+_HYBRID_RE = re.compile(r"\bhybrid\b", re.I)
+_COUNTRY_ONLY_RE = re.compile(
+    r"^\W*(?:us|usa|u\.s\.a?\.?|united states(?: of america)?|north america|americas?)\W*$", re.I
+)
+
+
+def posting_work_setting(row_location: str, title: str = "") -> str | None:
+    """ "remote" | "hybrid" | "onsite" | None — what the posting's own text says.
+
+    Remote wins over hybrid ("Remote or Hybrid - NYC" can be done from home). A bare
+    country ("United States") is how many boards label a remote-in-US role, so it stays
+    unknown rather than becoming "on-site". Empty text is unknown, never a verdict.
+    """
+    text = f"{row_location or ''} {title or ''}"
+    if _REMOTE_RE.search(text):
+        return "remote"
+    if _HYBRID_RE.search(text):
+        return "hybrid"
+    loc = (row_location or "").strip()
+    if not loc or not re.search(r"[a-z]", loc, re.I) or _COUNTRY_ONLY_RE.match(loc):
+        return None
+    return "onsite"
+
+
+def matches_work_setting(row_location: str, title: str, wanted: str | None) -> bool:
+    """Does this posting's arrangement fit what the user asked for? Unknown passes —
+    the same silence-is-not-a-mismatch rule as location and job type."""
+    want = (wanted or "").strip().lower()
+    if want != "remote":
+        # any / hybrid / onsite: the place is judged by location_verdict; a remote
+        # posting is fine for everyone.
+        return True
+    return posting_work_setting(row_location, title) in ("remote", None)

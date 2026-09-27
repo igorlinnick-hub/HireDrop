@@ -167,7 +167,12 @@ def on_search_filter(jobs: list, profile: dict) -> list:
     rule, one place — "what we collect", "what we show" and "what we apply to" cannot
     drift apart again.
     """
-    from modules.job_location import location_verdict, names_foreign_country, parse_user_location
+    from modules.job_location import (
+        location_verdict,
+        matches_work_setting,
+        names_foreign_country,
+        parse_user_location,
+    )
     from modules.job_type import matches_job_type
     from modules.platforms.ats_boards import (
         is_generic_talent_pool,
@@ -178,6 +183,7 @@ def on_search_filter(jobs: list, profile: dict) -> list:
 
     keywords = [k for k in (profile.get("keywords") or []) if (k or "").strip()]
     wanted_type = (profile.get("job_type") or "").strip() or None
+    wanted_setting = profile.get("work_setting")
     user_loc = parse_user_location(profile.get("location") or "")
     loc_filter_on = bool(user_loc.get("city") or user_loc.get("state_code"))
     # Country gate, independent of the city/state filter above. The coarse "usa"/"remote"
@@ -215,6 +221,10 @@ def on_search_filter(jobs: list, profile: dict) -> list:
         and matches_job_type(j.get("job_type"), wanted_type)
         and (not country_gate or not names_foreign_country(j.get("location")))
         and (not loc_filter_on or location_verdict(j.get("location"), user_loc) != "elsewhere")
+        # Work setting (09-27): the one filter the dashboard saved and no server path read.
+        # Only a remote-only pick narrows here — hybrid/on-site are already "the user's
+        # place", which is the location line above (modules/job_location.py).
+        and matches_work_setting(j.get("location") or "", j.get("title") or "", wanted_setting)
         and (not salary_gate_on or passes_salary(j, salary_min, salary_max, listed_only))
     ]
 

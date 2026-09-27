@@ -7,6 +7,8 @@ truthfully — same city, same state, or remote — and everything it cannot pla
 like job_type: silence is not a mismatch.
 """
 
+import pytest
+
 from modules.job_location import location_verdict, names_foreign_country, parse_user_location
 
 MIAMI = parse_user_location("Miami, Florida, US")
@@ -204,3 +206,56 @@ def test_us_towns_named_after_countries_are_still_american():
     ):
         assert not names_foreign_country(text), text
     assert location_verdict("Peru, IN", parse_user_location("Peru, Indiana, US")) == "fits"
+
+
+# ── work setting (09-27) ──────────────────────────────────────────────────────────
+from modules.job_location import matches_work_setting, posting_work_setting  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "loc,title,expected",
+    [
+        ("Remote - US", "", "remote"),
+        ("Hybrid - San Francisco, California", "", "hybrid"),
+        ("Remote or Hybrid - New York, NY", "", "remote"),
+        ("Honolulu, HI", "", "onsite"),
+        ("New York, NY", "Account Executive (Remote)", "remote"),
+        ("United States", "", None),
+        ("USA", "", None),
+        ("", "", None),
+    ],
+)
+def test_posting_work_setting(loc, title, expected):
+    assert posting_work_setting(loc, title) == expected
+
+
+def test_remote_only_user_rejects_office_role_in_own_city():
+    # The hole this closes: geography says "fits", the arrangement does not.
+    assert not matches_work_setting("Honolulu, HI", "Marketing Manager", "remote")
+    assert not matches_work_setting("Hybrid - Honolulu, HI", "Marketing Manager", "remote")
+
+
+def test_remote_only_user_keeps_remote_and_unknown():
+    assert matches_work_setting("Remote - US", "Marketing Manager", "remote")
+    assert matches_work_setting("United States", "Marketing Manager", "remote")
+    assert matches_work_setting("", "Marketing Manager", "remote")
+
+
+@pytest.mark.parametrize("wanted", ["", None, "any", "hybrid", "onsite"])
+def test_other_settings_never_narrow_here(wanted):
+    # Place is location_verdict's job; a remote posting fits everyone.
+    for loc in ("Honolulu, HI", "Remote - US", "Hybrid - Honolulu, HI", ""):
+        assert matches_work_setting(loc, "Marketing Manager", wanted)
+
+
+def test_on_search_filter_applies_remote_only_setting():
+    from app.routers.jobs import on_search_filter
+
+    rows = [
+        {"title": "Marketing Manager", "location": "Honolulu, HI"},
+        {"title": "Marketing Manager", "location": "Remote - US"},
+    ]
+    base = {"keywords": ["marketing manager"], "location": "Honolulu, Hawaii, US"}
+    assert len(on_search_filter(rows, base)) == 2
+    kept = on_search_filter(rows, {**base, "work_setting": "remote"})
+    assert [r["location"] for r in kept] == ["Remote - US"]
