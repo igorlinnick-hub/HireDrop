@@ -821,6 +821,41 @@
     return true;
   }
 
+  // The four fields every apply form opens with. Split out of the step loop so the rule
+  // below can be DRIVEN by a test (tests/stall-needs-real-fill.test.js) instead of read.
+  //
+  // typeValue's RETURN VALUE is load-bearing: it is false when the profile has nothing to
+  // type. The old code set `filledAny = true` next to the call regardless, so a visible
+  // empty field we could never fill counted as progress — `stallRounds` was reset every
+  // round and the hand-back never came. ONE empty `profile.phone` was enough to spin a form
+  // until something else killed the run (candidate #4 of
+  // docs/reviews/2026-09-25-delivery-honesty.md; same class as #242, where the regexp was
+  // blind and the profile was empty underneath).
+  //
+  // `gaps` is the other half: a field we cannot fill is a fact the HUMAN can act on, so its
+  // label travels into the hand-back reason instead of a bare "Continue refused".
+  async function fillIdentityFields(profile, filled, gaps) {
+    let any = false;
+    const fields = [
+      ["firstName", "first", () => profile.name || ""],
+      ["lastName", "last", () => profile.last_name || ""],
+      ["email", "email", () => resolveEmail(profile)],
+      ["phone", "phone", () => profile.phone || ""],
+    ];
+    for (const [key, label, read] of fields) {
+      const el = findFieldBySelectorsOrLabel(key);
+      if (!el || (el.value || "").trim()) continue;
+      if (await typeValue(el, await read())) {
+        await sleep(humanDelay(1200, 2200));
+        any = true;
+        filled.push(label);
+      } else {
+        gaps.push(label);
+      }
+    }
+    return any;
+  }
+
   // Quick-set for long text (cover letters) — no char-by-char
   function quickSet(el, value) {
     if (!el || !value) return false;
@@ -3771,37 +3806,10 @@
       let filledAny = false;
       const filled = []; // durable step summary (popup log() is lost when the popup is closed)
 
-      // First name
-      const fnEl = findFieldBySelectorsOrLabel("firstName");
-      if (fnEl && !(fnEl.value || "").trim()) {
-        await typeValue(fnEl, profile.name || "");
-        await sleep(humanDelay(1200, 2200));
-        filledAny = true; filled.push("first");
-      }
-
-      // Last name
-      const lnEl = findFieldBySelectorsOrLabel("lastName");
-      if (lnEl && !(lnEl.value || "").trim()) {
-        await typeValue(lnEl, profile.last_name || "");
-        await sleep(humanDelay(1200, 2200));
-        filledAny = true; filled.push("last");
-      }
-
-      // Email
-      const emEl = findFieldBySelectorsOrLabel("email");
-      if (emEl && !(emEl.value || "").trim()) {
-        await typeValue(emEl, await resolveEmail(profile));
-        await sleep(humanDelay(1200, 2200));
-        filledAny = true; filled.push("email");
-      }
-
-      // Phone
-      const phEl = findFieldBySelectorsOrLabel("phone");
-      if (phEl && !(phEl.value || "").trim()) {
-        await typeValue(phEl, profile.phone || "");
-        await sleep(humanDelay(1200, 2200));
-        filledAny = true; filled.push("phone");
-      }
+      // Name / email / phone. Only a field we actually TYPED INTO counts as progress —
+      // see fillIdentityFields for the bug that rule closes.
+      const profileGaps = [];
+      if (await fillIdentityFields(profile, filled, profileGaps)) filledAny = true;
 
       // Cover letter — written on demand, only because this step showed a field for it.
       const clEl = findFieldBySelectorsOrLabel("coverLetter");
@@ -3883,7 +3891,9 @@
           // advances the walk) — NOT DETECTION_TRIPPED, which means "a human check is
           // blocking us" and pauses the whole campaign behind a captcha CTA.
           await handBackJob(
-            `the form step wouldn't accept our answers — "${classifyFormButton().label || "Continue"}" refused ${stallRounds + 1}× with nothing left to fill`,
+            `the form step wouldn't accept our answers — "${classifyFormButton().label || "Continue"}" refused ${stallRounds + 1}× with nothing left to fill${
+              profileGaps.length ? ` — your profile has nothing for: ${[...new Set(profileGaps)].join(", ")}` : ""
+            }`,
             { title: jobInfo.title, company: jobInfo.company, platform: detectPlatform(),
               // The refusing screen is not a completed step — count the ones before it.
               steps: Math.max(0, formStepCount - 1) });
@@ -3904,7 +3914,7 @@
         const where = !action.btn ? "none" : (dlgs.some((d) => d.contains(action.btn)) ? "dialog" : "page");
         const dt = ((Date.now() - prevStepAt) / 1000).toFixed(1);
         prevStepAt = Date.now();
-        logBackend(`STEP ${formStepCount} [${platformLabel()}] Δ${dt}s filled=[${filled.join(",")}] btn="${action.label || "-"}" (${where}) → ${action.btn ? (action.submit ? "SUBMIT" : "continue") : "no button"} ${dialogSnapshot()}`, "info");
+        logBackend(`STEP ${formStepCount} [${platformLabel()}] Δ${dt}s filled=[${filled.join(",")}]${profileGaps.length ? ` gaps=[${profileGaps.join(",")}]` : ""} btn="${action.label || "-"}" (${where}) → ${action.btn ? (action.submit ? "SUBMIT" : "continue") : "no button"} ${dialogSnapshot()}`, "info");
       }
 
       // Check if this is the final submit step
