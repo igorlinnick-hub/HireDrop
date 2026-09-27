@@ -292,14 +292,64 @@ def test_webhook_grant_period_end_falls_back_to_item(
 
 
 def test_webhook_unknown_price_grants_nothing(client, stripe_mock, billing_db_mock, monkeypatch):
+    # Someone else's product in the same Stripe account must never grant our tier.
     monkeypatch.setitem(PLANS["weekly"], "price_id", "price_w")
     monkeypatch.setitem(PLANS["monthly"], "price_id", "price_m")
+    stripe_mock.Price.retrieve.side_effect = lambda pid: (
+        {"id": pid, "product": "prod_theirs" if pid == "price_foreign" else "prod_hiredrop"}
+    )
     sub = {**SUB_ACTIVE, "items": {"data": [{"price": {"id": "price_foreign"}}]}}
     stripe_mock.Webhook.construct_event.return_value = make_event(
         "checkout.session.completed",
         {"client_reference_id": "u1", "customer": "cus_1", "subscription": "sub_1"},
     )
     stripe_mock.Subscription.retrieve.return_value = sub
+
+    r = client.post(f"{API}/billing/webhook", content=b"{}")
+
+    assert r.status_code == 200
+    billing_db_mock.grant.assert_not_called()
+
+
+def test_webhook_legacy_price_on_our_product_still_grants(
+    client, stripe_mock, billing_db_mock, monkeypatch
+):
+    """Stripe Prices are IMMUTABLE, so repricing mints new ids and the env holds only the
+    current pair (we already repriced once: $9/$29 → $12/$39). A subscriber grandfathered on
+    an older price fell through tier_for_price and was granted NOTHING — Stripe kept charging
+    them while get_tier fail-closed them to free at period end. Paying and locked out is the
+    worst state we can put someone in, so an unknown price on OUR product still grants."""
+    monkeypatch.setitem(PLANS["weekly"], "price_id", "price_w")
+    monkeypatch.setitem(PLANS["monthly"], "price_id", "price_m")
+    # price_legacy_9 is gone from the env but sits on the same product as price_w.
+    stripe_mock.Price.retrieve.side_effect = lambda pid: {"id": pid, "product": "prod_hiredrop"}
+    sub = {**SUB_ACTIVE, "items": {"data": [{"price": {"id": "price_legacy_9"}}]}}
+    stripe_mock.Webhook.construct_event.return_value = make_event(
+        "checkout.session.completed",
+        {"client_reference_id": "u1", "customer": "cus_1", "subscription": "sub_1"},
+    )
+    stripe_mock.Subscription.retrieve.return_value = sub
+
+    r = client.post(f"{API}/billing/webhook", content=b"{}")
+
+    assert r.status_code == 200
+    assert billing_db_mock.grant.call_args.args[1] == "pro"
+
+
+def test_webhook_unknown_price_grants_nothing_when_stripe_cannot_answer(
+    client, stripe_mock, billing_db_mock, monkeypatch
+):
+    # No answer from Stripe = no evidence it is ours. Stay closed.
+    monkeypatch.setitem(PLANS["weekly"], "price_id", "price_w")
+    stripe_mock.Price.retrieve.side_effect = RuntimeError("stripe down")
+    stripe_mock.Webhook.construct_event.return_value = make_event(
+        "checkout.session.completed",
+        {"client_reference_id": "u1", "customer": "cus_1", "subscription": "sub_1"},
+    )
+    stripe_mock.Subscription.retrieve.return_value = {
+        **SUB_ACTIVE,
+        "items": {"data": [{"price": {"id": "price_mystery"}}]},
+    }
 
     r = client.post(f"{API}/billing/webhook", content=b"{}")
 

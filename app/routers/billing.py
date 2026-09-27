@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from app.billing_config import plan_by_key, tier_for_price
+from app.billing_config import PLANS, plan_by_key, tier_for_price
 from app.db import affiliates as affiliates_db
 from app.db import billing as billing_db
 from app.deps import get_current_user
@@ -186,11 +186,46 @@ def _period_end_iso(subscription: dict) -> str | None:
     return datetime.fromtimestamp(int(ts), tz=UTC).isoformat()
 
 
+def _product_of(stripe, price_id: str) -> str | None:
+    """The Stripe product a price belongs to (prices carry it either inline or as an id)."""
+    price = stripe.Price.retrieve(price_id)
+    if hasattr(price, "to_dict"):
+        price = price.to_dict()
+    product = price.get("product")
+    return product if isinstance(product, str) else (product or {}).get("id")
+
+
+def _tier_for_legacy_price(stripe, price_id: str) -> str | None:
+    """A price that is not in the env but IS on our product still grants our paid tier.
+
+    Stripe Prices are IMMUTABLE, so every repricing mints new ids and the env holds only the
+    current pair ($12/wk, $39/mo — we already repriced once). A subscriber grandfathered on
+    an older price therefore fell through tier_for_price and was never granted anything:
+    Stripe kept charging them while get_tier fail-closed them to free at period end. Paying
+    and locked out is the worst state the product can put someone in, so instead of guessing
+    we ask Stripe whose product the price is — we sell exactly one.
+    """
+    ours = next((p["price_id"] for p in PLANS.values() if p["price_id"]), None)
+    if not ours or not price_id:
+        return None
+    try:
+        if _product_of(stripe, price_id) == _product_of(stripe, ours):
+            print(
+                f"[billing] price {price_id} is not in env but is OUR product — granting pro. "
+                "Add it to STRIPE_PRICE_* (or migrate the subscriber) to stop the lookup.",
+                file=sys.stderr,
+            )
+            return "pro"
+    except Exception as e:
+        print(f"[billing] product lookup failed for {price_id}: {e}", file=sys.stderr)
+    return None
+
+
 def _grant_from_subscription(stripe, user_id: str, subscription: dict) -> None:
     """Given a Stripe subscription object, grant the matching tier + expiry."""
     items = subscription.get("items", {}).get("data", [])
     price_id = items[0]["price"]["id"] if items else None
-    tier = tier_for_price(price_id)
+    tier = tier_for_price(price_id) or _tier_for_legacy_price(stripe, price_id)
     if not tier:
         print(
             f"[billing] subscription {subscription.get('id')} has unknown price {price_id}",

@@ -30,7 +30,7 @@ def _row(title, platform="greenhouse", status="approved", link=None, jid="809531
     }
 
 
-def _queue(pool, applied_urls=(), done_today=0, budget=30):
+def _queue(pool, applied_urls=(), done_today=0, budget=30, mode=None):
     with (
         patch.object(campaign_router.jobs_db, "get_jobs", return_value=pool),
         patch.object(campaign_router.apps_db, "applied_job_urls", return_value=list(applied_urls)),
@@ -39,7 +39,7 @@ def _queue(pool, applied_urls=(), done_today=0, budget=30):
         patch.object(campaign_router, "get_submit_mode", return_value="tap"),
         patch.object(campaign_router, "daily_limit", return_value=budget),
     ):
-        return campaign_router.campaign_queue(user=_User())
+        return campaign_router.campaign_queue(mode=mode, user=_User())
 
 
 def test_only_approved_swipes_on_submittable_platforms():
@@ -90,3 +90,33 @@ def test_an_exhausted_daily_budget_returns_an_empty_queue_not_an_error():
     assert out["queue"] == []
     assert out["waiting"] == 1
     assert out["done_today"] == 30
+
+
+def test_an_auto_run_is_not_offered_lever_approvals():
+    """Lever's submit stops at an hCaptcha a human has to clear, so an AUTO run discards
+    those rows — and until 09-26 the server did not know: it spent the day's budget slice on
+    them anyway. A user whose approvals are Lever-heavy got a short queue (or none) while the
+    dashboard showed the swipes waiting. Same rule, now told to the server.
+    """
+    pool = [
+        _row("lever one", platform="lever", link="https://jobs.lever.co/acme/1", jid="1"),
+        _row("lever two", platform="lever", link="https://jobs.lever.co/acme/2", jid="2"),
+        _row("greenhouse one", jid="9000001"),
+    ]
+    out = _queue(pool, budget=2, mode="auto")
+    assert [j["title"] for j in out["queue"]] == ["greenhouse one"]
+    # And the counters stay honest about what was held back.
+    assert out["waiting"] == 1
+
+
+def test_a_tap_run_still_gets_lever_because_the_human_is_at_the_wheel():
+    pool = [_row("lever one", platform="lever", link="https://jobs.lever.co/acme/1", jid="1")]
+    assert [j["title"] for j in _queue(pool, mode="tap")["queue"]] == ["lever one"]
+
+
+def test_an_older_extension_that_sends_no_mode_loses_nothing():
+    # Byte-for-byte old behaviour when the parameter is absent or unknown — a build that
+    # predates this must never come back with fewer rows than it used to.
+    pool = [_row("lever one", platform="lever", link="https://jobs.lever.co/acme/1", jid="1")]
+    assert len(_queue(pool)["queue"]) == 1
+    assert len(_queue(pool, mode="whatever")["queue"]) == 1

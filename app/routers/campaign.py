@@ -40,8 +40,20 @@ router = APIRouter(tags=["campaign"])
 # the irreversible application) instead of discovering the 429 after the fact.
 
 
+# An AUTO run cannot submit a Lever approval — its form needs a human at the captcha, and
+# nobody is watching. The extension has always dropped those locally, but the SERVER did not
+# know, so it spent the day's budget slice on rows the run then discarded: a user whose
+# approvals are Lever-heavy got a short queue (or "no approved jobs") while the dashboard
+# showed the swipes waiting. Same rule, told to the server, so the slice goes to work the
+# run can actually do. Kept as a list rather than a bare `if` because the next
+# needs-a-human platform will land here too.
+_AUTO_CANNOT_SUBMIT = ("lever",)
+
+
 @router.get("/campaign/queue")
-def campaign_queue(since: str | None = None, user=Depends(get_current_user)):
+def campaign_queue(
+    since: str | None = None, mode: str | None = None, user=Depends(get_current_user)
+):
     """The work list for a Tap run — owned by the server, not by chrome.storage.
 
     Step 1 of moving campaign state server-side (decision 2026-09-08). Until now the
@@ -69,12 +81,18 @@ def campaign_queue(since: str | None = None, user=Depends(get_current_user)):
     applied_ids = {job_identity(u) for u in apps_db.applied_job_urls(user.id)}
     applied_ids.discard(None)
 
+    # `mode` is the RUN's mode, not a preference: "auto" means unattended, so the platforms
+    # that need a human are not candidates at all (see _AUTO_CANNOT_SUBMIT). Absent/unknown
+    # mode keeps the old behaviour byte-for-byte — an older extension build must not lose
+    # rows because it doesn't send the parameter yet.
+    unattended = (mode or "").lower() == "auto"
     approved = [
         j
         for j in jobs_db.get_jobs(user.id)
         if (j.get("status") or "") == "approved"
         and (j.get("link") or j.get("apply_url"))
         and j.get("platform") in TAP_APPLY_PLATFORMS
+        and not (unattended and j.get("platform") in _AUTO_CANNOT_SUBMIT)
     ]
     waiting = [
         j for j in approved if job_identity(j.get("link") or j.get("apply_url")) not in applied_ids

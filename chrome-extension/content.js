@@ -5876,9 +5876,17 @@
   // Screenshot ping — keeps the service worker alive and triggers a capture
   // every 2.5 s while this page is open. background.js only sends to backend
   // when campaignRunning is true, so this is a no-op outside campaigns.
+  //
+  // The number USED to be 300, i.e. 3.3 messages per second, on every tab matching the
+  // manifest — including the user's own Indeed/LinkedIn browsing tabs, forever, campaign or
+  // not. That is the "service worker kept alive on stale code" trap this codebase documents
+  // elsewhere, paid for in battery on every open job page. 2500 matches the comment that was
+  // always here, and 30s is the MV3 idle limit, so the keep-alive still has 12x the margin
+  // it needs.
+  const SCREENSHOT_PING_MS = 2500;
   const _screenshotPing = setInterval(() => {
     safeSend({ type: "CAPTURE_SCREENSHOT" });
-  }, 300);
+  }, SCREENSHOT_PING_MS);
   // `pagehide`, not `unload`: some ATS hosts (Greenhouse) block `unload` via
   // Permissions-Policy, which spams a console violation on every job page. pagehide
   // is the modern, un-blocked equivalent and fires on navigation all the same. The

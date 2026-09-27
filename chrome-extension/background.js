@@ -1150,9 +1150,18 @@ async function buildApprovedAtsQueue(perPlatformCap, opts) {
   //
   // poolDoneUrls stays: it is the IN-RUN guard (a posting that skips is not applied, so
   // the server would keep offering it) and it is reset at every campaign start.
+  // Caller-supplied exclusions — an auto run drops Lever (its submit needs a human at the
+  // captcha), so those approvals wait for a tap run instead of stalling an unattended one.
+  // Read BEFORE the fetch now, because the server needs to know: it slices today's budget
+  // over the rows it returns, and until 09-26 it sliced it over Lever rows this run was
+  // about to throw away — a Lever-heavy approval stack came back as a short queue, or as
+  // none at all, while the dashboard showed the swipes waiting.
+  const skip = (opts && opts.skipPlatforms) || [];
+  const mode = skip.includes("lever") ? "auto" : "tap";
+
   let payload = null;
   try {
-    payload = await apiGet("/campaign/queue");
+    payload = await apiGet(`/campaign/queue?mode=${mode}`);
   } catch (e) {
     await addToActivityLog("Couldn't reach the server for your approved list — will retry shortly.", "warn");
     return [];
@@ -1187,10 +1196,6 @@ async function buildApprovedAtsQueue(perPlatformCap, opts) {
   const poolPlatforms = dd.tapNativePool === true
     ? ATS_PLATFORMS.concat(POOL_NATIVE_VERIFIED, POOL_NATIVE_PENDING)
     : ATS_PLATFORMS.concat(POOL_NATIVE_VERIFIED);
-  // Caller-supplied exclusions — an auto run drops Lever (its submit needs a human at the
-  // captcha), so those approvals wait for a tap run instead of stalling an unattended one.
-  const skip = (opts && opts.skipPlatforms) || [];
-
   const out = [];
   for (const j of (payload && payload.queue) || []) {
     if (!poolPlatforms.includes(j.platform)) continue;
