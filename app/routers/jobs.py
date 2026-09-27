@@ -158,7 +158,7 @@ def on_search_filter(jobs: list, profile: dict) -> list:
     """Keep only the pool rows that match the profile's CURRENT search.
 
     The pool is INSERT-only and never expires, so any raw read of it is an ARCHIVE: every
-    job ever harvested under every keyword set the user has tried. Three filters, each
+    job ever harvested under every keyword set the user has tried. Four filters, each
     with its own "unknown passes" rule, documented at the call sites they were born in
     (see get_deck below). Extracted 09-13 because the Tap deck had this and the auto ATS
     queue did not: Igor's 09-13 run walked 15 Oura/Braze ENGINEERING jobs harvested weeks
@@ -174,6 +174,7 @@ def on_search_filter(jobs: list, profile: dict) -> list:
         keyword_match,
         names_other_profession,
     )
+    from modules.salary_filter import passes_salary
 
     keywords = [k for k in (profile.get("keywords") or []) if (k or "").strip()]
     wanted_type = (profile.get("job_type") or "").strip() or None
@@ -184,6 +185,21 @@ def on_search_filter(jobs: list, profile: dict) -> list:
     # and a "remote" search surfaced Bengaluru/India rows from the worldwide boards
     # (Igor, 09-21). We serve US job seekers; only the explicit "europe" pick opts out.
     country_gate = _wants_us_jobs(profile)
+    # Salary joined the filters 09-26. It was missing from every live path: the user set
+    # "$150k minimum" in the launch modal and we showed and applied to whatever (verified
+    # 09-25, docs/handoff/salary-filter.md). It belongs HERE and not at harvest for the
+    # same reason the city does — the pool is an archive shared by every future search, and
+    # a row dropped at harvest is gone even after the user lowers the number.
+    #
+    # "Not listed" PASSES unless the user asked for listed-only. That is not timidity, it
+    # is the measurement: `scripts/measure_salary_fill.py` (09-26) reads pay in ~12% of
+    # pool rows (Indeed 40%, Greenhouse 7%, Ashby/Workday 0% — `jobs` has no salary
+    # column, so pay is whatever the posting text says). Rejecting "unknown" left 6% of
+    # the deck and would have blocked 123 of 124 real applications.
+    salary_min = profile.get("salary_min") or None
+    salary_max = profile.get("salary_max") or None
+    listed_only = bool(profile.get("salary_listed_only"))
+    salary_gate_on = bool(salary_min or salary_max or listed_only)
     return [
         j
         for j in jobs
@@ -199,6 +215,7 @@ def on_search_filter(jobs: list, profile: dict) -> list:
         and matches_job_type(j.get("job_type"), wanted_type)
         and (not country_gate or not names_foreign_country(j.get("location")))
         and (not loc_filter_on or location_verdict(j.get("location"), user_loc) != "elsewhere")
+        and (not salary_gate_on or passes_salary(j, salary_min, salary_max, listed_only))
     ]
 
 
@@ -281,7 +298,7 @@ def get_deck(user=Depends(get_current_user)):
         and (j.get("link") or j.get("apply_url"))
         and j.get("platform") in TAP_APPLY_PLATFORMS
     ]
-    # Three filters, not one — all in on_search_filter(), shared with the auto ATS queue.
+    # Four filters, not one — all in on_search_filter(), shared with the auto ATS queue.
     # Keywords say WHAT the job is; job_type says on what terms — a contract role is a
     # different answer to "should I apply" than a staff job with the same title, and the
     # picker on the dashboard has been promising this since long before anything wrote the
@@ -293,6 +310,8 @@ def get_deck(user=Depends(get_current_user)):
     # place, and an empty deck is the worse failure. No coordinates exist in the
     # backend, so this is city/state/remote honesty, not a miles radius: the radius
     # picker keeps steering the native searches only.
+    # Salary joined 09-26 — same "unknown passes" shape, and for a measured reason
+    # (~12% of rows state pay at all). See on_search_filter.
     on_search = on_search_filter(swipeable, profile)
     # Age gate — the deck's own DECK_MAX_AGE_DAYS (14), stricter than the apply cap (45),
     # because a swipe is a promise the freshest-first queue must be able to keep (see the
