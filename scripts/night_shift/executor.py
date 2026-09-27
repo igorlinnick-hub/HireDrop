@@ -44,11 +44,16 @@ from app.db import resume as resume_storage  # noqa: E402
 from app.db.client import get_supabase  # noqa: E402
 from app.db.profile import get_profile  # noqa: E402
 from app.db.subscriptions import check_can_apply, increment_free_apps  # noqa: E402
+from app.routers.jobs import fresh_enough, on_search_filter  # noqa: E402
 from modules.ai_cover_letter import generate_cover_letter  # noqa: E402
 from modules.ai_fit_judge import assess_fit  # noqa: E402
 from modules.ai_question_answer import answer_screener_question  # noqa: E402
 from modules.job_identity import job_identity, normalized_link  # noqa: E402
-from modules.job_location import location_verdict, parse_user_location  # noqa: E402
+from modules.job_location import (  # noqa: E402
+    location_verdict,
+    matches_work_setting,
+    parse_user_location,
+)
 
 SHOTS = os.path.join(os.path.dirname(__file__), "shots")
 
@@ -74,15 +79,30 @@ def log(msg: str) -> None:
     print(msg, flush=True)
 
 
-def pick_jobs(user_id: str, job_url: str | None) -> list[dict]:
+def pick_jobs(user_id: str, job_url: str | None, profile: dict) -> list[dict]:
     """Candidates, best first. The walk tries them in order until one has a live form —
     dry-run #2 hit a job GH had already closed (`?error=true` redirect, the same shape
     that once stalled the auto-ATS walk on reddit?error=true) and a single-pick run
     just ended there."""
-    sb = get_supabase()
-    q = sb.table("jobs").select("*").eq("user_id", user_id).eq("platform", "greenhouse")
-    q = q.eq("link", job_url) if job_url else q.eq("status", "new")
-    rows = q.limit(200).execute().data or []
+    if job_url:
+        # Igor's own pick: skips the search filter, but not the per-candidate gates.
+        sb = get_supabase()
+        q = sb.table("jobs").select("*").eq("user_id", user_id).eq("platform", "greenhouse")
+        rows = q.eq("link", job_url).limit(5).execute().data or []
+    else:
+        # ONE RULE FOR EVERY APPLY PATH. The deck and the extension's auto queue read
+        # the pool through on_search_filter (keywords, other-profession titles, job
+        # type, country, city, salary, work setting) + the age gate; this walk used to
+        # read a raw 200-row slice of `status=new` and re-check only the city — so a row
+        # the user's own search had excluded (old keyword set, pay below the floor) was
+        # still eligible for an unwatched submit. The pool is read whole and paged: a
+        # bare select stops at PostgREST's 1000-row cap.
+        rows = [
+            r
+            for r in jobs_db.get_jobs(user_id)
+            if r.get("platform") == "greenhouse" and (r.get("status") or "new") == "new"
+        ]
+        rows = [r for r in on_search_filter(rows, profile) if fresh_enough(r)]
     if not rows:
         raise SystemExit("no matching greenhouse job in this user's pool")
     # Prefer GH-HOSTED apply pages (job-boards.greenhouse.io — the form lives right on
@@ -707,7 +727,19 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
     if not profile.get("email"):
         admin = get_supabase().auth.admin.get_user_by_id(user_id)
         profile["email"] = admin.user.email if admin and admin.user else ""
-    candidates = pick_jobs(user_id, job_url)
+    # WORK SETTING IS REQUIRED FOR AN UNWATCHED SUBMIT. Empty means "never asked", not
+    # "anything goes": the first live pick (09-26) was an SF hybrid role for a Honolulu
+    # user whose setting was blank. The dashboard makes the pick before Start; the server
+    # refuses to guess it for a run nobody is watching. Dry-run only warns.
+    setting = (profile.get("work_setting") or "").strip().lower()
+    if not setting:
+        if live:
+            raise SystemExit(
+                "LIVE REFUSED — work setting is not chosen (Remote / Hybrid / On-site)."
+                " Pick it on the dashboard, then run again."
+            )
+        log("! work setting not chosen — dry-run continues as 'any'; --live would refuse")
+    candidates = pick_jobs(user_id, job_url, profile)
     user_loc = parse_user_location(profile.get("location") or "")
     resume_path = download_resume(user_id, profile)
     log(f"resume: {resume_path} | candidates: {len(candidates)}")
@@ -767,6 +799,14 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
                     f"  skip (location: {cand.get('location')!r}"
                     f" is outside {profile.get('location')})"
                 )
+                continue
+
+            # Arrangement, separately from place: an office role in the user's own city
+            # passes the check above, and is still wrong for someone who asked for remote.
+            if not matches_work_setting(
+                cand.get("location") or "", cand.get("title") or "", setting
+            ):
+                log(f"  skip (work setting: {cand.get('location')!r} is not remote)")
                 continue
 
             # ALREADY APPLIED? The pool row's own status is not the answer. The same
