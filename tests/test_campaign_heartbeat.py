@@ -169,6 +169,57 @@ def test_activity_line_without_a_campaign_is_not_a_heartbeat(auth_client):
     touch.assert_not_called()
 
 
+def test_the_campaigns_own_death_line_is_not_a_heartbeat(auth_client):
+    """The line that ANNOUNCES the end must not certify life.
+
+    background.js writes "⏹ Campaign stopped" (with metadata.outcome) while the flag is
+    still up, so it refreshed last_ping_at — and the `campaign_running: false` ping right
+    behind it could not reap the flag, because reconcile_not_running deliberately refuses to
+    reap a campaign whose heartbeat is fresh (an idle second install must not kill a working
+    run, 08-15). Net effect whenever the extension's own /campaign/stop didn't land
+    (offline, 401 storm, SW killed mid-handler): a guaranteed zombie for a full
+    HEARTBEAT_TTL — 10 minutes of "running" with nothing running, "Watch Live" lying, and
+    other installs told should_run=true.
+    """
+    with (
+        patch("app.routers.activity.campaign_db.get_state", return_value={"running": True}),
+        patch("app.routers.activity.campaign_db.touch_ping") as touch,
+        patch("app.routers.activity.activity_db.write", return_value="id1"),
+    ):
+        res = auth_client.post(
+            "/api/v1/activity",
+            json={
+                "message": "⏹ Campaign stopped (run complete).",
+                "phase": "extension",
+                "metadata": {"outcome": "completed"},
+            },
+        )
+
+    assert res.status_code == 200
+    touch.assert_not_called()
+
+
+def test_an_ordinary_line_with_other_metadata_is_still_a_heartbeat(auth_client):
+    # Only `outcome` marks a terminal line; metadata in general must not mute the heartbeat,
+    # or a live run stops proving itself the moment it starts attaching detail.
+    with (
+        patch("app.routers.activity.campaign_db.get_state", return_value={"running": True}),
+        patch("app.routers.activity.campaign_db.touch_ping") as touch,
+        patch("app.routers.activity.activity_db.write", return_value="id1"),
+    ):
+        res = auth_client.post(
+            "/api/v1/activity",
+            json={
+                "message": "STEP 3 filled=[first,last]",
+                "phase": "extension",
+                "metadata": {"steps_done": 3},
+            },
+        )
+
+    assert res.status_code == 200
+    touch.assert_called_once()
+
+
 def test_non_extension_activity_never_stamps_the_heartbeat(auth_client):
     """Dashboard/server-written lines must not keep a dead campaign alive."""
     with (

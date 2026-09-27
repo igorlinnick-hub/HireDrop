@@ -45,7 +45,18 @@ def write_activity(req: ActivityWriteRequest, user=Depends(get_current_user)):
     # These lines are written BY the content script and ONLY while a campaign is running,
     # so they prove the CAMPAIGN is alive — the property ZOMBIE_FIX_PLAN demands — rather
     # than merely that the extension is loaded.
-    if req.phase == "extension":
+    #
+    # …with ONE exception: a line that ANNOUNCES THE END is not a sign of life. Every
+    # terminal line carries `metadata.outcome` (background.js STOP_CAMPAIGN writes
+    # "⏹ Campaign stopped" with outcome=stopped_by_user / completed), and it is written
+    # while the flag is still up — so it refreshed last_ping_at, and the `campaign_running:
+    # false` ping arriving right behind it could not reap the flag: reconcile_not_running
+    # refuses to reap a campaign whose heartbeat is fresh (deliberately — an idle second
+    # install must not kill a working run, 08-15). The result was a guaranteed zombie for a
+    # full HEARTBEAT_TTL (600s) whenever the extension's own /campaign/stop didn't land
+    # (offline, 401 storm, service worker killed mid-handler): the dashboard said "running",
+    # "Watch Live" lied, and other installs were told should_run=true.
+    if req.phase == "extension" and not (req.metadata or {}).get("outcome"):
         with contextlib.suppress(Exception):
             if campaign_db.get_state(user.id).get("running"):
                 campaign_db.touch_ping(user.id)

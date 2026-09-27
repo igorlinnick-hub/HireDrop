@@ -122,11 +122,23 @@ class CraigslistPlatform(JobPlatform):
             futures = {
                 executor.submit(_scrape_city, city, query, remote): city for city in US_CITIES
             }
-            for future in concurrent.futures.as_completed(futures, timeout=20):
-                try:
-                    all_jobs.extend(future.result())
-                except Exception as e:
-                    print(f"[craigslist] City scrape error: {e}")
+            # The timeout belongs to the ITERATOR, so it raises at the for-loop's next()
+            # call — outside the try below, which only guards one future's result(). 20
+            # cities on 8 workers at ~10s each takes ~30s whenever craigslist throttles
+            # us, so that TimeoutError escaped scrape() and 500'd the whole /jobs/find
+            # request, throwing away every OTHER platform's already-scraped jobs. A slow
+            # optional board must cost its own results, never the sweep's.
+            try:
+                for future in concurrent.futures.as_completed(futures, timeout=20):
+                    try:
+                        all_jobs.extend(future.result())
+                    except Exception as e:
+                        print(f"[craigslist] City scrape error: {e}")
+            except concurrent.futures.TimeoutError:
+                print(
+                    f"[craigslist] gave up after 20s — keeping {len(all_jobs)} jobs "
+                    "from the cities that answered"
+                )
 
         # Deduplicate by link, cap at max_results
         seen = set()
