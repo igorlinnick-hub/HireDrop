@@ -45,6 +45,13 @@ def _fake_supabase():
 
     tbl.upsert.side_effect = _upsert
 
+    def _insert(row):
+        calls["inserted"] = row
+        calls["payload"] = row
+        return tbl
+
+    tbl.insert.side_effect = _insert
+
     def _update(patch_):
         calls["payload"] = patch_
         return tbl
@@ -77,12 +84,41 @@ def test_open_list_is_scoped_to_the_user_and_hides_resolved():
 def test_the_same_job_handed_back_twice_does_not_stack():
     """The list must count JOBS waiting, not attempts — a re-run that hits the same
     wall would otherwise inflate the badge and teach the user to ignore it."""
-    client, calls, _tbl = _fake_supabase()
+    client, calls, _tbl = _fake_supabase()  # the update finds the open row
     with patch.object(hb, "get_supabase", return_value=client):
         hb.add("u1", {"job_title": "Assoc. Director", "url": "https://x/form"})
 
-    assert calls["conflict"] == "user_id,url"
-    assert calls["payload"]["user_id"] == "u1"
+    assert "inserted" not in calls
+    assert ("eq", ("user_id", "u1")) in calls["filters"]
+    assert ("eq", ("url", "https://x/form")) in calls["filters"]
+    # Only the OPEN row — a resolved one stays history, the job starts a new row.
+    assert ("is_", ("resolved_at", "null")) in calls["filters"]
+
+
+def test_a_new_job_is_inserted_not_upserted():
+    """The uniqueness is a PARTIAL index; Postgres rejects ON CONFLICT (user_id, url)
+    against it with 42P10. That upsert made every POST /handbacks a 500 for six days
+    while this mock happily accepted it — so pin that the path never goes back to it."""
+    client, calls, tbl = _fake_supabase()
+    tbl.execute.side_effect = [MagicMock(data=[]), MagicMock(data=[{"id": "h9"}])]
+    with patch.object(hb, "get_supabase", return_value=client):
+        row = hb.add("u1", {"job_title": "PM", "url": "https://x/new"})
+
+    assert row == {"id": "h9"}
+    assert calls["inserted"]["url"] == "https://x/new"
+    assert not tbl.upsert.called
+
+
+def test_a_racing_duplicate_becomes_an_update():
+    """Two reports of one wall can both miss the lookup; the index admits the first,
+    and the second must land as an update of it, not an error the extension swallows."""
+    from postgrest.exceptions import APIError
+
+    client, calls, tbl = _fake_supabase()
+    dup = APIError({"code": "23505", "message": "duplicate key"})
+    tbl.execute.side_effect = [MagicMock(data=[]), dup, MagicMock(data=[{"id": "h1"}])]
+    with patch.object(hb, "get_supabase", return_value=client):
+        assert hb.add("u1", {"url": "https://x/form"}) == {"id": "h1"}
 
 
 def test_resolve_is_scoped_and_only_touches_still_open_rows():

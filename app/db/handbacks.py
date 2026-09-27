@@ -12,6 +12,8 @@ cannot disagree.
 
 from datetime import UTC, datetime
 
+from postgrest.exceptions import APIError
+
 from app.db.client import get_supabase
 
 # The backend runs as service_role and bypasses RLS, so every query here filters
@@ -53,9 +55,16 @@ def _clean_questions(raw) -> list[dict]:
 
 
 def add(user_id: str, job: dict) -> dict | None:
-    """Record a hand-back. Idempotent per open URL — the partial unique index means a
-    job handed back twice (a re-run that hit the same wall) updates rather than stacks,
-    so the list counts JOBS waiting, not attempts."""
+    """Record a hand-back. Idempotent per open URL: a job handed back twice (a re-run that
+    hit the same wall) updates its open row rather than stacking, so the list counts JOBS
+    waiting, not attempts.
+
+    Not an upsert: the uniqueness is a PARTIAL index (`WHERE resolved_at IS NULL`, so a
+    resolved job can be handed back again), and Postgres refuses `ON CONFLICT (user_id,
+    url)` without that predicate — 42P10 on every call. PostgREST cannot send the
+    predicate, so from 09-21 to 09-27 every POST /handbacks returned 500, the extension
+    swallowed it, and the table stayed empty while 39 hand-backs sat in the activity log.
+    """
     row = {
         "user_id": user_id,
         "job_title": (job.get("job_title") or "")[:300],
@@ -76,10 +85,29 @@ def add(user_id: str, job: dict) -> dict | None:
         # native walk that was never pool-driven — those rows still belong in the list.
         "job_id": job.get("job_id") or None,
     }
+    updated = _update_open(user_id, row)
+    if updated is not None:
+        return updated
+    try:
+        res = get_supabase().table("handbacks").insert(row).execute()
+    except APIError as e:
+        # Two hand-backs for the same URL raced past the lookup: the index let the first
+        # in, so the second is an update of the row it just created.
+        if e.code != "23505":
+            raise
+        return _update_open(user_id, row)
+    return (res.data or [None])[0]
+
+
+def _update_open(user_id: str, row: dict) -> dict | None:
+    """Overwrite this user's OPEN row for row["url"]; None when there is none."""
     res = (
         get_supabase()
         .table("handbacks")
-        .upsert(row, on_conflict="user_id,url", ignore_duplicates=False)
+        .update(row)
+        .eq("user_id", user_id)
+        .eq("url", row["url"])
+        .is_("resolved_at", "null")
         .execute()
     )
     return (res.data or [None])[0]
