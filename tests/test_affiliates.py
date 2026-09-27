@@ -63,7 +63,7 @@ def stripe_mock():
 @pytest.fixture
 def billing_db_mock():
     fake = MagicMock()
-    fake.mark_event_processed.return_value = True  # default: first delivery
+    fake.claim_event.return_value = True  # default: first delivery
     with patch("app.routers.billing.billing_db", fake):
         yield fake
 
