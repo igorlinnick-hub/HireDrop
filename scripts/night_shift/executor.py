@@ -35,7 +35,9 @@ import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
+import ashby  # noqa: E402
 import httpx  # noqa: E402
+from common import _DECLINE_OPT, _DEMOGRAPHIC_Q, is_knockout, log  # noqa: E402
 from playwright.async_api import async_playwright  # noqa: E402
 
 from app.db import applications as apps_db  # noqa: E402
@@ -61,25 +63,12 @@ SHOTS = os.path.join(os.path.dirname(__file__), "shots")
 # submit — better a hand-back than an invented visa status (memory: adapt-not-invent).
 REQUIRED_EMPTY_IS_FATAL = True
 
-# Voluntary self-identification questions, and the neutral way out of them. We decline
-# these on principle rather than let a model infer a person's gender or race from a CV.
-_DEMOGRAPHIC_Q = re.compile(
-    r"gender|race|ethnic|sexual orientation|lgbt|transgender|disability|veteran"
-    r"|self.?identif|demographic|pronoun",
-    re.I,
-)
-_DECLINE_OPT = re.compile(
-    r"don'?t wish|do not wish|decline|prefer not|rather not|not to (?:answer|disclose)"
-    r"|no answer|not wish to (?:answer|identify)",
-    re.I,
-)
+PLATFORMS = ("greenhouse", "ashby")
 
 
-def log(msg: str) -> None:
-    print(msg, flush=True)
-
-
-def pick_jobs(user_id: str, job_url: str | None, profile: dict) -> list[dict]:
+def pick_jobs(
+    user_id: str, job_url: str | None, profile: dict, platforms: tuple = PLATFORMS
+) -> list[dict]:
     """Candidates, best first. The walk tries them in order until one has a live form —
     dry-run #2 hit a job GH had already closed (`?error=true` redirect, the same shape
     that once stalled the auto-ATS walk on reddit?error=true) and a single-pick run
@@ -87,7 +76,7 @@ def pick_jobs(user_id: str, job_url: str | None, profile: dict) -> list[dict]:
     if job_url:
         # Igor's own pick: skips the search filter, but not the per-candidate gates.
         sb = get_supabase()
-        q = sb.table("jobs").select("*").eq("user_id", user_id).eq("platform", "greenhouse")
+        q = sb.table("jobs").select("*").eq("user_id", user_id).in_("platform", list(platforms))
         rows = q.eq("link", job_url).limit(5).execute().data or []
     else:
         # ONE RULE FOR EVERY APPLY PATH. The deck and the extension's auto queue read
@@ -100,11 +89,11 @@ def pick_jobs(user_id: str, job_url: str | None, profile: dict) -> list[dict]:
         rows = [
             r
             for r in jobs_db.get_jobs(user_id)
-            if r.get("platform") == "greenhouse" and (r.get("status") or "new") == "new"
+            if r.get("platform") in platforms and (r.get("status") or "new") == "new"
         ]
         rows = [r for r in on_search_filter(rows, profile) if fresh_enough(r)]
     if not rows:
-        raise SystemExit("no matching greenhouse job in this user's pool")
+        raise SystemExit(f"no matching {'/'.join(platforms)} job in this user's pool")
     # Prefer GH-HOSTED apply pages (job-boards.greenhouse.io — the form lives right on
     # the page). Old-style boards.greenhouse.io links often redirect to a company's
     # CUSTOM careers site with no form at all — dry-run #1 landed on Cloudflare's
@@ -116,7 +105,9 @@ def pick_jobs(user_id: str, job_url: str | None, profile: dict) -> list[dict]:
     # is at least likely to exist; the fit judge decides quality later anyway.
     rows.sort(
         key=lambda r: (
-            "job-boards.greenhouse.io" in (r.get("link") or ""),
+            # Ashby postings are always board-hosted (jobs.ashbyhq.com), so they rank
+            # with GH-hosted ones.
+            any(h in (r.get("link") or "") for h in ("job-boards.greenhouse.io", "ashbyhq.com")),
             (r.get("date_found") or r.get("created_at") or ""),
             r.get("score") or 0,
         ),
@@ -174,14 +165,6 @@ async def knockout_answers(form) -> list[str]:
     Read from the widgets AFTER filling, not from our intent: what matters is what the
     employer would receive.
     """
-    hard = re.compile(
-        r"are you (?:currently )?(?:located|based|living)|able to (?:work|commute|relocate)"
-        r"|do you (?:have|possess).{0,40}(?:years|experience|degree|license|certification)"
-        r"|legally (?:authorized|eligible)|eligible to work|willing to relocate"
-        r"|can you (?:work|start|commute)",
-        re.I,
-    )
-    negative = re.compile(r"^\s*(no|nope|n/a|not\b|i am not|i'm not|i do not|i don't)\b", re.I)
     out: list[str] = []
     with contextlib.suppress(Exception):
         blocks = form.locator('div[class*="select"]:has([class*="singleValue"])')
@@ -200,11 +183,7 @@ async def knockout_answers(form) -> list[str]:
             answer = re.sub(r"\s+", " ", (pair[1] or "")).strip()
             if not question or not answer:
                 continue
-            # "Do you require sponsorship? → No" is a POSITIVE for the candidate: the
-            # negative only disqualifies when the question asks for something we lack.
-            if re.search(r"sponsor|visa", question, re.I):
-                continue
-            if hard.search(question) and negative.match(answer):
+            if is_knockout(question, answer):
                 out.append(f"{question[:90]} → {answer[:30]}")
     return out
 
@@ -721,7 +700,9 @@ async def submit_outcome(page, form, watch: "SubmitWatch | None" = None) -> tupl
     )
 
 
-async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> None:
+async def run(
+    user_id: str, job_url: str | None, live: bool, headful: bool, platforms: tuple = PLATFORMS
+) -> None:
     profile = get_profile(user_id)
     # Email lives in Supabase auth, not profiles (same gap content.js patches from the JWT).
     if not profile.get("email"):
@@ -739,7 +720,7 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
                 " Pick it on the dashboard, then run again."
             )
         log("! work setting not chosen — dry-run continues as 'any'; --live would refuse")
-    candidates = pick_jobs(user_id, job_url, profile)
+    candidates = pick_jobs(user_id, job_url, profile, platforms)
     user_loc = parse_user_location(profile.get("location") or "")
     resume_path = download_resume(user_id, profile)
     log(f"resume: {resume_path} | candidates: {len(candidates)}")
@@ -758,21 +739,30 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
 
         job = form = None
         for cand in candidates[:40]:  # bounded walk — this is a one-job MVP, not a sweep
-            log(f"try: {cand['title']} @ {cand.get('company', '?')}\n     {cand['link']}")
+            is_ashby = cand.get("platform") == "ashby"
+            url = ashby.application_url(cand["link"]) if is_ashby else cand["link"]
+            log(
+                f"try: [{cand.get('platform')}] {cand['title']} @ {cand.get('company', '?')}\n     {url}"
+            )
             try:
-                await page.goto(cand["link"], wait_until="domcontentloaded", timeout=45000)
+                await page.goto(url, wait_until="domcontentloaded", timeout=45000)
             except Exception as exc:  # noqa: BLE001 — a dead host is a skip, not a crash
                 log(f"  skip (nav failed: {exc})")
                 continue
             await page.wait_for_timeout(3000)
-            form = await find_application_form(page)
+            form = await (ashby.find_form(page) if is_ashby else find_application_form(page))
             if form is None:
                 # GH answers a closed posting with a redirect to the board root
                 # (`?error=true`) — bury the row so no run re-opens this corpse. Live
                 # 09-23: the twelve freshest candidates were ALL dead; without burial
                 # every future walk pays the same twelve page-loads first. Only in
                 # auto-pick mode: an explicit --job-url misfire must not retire a row.
-                if not job_url and ("error=true" in page.url or "/jobs/" not in page.url):
+                # Ashby has no equivalent redirect we have seen live — skip, never retire.
+                if (
+                    not is_ashby
+                    and not job_url
+                    and ("error=true" in page.url or "/jobs/" not in page.url)
+                ):
                     n = jobs_db.mark_dead_link(user_id, cand["link"])
                     log(f"  skip (dead posting — retired {n} pool row(s))")
                 else:
@@ -832,14 +822,18 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
             await browser.close()
             return
 
-        unfilled, letter = await fill_greenhouse(page, form, profile, job, resume_path)
+        platform = job.get("platform") or "greenhouse"
+        if platform == "ashby":
+            unfilled, letter, knocked = await ashby.fill(page, form, profile, job, resume_path)
+        else:
+            unfilled, letter = await fill_greenhouse(page, form, profile, job, resume_path)
+            knocked = await knockout_answers(form)
 
         # KNOCKOUT: the form asked a hard requirement and our honest answer was "no".
         # Sending anyway spends a daily slot on a guaranteed rejection and tells the
         # employer we did not read their posting. Live 09-26 (Igor): an SF hybrid role
         # asked "are you currently located in the Bay Area and able to work from our
         # office?", the honest answer was No — and the run was about to submit.
-        knocked = await knockout_answers(form)
         if knocked:
             log(f"KNOCKOUT — the form's own requirement rules this candidate out: {knocked[0]}")
             if live:
@@ -876,7 +870,11 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
             await browser.close()
             return
 
-        submit = form.locator('button[type="submit"], button:has-text("Submit application")')
+        submit = (
+            form.locator(ashby.SUBMIT)
+            if platform == "ashby"
+            else form.locator('button[type="submit"], button:has-text("Submit application")')
+        )
         if not await submit.count():
             log("LIVE ABORTED — no submit button found")
             await browser.close()
@@ -891,7 +889,7 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
         # Asked HERE, immediately before the click: the answer must be as fresh as
         # possible, since the extension may have been applying on the user's machine
         # while this walk was reading forms.
-        gate = check_can_apply(user_id, "greenhouse", profile.get("email"))
+        gate = check_can_apply(user_id, platform, profile.get("email"))
         if not gate.get("allowed"):
             log(f"LIVE ABORTED — cap reached: {gate.get('reason')}")
             with contextlib.suppress(Exception):
@@ -911,7 +909,8 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
         watch = SubmitWatch()
         watch.attach(page)  # armed BEFORE the click — the verdict rides the submit XHR
         await submit.first.click()
-        confirmed, why, outcome = await submit_outcome(page, form, watch)
+        judge = ashby.submit_outcome if platform == "ashby" else submit_outcome
+        confirmed, why, outcome = await judge(page, form, watch)
         await page.screenshot(
             path=os.path.join(SHOTS, f"{job['id']}-after-submit.png"), full_page=True
         )
@@ -932,7 +931,7 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
                     # per hundred submits IS the reputation metric (P2), and `outcome=invalid`
                     # separates our own filling bugs from Greenhouse's judgement of us.
                     "message": (
-                        f"🌙 Night shift could NOT send [outcome={outcome} http={watch.status}]:"
+                        f"🌙 Night shift could NOT send [outcome={outcome} http={watch.status} board={platform}]:"
                         f" {job['title']} @ {job.get('company', '?')} — {why}."
                         " Nothing recorded as applied."
                     ),
@@ -950,7 +949,7 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
             status=status,
             job_title=job["title"],
             company=job.get("company") or "",
-            platform="greenhouse",
+            platform=platform,
             job_url=job["link"],
         )
         # The lifetime free-taste counter lives beside the daily cap and is advanced by
@@ -966,7 +965,7 @@ async def run(user_id: str, job_url: str | None, live: bool, headful: bool) -> N
                 "level": "info",
                 "phase": "night-shift",
                 "message": (
-                    f"🌙 Night shift applied (server) [outcome=sent http={watch.status}]:"
+                    f"🌙 Night shift applied (server) [outcome=sent http={watch.status} board={platform}]:"
                     f" {job['title']} @ {job.get('company', '?')} [{status}]"
                 ),
             }
@@ -981,5 +980,7 @@ if __name__ == "__main__":
     ap.add_argument("--job-url")
     ap.add_argument("--live", action="store_true")
     ap.add_argument("--headful", action="store_true")
+    ap.add_argument("--platform", choices=[*PLATFORMS, "all"], default="all")
     args = ap.parse_args()
-    asyncio.run(run(args.user, args.job_url, args.live, args.headful))
+    boards = PLATFORMS if args.platform == "all" else (args.platform,)
+    asyncio.run(run(args.user, args.job_url, args.live, args.headful, boards))
