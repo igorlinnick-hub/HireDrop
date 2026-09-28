@@ -30,6 +30,7 @@ import os
 import re
 import sys
 import time
+from types import SimpleNamespace
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -110,8 +111,8 @@ class ApplicationRequest(BaseModel):
     website: str = Field(default="", max_length=200)
 
 
-def _email_of_caller(authorization: str | None) -> str | None:
-    """The signed-in caller's address, or None if this is a stranger.
+def _caller(authorization: str | None) -> SimpleNamespace | None:
+    """The signed-in caller (id + lowercase email), or None for a stranger.
 
     Optional on purpose: a missing, malformed or expired token must not turn
     into a 401 here — it only means nobody is signed in, and the form is still
@@ -127,9 +128,42 @@ def _email_of_caller(authorization: str | None) -> str | None:
     try:
         res = get_supabase().auth.get_user(token)
         user = getattr(res, "user", None)
-        return (getattr(user, "email", "") or "").lower() or None
+        email = (getattr(user, "email", "") or "").lower()
+        uid = str(getattr(user, "id", "") or "")
+        return SimpleNamespace(id=uid, email=email) if email and uid else None
     except Exception:  # noqa: BLE001 — an unusable token is a stranger, not an error
         return None
+
+
+def _email_of_caller(authorization: str | None) -> str | None:
+    caller = _caller(authorization)
+    return caller.email if caller else None
+
+
+def _stamp_affiliate_intent(user_id: str) -> None:
+    """Record on the account that this person came for the affiliate program.
+
+    The website decides where someone lands after signing in from this flag
+    (jobflow-website lib/gate/landing.ts): an affiliate goes to their own page,
+    everyone else who has not onboarded goes to the job-seeker quiz. The signup
+    form sets it when they arrive from the affiliate landing — but that misses
+    anyone who signed up another way (the SERVICE QR on the card's front) and
+    applied from inside the app later. Measured 27.09: such an account, with a
+    live application, was sent to the quiz on every login.
+
+    The application is the strongest statement of intent there is, so it
+    stamps the flag. Supabase MERGES user_metadata on admin update (checked on
+    a live account — first/last name survived), so this cannot wipe anything.
+
+    Best-effort: the application already counts; a failed stamp costs a wrong
+    landing page, never the application.
+    """
+    try:
+        get_supabase().auth.admin.update_user_by_id(
+            user_id, {"user_metadata": {"affiliate_intent": True}}
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[affiliate.apply] intent stamp failed for {user_id}: {exc}", file=sys.stderr)
 
 
 @router.post("/affiliate/apply")
@@ -156,7 +190,10 @@ def apply(
     if _rate_limited(f"ip:{_client_ip(request)}"):
         raise HTTPException(status_code=429, detail="Too many applications from here. Try later.")
 
-    email = _email_of_caller(authorization) or req.email.strip().lower()
+    caller = _caller(authorization)
+    if caller:
+        _stamp_affiliate_intent(caller.id)
+    email = (caller.email if caller else None) or req.email.strip().lower()
     if "@" not in email[1:]:
         raise HTTPException(status_code=400, detail="That email doesn't look right.")
     if is_disposable_email(email):

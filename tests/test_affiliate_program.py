@@ -326,7 +326,11 @@ def test_a_signed_in_applicant_cannot_apply_as_someone_else(client, db):
     rule: an approved code attaches to an account BY EMAIL, so a body claiming
     a different address would produce an approved partner whose link belongs to
     no account — and no screen they can reach would ever say so."""
-    with patch("app.routers.affiliate._email_of_caller", return_value="lauren@uni.edu"):
+    lauren = SimpleNamespace(id="user-lauren", email="lauren@uni.edu")
+    with (
+        patch("app.routers.affiliate._caller", return_value=lauren),
+        patch("app.routers.affiliate._stamp_affiliate_intent"),
+    ):
         res = client.post(
             f"{API}/affiliate/apply",
             json={
@@ -385,3 +389,66 @@ def test_issuing_uses_the_body_email_not_the_admins(client, db, admin_env):
     assert res.status_code == 200, res.text
     (app_row,) = inserts(db.log, "affiliate_applications")
     assert app_row["email"] == "lauren@uni.edu"
+
+
+# ------------------------------------------ applying marks the account's intent
+
+
+def test_a_signed_in_application_stamps_affiliate_intent_on_that_account(client, db):
+    """The website lands an affiliate on their own page instead of the job-seeker
+    quiz by reading this flag. Signup sets it for people arriving from the
+    affiliate landing; applying has to set it for everyone else — measured
+    27.09, an applicant who signed up via the service QR hit the quiz on every
+    login."""
+    lauren = SimpleNamespace(id="user-lauren", email="lauren@uni.edu")
+    with (
+        patch("app.routers.affiliate._caller", return_value=lauren),
+        patch("app.routers.affiliate._stamp_affiliate_intent") as stamp,
+    ):
+        res = client.post(
+            f"{API}/affiliate/apply",
+            json={"name": "Lauren", "email": "lauren@uni.edu", "desired_code": "lauren"},
+            headers={"Authorization": "Bearer jwt-of-lauren"},
+        )
+    assert res.status_code == 200, res.text
+    stamp.assert_called_once_with("user-lauren")
+
+
+def test_a_stranger_has_no_account_to_stamp(client, db):
+    with patch("app.routers.affiliate._stamp_affiliate_intent") as stamp:
+        res = client.post(
+            f"{API}/affiliate/apply",
+            json={"name": "Luca", "email": "luca@uni.edu", "desired_code": "luca"},
+        )
+    assert res.status_code == 200, res.text
+    stamp.assert_not_called()
+
+
+def test_a_failed_stamp_never_costs_the_application(client, db):
+    """The flag only chooses a landing page. Losing it must not lose the
+    application, which is the thing the person actually asked for."""
+    lauren = SimpleNamespace(id="user-lauren", email="lauren@uni.edu")
+    with (
+        patch("app.routers.affiliate._caller", return_value=lauren),
+        patch("app.routers.affiliate.get_supabase") as sb,
+    ):
+        sb.return_value.auth.admin.update_user_by_id.side_effect = RuntimeError("auth down")
+        sb.return_value.table.side_effect = lambda name: FakeTable(name, db.tables, db.log)
+        res = client.post(
+            f"{API}/affiliate/apply",
+            json={"name": "Lauren", "email": "lauren@uni.edu", "desired_code": "lauren"},
+            headers={"Authorization": "Bearer jwt-of-lauren"},
+        )
+    assert res.status_code == 200, res.text
+    assert inserts(db.log, "affiliate_applications")
+
+
+def test_the_stamp_asks_supabase_to_merge_not_replace(db):
+    """Supabase merges user_metadata on admin update (verified on a live
+    account 27.09 — first/last name survived). Sending only the one key is
+    what keeps that true: a full object here would be a replace in disguise."""
+    with patch("app.routers.affiliate.get_supabase") as sb:
+        mod._stamp_affiliate_intent("user-lauren")
+    sb.return_value.auth.admin.update_user_by_id.assert_called_once_with(
+        "user-lauren", {"user_metadata": {"affiliate_intent": True}}
+    )
