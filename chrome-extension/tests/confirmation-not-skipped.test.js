@@ -43,6 +43,8 @@ const cases = [
   // The bug's own page — Greenhouse confirmation. MUST be recognised as post-apply.
   ["/amwell/jobs/4369654009/confirmation", true, "Amwell confirmation (the bug)"],
   ["/oura/jobs/4393754009/confirmation", true, "a GH job confirmation"],
+  // 2026-09-27: the AUTO ATS walk's own page — Tia, logged "posting closed/errored".
+  ["/tia/jobs/8005735003/confirmation", true, "Tia confirmation (auto walk, 09-27)"],
   // Expired posting → Greenhouse board root. MUST NOT be — it is a genuine skip.
   ["/oura", false, "expired job → board root (correct skip)"],
   ["/oura?error=true", false, "expired job with error flag"],
@@ -56,28 +58,33 @@ for (const [url, want, label] of cases) {
 }
 check("'/confirmation' is one of the hints", HINTS.includes("/confirmation"));
 
-// ---- STRUCTURAL: the branch is wired the honest way ----------------------------------
-// Anchor on the confirmation check itself (unique in the file), not on the literal
-// "Couldn't open" — that phrase also appears in a COMMENT, which an earlier draft of
-// this test mistook for the skip.
-const confIdx = SRC.indexOf("POSTAPPLY_URL_HINTS.some");
-check("the confirmation check exists", confIdx > -1,
-  "no POSTAPPLY_URL_HINTS check — the bug is back");
-
-// The ACTUAL skip is the logBackend statement (backtick template), not the comment that
-// quotes the phrase. It must come AFTER the confirmation check, so a re-init on
-// /confirmation is handled before the code can decide "couldn't open".
-const skipCallIdx = SRC.indexOf("logBackend(`Couldn't open this job page", confIdx);
-check("the confirmation check runs BEFORE the real skip", skipCallIdx > confIdx,
-  "the POSTAPPLY check must precede the 'Couldn't open' skip statement");
-
-// Everything the confirmation sub-branch does, up to the late-hydration poll that follows.
-const confBlock = SRC.slice(confIdx, SRC.indexOf("Async ATS forms", confIdx));
+// ---- STRUCTURAL: the recorder, and BOTH walks ask it before they skip ----------------
+// The record lives in one helper so the two queue walks can't drift apart again: #217 put
+// the check in the pool branch only, and on 2026-09-27 the auto ATS walk (Tia) logged a
+// sent Greenhouse application as "posting closed/errored".
+const helperIdx = SRC.indexOf("async function recordWokeOnPostApply()");
+check("the recorder helper exists", helperIdx > -1, "recordWokeOnPostApply() is gone");
+const confBlock = SRC.slice(helperIdx, SRC.indexOf("\n  }\n", helperIdx));
+check("the helper tests the URL against POSTAPPLY_URL_HINTS",
+  /POSTAPPLY_URL_HINTS\.some/.test(confBlock));
 check("records the application, not a skip", /APPLICATION_SAVED/.test(confBlock));
 check("records it as applied_unconfirmed", /status: "applied_unconfirmed"/.test(confBlock),
   "must be unconfirmed — this context never saw the form succeed");
 check("advances the queue after recording", /ATS_JOB_DONE/.test(confBlock));
-check("leaves the branch before reaching the skip", /\n\s*break;/.test(confBlock));
+check("tells the caller it handled the page", /return true;/.test(confBlock));
+
+// Each walk: the helper call must come BEFORE that walk's skip statement, and sit close
+// enough to it that it's the same branch (the skip is the next statement or near it).
+function precedes(skipNeedle, label) {
+  const skipIdx = SRC.indexOf(skipNeedle);
+  check(`${label}: skip statement found`, skipIdx > -1, skipNeedle);
+  const callIdx = SRC.lastIndexOf("await recordWokeOnPostApply()", skipIdx);
+  check(`${label}: asks recordWokeOnPostApply() before skipping`,
+    callIdx > -1 && skipIdx - callIdx < 3000,
+    "the confirmation check must precede this skip in the same branch");
+}
+precedes("logBackend(`Couldn't open this job page", "pool walk (#217)");
+precedes("logBackend(`Skipping (posting closed/errored", "auto ATS walk (09-27)");
 
 // The letter reached the employer; only the RECORD was lost. Writing "" here made a
 // sent-with-letter application indistinguishable in the database from one sent without
