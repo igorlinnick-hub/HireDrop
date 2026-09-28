@@ -44,6 +44,9 @@ class AnswerQuestionRequest(BaseModel):
     # answered by hand must never be re-derived by a model, and must never come back
     # with a different answer the second time.
     job_id: str | None = Field(None, max_length=64)
+    # The posting text, for runs with no pool row (Indeed/ZipRecruiter live search):
+    # without it the answerer sees only the company NAME and guesses the employer.
+    job_description: str = Field("", max_length=8000)
 
 
 class AssessFitRequest(BaseModel):
