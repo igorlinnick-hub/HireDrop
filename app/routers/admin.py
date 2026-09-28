@@ -34,6 +34,7 @@ from fastapi import APIRouter, Header, HTTPException, Query
 
 from app.billing_config import PLANS
 from app.db.client import get_supabase
+from config import FRONTEND_URL
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -737,6 +738,10 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
         rows.append(
             {
                 "code": a.get("code"),
+                # The whole link, not just the code: the board's approval result
+                # is gone once you close it, and a partner who asks "what was my
+                # link again?" should be one copy away, not a reconstruction.
+                "link": f"{FRONTEND_URL}/?ref={a.get('code')}",
                 "status": a.get("status"),
                 "rate": f"{round(float(a.get('commission_pct') or 0))}%",
                 "clicks": int((clicks_by_code.get(a.get("code")) or {}).get("clicks_total") or 0),
@@ -930,6 +935,7 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
                 "Partner ledger",
                 [
                     _col("code", "Code"),
+                    _col("link", "Link"),
                     _col("status", "Status"),
                     _col("rate", "Rate"),
                     _col("clicks", "Opens", "number", "right"),
