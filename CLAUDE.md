@@ -46,6 +46,13 @@ node --check chrome-extension/background.js   # ДО загрузки в Chrome 
 `/activity/handbacks` (админский разбор незаполненных полей, только открытые и с лимитом —
 агрегата за период он НЕ даёт).
 
+**Реклама (траты, подключения) — `scripts/ads_spend.py`, вкладка Ads в админ-борде.**
+`.venv/bin/python scripts/ads_spend.py status` — что подключено (Meta spend / Meta CAPI /
+Google ingest), строк и последний синк по платформам; `sync-meta --days N` — стянуть Meta
+Insights сейчас; `add --platform manual --channel <utm_source> --date … --campaign … --spend …`
+— трата в канале без API. Цифры CAC/ROAS/вердикты по объявлениям смотреть в секции `ads`
+`GET /admin/metrics`, не считать руками. Хендофф: `docs/handoff/ads-board.md`.
+
 **Как часто мы возвращаем форму человеку — `scripts/measure_handback_share.py`, и мерить
 ДОЛЮ, а не счёт.** `.venv/bin/python scripts/measure_handback_share.py [--days N]` печатает
 handback/apply по платформам, общую долю и знаменатель рядом с ней. Зачем именно доля: 09-26

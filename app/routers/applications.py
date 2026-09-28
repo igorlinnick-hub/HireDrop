@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
+from app.ads import meta_capi
 from app.db import applications as apps_db
 from app.db import interview_kit as kit_db
 from app.db import jobs as jobs_db
@@ -65,6 +66,10 @@ def save_application(req: ApplicationSaveRequest, user=Depends(get_current_user)
     free_used = check["free_used"]
     if check["tier"] == "free":
         free_used = increment_free_apps(user.id) or ((free_used or 0) + 1)
+    # Meta CAPI StartTrial on the FIRST real application (the activation event), for
+    # Meta-attributed users only. Returns at once; the send runs on its own thread
+    # and cannot fail this save. No-op while META_PIXEL_ID/META_CAPI_TOKEN are unset.
+    meta_capi.track_start_trial(user.id, getattr(user, "email", None))
     return {
         "saved": True,
         "job_id": job_id,

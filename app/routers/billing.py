@@ -20,6 +20,7 @@ from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from app.ads import meta_capi
 from app.billing_config import PLANS, plan_by_key, tier_for_price
 from app.db import affiliates as affiliates_db
 from app.db import billing as billing_db
@@ -332,6 +333,10 @@ def _dispatch_event(stripe, etype: str, obj: dict) -> None:
         # invoice.paid only — never off signup or subscription.updated.
         if etype == "invoice.paid":
             affiliates_db.accrue_from_invoice(user_id, obj)
+            # Meta CAPI Purchase (eventID pay_<invoice id>, so a Stripe re-delivery
+            # dedups at Meta). Fire-and-forget on its own thread, never raises: an ad
+            # platform being down must not turn a paid invoice into a 5xx/retry.
+            meta_capi.track_purchase(user_id, obj)
 
     elif etype == "charge.refunded":
         # Clawback: the commission for that invoice is voided. Resolving the
