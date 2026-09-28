@@ -347,8 +347,8 @@ def answer_question(req: AnswerQuestionRequest, user=Depends(get_current_user)):
         # The posting text, when we hold the row: the extension sends only title and
         # company, and a model that cannot read the posting invents the employer
         # ("Why us?" answered about the wrong industry — dry-run 09-27).
-        description = ""
-        if req.job_id:
+        description = req.job_description or ""
+        if req.job_id and not description:
             with contextlib.suppress(Exception):
                 row = jobs_db.get_job_by_id(user.id, req.job_id)
                 description = (row or {}).get("description") or ""

@@ -175,6 +175,33 @@ def strip_preamble(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+# A contact header the model sometimes puts on top ("**Igor Linnyk | igor@… | (713) …**"
+# followed by "---"). The form already holds the contact fields; in a plain textarea the
+# header is noise and the markdown arrives as literal asterisks — 30 of 110 stored
+# letters carried it (audit 09-27).
+_CONTACT_LINE = re.compile(r"@[\w.-]+\.\w+|\(?\+?\d[\d\s().-]{7,}\d")
+
+
+def to_plain_letter(text: str) -> str:
+    """Letter as it must reach a plain-text field: no markdown emphasis, no heading
+    marks, no mid-letter --- rules, no contact header block on top."""
+    if not text:
+        return text
+    text = re.sub(r"\*\*(.+?)\*\*|__(.+?)__", lambda m: m.group(1) or m.group(2), text)
+    lines = [ln for ln in text.split("\n") if not _FENCE.match(ln)]
+    lines = [re.sub(r"^\s{0,3}#{1,6}\s+", "", ln) for ln in lines]
+    # Drop a header block: leading lines (before the first blank line) that are the
+    # applicant's name/contact details, when at least one of them is a contact line.
+    head: list[str] = []
+    for ln in lines:
+        if not ln.strip():
+            break
+        head.append(ln)
+    if head and len(head) <= 3 and any(_CONTACT_LINE.search(h) for h in head):
+        lines = lines[len(head) :]
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
 def build_system_prompt(writing_style=""):
     style_instruction = ""
     if writing_style:
@@ -194,6 +221,14 @@ STRICT RULES:
 - Natural rhythm. Occasional imperfection is fine and actually good.
 - Max 120 words total. Be concise.
 - Be direct: what you did, why this job, one specific thing that interests you about the company.
+- Every fact about the COMPANY (what it does, its brands, market, city, customers, culture) \
+must be written in the job posting you are given. Do not use outside knowledge of the \
+company and do not guess from its name. If the posting says little, write about the ROLE \
+and the candidate's fit instead — a letter about the role beats an invented company.
+- Never claim prior familiarity ("has been on my radar", "I've followed your work") or \
+local knowledge ("I know the Boston market") unless the resume shows it.
+- Plain text only: no markdown, no bold, no headings, no --- lines, and no name/email/ \
+phone header (the form already has those). Start with the greeting or the first sentence.
 - Do NOT list your skills like a resume. Tell a micro-story instead.
 - Output the letter and NOTHING else. No "Here's a cover letter for...", no surrounding
   --- fences, no commentary about the candidate's fit. Your entire reply is pasted
@@ -217,7 +252,17 @@ def generate_cover_letter(job, profile=None):
     # One model, both modes — see COVER_LETTER_MODEL above for why the split was dropped.
     model = COVER_LETTER_MODEL
 
-    description = job.get("description", "Not available")[:500]
+    # 1500, not 500: at 500 the model often saw only a salary chip or the "About us"
+    # opener and filled the rest from its own guesses (audit 09-27: an 18-char "$300 -
+    # $500 a week" posting produced a letter about Boston neighbourhoods and West
+    # African food). Thin text is labelled as thin so the model knows not to describe
+    # the company at all.
+    description = re.sub(r"\s+", " ", str(job.get("description") or "")).strip()[:1500]
+    if len(description) < 200:
+        description = (
+            f"(Only this is known about the posting: {description or 'nothing'}. "
+            "Do not describe the company.)"
+        )
 
     prompt = f"""Write a cover letter for this job application.
 
@@ -246,7 +291,7 @@ Candidate background (from resume):
             system=system,
             messages=[{"role": "user", "content": prompt}],
         )
-        return strip_preamble(message.content[0].text)
+        return to_plain_letter(strip_preamble(message.content[0].text))
     except Exception as e:
         print(f"[cover_letter] AI generation failed: {e}")
         return fallback_template(job, profile)

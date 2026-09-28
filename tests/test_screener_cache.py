@@ -202,3 +202,24 @@ def test_endpoint_hands_the_posting_text_to_the_model(auth_client):
         )
     assert lookup.call_args.args[1] == "j1"
     assert generate.call_args.kwargs["job"]["description"].startswith("We automate taxes")
+
+
+def test_endpoint_uses_sent_posting_text_without_a_pool_row(auth_client):
+    """Indeed/ZR live search has no job_id; the extension can send the text itself."""
+    generate = MagicMock(return_value="Because of the role.")
+    with (
+        patch("app.routers.tools.get_profile", return_value=PROFILE),
+        patch("app.routers.tools.usage_db.claim_today", return_value=True),
+        patch("app.routers.tools.answer_screener_question", generate),
+    ):
+        auth_client.post(
+            "/api/v1/tools/answer-question",
+            json={
+                "question": "Why us?",
+                "options": [],
+                "job_title": "PM",
+                "company": "X",
+                "job_description": "We sell pest control.",
+            },
+        )
+    assert generate.call_args.kwargs["job"]["description"] == "We sell pest control."
