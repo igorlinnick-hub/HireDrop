@@ -189,7 +189,7 @@ def on_search_filter(jobs: list, profile: dict) -> list:
     # Country gate, independent of the city/state filter above. The coarse "usa"/"remote"
     # enum parses to no city/state, which used to switch the location filter OFF entirely —
     # and a "remote" search surfaced Bengaluru/India rows from the worldwide boards
-    # (Igor, 09-21). We serve US job seekers; only the explicit "europe" pick opts out.
+    # (Igor, 09-21). We serve US job seekers only (09-27) — the gate applies to everyone.
     country_gate = _wants_us_jobs(profile)
     # Salary joined the filters 09-26. It was missing from every live path: the user set
     # "$150k minimum" in the launch modal and we showed and applied to whatever (verified
@@ -230,10 +230,11 @@ def on_search_filter(jobs: list, profile: dict) -> list:
 
 
 def _wants_us_jobs(profile: dict) -> bool:
-    """Every profile except an explicit "europe" pick is a US job seeker — the product,
-    the boards we sweep and the resume filler are all US-shaped. One place, so harvest,
-    listing, deck and queue can never disagree about who the country gate applies to."""
-    return (profile.get("location") or "").strip().lower() != "europe"
+    """Every profile is a US job seeker. Igor, 09-27: the product is US-only — Europe is
+    gone from the picker and region is no longer a question (0 of 41 profiles had picked
+    it). Kept as the one place harvest, listing, deck and queue ask, so bringing a second
+    region back is a change here, not a hunt through four call sites."""
+    return True
 
 
 @router.get("/jobs/ats-queue")
@@ -531,8 +532,8 @@ def _search_signature(profile: dict) -> str:
     keywords are walked — so a city change would reset the cooldown, re-walk the same
     boards, and mostly re-collect into the dedup. Successive sweeps walk the whole
     supply in anyway (exclude=known). The one location value that DOES change what is
-    collected is the "europe" pick, via the country gate — so the derived gate is in
-    the key, the raw city string is not.
+    collected is the country gate — so the derived gate is in the key, the raw city
+    string is not (today always "us": the product is US-only since 09-27).
     """
     keywords = ",".join(
         sorted(k.strip().lower() for k in (profile.get("keywords") or []) if (k or "").strip())
