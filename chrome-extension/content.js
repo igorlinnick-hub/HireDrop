@@ -702,6 +702,61 @@
     "/success", "/confirmation", "application-submitted", "applysuccess",
   ];
 
+  /**
+   * Woke on a post-apply page? Then this is a SENT application, not a broken job page.
+   *
+   * phase_ats filled and submitted; the ATS did a FULL navigation to its thank-you URL,
+   * which killed that script context before it could record anything — and this re-init
+   * woke up on the result. Both queue walks (the tap pool AND the auto ATS walk) share
+   * the same atsQueue and the same death, so both must ask this before they skip.
+   * History: the pool branch got this check in #217 (live 2026-09-21, Amwell); the auto
+   * ATS walk did not, and on 2026-09-27 a Greenhouse submit to Tia landed on
+   * /tia/jobs/8005735003/confirmation and was logged "Skipping (posting closed/errored)" —
+   * no applications row, dedup blind to the company, a re-apply possible on the next run.
+   *
+   * URL check only: on a cold re-init the URL is the one thing we know. Returns true when
+   * it recorded + advanced (caller must stop), false when this is not a post-apply page.
+   */
+  async function recordWokeOnPostApply() {
+    const _path = location.pathname.toLowerCase();
+    if (!POSTAPPLY_URL_HINTS.some((h) => _path.includes(h))) return false;
+    const _q = (await storageGet("atsQueue")).atsQueue || [];
+    const _cur = _q[0] || {};
+    // Unconfirmed, not "applied": the URL says the submit landed, but this
+    // context never saw the form succeed — same honesty rule as phase_ats.
+    if (_cur.title) {
+      // The letter went to the employer — this context just never saw it.
+      // Every generation path stores it (with currentJobInfo alongside), and
+      // the normal report branch reads the same key; writing "" here made a
+      // sent-with-letter application indistinguishable in the database from
+      // one sent without (live: Amwell 09-21, Glossier 07-19, both GH).
+      // Guarded by currentJobInfo: the key holds the LAST generation, so it
+      // is only ours if it was generated for the job the queue head names.
+      const _st = await storageGet(["generatedCoverLetter", "currentJobInfo"]);
+      const _for = _st.currentJobInfo || {};
+      const _sameJob = _for.title && _cur.title
+        && _for.title.trim().toLowerCase() === _cur.title.trim().toLowerCase();
+      const _letter = _sameJob ? (_st.generatedCoverLetter || "") : "";
+      logBackend(`⚠️ Applied (unconfirmed — woke on the confirmation page): ${_cur.title} @ ${_cur.company || "?"}${_letter ? "" : " (letter not recovered)"}`, "warn");
+      await sendMsg({
+        type: "APPLICATION_SAVED",
+        data: {
+          job_title: _cur.title, company: _cur.company || "",
+          platform: detectPlatform() || _cur.platform || "",
+          job_url: _cur.applyUrl || location.href,
+          cover_letter: _letter,
+          status: "applied_unconfirmed", verified: false,
+          verify_signal: "reinit-postapply-url",
+        },
+      });
+    } else {
+      // Queue empty/mismatched — still not a skip: say what we saw.
+      logBackend(`Post-apply page reached (${location.hostname}${_path}) but no queue item to record`, "warn");
+    }
+    await sendMsg({ type: "ATS_JOB_DONE" });
+    return true;
+  }
+
   const SUCCESS_TEXTS = [
     "application submitted",
     "thanks for applying",
@@ -5638,52 +5693,9 @@
               // Leave it to warmup; only skip a genuinely broken job page.
               const onHomeRoot = location.pathname === "/" || location.pathname === "";
               if (onHomeRoot) break;
-              // A confirmation page is not a broken job page. phase_ats filled and
-              // submitted; the ATS did a FULL navigation to its thank-you URL, which
-              // killed that script context before it could record anything — and this
-              // re-init woke up on the result. Calling it "couldn't open" recorded a
-              // SENT application as skipped (live 2026-09-21: Amwell GH pick — 19
-              // fields filled, resume attached, browser on /confirmation — logged
-              // "Couldn't open", no applications row, dedup blind to the company).
-              // URL check only: on a cold re-init the URL is the one thing we know.
-              const _path = location.pathname.toLowerCase();
-              if (POSTAPPLY_URL_HINTS.some((h) => _path.includes(h))) {
-                const _q = (await storageGet("atsQueue")).atsQueue || [];
-                const _cur = _q[0] || {};
-                // Unconfirmed, not "applied": the URL says the submit landed, but this
-                // context never saw the form succeed — same honesty rule as phase_ats.
-                if (_cur.title) {
-                  // The letter went to the employer — this context just never saw it.
-                  // Every generation path stores it (with currentJobInfo alongside), and
-                  // the normal report branch reads the same key; writing "" here made a
-                  // sent-with-letter application indistinguishable in the database from
-                  // one sent without (live: Amwell 09-21, Glossier 07-19, both GH).
-                  // Guarded by currentJobInfo: the key holds the LAST generation, so it
-                  // is only ours if it was generated for the job the queue head names.
-                  const _st = await storageGet(["generatedCoverLetter", "currentJobInfo"]);
-                  const _for = _st.currentJobInfo || {};
-                  const _sameJob = _for.title && _cur.title
-                    && _for.title.trim().toLowerCase() === _cur.title.trim().toLowerCase();
-                  const _letter = _sameJob ? (_st.generatedCoverLetter || "") : "";
-                  logBackend(`⚠️ Applied (unconfirmed — woke on the confirmation page): ${_cur.title} @ ${_cur.company || "?"}${_letter ? "" : " (letter not recovered)"}`, "warn");
-                  await sendMsg({
-                    type: "APPLICATION_SAVED",
-                    data: {
-                      job_title: _cur.title, company: _cur.company || "",
-                      platform: detectPlatform() || _cur.platform || "",
-                      job_url: _cur.applyUrl || location.href,
-                      cover_letter: _letter,
-                      status: "applied_unconfirmed", verified: false,
-                      verify_signal: "reinit-postapply-url",
-                    },
-                  });
-                } else {
-                  // Queue empty/mismatched — still not a skip: say what we saw.
-                  logBackend(`Post-apply page reached (${location.hostname}${_path}) but no queue item to record`, "warn");
-                }
-                await sendMsg({ type: "ATS_JOB_DONE" });
-                break;
-              }
+              // A confirmation page is not a broken job page: the submit landed and killed
+              // the context that would have recorded it (#217, Amwell 09-21).
+              if (await recordWokeOnPostApply()) break;
               // Async ATS forms (Ashby/Greenhouse React) render the fields LATE, especially in
               // a throttled background window — detectPhase sees no field yet and would skip a
               // LIVE job as "couldn't open". POLL for hydration (~20s) before giving up; if the
@@ -5718,6 +5730,9 @@
           {
             const _atsP = (await storageGet("atsPlatform")).atsPlatform;
             if ((_atsP === "greenhouse" || _atsP === "lever" || _atsP === "ashby") && (await isCampaignRunning())) {
+              // A thank-you page is not a closed posting: the submit landed and killed the
+              // context that would have recorded it (live 2026-09-27, Tia /confirmation).
+              if (await recordWokeOnPostApply()) break;
               logBackend(`Skipping (posting closed/errored on ${location.hostname}) — next job`, "warn");
               await sendMsg({ type: "ATS_JOB_DONE" });
               break;
