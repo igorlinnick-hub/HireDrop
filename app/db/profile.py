@@ -46,6 +46,9 @@ _DEFAULTS = {
     # see migrations/add_current_employment.sql).
     "current_employer": "",
     "current_title": "",
+    # Answered once in the pre-Start form (modules/employer_answers.py).
+    "country": "",
+    "no_linkedin": False,
 }
 
 
@@ -94,6 +97,8 @@ def get_profile(user_id: str) -> dict:
         "postal_code": p.get("postal_code") or "",
         "current_employer": p.get("current_employer") or "",
         "current_title": p.get("current_title") or "",
+        "country": p.get("country") or "",
+        "no_linkedin": bool(p.get("no_linkedin")),
     }
 
 
@@ -126,10 +131,20 @@ def update_profile(user_id: str, data: dict) -> dict:
         "current_employer",
         "current_title",
         "work_setting",
+        "country",
     ):
         if k in data:
             payload[k] = data[k]
     (get_supabase().table("profiles").update(payload).eq("user_id", user_id).execute())
+    return get_profile(user_id)
+
+
+def update_employer_answers(user_id: str, answers: dict) -> dict:
+    """Partial write of the pre-Start answers — touches only the keys given, already
+    cleaned by modules.employer_answers.clean. update_profile can't be reused: it resets
+    name/keywords/location to defaults whenever the caller omits them."""
+    if answers:
+        get_supabase().table("profiles").update(answers).eq("user_id", user_id).execute()
     return get_profile(user_id)
 
 

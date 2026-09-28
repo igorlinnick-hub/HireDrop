@@ -23,6 +23,7 @@ class ProfileUpdate(BaseModel):
     postal_code: str = ""
     current_employer: str = ""
     current_title: str = ""
+    country: str = ""
 
 
 class LetterPreviewRequest(BaseModel):

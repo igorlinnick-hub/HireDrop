@@ -2,6 +2,18 @@
 
 from app.db.campaign import build_readiness
 
+# Every question modules/employer_answers asks, answered — a profile that is ready.
+ANSWERED = {
+    "country": "United States",
+    "city": "Honolulu",
+    "state": "HI",
+    "work_authorized_us": True,
+    "needs_sponsorship": False,
+    "current_title": "Marketing Manager",
+    "current_employer": "Acme",
+    "linkedin_url": "https://linkedin.com/in/x",
+}
+
 
 def _profile(**over):
     base = {
@@ -9,6 +21,7 @@ def _profile(**over):
         "keywords": ["marketing"],
         "platforms": ["indeed"],
         "resume_url": "https://x/resume.pdf",
+        **ANSWERED,
     }
     base.update(over)
     return base
@@ -94,3 +107,58 @@ def test_failed_checks_carry_reason_and_fix():
     assert kw["reason"] and kw["fix"] == "keywords"
     ok = next(c for c in res["checks"] if c["id"] == "onboarding")
     assert ok["reason"] is None and ok["fix"] is None
+
+
+def test_unanswered_employer_questions_block_and_name_what_is_missing():
+    res = build_readiness(
+        _profile(country="", needs_sponsorship=None), False, "pro", "auto", None, 40
+    )
+    ready, by_id = _ready(res)
+    assert not ready and by_id["employer_answers"] is False
+    check = next(c for c in res["checks"] if c["id"] == "employer_answers")
+    assert [m["key"] for m in check["missing"]] == ["country", "needs_sponsorship"]
+    assert check["fix"] == "answers"
+
+
+def test_false_is_an_answer_for_yes_no_questions():
+    """'No, I don't need sponsorship' must not read as 'never answered'."""
+    ready, _ = _ready(
+        build_readiness(
+            _profile(work_authorized_us=False, needs_sponsorship=False),
+            False,
+            "pro",
+            "auto",
+            None,
+            40,
+        )
+    )
+    assert ready
+
+
+def test_state_is_asked_only_for_a_us_address_and_no_linkedin_is_an_answer():
+    from modules.employer_answers import missing
+
+    abroad = {**ANSWERED, "country": "Canada", "state": ""}
+    assert missing(abroad) == []
+    assert [m["key"] for m in missing({**ANSWERED, "state": ""})] == ["state"]
+    assert missing({**ANSWERED, "linkedin_url": "", "no_linkedin": True}) == []
+
+
+def test_clean_keeps_known_keys_typed_and_ignores_the_rest():
+    from modules.employer_answers import clean
+
+    out = clean(
+        {
+            "country": "  Canada ",
+            "needs_sponsorship": "yes",
+            "work_authorized_us": False,
+            "tier": "pro",
+            "city": "x" * 999,
+            "no_linkedin": True,
+        }
+    )
+    assert out["country"] == "Canada"
+    assert "needs_sponsorship" not in out  # a string is not a yes/no answer
+    assert out["work_authorized_us"] is False
+    assert "tier" not in out
+    assert len(out["city"]) == 200 and out["no_linkedin"] is True
