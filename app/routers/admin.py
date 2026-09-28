@@ -7,7 +7,10 @@ service_role key for this database, and changing a metric is a change here, in
 the product repo, not in someone else's app.
 
 SECURITY
-  * Read-only. Every query below is a SELECT; this router must never write.
+  * Read-only on product data. Every query below is a SELECT on user tables.
+    The ONE write is the Ads section refreshing its own cache: when Meta spend
+    is older than an hour it re-pulls the last 7 days of Insights into
+    `ad_spend` (third-party numbers, never user data — app/ads/meta_spend.py).
   * Guarded by a shared secret (ADMIN_METRICS_TOKEN, header X-Admin-Token) and
     NOT by the user JWT dependency: the caller is a server-side dashboard, not a
     signed-in HireDrop user. Token unset -> 503, never "open".
@@ -32,8 +35,12 @@ from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Query
 
+from app.ads import attribution as attr_rules
+from app.ads import meta_spend
+from app.ads import verdict as ad_rules
 from app.billing_config import PLANS
-from app.db.client import get_supabase
+from app.db import ad_spend as spend_db
+from app.db.client import fetch_paged, get_supabase
 from config import FRONTEND_URL
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -63,9 +70,13 @@ AFFILIATE_RATE = 0.30
 # Row ceilings. At today's scale nothing comes close; a read that DID hit one
 # would silently under-count, so each section says so in `notes`.
 ROW_LIMIT = 20000
+PROFILE_LIMIT = 5000
 ROSTER_LIMIT = 50
 SPENDER_LIMIT = 25
 LOG_LIMIT = 5000
+
+# Ads: the monthly test budget the "budget used" gauge is measured against.
+DEFAULT_ADS_MONTHLY_BUDGET_USD = 500.0
 
 
 # --- auth --------------------------------------------------------------------
@@ -130,6 +141,24 @@ def _rows(table: str, columns: str, limit: int = ROW_LIMIT, **filters) -> list[d
     return q.limit(limit).execute().data or []
 
 
+def _paged(table: str, columns: str, order: tuple[str, ...], limit: int = ROW_LIMIT) -> list[dict]:
+    """SELECT an entire table past PostgREST's silent 1000-row cap.
+
+    `_rows` asks for `limit` rows but PostgREST answers with at most 1000 and
+    says nothing — for the all-time reads the board is built on (applications,
+    profiles) that is a count that quietly plateaus. Pages are ordered by
+    `order` then id so no row is duplicated or dropped between pages.
+    """
+
+    def build(start: int, end: int):
+        q = get_supabase().table(table).select(columns)
+        for col in order:
+            q = q.order(col)
+        return q.order("id").range(start, end)
+
+    return fetch_paged(build, limit)
+
+
 def _count(table: str, **filters) -> int | None:
     """Head-only count. Returns None on failure so one renamed column degrades
     a single metric instead of blanking the section."""
@@ -178,12 +207,8 @@ def _usd(cents: float) -> float:
 
 
 def _source_of(attribution: dict | None) -> str:
-    a = attribution or {}
-    if isinstance(a.get("ref"), str) and a["ref"]:
-        return f"ref:{a['ref']}"
-    if isinstance(a.get("utm_source"), str) and a["utm_source"]:
-        return a["utm_source"]
-    return "direct"
+    # One definition, shared with the Ads section's channel classification.
+    return attr_rules.source_of(attribution)
 
 
 def _effective_tier(profile: dict, now_iso: str) -> str:
@@ -483,15 +508,39 @@ def _section_users(profiles: list[dict], apps: list[dict], from_ts: str, to_ts: 
     }
 
 
+def _extension_users() -> set[str] | None:
+    """Every user who has ever held an extension key. None when unreadable.
+
+    Per USER, not per key: keys are revoked and re-issued on every reconnect, so
+    counting rows read 30 keys from 5 people as a 79% connect rate (09-28).
+    """
+    try:
+        return {
+            r["user_id"]
+            for r in _paged("extension_keys", "user_id", ("created_at",))
+            if r.get("user_id")
+        }
+    except Exception as exc:  # noqa: BLE001
+        print(f"[admin.funnel] extension_keys unavailable: {exc}", file=sys.stderr)
+        return None
+
+
 def _section_funnel(profiles: list[dict], apps: list[dict], from_ts: str, to_ts: str) -> dict:
+    """Every step is a SUBSET OF PERIOD SIGNUPS — the only way the percentages
+    stay <= 100% and mean "of the people who signed up in this window".
+
+    Activation is "sent a first application" (a row in `applications`), not
+    "started a campaign": campaign_states.started_at is cleared on Stop, so
+    that step read 0 while 126 applications existed (09-28).
+    """
     now_iso = datetime.now(UTC).isoformat()
-    # Period filters use each table's real timestamp column: profiles/
-    # extension_keys -> created_at, campaign_states -> started_at,
-    # applications -> date_applied.
     signups = [p for p in profiles if from_ts <= (p.get("created_at") or "") <= to_ts]
+    signup_ids = {p["user_id"] for p in signups if p.get("user_id")}
     onboarded = [p for p in signups if p.get("onboarding_completed") is True]
-    connected = _count("extension_keys", created_at__gte=from_ts, created_at__lte=to_ts)
-    campaigns = _count("campaign_states", started_at__gte=from_ts, started_at__lte=to_ts)
+    key_users = _extension_users()
+    connected = len(signup_ids & key_users) if key_users is not None else None
+    applied_users = {a["user_id"] for a in apps if a.get("user_id")}
+    first_app = len(signup_ids & applied_users)
     submitted = len([a for a in apps if from_ts <= (a.get("date_applied") or "") <= to_ts])
     paid_now = _count("profiles", subscription_expires_at__gt=now_iso)
 
@@ -508,19 +557,27 @@ def _section_funnel(profiles: list[dict], apps: list[dict], from_ts: str, to_ts:
             "of_signups": _pct(connected, len(signups)),
         },
         {
-            "step": "Started a campaign",
-            "count": campaigns,
-            "of_signups": _pct(campaigns, len(signups)),
+            "step": "Sent first application",
+            "count": first_app,
+            "of_signups": _pct(first_app, len(signups)),
         },
     ]
 
     return {
         "key": "funnel",
         "title": "Funnel",
-        "subtitle": "Signup → onboarding → extension → campaign → applications.",
+        "subtitle": (
+            "Signup → onboarding → extension → first application. Every step counts "
+            "only the people who signed up in this period."
+        ),
         "metrics": [
             _metric("signups", "Signups", len(signups), emphasis=True),
-            _metric("campaigns_started", "Campaigns started", campaigns),
+            _metric(
+                "first_application",
+                "Sent first application",
+                first_app,
+                description="Period signups with at least one application, ever — the real activation.",
+            ),
             _metric("applications", "Applications sent", submitted),
             _metric(
                 "paid_users",
@@ -532,13 +589,22 @@ def _section_funnel(profiles: list[dict], apps: list[dict], from_ts: str, to_ts:
             ),
             _metric(
                 "activation_rate",
-                "Signup → campaign",
-                _pct(campaigns, len(signups)),
+                "Signup → first application",
+                _pct(first_app, len(signups)),
                 "percent",
-                description="Share of period signups that started their first campaign.",
+                description="Share of period signups that have sent at least one application.",
             ),
             _metric(
-                "extension_rate", "Extension connect rate", _pct(connected, len(signups)), "percent"
+                "extension_rate",
+                "Extension connect rate",
+                _pct(connected, len(signups)),
+                "percent",
+                description=(
+                    "Share of period signups who ever connected the extension — counted per "
+                    "person, not per key (keys are re-issued on every reconnect)."
+                    if connected is not None
+                    else "extension_keys could not be read."
+                ),
             ),
         ],
         "timeseries": {
@@ -557,6 +623,489 @@ def _section_funnel(profiles: list[dict], apps: list[dict], from_ts: str, to_ts:
                 ],
                 steps,
             )
+        ],
+    }
+
+
+# --- ads ---------------------------------------------------------------------
+# Spend comes from `ad_spend` (Meta Insights sync, Google Ads Script, manual
+# CLI); signups/activation/paying come from our own tables. The join key is
+# utm_content = the ad id, set on every ad URL (docs/handoff/ads-board.md).
+
+_PLATFORM_CHANNEL = {"meta": attr_rules.META_PAID, "google": attr_rules.GOOGLE_PAID}
+_CHANNEL_PLATFORM = {v: k for k, v in _PLATFORM_CHANNEL.items()}
+
+
+def _ads_budget() -> float:
+    try:
+        return float(os.getenv("ADS_MONTHLY_BUDGET_USD", "") or DEFAULT_ADS_MONTHLY_BUDGET_USD)
+    except ValueError:
+        return DEFAULT_ADS_MONTHLY_BUDGET_USD
+
+
+def _spend_channel(row: dict) -> str:
+    """Which signup channel a spend row bought. Manual rows carry the utm_source
+    they paid for in account_id (e.g. `reddit`)."""
+    platform = row.get("platform")
+    if platform in _PLATFORM_CHANNEL:
+        return _PLATFORM_CHANNEL[platform]
+    return (row.get("account_id") or "manual").strip().lower() or "manual"
+
+
+def _money(value: float) -> float:
+    return round(value, 2)
+
+
+def _ratio(num: float | None, den: float | None) -> float | None:
+    """num/den to cents, or None when either side is missing or den is zero —
+    "cost per signup" with no signups is unknown, not $0 and not infinite."""
+    if num is None or not den:
+        return None
+    return round(num / den, 2)
+
+
+def _sum_or_none(values: list) -> int | None:
+    present = [int(v) for v in values if v is not None]
+    return sum(present) if present else None
+
+
+def _paid_users(profiles: list[dict], since_ts: str) -> tuple[dict[str, int] | None, str]:
+    """({user_id: net cents collected}, how it was decided).
+
+    "Paid" = at least one SUCCEEDED Stripe charge, net of refunds, on the
+    Stripe customer our webhook linked to the user (profiles.stripe_customer_id,
+    written on checkout.session.completed). Not `subscription_tier`: promo codes
+    write that column too, and an expired sub reads `free` — neither is money.
+    Charges since the period start cover every period signup, who cannot have
+    paid before signing up.
+
+    Fallback when Stripe can't be read: a linked customer (= a completed
+    checkout) counts as paid and revenue is unknown (None in the map's place).
+    """
+    by_customer = {
+        p["stripe_customer_id"]: p["user_id"] for p in profiles if p.get("stripe_customer_id")
+    }
+    stripe = _stripe_client()
+    reason = "STRIPE_SECRET_KEY is not set"
+    if stripe is not None:
+        try:
+            net: dict[str, int] = defaultdict(int)
+            for ch in _paid_charges(stripe, _epoch(since_ts)):
+                uid = by_customer.get(ch["customer"])
+                if uid:
+                    net[uid] += ch["amount"] - ch["refunded"]
+            return {u: c for u, c in net.items() if c > 0}, (
+                "Stripe: at least one succeeded charge, net of refunds, on the user's linked customer."
+            )
+        except Exception as exc:  # noqa: BLE001
+            reason = f"Stripe unreadable ({type(exc).__name__})"
+            print(f"[admin.ads] {reason}: {exc}", file=sys.stderr)
+    # Fallback: presence of a linked customer. Revenue unknown -> None.
+    return (
+        None,
+        f"{reason} — counting a completed checkout (linked Stripe customer) as paid; revenue unknown.",
+    )
+
+
+def _section_ads(
+    profiles: list[dict], apps: list[dict], from_ts: str, to_ts: str, from_day: str, to_day: str
+) -> dict:
+    today = datetime.now(UTC).date()
+    month_start = today.replace(day=1).isoformat()
+    today_s = today.isoformat()
+    ceiling = ad_rules.cac_ceiling()
+    budget = _ads_budget()
+
+    # 1. Spend: refresh Meta if stale (never raises), then read every row.
+    meta_state = meta_spend.sync_if_stale()
+    spend_error = None
+    try:
+        spend_rows = spend_db.read_all()
+    except Exception as exc:  # noqa: BLE001
+        spend_rows = []
+        # PostgREST errors carry a readable `.message`; str() is a dict dump.
+        detail = getattr(exc, "message", None) or str(exc)
+        spend_error = f"ad_spend unreadable: {detail}"[:300]
+        print(f"[admin.ads] {type(exc).__name__}: {exc}", file=sys.stderr)
+
+    has_rows = {p: any(r.get("platform") == p for r in spend_rows) for p in spend_db.PLATFORMS}
+    # Meta counts as a source once it has given us data, or a sync succeeded
+    # (with nothing delivered yet an honest $0). Configured-but-failing with no
+    # rows is NOT a source: its spend is unknown, not zero.
+    meta_connected = has_rows["meta"] or (meta_state["connected"] and not meta_state["error"])
+    # Google has no pull: it is "connected" once the Ads Script has posted.
+    connected = {"meta": meta_connected, "google": has_rows["google"], "manual": has_rows["manual"]}
+    any_source = spend_error is None and any(connected.values())
+
+    period_rows = [r for r in spend_rows if from_day <= str(r.get("date")) <= to_day]
+    mtd_rows = [r for r in spend_rows if month_start <= str(r.get("date")) <= today_s]
+
+    def spend_of(rows: list[dict]) -> float:
+        return _money(sum(float(r.get("spend_usd") or 0) for r in rows))
+
+    spend_period = spend_of(period_rows) if any_source else None
+    spend_mtd = spend_of(mtd_rows) if any_source else None
+
+    # 2. Who signed up, from where, and what they did since.
+    applied = {a["user_id"] for a in apps if a.get("user_id")}
+    paid_cents, paid_how = _paid_users(profiles, from_ts)
+    signups = []
+    for p in profiles:
+        if not (from_ts <= (p.get("created_at") or "") <= to_ts) or not p.get("user_id"):
+            continue
+        attribution = p.get("attribution") if isinstance(p.get("attribution"), dict) else {}
+        uid = p["user_id"]
+        if paid_cents is None:
+            paid = bool(p.get("stripe_customer_id"))
+            revenue = None
+        else:
+            paid = uid in paid_cents
+            revenue = paid_cents.get(uid, 0) / 100
+        signups.append(
+            {
+                "user_id": uid,
+                "signed_up": (p.get("created_at") or "")[:10],
+                "channel": attr_rules.channel_of(attribution).strip().lower() or "direct",
+                "utm_campaign": attribution.get("utm_campaign"),
+                "utm_content": str(attribution.get("utm_content") or "").strip() or None,
+                "activated": uid in applied,
+                "paid": paid,
+                "revenue": revenue,
+            }
+        )
+
+    manual_channels = {_spend_channel(r) for r in period_rows if r.get("platform") == "manual"}
+    paid_channels = set(attr_rules.PAID_AD_CHANNELS) | manual_channels
+    ad_signups = [s for s in signups if s["channel"] in paid_channels]
+    n_signups = len(ad_signups)
+    n_activated = sum(1 for s in ad_signups if s["activated"])
+    n_paying = sum(1 for s in ad_signups if s["paid"])
+    ad_revenue = None if paid_cents is None else _money(sum(s["revenue"] or 0 for s in ad_signups))
+
+    # 3. Say what is (not) connected — in the descriptions, never as a zero.
+    source_notes = []
+    if spend_error:
+        source_notes.append(spend_error)
+    elif meta_state.get("error"):
+        source_notes.append(meta_state["error"])
+    if spend_error is None and not connected["google"]:
+        source_notes.append(
+            "Google not connected: paste scripts/google_ads_spend.js into Google Ads"
+        )
+    if spend_error:
+        no_spend_reason = f"{spend_error} (is migrations/2026-09-28_ad_spend.sql applied?)"
+    elif not any_source:
+        no_spend_reason = "No spend source connected. " + "; ".join(source_notes)
+    else:
+        no_spend_reason = None
+    spend_desc = no_spend_reason or (
+        "Ad spend in this period across "
+        + ", ".join(p for p, ok in connected.items() if ok)
+        + (f". {'; '.join(source_notes)}." if source_notes else ".")
+    )
+
+    def cost_desc(what: str, den: int) -> str | None:
+        if spend_period is None:
+            return no_spend_reason
+        if not den:
+            return f"No {what} from ads in this period yet — cost unknown, not $0."
+        return None
+
+    metrics = [
+        _metric("spend", "Spend", spend_period, "currency", emphasis=True, description=spend_desc),
+        _metric(
+            "budget_used",
+            "Budget used this month",
+            _pct(spend_mtd, budget) if spend_mtd is not None else None,
+            "percent",
+            scope="current",
+            emphasis=True,
+            description=(
+                f"${spend_mtd:,.2f} of ${budget:,.0f} spent since {month_start} "
+                "(ADS_MONTHLY_BUDGET_USD)."
+                if spend_mtd is not None
+                else no_spend_reason
+            ),
+        ),
+        _metric(
+            "paid_signups",
+            "Paid-ad signups",
+            n_signups,
+            emphasis=True,
+            description="Period signups whose first touch was a paid ad (Meta/Google UTMs or a Google click id).",
+        ),
+        _metric(
+            "cost_per_signup",
+            "Cost per signup",
+            _ratio(spend_period, n_signups),
+            "currency",
+            description=cost_desc("signups", n_signups),
+        ),
+        _metric(
+            "activated_from_ads",
+            "Activated from ads",
+            n_activated,
+            description="Paid-ad signups who have sent at least one application.",
+        ),
+        _metric(
+            "cost_per_activation",
+            "Cost per activation",
+            _ratio(spend_period, n_activated),
+            "currency",
+            description=cost_desc("activations", n_activated),
+        ),
+        _metric("paying_from_ads", "Paying from ads", n_paying, description=paid_how),
+        _metric(
+            "cac",
+            "CAC",
+            _ratio(spend_period, n_paying),
+            "currency",
+            emphasis=True,
+            description=cost_desc("paying users", n_paying)
+            or f"Spend / paying users. Ceiling ${ceiling:.0f} (ADS_CAC_CEILING_USD).",
+        ),
+        _metric(
+            "roas",
+            "ROAS",
+            _ratio(ad_revenue, spend_period),
+            description=(
+                "Revenue collected from paid-ad signups / spend."
+                if ad_revenue is not None and spend_period
+                else (
+                    no_spend_reason
+                    or ("Revenue unknown: " + paid_how if ad_revenue is None else "No spend yet.")
+                )
+            ),
+        ),
+    ]
+
+    # 4. By channel — every channel, organic included, so paid is read against it.
+    by_channel: dict[str, dict] = {}
+    for s in signups:
+        c = by_channel.setdefault(s["channel"], {"signups": 0, "activated": 0, "paid": 0})
+        c["signups"] += 1
+        c["activated"] += int(s["activated"])
+        c["paid"] += int(s["paid"])
+    for ch in paid_channels:
+        by_channel.setdefault(ch, {"signups": 0, "activated": 0, "paid": 0})
+
+    def channel_connected(ch: str) -> bool:
+        if spend_error:
+            return False
+        platform = _CHANNEL_PLATFORM.get(ch)
+        return connected[platform] if platform else ch in manual_channels
+
+    channel_rows = []
+    for ch, c in by_channel.items():
+        rows_for = [r for r in period_rows if _spend_channel(r) == ch]
+        spend = spend_of(rows_for) if ch in paid_channels and channel_connected(ch) else None
+        channel_rows.append(
+            {
+                "channel": ch,
+                "spend": spend,
+                "clicks": _sum_or_none([r.get("clicks") for r in rows_for])
+                if spend is not None
+                else None,
+                "signups": c["signups"],
+                "activated": c["activated"],
+                "paid": c["paid"],
+                "cost_signup": _ratio(spend, c["signups"]),
+                "cost_activation": _ratio(spend, c["activated"]),
+                "cac": _ratio(spend, c["paid"]),
+            }
+        )
+    channel_rows.sort(
+        key=lambda r: (r["channel"] not in paid_channels, -r["signups"], r["channel"])
+    )
+
+    # 5. By ad (Meta + Google; manual spend has no ad-level join).
+    known_ads = {
+        (r.get("platform"), str(r.get("ad_id")))
+        for r in spend_rows
+        if r.get("platform") != "manual"
+    }
+    by_ad: dict[tuple, dict] = {}
+    for r in period_rows:
+        if r.get("platform") == "manual":
+            continue
+        key = (r["platform"], str(r.get("ad_id")))
+        a = by_ad.setdefault(
+            key,
+            {"campaign": None, "ad": None, "spend": 0.0, "impressions": [], "clicks": []},
+        )
+        a["campaign"] = r.get("campaign_name") or r.get("campaign_id") or a["campaign"]
+        a["ad"] = r.get("ad_name") or a["ad"]
+        a["spend"] += float(r.get("spend_usd") or 0)
+        a["impressions"].append(r.get("impressions"))
+        a["clicks"].append(r.get("clicks"))
+
+    ad_rows = []
+    for (platform, ad_id), a in by_ad.items():
+        channel = _PLATFORM_CHANNEL[platform]
+        mine = [s for s in ad_signups if s["channel"] == channel and s["utm_content"] == ad_id]
+        spend = _money(a["spend"])
+        impressions = _sum_or_none(a["impressions"])
+        clicks = _sum_or_none(a["clicks"])
+        n_s = len(mine)
+        n_a = sum(1 for s in mine if s["activated"])
+        n_p = sum(1 for s in mine if s["paid"])
+        ad_rows.append(
+            {
+                "platform": platform,
+                "campaign": a["campaign"] or "—",
+                "ad": a["ad"] or ad_id,
+                "spend": spend,
+                "impressions": impressions,
+                "clicks": clicks,
+                "ctr": ad_rules.ctr_pct(clicks, impressions),
+                "cpc": _ratio(spend, clicks),
+                "signups": n_s,
+                "activated": n_a,
+                "paid": n_p,
+                "verdict": ad_rules.ad_verdict(spend, impressions, clicks, n_s, n_a, n_p, ceiling),
+            }
+        )
+    ad_rows.sort(key=lambda r: -r["spend"])
+
+    # 6. Unmatched — paid-ad signups we cannot tie to an ad: a broken tracking
+    # template shows up here instead of as a quietly low signup count.
+    unmatched = []
+    for s in ad_signups:
+        platform = _CHANNEL_PLATFORM.get(s["channel"])
+        if platform is None:  # manual channels have no ad-level join
+            continue
+        if (platform, s["utm_content"]) in known_ads:
+            continue
+        if not s["utm_content"]:
+            why = "no utm_content on the landing URL (check the ad's URL parameters)"
+        elif not connected[platform]:
+            why = f"{platform} spend not connected"
+        else:
+            why = "utm_content matches no ad in ad_spend (not synced yet, or a wrong UTM)"
+        unmatched.append(
+            {
+                "signed_up": s["signed_up"],
+                "account": s["user_id"][:8],
+                "channel": s["channel"],
+                "utm_campaign": s["utm_campaign"] or "—",
+                "utm_content": s["utm_content"] or "—",
+                "why": why,
+            }
+        )
+
+    # 7. Spend sources — what is connected and how fresh it is.
+    def newest(platform: str) -> str | None:
+        stamps = [
+            str(r.get("synced_at") or "") for r in spend_rows if r.get("platform") == platform
+        ]
+        return max(stamps)[:16].replace("T", " ") if stamps else None
+
+    source_rows = []
+    for platform in spend_db.PLATFORMS:
+        if spend_error:
+            status = "ad_spend unreadable (see Spend)"
+        elif platform == "meta":
+            status = meta_state.get("error") or (
+                "connected" if meta_connected else meta_spend.NOT_CONNECTED
+            )
+        elif platform == "google":
+            status = (
+                "posting"
+                if connected["google"]
+                else "not connected — install scripts/google_ads_spend.js"
+            )
+        else:
+            status = "has rows" if connected["manual"] else "none (scripts/ads_spend.py add)"
+        source_rows.append(
+            {
+                "platform": platform,
+                "status": status,
+                "last_sync": newest(platform),
+                "rows": sum(1 for r in spend_rows if r.get("platform") == platform),
+                "spend": spend_of([r for r in period_rows if r.get("platform") == platform])
+                if connected[platform] and not spend_error
+                else None,
+            }
+        )
+
+    by_date: dict[str, float] = defaultdict(float)
+    for r in period_rows:
+        by_date[str(r.get("date"))] += float(r.get("spend_usd") or 0)
+
+    return {
+        "key": "ads",
+        "title": "Ads",
+        "subtitle": (
+            "Paid acquisition: spend from the ad platforms against signups, activation and "
+            "payment from our own tables, joined on utm_content = ad id."
+        ),
+        "metrics": metrics,
+        "timeseries": {
+            "label": "Ad spend per day",
+            "format": "currency",
+            "points": [{"date": d, "value": _money(v)} for d, v in sorted(by_date.items())],
+        },
+        "tables": [
+            _table(
+                "by_channel",
+                "By channel (period signups)",
+                [
+                    _col("channel", "Channel"),
+                    _col("spend", "Spend", "currency", "right"),
+                    _col("clicks", "Clicks", "number", "right"),
+                    _col("signups", "Signups", "number", "right"),
+                    _col("activated", "Activated", "number", "right"),
+                    _col("paid", "Paid", "number", "right"),
+                    _col("cost_signup", "Cost/signup", "currency", "right"),
+                    _col("cost_activation", "Cost/activation", "currency", "right"),
+                    _col("cac", "CAC", "currency", "right"),
+                ],
+                channel_rows,
+            ),
+            _table(
+                "by_ad",
+                "By ad",
+                [
+                    _col("platform", "Platform"),
+                    _col("campaign", "Campaign"),
+                    _col("ad", "Ad"),
+                    _col("spend", "Spend", "currency", "right"),
+                    _col("impressions", "Impr.", "number", "right"),
+                    _col("clicks", "Clicks", "number", "right"),
+                    _col("ctr", "CTR", "percent", "right"),
+                    _col("cpc", "CPC", "currency", "right"),
+                    _col("signups", "Signups", "number", "right"),
+                    _col("activated", "Activated", "number", "right"),
+                    _col("paid", "Paid", "number", "right"),
+                    _col("verdict", "Verdict"),
+                ],
+                ad_rows,
+            ),
+            _table(
+                "unmatched",
+                "Paid-ad signups not matched to an ad",
+                [
+                    _col("signed_up", "Signed up", "date"),
+                    _col("account", "Account"),
+                    _col("channel", "Channel"),
+                    _col("utm_campaign", "utm_campaign"),
+                    _col("utm_content", "utm_content"),
+                    _col("why", "Why"),
+                ],
+                unmatched,
+            ),
+            _table(
+                "sources",
+                "Spend sources",
+                [
+                    _col("platform", "Platform"),
+                    _col("status", "Status"),
+                    _col("last_sync", "Last sync (UTC)"),
+                    _col("rows", "Rows", "number", "right"),
+                    _col("spend", "Spend (period)", "currency", "right"),
+                ],
+                source_rows,
+            ),
         ],
     }
 
@@ -952,12 +1501,52 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
     }
 
 
-def _section_revenue(from_ts: str, to_ts: str) -> dict:
-    """Money actually taken, read from Stripe. Separate from the affiliate
-    ledger on purpose: that one is a liability, this one is revenue."""
+def _stripe_client():
+    """The configured Stripe SDK, or None when STRIPE_SECRET_KEY is unset."""
     from config import STRIPE_SECRET_KEY
 
     if not STRIPE_SECRET_KEY:
+        return None
+    import stripe
+
+    stripe.api_key = STRIPE_SECRET_KEY
+    return stripe
+
+
+def _sg(obj, key, default=None):
+    """Stripe objects are NOT dicts (stripe 15.x): `.get` resolves through
+    __getattr__ and raises. Index access with a default is the safe read."""
+    try:
+        value = obj[key]
+    except (KeyError, TypeError):
+        return default
+    return default if value is None else value
+
+
+def _epoch(ts: str) -> int:
+    return int(datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
+
+
+def _paid_charges(stripe, start: int, end: int | None = None):
+    """Succeeded charges created in [start, end] (end open when None), as plain
+    dicts. The one Stripe money read — Revenue and Ads both count from it."""
+    created = {"gte": start} if end is None else {"gte": start, "lte": end}
+    for ch in stripe.Charge.list(created=created, limit=100).auto_paging_iter():
+        if not _sg(ch, "paid", False) or _sg(ch, "status") != "succeeded":
+            continue
+        yield {
+            "customer": _sg(ch, "customer"),
+            "amount": _sg(ch, "amount", 0),
+            "refunded": _sg(ch, "amount_refunded", 0),
+            "created": _sg(ch, "created", 0),
+        }
+
+
+def _section_revenue(from_ts: str, to_ts: str) -> dict:
+    """Money actually taken, read from Stripe. Separate from the affiliate
+    ledger on purpose: that one is a liability, this one is revenue."""
+    stripe = _stripe_client()
+    if stripe is None:
         return {
             "key": "revenue",
             "title": "Revenue",
@@ -967,33 +1556,16 @@ def _section_revenue(from_ts: str, to_ts: str) -> dict:
             "tables": [],
         }
 
-    import stripe
-
-    stripe.api_key = STRIPE_SECRET_KEY
-
-    def g(obj, key, default=None):
-        """Stripe objects are NOT dicts (stripe 15.x): `.get` resolves through
-        __getattr__ and raises. Index access with a default is the safe read."""
-        try:
-            value = obj[key]
-        except (KeyError, TypeError):
-            return default
-        return default if value is None else value
-
-    start = int(datetime.fromisoformat(from_ts.replace("Z", "+00:00")).timestamp())
-    end = int(datetime.fromisoformat(to_ts.replace("Z", "+00:00")).timestamp())
+    g = _sg
 
     gross = refunded = 0
     by_date: dict[str, int] = defaultdict(int)
-    charges = stripe.Charge.list(created={"gte": start, "lte": end}, limit=100)
-    for ch in charges.auto_paging_iter():
-        if not g(ch, "paid", False) or g(ch, "status") != "succeeded":
-            continue
-        amount = g(ch, "amount", 0)
-        back = g(ch, "amount_refunded", 0)
+    for ch in _paid_charges(stripe, _epoch(from_ts), _epoch(to_ts)):
+        amount = ch["amount"]
+        back = ch["refunded"]
         gross += amount
         refunded += back
-        day = datetime.fromtimestamp(g(ch, "created", 0), UTC).date().isoformat()
+        day = datetime.fromtimestamp(ch["created"], UTC).date().isoformat()
         by_date[day] += amount - back
 
     # Normalise every active subscription to a monthly figure so weekly and
@@ -1095,13 +1667,15 @@ def metrics(
     # Shared reads. Applications and profiles are each read ONCE, all-time, and
     # sliced per section in Python: three sections need overlapping windows of
     # the same rows, and at this scale one read beats three.
-    apps = _rows("applications", "user_id, date_applied, status, platform")
+    # Paged: PostgREST silently stops at 1000 rows, and these are all-time reads.
+    apps = _paged("applications", "user_id, date_applied, status, platform", ("date_applied",))
     apps.sort(key=lambda a: a.get("date_applied") or "", reverse=True)
-    profiles = _rows(
+    profiles = _paged(
         "profiles",
         "user_id, name, created_at, onboarding_completed, subscription_tier, "
-        "subscription_expires_at, attribution",
-        limit=5000,
+        "subscription_expires_at, attribution, stripe_customer_id",
+        ("created_at",),
+        limit=PROFILE_LIMIT,
     )
 
     builders = [
@@ -1109,6 +1683,12 @@ def metrics(
         ("revenue", lambda: _section_revenue(from_ts, to_ts)),
         ("users", lambda: _section_users(profiles, apps, from_ts, to_ts)),
         ("funnel", lambda: _section_funnel(profiles, apps, from_ts, to_ts)),
+        (
+            "ads",
+            lambda: _section_ads(
+                profiles, apps, from_ts, to_ts, from_day.isoformat(), to_day.isoformat()
+            ),
+        ),
         ("affiliates", lambda: _section_affiliates(from_ts, to_ts)),
         (
             "ai_cost",
@@ -1140,8 +1720,8 @@ def metrics(
     notes = []
     if len(apps) >= ROW_LIMIT:
         notes.append(f"applications read hit the {ROW_LIMIT}-row ceiling — counts under-report.")
-    if len(profiles) >= 5000:
-        notes.append("profiles read hit the 5000-row ceiling — counts under-report.")
+    if len(profiles) >= PROFILE_LIMIT:
+        notes.append(f"profiles read hit the {PROFILE_LIMIT}-row ceiling — counts under-report.")
 
     return {
         "generated_at": datetime.now(UTC).isoformat(),

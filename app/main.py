@@ -30,6 +30,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 from app.routers import (
     activity,
     admin,
+    ads,
     affiliate,
     applications,
     auth,
@@ -162,6 +163,8 @@ app.include_router(review.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
 # Affiliate applications: public apply + admin decide (same admin token).
 app.include_router(affiliate.router, prefix="/api/v1")
+# Ad-spend ingest from the Google Ads Script — its own token (ADS_INGEST_TOKEN).
+app.include_router(ads.router, prefix="/api/v1")
 
 
 @app.get("/health")
