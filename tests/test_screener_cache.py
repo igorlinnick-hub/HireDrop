@@ -176,3 +176,29 @@ def test_a_broken_cache_never_breaks_answering(auth_client):
         res = _post(auth_client)
     assert res.status_code == 200
     assert res.json()["answer"] == "2-4 years"
+
+
+def test_endpoint_hands_the_posting_text_to_the_model(auth_client):
+    """The extension sends only title + company; with a job_id the server adds the
+    posting text from the user's own pool row (scoped by user_id — IDOR rule)."""
+    generate = MagicMock(return_value="Because of the role.")
+    lookup = MagicMock(return_value={"description": "We automate taxes for small businesses."})
+    with (
+        patch("app.routers.tools.get_profile", return_value=PROFILE),
+        patch("app.routers.tools.handbacks_db.answers_for_job", return_value=[]),
+        patch("app.routers.tools.usage_db.claim_today", return_value=True),
+        patch("app.routers.tools.answer_screener_question", generate),
+        patch("app.routers.tools.jobs_db.get_job_by_id", lookup),
+    ):
+        auth_client.post(
+            "/api/v1/tools/answer-question",
+            json={
+                "question": "Why us?",
+                "options": [],
+                "job_title": "PM",
+                "company": "Found",
+                "job_id": "j1",
+            },
+        )
+    assert lookup.call_args.args[1] == "j1"
+    assert generate.call_args.kwargs["job"]["description"].startswith("We automate taxes")
