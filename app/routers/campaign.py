@@ -209,6 +209,12 @@ def campaign_start(req: CampaignStartRequest, user=Depends(get_current_user)):
     profile = get_profile(user.id)
     if not profile.get("onboarding_completed"):
         raise HTTPException(status_code=403, detail="onboarding_incomplete")
+    # Same list /campaign/readiness shows. Enforced here too: a Start that skips the
+    # dashboard's form would file 99%-complete applications that all come back.
+    from modules.employer_answers import missing as missing_answers
+
+    if missing_answers(profile):
+        raise HTTPException(status_code=403, detail="employer_answers_missing")
     # Round-robin the roles: the walk always starts at index 0 and every cap counts
     # applications, so with six or seven roles the tail of the list never gets searched.
     # The server decides who leads this run and remembers it in the row it is about to

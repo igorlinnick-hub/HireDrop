@@ -60,6 +60,7 @@ _OPTIONAL_PROFILE_FIELDS = (
     "postal_code",
     "current_employer",
     "current_title",
+    "country",
 )
 
 
@@ -72,6 +73,16 @@ def update_profile(profile: ProfileUpdate, user=Depends(get_current_user)):
             payload.pop(key, None)
     updated = profile_db.update_profile(user.id, payload)
     return {"message": "Profile saved", "profile": updated}
+
+
+@router.post("/profile/employer-answers")
+def update_employer_answers(body: dict, user=Depends(get_current_user)):
+    """Save the pre-Start answers (modules/employer_answers.py). Partial: only the keys
+    sent are written, so answering one question never blanks another."""
+    from modules.employer_answers import clean, missing
+
+    profile = profile_db.update_employer_answers(user.id, clean(body or {}))
+    return {"saved": True, "missing": missing(profile)}
 
 
 @router.post("/profile/apply-mode")

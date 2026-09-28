@@ -16,6 +16,7 @@ import pytest
 
 from app.routers import campaign as campaign_router
 from modules.keyword_rotation import clean_keywords, rotate
+from tests.test_campaign_readiness import ANSWERED
 
 ROLES = ["social media manager", "marketing manager", "digital marketing"]
 
@@ -83,7 +84,7 @@ def test_start_hands_the_dashboard_the_rotated_order(auth_client):
         patch.object(
             campaign_router,
             "get_profile",
-            return_value={"onboarding_completed": True, "search_radius_miles": None},
+            return_value={"onboarding_completed": True, "search_radius_miles": None, **ANSWERED},
         ),
     ):
         body = auth_client.post(
@@ -109,7 +110,7 @@ def test_start_survives_a_row_with_no_cursor_yet(auth_client):
         patch.object(
             campaign_router,
             "get_profile",
-            return_value={"onboarding_completed": True, "search_radius_miles": None},
+            return_value={"onboarding_completed": True, "search_radius_miles": None, **ANSWERED},
         ),
     ):
         body = auth_client.post(
@@ -135,7 +136,7 @@ def _start(auth_client, platforms, mode="auto"):
         patch.object(
             campaign_router,
             "get_profile",
-            return_value={"onboarding_completed": True, "search_radius_miles": None},
+            return_value={"onboarding_completed": True, "search_radius_miles": None, **ANSWERED},
         ),
     ):
         return auth_client.post(

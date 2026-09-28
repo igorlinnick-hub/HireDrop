@@ -116,6 +116,19 @@ def build_readiness(
         "Upload a resume — company-site (Greenhouse/Lever) applications require one",
         "settings",
     )
+    # The questions employers almost always ask. Unanswered = the filler reaches 99% of
+    # a form and hands it back, run after run. The form is drawn from `missing`.
+    from modules.employer_answers import missing
+
+    unanswered = missing(profile)
+    add(
+        "employer_answers",
+        not unanswered,
+        "Answer what employers ask on almost every application — once",
+        "answers",
+    )
+    if unanswered:
+        checks[-1]["missing"] = unanswered
     if tier == "free":
         add(
             "free_quota",
