@@ -344,9 +344,17 @@ def answer_question(req: AnswerQuestionRequest, user=Depends(get_current_user)):
 
     _claim_ai_slot(user)
     try:
+        # The posting text, when we hold the row: the extension sends only title and
+        # company, and a model that cannot read the posting invents the employer
+        # ("Why us?" answered about the wrong industry — dry-run 09-27).
+        description = ""
+        if req.job_id:
+            with contextlib.suppress(Exception):
+                row = jobs_db.get_job_by_id(user.id, req.job_id)
+                description = (row or {}).get("description") or ""
         answer = answer_screener_question(
             req.question,
-            job={"title": req.job_title, "company": req.company},
+            job={"title": req.job_title, "company": req.company, "description": description},
             profile=profile,
             options=req.options,
         )
