@@ -135,13 +135,28 @@ def test_false_is_an_answer_for_yes_no_questions():
     assert ready
 
 
-def test_state_is_asked_only_for_a_us_address_and_no_linkedin_is_an_answer():
+def test_no_linkedin_is_an_answer():
     from modules.employer_answers import missing
 
-    abroad = {**ANSWERED, "country": "Canada", "state": ""}
-    assert missing(abroad) == []
-    assert [m["key"] for m in missing({**ANSWERED, "state": ""})] == ["state"]
     assert missing({**ANSWERED, "linkedin_url": "", "no_linkedin": True}) == []
+    assert [m["key"] for m in missing({**ANSWERED, "state": ""})] == ["state"]
+
+
+def test_living_outside_the_us_closes_start_with_no_fix():
+    """US only (Igor 09-27): a No is a closed door, not a form to fill."""
+    res = build_readiness(_profile(country="Outside US"), False, "pro", "auto", None, 40)
+    ready, by_id = _ready(res)
+    assert not ready and by_id["us_only"] is False
+    row = next(c for c in res["checks"] if c["id"] == "us_only")
+    assert row["fix"] is None
+    # A legacy free-text country from Settings is judged the same way.
+    assert (
+        _ready(build_readiness(_profile(country="Germany"), False, "pro", "auto", None, 40))[1][
+            "us_only"
+        ]
+        is False
+    )
+    assert _ready(build_readiness(_profile(country="USA"), False, "pro", "auto", None, 40))[0]
 
 
 def test_clean_keeps_known_keys_typed_and_ignores_the_rest():
@@ -149,7 +164,7 @@ def test_clean_keeps_known_keys_typed_and_ignores_the_rest():
 
     out = clean(
         {
-            "country": "  Canada ",
+            "country": "Canada",  # free text is not an answer — only Yes/No is
             "needs_sponsorship": "yes",
             "work_authorized_us": False,
             "tier": "pro",
@@ -157,7 +172,9 @@ def test_clean_keeps_known_keys_typed_and_ignores_the_rest():
             "no_linkedin": True,
         }
     )
-    assert out["country"] == "Canada"
+    assert "country" not in out
+    assert clean({"country": True})["country"] == "United States"
+    assert clean({"country": False})["country"] == "Outside US"
     assert "needs_sponsorship" not in out  # a string is not a yes/no answer
     assert out["work_authorized_us"] is False
     assert "tier" not in out

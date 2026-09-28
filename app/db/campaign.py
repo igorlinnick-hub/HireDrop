@@ -88,7 +88,7 @@ def build_readiness(
     ats_selected = any(p in ("greenhouse", "lever") for p in platforms)
     checks: list[dict] = []
 
-    def add(check_id: str, ok, reason: str, fix: str) -> None:
+    def add(check_id: str, ok, reason: str, fix: str | None) -> None:
         checks.append(
             {
                 "id": check_id,
@@ -118,7 +118,15 @@ def build_readiness(
     )
     # The questions employers almost always ask. Unanswered = the filler reaches 99% of
     # a form and hands it back, run after run. The form is drawn from `missing`.
-    from modules.employer_answers import missing
+    from modules.employer_answers import missing, outside_us
+
+    # US only. No fix button on purpose: there is nothing to change on our side.
+    add(
+        "us_only",
+        not outside_us(profile),
+        "HireDrop applies to jobs in the United States only — it can't run from abroad yet",
+        None,
+    )
 
     unanswered = missing(profile)
     add(

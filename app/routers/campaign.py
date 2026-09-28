@@ -212,7 +212,10 @@ def campaign_start(req: CampaignStartRequest, user=Depends(get_current_user)):
     # Same list /campaign/readiness shows. Enforced here too: a Start that skips the
     # dashboard's form would file 99%-complete applications that all come back.
     from modules.employer_answers import missing as missing_answers
+    from modules.employer_answers import outside_us
 
+    if outside_us(profile):
+        raise HTTPException(status_code=403, detail="us_only")
     if missing_answers(profile):
         raise HTTPException(status_code=403, detail="employer_answers_missing")
     # Round-robin the roles: the walk always starts at index 0 and every cap counts

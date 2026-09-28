@@ -11,6 +11,11 @@ This list is the ONE authority: `/campaign/readiness` shows what is missing from
 `/campaign/start` refuses on it, and the dashboard renders its form from what the server
 returns — so the three can never disagree about which questions count.
 
+HireDrop applies to US jobs only (Igor, 09-27: "мы только работаем с США"). So the
+country question is "do you live in the United States?", and a No closes Start with its
+own readiness row (`us_only`) rather than letting someone file US applications from
+abroad. There is deliberately no country picker to choose Europe from.
+
 EEO (gender, race, veteran, disability) is deliberately NOT here: those have a
 deterministic "decline to answer" default, so a blank one is a filler miss, not missing
 data, and asking a human for it before every start would be both wrong and intrusive.
@@ -21,9 +26,9 @@ from __future__ import annotations
 # (key, label, kind) — kind tells the form which control to draw.
 #   text    free text
 #   yesno   boolean; None = never answered (False is a real answer)
-#   country free text drawn with a country picker
+#   us_resident  yes/no, stored as country ("United States" or OUTSIDE_US)
 QUESTIONS: tuple[tuple[str, str, str], ...] = (
-    ("country", "Country you live in", "country"),
+    ("country", "Do you live in the United States?", "us_resident"),
     ("city", "City", "text"),
     ("state", "State", "text"),
     ("work_authorized_us", "Are you legally authorized to work in the United States?", "yesno"),
@@ -33,6 +38,8 @@ QUESTIONS: tuple[tuple[str, str, str], ...] = (
     ("linkedin_url", "LinkedIn profile URL", "text"),
 )
 
+US = "United States"
+OUTSIDE_US = "Outside US"
 _US = {"united states", "united states of america", "usa", "us", "u.s.", "u.s.a."}
 
 
@@ -40,14 +47,16 @@ def is_us(country: str | None) -> bool:
     return (country or "").strip().lower() in _US
 
 
+def outside_us(profile: dict) -> bool:
+    """Answered, and not the US — the one answer that closes Start outright."""
+    country = str(profile.get("country") or "").strip()
+    return bool(country) and not is_us(country)
+
+
 def missing(profile: dict) -> list[dict]:
     """The unanswered questions, in form order. Empty list = ready."""
     out: list[dict] = []
     for key, label, kind in QUESTIONS:
-        # "State" only means something for a US address; elsewhere forms ask for a
-        # region inconsistently and a blank one is not what stops them.
-        if key == "state" and not is_us(profile.get("country")):
-            continue
         # Not everyone has a LinkedIn. Saying so IS the answer — the filler then hands
         # a required LinkedIn field back honestly instead of inventing a URL.
         if key == "linkedin_url" and profile.get("no_linkedin"):
@@ -74,6 +83,9 @@ def clean(body: dict) -> dict:
         if kind == "yesno":
             if isinstance(raw, bool):
                 out[key] = raw
+        elif kind == "us_resident":
+            if isinstance(raw, bool):
+                out[key] = US if raw else OUTSIDE_US
         else:
             out[key] = str(raw or "").strip()[: (500 if key == "linkedin_url" else _MAX_TEXT)]
     if "no_linkedin" in body:
