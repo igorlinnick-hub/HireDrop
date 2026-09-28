@@ -104,8 +104,9 @@ def test_a_city_change_is_the_same_search_because_it_walks_the_same_boards():
     assert not thread.called
 
 
-def test_crossing_the_europe_gate_is_a_new_search():
-    """The one location value collection reads: "europe" flips the country gate."""
+def test_location_never_changes_the_search_us_only():
+    """US-only (09-27): no location value flips the country gate any more, so a city or
+    a leftover "europe" is the same sweep and stays in cooldown."""
     _call({"keywords": ["event manager"], "location": "miami"})
     jobs_router._FIND_ATS_LAST_RUN[_User.id] = (
         jobs_router._FIND_ATS_LAST_RUN[_User.id][0],
@@ -113,8 +114,7 @@ def test_crossing_the_europe_gate_is_a_new_search():
     )
 
     out, _ = _call({"keywords": ["event manager"], "location": "europe"})
-    assert out["started"] is True
-    assert out["search_changed"] is True
+    assert out["search_changed"] is False
 
 
 def test_job_type_is_part_of_the_search():

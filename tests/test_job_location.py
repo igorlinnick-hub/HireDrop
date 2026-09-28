@@ -133,14 +133,15 @@ def test_coarse_remote_profile_still_hides_foreign_rows_in_the_deck():
     assert [c["title"] for c in out["cards"]] == ["AI Engineer 3"]
 
 
-def test_europe_profile_opts_out_of_the_country_gate():
+def test_country_gate_applies_to_every_profile_us_only():
+    # 09-27, Igor: US-only product. A leftover "europe" location no longer opts out.
     from app.routers.jobs import on_search_filter
 
     rows = [
         {"title": "AI Engineer", "location": "Berlin, Germany", "job_type": None},
     ]
     profile = {"keywords": ["ai engineer"], "location": "europe", "job_type": ""}
-    assert on_search_filter(rows, profile) == rows
+    assert on_search_filter(rows, profile) == []
 
 
 def test_profile_without_a_location_disables_the_filter_entirely():
