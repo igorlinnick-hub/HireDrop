@@ -19,8 +19,12 @@ import httpx
 from app.ads.meta_capi import DEFAULT_GRAPH_VERSION, GRAPH_URL
 from app.db import ad_spend as spend_db
 
+# inline_link_clicks, not clicks: Meta's `clicks` counts every tap on the ad (likes,
+# "see more", profile) and would flatter the CTR the kill rule reads. Link clicks are
+# the ones that can land on hiredrop.io — the same meaning Google's clicks have.
 FIELDS = (
-    "campaign_id,campaign_name,adset_id,ad_id,ad_name,spend,impressions,clicks,account_currency"
+    "campaign_id,campaign_name,adset_id,ad_id,ad_name,spend,impressions,"
+    "inline_link_clicks,account_currency"
 )
 PAGE_LIMIT = 500
 MAX_PAGES = 50
@@ -83,7 +87,7 @@ def to_rows(insights: list[dict], account_id: str) -> list[dict]:
                 "ad_name": r.get("ad_name"),
                 "spend_usd": round(float(r.get("spend") or 0), 2),
                 "impressions": _int(r.get("impressions")),
-                "clicks": _int(r.get("clicks")),
+                "clicks": _int(r.get("inline_link_clicks")),
                 "source": "meta_insights",
             }
         )

@@ -591,7 +591,7 @@ def test_insights_rows_map_to_ad_spend():
                 "ad_name": "Hook A",
                 "spend": "12.345",
                 "impressions": "1500",
-                "clicks": "22",
+                "inline_link_clicks": "22",
                 "account_currency": "USD",
             }
         ],
