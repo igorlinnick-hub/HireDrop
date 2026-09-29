@@ -144,8 +144,25 @@
   // The header/nav that carries the login signal can render slightly after
   // document_idle, so poll a few times for a DEFINITIVE (non-unknown) answer
   // before giving up — otherwise an early "unknown" would never get corrected.
+  /**
+   * Indeed's sign-in page with a return address is often a PASS-THROUGH, not a wall: with
+   * a live year-long key the site renews the working session and sends the tab straight on
+   * to `continue` (background.js platformEntryUrl enters every Indeed walk this way). Read
+   * as a wall the instant it loads, that transit wrote a false "logged_out" and could open
+   * the 5-minute login pause for a user who was never signed out. So give it the time a
+   * renewal takes: if the page navigates, this context dies here and says nothing — which
+   * is the right answer. Still here afterwards ⇒ it really is asking for a human.
+   */
+  const INDEED_RENEW_GRACE_MS = 10000;
+  async function settleIndeedAuthTransit() {
+    if (window.location.hostname !== "secure.indeed.com") return;
+    if (!/[?&]continue=/.test(window.location.search)) return;
+    await sleep(INDEED_RENEW_GRACE_MS);
+  }
+
   async function reportPlatformAuth() {
     const platform = detectPlatform();
+    if (platform === "indeed") await settleIndeedAuthTransit();
     let status = detectPlatformAuth(platform);
     for (let i = 0; i < 8 && status === "unknown"; i++) {
       await sleep(1000);
@@ -5605,6 +5622,7 @@
       // (looks like a dead 6-7-min+ hang on a zero-touch GH apply). Mirrors sessionWarmup's
       // greenhouse/lever guard.
       const isAtsGuest = authPlatform === "greenhouse" || authPlatform === "lever" || authPlatform === "ashby";
+      if (authPlatform === "indeed") await settleIndeedAuthTransit();
       const authStatus = isAtsGuest ? "connected" : detectPlatformAuth(authPlatform);
       if (authStatus === "logged_out") {
         await reportPlatformAuth();
@@ -5870,6 +5888,9 @@
         log("Campaign active — resuming on this page", "ok");
         logBackend(`Extension active on ${platformName} — starting automation`, "info");
         await sleep(humanDelay(2000, 3000));
+        // Entered through Indeed's sign-in page (platformEntryUrl)? Let the renewal
+        // redirect happen before warmup gets a chance to navigate the tab elsewhere.
+        if (detectPlatform() === "indeed") await settleIndeedAuthTransit();
         // One-shot warmup before the very first action. No-op if already
         // warmed up this campaign.
         await sessionWarmup();

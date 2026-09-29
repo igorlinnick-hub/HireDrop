@@ -946,6 +946,31 @@ function platformHomeUrl(platform) {
   return "https://www.indeed.com/";
 }
 
+/**
+ * Where the walk ENTERS a board — the homepage, except on Indeed, where it enters through
+ * Indeed's own sign-in page with the homepage as the return address.
+ *
+ * Indeed keeps two layers of login: a year-long key (__Secure-PassportAuthProxy-RefreshToken)
+ * and a short working session. A person who opens Indeed never notices the session expire —
+ * the site renews it from the key on the way in. The walk used to open www.indeed.com
+ * directly, where search works signed OUT, so the expiry surfaced only at the first Apply:
+ * the click bounced to secure.indeed.com/auth, content.js read that host as a login wall,
+ * and the run sat 5 minutes waiting for a human before leaving the board (live 2026-09-28,
+ * ext 1.8.21: Indeed lost at 00:19, "Still signed out of Indeed after 5 minutes").
+ * The same account, same browser, one navigation to secure.indeed.com/auth?continue=<home>
+ * came straight back to www.indeed.com SIGNED IN — no click, no password.
+ *
+ * So entering through that URL renews a renewable session for free, and when the key is
+ * gone too the run learns it on its FIRST page instead of at its first Apply — the login
+ * wall (content.js) fires at the start, where the user is still looking. The redirect lands
+ * on the same homepage sessionWarmup always started from, so nothing downstream changes.
+ */
+function platformEntryUrl(platform) {
+  if (platform === "ziprecruiter" || platform === "linkedin") return platformHomeUrl(platform);
+  return "https://secure.indeed.com/auth?hl=en_US&co=US&continue=" +
+    encodeURIComponent("https://www.indeed.com/");
+}
+
 // Platforms the extension actually auto-applies on. Everything else in
 // filters.platforms is a discovery-only source (scraped, applied to externally).
 // LinkedIn = native search-walk like Indeed/ZR (v1 semi-auto: fills, human submits).
@@ -1257,7 +1282,7 @@ async function navigatePoolNext(tabId, job) {
         campaignWarmedUp: false,
         poolWarmedNatives: Array.from(warmed),
       });
-      await chrome.tabs.update(tabId, { url: platformHomeUrl(job.platform) }).catch(() => {});
+      await chrome.tabs.update(tabId, { url: platformEntryUrl(job.platform) }).catch(() => {});
       return;
     }
   }
@@ -2038,9 +2063,9 @@ async function handleMessage(msg, sender) {
         // LinkedIn has NO Cloudflare gate, so skip the homepage→search hop (built for Indeed's
         // CF) and open the Easy-Apply search DIRECTLY — the homepage-first warmup was landing
         // on /feed and not reliably navigating on (live 2026-08-01). Direct nav is proven.
-        ? (primaryPlatform === "linkedin" ? targetUrl : platformHomeUrl(primaryPlatform))
+        ? (primaryPlatform === "linkedin" ? targetUrl : platformEntryUrl(primaryPlatform))
         : POOL_NATIVE_ALL.includes(headPlatform)
-          ? platformHomeUrl(headPlatform)
+          ? platformEntryUrl(headPlatform)
           : atsQueue[0].applyUrl;
       await addToActivityLog(`Opening the automation window → ${String(homeUrl).slice(0, 70)}`, "info");
 
@@ -2347,7 +2372,7 @@ async function handleMessage(msg, sender) {
       // handler would keep steering the window back into it behind the board search.
       await chrome.storage.local.remove(["atsQueue", "atsPlatform", "atsNavAt", "atsNavTries"]);
       try {
-        await chrome.tabs.update(ex.campaignTabId, { url: platformHomeUrl(next) });
+        await chrome.tabs.update(ex.campaignTabId, { url: platformEntryUrl(next) });
       } catch (e) {
         await addToActivityLog(`Couldn't open ${NAMES[next]} (${e.message}) — stopping the campaign.`, "error");
         return await handleMessage({ type: "STOP_CAMPAIGN" }, sender);
