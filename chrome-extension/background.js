@@ -3022,6 +3022,23 @@ async function handleMessage(msg, sender) {
       return { focused: !!captchaWaiting.url };
     }
 
+    // ----- Tracking pop-up switch (dashboard launch dialog, via ping.js) -----
+    case "PILL_EVERYWHERE_STATE":
+      return { on: await chrome.permissions.contains({ origins: HD_PILL_EVERYWHERE_ORIGINS }) };
+
+    case "PILL_EVERYWHERE_SET": {
+      const on = await chrome.permissions.contains({ origins: HD_PILL_EVERYWHERE_ORIGINS });
+      if (!msg.on) {
+        if (on) await chrome.permissions.remove({ origins: HD_PILL_EVERYWHERE_ORIGINS }).catch(() => {});
+        return { on: false };
+      }
+      if (on) return { on: true };
+      // A page can't ask Chrome for host access and the worker has no user gesture, so the
+      // ask happens in our own small window: its "Allow" click is the gesture.
+      await chrome.windows.create({ url: chrome.runtime.getURL("pill-allow.html"), type: "popup", width: 340, height: 260, focused: true });
+      return { on: false, pending: true };
+    }
+
     case "GET_STATUS": {
       const data = await chrome.storage.local.get([
         "campaignRunning",

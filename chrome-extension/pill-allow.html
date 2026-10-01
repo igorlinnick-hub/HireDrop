@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>HireDrop — Tracking pop-up</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#fffef9;--border:#e8ddc2;--text:#14141c;--text2:#3a3a46;--btn:#101014;--shot:#f7f1e1}
+@media (prefers-color-scheme: dark){:root{--bg:#1a1d27;--border:#2e3348;--text:#e4e4e7;--text2:#9395a5;--btn:#6c5ce7;--shot:#242836}}
+html,body{height:100%}
+body{font:400 13px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;padding:20px}
+.mini{width:120px;height:80px;border-radius:12px;border:1px solid var(--border);background:var(--shot);position:relative;overflow:hidden}
+.mini::before{content:"";position:absolute;left:0;right:0;top:0;height:12px;background:color-mix(in srgb,var(--text) 8%,transparent)}
+.ln{position:absolute;left:12px;height:5px;border-radius:3px;background:color-mix(in srgb,var(--text) 14%,transparent)}
+.a{top:26px;width:46px}.b{top:40px;width:58px}.c{top:54px;width:34px}
+.pill{position:absolute;right:5px;top:24px;height:34px;width:8px;border-radius:99px;background:#101014;box-shadow:0 0 0 1px rgba(255,255,255,.5);overflow:hidden;display:flex;align-items:center;justify-content:flex-end;animation:slide 3.6s cubic-bezier(.2,.8,.2,1) infinite}
+.pill em{position:relative;z-index:1;font:700 14px/1 -apple-system,system-ui,sans-serif;font-style:normal;color:#fff;padding-right:10px;opacity:0;white-space:nowrap;animation:num 3.6s ease infinite}
+.pill::before{content:"";position:absolute;left:0;bottom:0;width:100%;height:4px;background:linear-gradient(90deg,#4F44C9,#7B6CF6,#C85FD6)}
+@keyframes slide{0%,18%{width:8px}34%,72%{width:72px}88%,100%{width:8px}}
+@keyframes num{0%,26%{opacity:0}38%,66%{opacity:1}80%,100%{opacity:0}}
+@media (prefers-reduced-motion: reduce){.pill{animation:none;width:72px}.pill em{animation:none;opacity:1}}
+h1{font-size:15px;font-weight:700}
+button{border:0;border-radius:10px;padding:10px 28px;font:700 14px -apple-system,system-ui,sans-serif;background:var(--btn);color:#fff;cursor:pointer}
+button:focus-visible{outline:2px solid #b07c0a;outline-offset:2px}
+</style>
+</head>
+<body>
+<div class="mini" aria-hidden="true"><i class="ln a"></i><i class="ln b"></i><i class="ln c"></i><div class="pill"><em>12/30</em></div></div>
+<h1>Tracking pop-up</h1>
+<button id="allow" type="button">Allow</button>
+<script src="pill-allow.js"></script>
+</body>
+</html>

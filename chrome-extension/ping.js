@@ -328,4 +328,23 @@ window.addEventListener("message", function (e) {
       window.postMessage({ type: "HIREDROP_PLATFORM_LOGIN_OPENED", ok: false, platform: e.data.platform, error: "context_invalidated" }, "*");
     }
   }
+
+  // Tracking pop-up switch in the dashboard's launch dialog (pill-everywhere.js). GET reads
+  // whether the edge pill is on for every site; SET on asks background to open the small
+  // extension window whose "Allow" click is the user gesture Chrome needs, SET off drops
+  // the access. The reply carries the state as it is NOW — after an "on" the dashboard
+  // polls GET until the human has answered Chrome.
+  if (typeof e.data === "object" && (e.data.type === "HIREDROP_GET_PILL_EVERYWHERE" || e.data.type === "HIREDROP_SET_PILL_EVERYWHERE")) {
+    const msg = e.data.type === "HIREDROP_GET_PILL_EVERYWHERE"
+      ? { type: "PILL_EVERYWHERE_STATE" }
+      : { type: "PILL_EVERYWHERE_SET", on: e.data.on === true };
+    try {
+      chrome.runtime.sendMessage(msg, function (resp) {
+        void chrome.runtime.lastError;
+        window.postMessage({ type: "HIREDROP_PILL_EVERYWHERE", ok: !!resp, on: !!(resp && resp.on), pending: !!(resp && resp.pending) }, "*");
+      });
+    } catch (ex) {
+      window.postMessage({ type: "HIREDROP_PILL_EVERYWHERE", ok: false, on: false, error: "context_invalidated" }, "*");
+    }
+  }
 });
