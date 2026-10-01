@@ -49,6 +49,14 @@ _DEFAULTS = {
     # Answered once in the pre-Start form (modules/employer_answers.py).
     "country": "",
     "no_linkedin": False,
+    # Education — Greenhouse's "School" / "Degree" (migrations/add_employer_answer_fields.sql).
+    "school": "",
+    "degree": "",
+    "no_degree": False,
+    # What the user said to tell an employer who asks about pay — NOT the salary_min
+    # filter below, which only decides which jobs they see.
+    "salary_expectation": "",
+    "no_salary_expectation": False,
     # Search gates read by on_search_filter (deck, auto ATS queue, night shift).
     "salary_min": None,
     "salary_max": None,
@@ -125,6 +133,11 @@ def get_profile(user_id: str) -> dict:
         "current_title": p.get("current_title") or "",
         "country": p.get("country") or "",
         "no_linkedin": bool(p.get("no_linkedin")),
+        "school": p.get("school") or "",
+        "degree": p.get("degree") or "",
+        "no_degree": bool(p.get("no_degree")),
+        "salary_expectation": p.get("salary_expectation") or "",
+        "no_salary_expectation": bool(p.get("no_salary_expectation")),
         # Written by update_salary / update_profile / update_ats but not returned here
         # until 09-30, so every reader saw None: on_search_filter's salary and
         # work-setting gates never fired (deck, auto queue, night shift), and
@@ -169,6 +182,11 @@ def update_profile(user_id: str, data: dict) -> dict:
         "current_title",
         "work_setting",
         "country",
+        "school",
+        "degree",
+        "no_degree",
+        "salary_expectation",
+        "no_salary_expectation",
     ):
         if k in data:
             payload[k] = data[k]

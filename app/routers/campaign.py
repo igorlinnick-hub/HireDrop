@@ -194,7 +194,7 @@ def campaign_status(since: str | None = None, user=Depends(get_current_user)):
 
 
 @router.post("/campaign/start")
-def campaign_start(req: CampaignStartRequest, user=Depends(get_current_user)):
+def campaign_start(req: CampaignStartRequest, answers_ui: int = 1, user=Depends(get_current_user)):
     # Free-taste abuse guard: throwaway-email accounts never get to spend AI
     # budget. Signup is Supabase-hosted, so the first backend chokepoint is here.
     if is_disposable_email(getattr(user, "email", None)):
@@ -216,7 +216,9 @@ def campaign_start(req: CampaignStartRequest, user=Depends(get_current_user)):
 
     if outside_us(profile):
         raise HTTPException(status_code=403, detail="us_only")
-    if missing_answers(profile):
+    # `answers_ui`: which questions the caller can ask (see employer_answers.SINCE). An
+    # old dashboard tab and the extension say nothing and are held to the old list.
+    if missing_answers(profile, answers_ui):
         raise HTTPException(status_code=403, detail="employer_answers_missing")
     # Round-robin the roles: the walk always starts at index 0 and every cap counts
     # applications, so with six or seven roles the tail of the list never gets searched.
@@ -306,7 +308,7 @@ def campaign_start(req: CampaignStartRequest, user=Depends(get_current_user)):
 
 
 @router.get("/campaign/readiness")
-def campaign_readiness(user=Depends(get_current_user)):
+def campaign_readiness(answers_ui: int = 1, user=Depends(get_current_user)):
     """What's left before a campaign can start meaningfully — the dashboard renders the
     failed checks as a checklist with deep-links instead of a Start that silently no-ops.
     (Extension installed/connected is checked client-side via the PING bridge.)"""
@@ -319,7 +321,7 @@ def campaign_readiness(user=Depends(get_current_user)):
     submit_mode = get_submit_mode(user.id)
     free_used = get_free_apps_used(user.id) if tier == "free" else None
     return campaign_db.build_readiness(
-        profile, state["running"], tier, submit_mode, free_used, FREE_APP_LIMIT
+        profile, state["running"], tier, submit_mode, free_used, FREE_APP_LIMIT, answers_ui
     )
 
 

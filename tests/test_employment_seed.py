@@ -139,3 +139,45 @@ def test_split_location_variants():
     assert _split_location("") == ("", "", "")
     # ZIP+4 collapses to the 5-digit form the profile stores.
     assert _split_location("Brooklyn, NY 11201-1234") == ("Brooklyn", "NY", "11201")
+
+
+def test_education_is_offered_in_the_form_never_written_from_a_resume():
+    """A resume's first "education" row is as often a certificate as a degree. Written
+    straight into the profile it would count as answered and never be shown to the person
+    (adversarial pass, 10-01: "Coursera / Google Data Analytics Certificate" → gate closed)."""
+    written: list[dict] = []
+
+    class _Chain:
+        def update(self, payload):
+            written.append(payload)
+            return self
+
+        def eq(self, *_a, **_k):
+            return self
+
+        def execute(self):
+            return None
+
+    class _Client:
+        def table(self, _name):
+            return _Chain()
+
+    data = {
+        "experience": [{"company": "Acme", "title": "Analyst"}],
+        "education": [{"school": "Coursera", "degree": "Google Data Analytics Certificate"}],
+    }
+    blank = {
+        "current_employer": "",
+        "current_title": "",
+        "city": "",
+        "state": "",
+        "postal_code": "",
+    }
+    with (
+        patch.object(profile_db, "get_profile", return_value=blank),
+        patch.object(profile_db, "get_supabase", return_value=_Client()),
+    ):
+        _seed_employment_from_resume("u1", data)
+    assert written, "employer/title are still seeded"
+    assert not any("school" in w or "degree" in w for w in written)
+    assert not hasattr(profile_db, "fill_education_if_blank")

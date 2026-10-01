@@ -67,6 +67,7 @@ def build_readiness(
     submit_mode: str,
     free_used: int | None,
     free_limit: int,
+    answers_ui: int = 1,
 ) -> dict:
     """Single source of truth for "can a campaign start MEANINGFULLY?" (pure — testable).
 
@@ -128,7 +129,8 @@ def build_readiness(
         None,
     )
 
-    unanswered = missing(profile)
+    # Only what THIS client can ask (modules/employer_answers.SINCE).
+    unanswered = missing(profile, answers_ui)
     add(
         "employer_answers",
         not unanswered,

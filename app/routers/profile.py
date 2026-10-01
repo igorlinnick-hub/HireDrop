@@ -61,6 +61,11 @@ _OPTIONAL_PROFILE_FIELDS = (
     "current_employer",
     "current_title",
     "country",
+    "school",
+    "degree",
+    "no_degree",
+    "salary_expectation",
+    "no_salary_expectation",
 )
 
 
@@ -75,14 +80,65 @@ def update_profile(profile: ProfileUpdate, user=Depends(get_current_user)):
     return {"message": "Profile saved", "profile": updated}
 
 
+@router.get("/profile/employer-answers")
+def get_employer_answers(user=Depends(get_current_user)):
+    """Every question employers keep asking, with this user's answers on file — what the
+    signup step draws. Same list the Start gate refuses on (modules/employer_answers.py)."""
+    from modules.employer_answers import OPT_OUT, form, missing
+
+    profile = profile_db.get_profile(user.id)
+    return {
+        "questions": form(profile),
+        "missing": missing(profile),
+        **{flag: bool(profile.get(flag)) for flag in OPT_OUT},
+    }
+
+
+@router.post("/profile/employer-answers/suggest")
+def suggest_employer_answers(user=Depends(get_current_user)):
+    """What the user's own resume says for the questions still blank — offered in the
+    form, never written to the profile from here.
+
+    Free when an ATS resume exists (its stored structure already holds the facts). The
+    ATS step in onboarding is optional, though, so most signups have only a PDF: one
+    Haiku read of it, claimed against the daily AI quota like every other model call —
+    and only when a question the resume could answer is actually still open.
+    """
+    from modules.ai_cover_letter import load_resume_text
+    from modules.ai_resume_facts import FACT_KEYS, facts_for
+    from modules.employer_answers import missing, suggestions
+
+    profile = profile_db.get_profile(user.id)
+    blank = {m["key"] for m in missing(profile)}
+    hints = suggestions(profile)
+    unread = (blank & set(FACT_KEYS)) - set(hints)
+    if unread and not isinstance(profile.get("ats_structure"), dict) and profile.get("resume_url"):
+        from app.db import usage as usage_db
+        from app.routers.tools import _claim_ai_slot
+
+        text = load_resume_text(profile.get("resume_url"), max_chars=6000)
+        # One read per resume: a second tab, a reload, a blank result — none of them buy
+        # another model call for the same text (facts_for remembers by its hash).
+        found, called = facts_for(user.id, text, before_call=lambda: _claim_ai_slot(user))
+        if called and found is None:
+            # The slot was claimed and the model never answered: give it back. An answer
+            # with nothing usable in it is still an answer we paid for — that one stays
+            # spent, or a resume that states none of these facts is an unlimited tap.
+            usage_db.release_today(user.id)
+        hints = {**(found or {}), **hints}
+    return {"suggestions": {k: v for k, v in hints.items() if k in blank}}
+
+
 @router.post("/profile/employer-answers")
-def update_employer_answers(body: dict, user=Depends(get_current_user)):
-    """Save the pre-Start answers (modules/employer_answers.py). Partial: only the keys
-    sent are written, so answering one question never blanks another."""
+def update_employer_answers(body: dict, answers_ui: int = 1, user=Depends(get_current_user)):
+    """Save the employer answers (modules/employer_answers.py). Partial: only the keys
+    sent are written, so answering one question never blanks another. `missing` answers
+    for the client that asked (`answers_ui`) — an old form must not be handed questions
+    it cannot draw the moment it saves the ones it can."""
     from modules.employer_answers import clean, missing
 
     profile = profile_db.update_employer_answers(user.id, clean(body or {}))
-    return {"saved": True, "missing": missing(profile)}
+    return {"saved": True, "missing": missing(profile, answers_ui)}
 
 
 @router.post("/profile/apply-mode")
@@ -712,6 +768,10 @@ def _seed_employment_from_resume(user_id: str, data: dict) -> None:
         loc = str((data.get("contact") or {}).get("location") or "")
         city, state, postal = _split_location(loc)
         filled.update(profile_db.fill_address_if_blank(user_id, city, state, postal))
+        # School and degree are NOT seeded here. The same education line is OFFERED in
+        # the answers form (employer_answers.suggestions) for the person to confirm: a
+        # résumé's first "education" row is as often a certificate as a degree, and a
+        # value written here would count as answered and never be shown to them.
         if filled:
             print(f"[profile] seeded from resume: {sorted(filled)}", file=sys.stderr)
     except Exception as e:
