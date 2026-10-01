@@ -17,12 +17,16 @@ from common import (  # noqa: E402
     amounts,
     is_knockout,
     is_opt_in,
+    long_list_fact,
     number_from,
     parse_amount,
     pay_question,
+    pick_from_long_list,
     pick_typeahead,
+    residence_answer,
     salary_answer,
     same_value,
+    source_answer,
     typeahead_kind,
     typeahead_queries,
     walk_verdict,
@@ -474,3 +478,87 @@ def test_an_ashby_suggestion_is_taken_for_what_it_says_not_for_coming_first():
     # Letters inside another word are not the word.
     assert _the_typed_one("Other", ["Mother Teresa University"]) is None
     assert _the_typed_one("Rust", []) is None
+
+
+# ── What the night shift KNOWS, so no model is asked ─────────────────────────────────
+# Labels and answers from the dry walk of 2026-10-01 over Igor's live queue.
+
+HOME = {"city": "Honolulu", "state": "HI", "country": "United States"}
+
+
+@pytest.mark.parametrize(
+    ("label", "answer"),
+    [
+        # Grafana Labs: the model said Yes. Hawaii is not the West Coast — and we do not
+        # argue the point either way: a region we cannot compare is left for the person.
+        ("Are you located on the West Coast of the US?", ""),
+        ("Are you based in the Bay Area?", ""),
+        # A named state that is not theirs is No (and with that, a knockout).
+        (
+            "Are you based within a commutable distance of Dallas, Texas and available on-site?",
+            "No",
+        ),
+        (
+            "Are you currently located within 25 miles from our offices in Boston, MA or Vancouver, BC?",
+            "No",
+        ),
+        ("Are you currently based in Austin, New York or San Francisco?", "No"),
+        ("Are you currently located in Hawaii?", "Yes"),
+        ("Do you live in Honolulu?", "Yes"),
+        ("Are you located in the United States?", "Yes"),
+        # Not a residence question at all → the caller carries on.
+        ("Do you have agency experience?", None),
+        ("Are you legally authorized to work in the United States?", None),
+    ],
+)
+def test_residence_is_compared_not_argued(label, answer):
+    assert residence_answer(label, HOME, ["Yes", "No"]) == answer
+
+
+def test_residence_without_a_home_on_file_or_a_yes_no_is_not_ours():
+    assert residence_answer("Are you located in Texas?", {}, ["Yes", "No"]) == ""
+    assert residence_answer("Are you located in Texas?", HOME, None) is None
+    assert residence_answer("Are you located in Texas?", HOME, ["Remote", "Hybrid"]) is None
+
+
+def test_how_did_you_hear_is_answered_with_how_we_actually_did():
+    """Tanium: text → "through my job search on LinkedIn", dropdown → "LinkedIn"."""
+    with patch.object(common, "answer_screener_question") as model:
+        assert night_answer("How did you hear about Tanium?", JOB, HOME) == "Your careers page."
+        opts = ["Careers Website", "LinkedIn", "Twitter", "Glassdoor", "Indeed", "Other"]
+        assert (
+            night_answer("How did you hear about this job?", JOB, HOME, opts) == "Careers Website"
+        )
+        model.assert_not_called()
+    assert source_answer(["LinkedIn", "Indeed", "Job Board"]) == "Job Board"
+    assert source_answer(["Recruiter", "Other"]) == "Other"
+    # Nothing truthful on the list → nothing is picked.
+    assert source_answer(["LinkedIn", "Indeed", "Referral"]) == ""
+    # "If you were referred by someone, tell us" is not this question.
+    with patch.object(common, "answer_screener_question", return_value="I wasn't.") as model:
+        night_answer("If you were referred by someone at Later, please let us know", JOB, HOME)
+        model.assert_called_once()
+
+
+def test_a_list_too_long_to_read_is_typed_into_from_the_profile():
+    """Wikimedia: "country of residence → Afghanistan" — the first row of the first page."""
+    assert long_list_fact("Please select your country of residence", HOME) == [
+        "United States",
+        "USA",
+    ]
+    assert long_list_fact("In which state do you hold permanent residency?", HOME) == ["Hawaii"]
+    # No fact for the field → nothing is typed and the model is not asked either.
+    assert long_list_fact("Country", {"country": "Outside US"}) == []
+    assert long_list_fact("Preferred office", HOME) == []
+    shown = ["United States", "United States Minor Outlying Islands"]
+    assert pick_from_long_list("United States", shown) == "United States"
+    assert pick_from_long_list("United States", ["United States of America", shown[1]]) == (
+        "United States of America"
+    )
+    assert pick_from_long_list("United States", ["United Arab Emirates", "United Kingdom"]) is None
+
+
+def test_the_night_shift_asks_the_answerer_in_unattended_mode():
+    with patch.object(common, "answer_screener_question", return_value="Because.") as model:
+        night_answer("Why are you interested in working at Suno?", JOB, HOME)
+        assert model.call_args.kwargs["unattended"] is True

@@ -250,7 +250,6 @@ def test_ordinary_questions_about_ai_and_people_still_reach_the_model():
         "How have you used AI to answer customer questions?",
         "Do you have experience building AI applications?",
         "Our team uses AI heavily. Are you comfortable with that?",
-        "I certify that the information I provided is true and complete.",
         "Tell us about a project you completed on your own initiative.",
         "Are you comfortable managing a team of five people?",
         "Why do you want to work at Humane?",
@@ -258,3 +257,59 @@ def test_ordinary_questions_about_ai_and_people_still_reach_the_model():
         "Applicant Privacy Acknowledgement",
     ):
         assert _only_the_person(q, []) is None, q
+
+
+def test_a_typed_signature_is_the_persons_and_an_acknowledgement_is_not():
+    """Wikimedia's form (dry walk 10-01): "I certify that the information in this
+    application is true and complete" is a text box, and it got "Igor Linnik" typed in."""
+    from modules.ai_question_answer import _only_the_person
+
+    certify = "I certify that the information in this application is true and complete."
+    assert _refused_without_a_model(certify) == ""
+    assert _refused_without_a_model("Electronic signature — type your full name") == ""
+    # The same sentence as a dropdown is an acknowledgement, not a signature.
+    assert _only_the_person(certify, ["I agree", "I do not agree"]) is None
+    assert _only_the_person("Applicant Privacy Acknowledgement", ["Yes", "No"]) is None
+
+
+def test_an_attestation_hidden_in_the_options_is_refused_too():
+    """Grafana Labs (dry walk 10-01): the question is innocent, the answers are not."""
+    question = "Which of the following best describes you?"
+    assert _refused_without_a_model(question, ["I am a human being", "I am an AI agent"]) == ""
+    assert _refused_without_a_model("Please confirm", ["I am not a robot", "Skip"]) == ""
+    from modules.ai_question_answer import _only_the_person
+
+    assert _only_the_person(question, ["Individual contributor", "People manager"]) is None
+
+
+def test_unattended_mode_turns_unknown_into_no_answer_and_shows_the_facts():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
+
+    from modules import ai_question_answer as aq
+
+    def ask(reply, **kw):
+        client = MagicMock()
+        client.messages.create.return_value = SimpleNamespace(content=[SimpleNamespace(text=reply)])
+        with (
+            patch.object(aq, "ANTHROPIC_API_KEY", "k"),
+            patch.object(aq, "get_anthropic_client", return_value=client),
+            patch.object(aq, "resume_text_for", return_value="Marketing manager."),
+        ):
+            out = aq.answer_screener_question(
+                "Are you willing to travel up to 40% of the time?",
+                job={},
+                profile={"city": "Honolulu", "state": "HI", "country": "United States"},
+                options=["Yes", "No"],
+                **kw,
+            )
+        call = client.messages.create.call_args.kwargs
+        return out, call["system"], call["messages"][0]["content"]
+
+    out, system, prompt = ask("UNKNOWN", unattended=True)
+    assert out == ""
+    assert "UNATTENDED MODE" in system and "Lives in: Honolulu, HI" in prompt
+    assert ask("Yes", unattended=True)[0] == "Yes"
+    # The extension's path is untouched: same rules, same prompt as before.
+    out, system, prompt = ask("Yes")
+    assert out == "Yes" and "UNATTENDED MODE" not in system and "FACTS ON FILE" not in prompt

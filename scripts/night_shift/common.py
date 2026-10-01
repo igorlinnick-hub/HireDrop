@@ -403,12 +403,135 @@ def number_from(reply: str, label: str = "") -> str:
     return ""
 
 
+# ── Facts about the person the night shift knows without asking a model ────────────────
+# "How did you hear about us?" — the model said "LinkedIn" (Tanium, dry walk 10-01). The
+# night shift knows exactly how: it read the posting off the company's own board.
+_SOURCE_Q = re.compile(
+    r"how did you (?:first )?(?:hear|find|learn|come across)|where did you (?:first )?(?:hear|find|see|learn)"
+    r"|how you heard|source of (?:this )?application",
+    re.I,
+)
+_SOURCE_OPTIONS = (
+    re.compile(r"career|company (?:web)?site|corporate (?:web)?site|our (?:web)?site", re.I),
+    re.compile(r"job board|job site|online (?:job )?(?:board|posting)", re.I),
+    re.compile(r"^\W*other\W*$", re.I),
+)
+
+
+def source_answer(options: list[str] | None = None) -> str:
+    """Where this application came from, truthfully: the company's own careers board."""
+    if not options:
+        return "Your careers page."
+    for wanted in _SOURCE_OPTIONS:
+        hit = next((o for o in options if wanted.search(o)), None)
+        if hit:
+            return hit
+    return ""
+
+
+# "Are you located on the West Coast?" → Yes, for someone in Hawaii (Grafana Labs, dry
+# walk 10-01). Where a person lives is on file; it is compared, not argued for.
+_RESIDENCE_Q = re.compile(
+    r"\b(?:are you|do you|will you be)\b.{0,30}\b(?:located|based|living|live|reside|residing)\b"
+    r"|\bwithin \d+ ?(?:miles|mi|km|kms|kilometers)\b|\bcommut(?:e|able|ing)\b",
+    re.I,
+)
+
+
+_IN_THE_US = re.compile(
+    r"\b(?:located|based|living|live|reside|residing)\s+(?:currently\s+)?in\s+(?:the\s+)?"
+    r"(?:u\.?s\.?a?\.?|united states)(?:\s+of america)?\s*[?.)]?\s*$",
+    re.I,
+)
+
+
+def residence_answer(label: str, profile: dict, options: list[str] | None) -> str | None:
+    """Yes / No to "are you located in X", from where the user lives.
+
+    None = not this kind of question, or no Yes/No on offer (the caller carries on).
+    "" = the question names a place we cannot compare ("the West Coast", "the Bay Area"):
+    left for the person rather than guessed. A named US state that is not theirs is No.
+    """
+    if not options or not _RESIDENCE_Q.search(label or ""):
+        return None
+    yes = next((o for o in options if re.match(r"^\s*yes\b", o, re.I)), None)
+    no = next((o for o in options if re.match(r"^\s*no\b", o, re.I)), None)
+    if not yes or not no:
+        return None
+    from modules.job_location import _NAME_TO_CODE, _STATE_CODES, parse_user_location
+
+    home = parse_user_location(f"{profile.get('city') or ''}, {profile.get('state') or ''}")
+    city, code, name = home.get("city"), home.get("state_code"), home.get("state_name")
+    if not (city or code):
+        return ""
+    low = " " + (label or "").lower() + " "
+    # "…located IN the United States?" — the country itself is the place asked about.
+    # ("on the West Coast of the US" is not: the US there only says which coast.)
+    if _IN_THE_US.search(low):
+        from modules.employer_answers import is_us
+
+        return yes if is_us(profile.get("country")) else ""
+    if city and re.search(rf"\b{re.escape(city)}\b", low):
+        return yes
+    # A state by its full name, or by its code written AS a code ("MA", not "ma" in a word).
+    named = {n for n in _NAME_TO_CODE if re.search(rf"\b{re.escape(n)}\b", low)}
+    named |= {
+        _STATE_CODES[c.lower()]
+        for c in re.findall(r"\b[A-Z]{2}\b", label or "")
+        if c.lower() in _STATE_CODES
+    }
+    if named:
+        return yes if name in named else no
+    return ""
+
+
+# A list too long to read: react-select shows the first page of ~250 countries, and a
+# model handed "the options" picked from Afghanistan–Cambodia (Wikimedia, dry walk 10-01:
+# "country of residence → Afghanistan"). These are typed from the profile instead.
+_COUNTRY_Q = re.compile(r"\bcountry\b|\bcountries\b|\bnation\b", re.I)
+_STATE_Q = re.compile(r"\bstate\b|\bprovince\b", re.I)
+
+
+def long_list_fact(label: str, profile: dict) -> list[str]:
+    """What to type into a dropdown whose list we cannot see whole — ways of writing the
+    same fact, most likely first. [] = no fact for this field: leave it for the person."""
+    from modules.employer_answers import is_us
+    from modules.job_location import parse_user_location
+
+    if _COUNTRY_Q.search(label or ""):
+        return ["United States", "USA"] if is_us(profile.get("country")) else []
+    if _STATE_Q.search(label or ""):
+        home = parse_user_location(f"x, {profile.get('state') or ''}")
+        return [s.title() for s in (home.get("state_name"),) if s]
+    return []
+
+
+def pick_from_long_list(query: str, options: list[str]) -> str | None:
+    """The filtered option that IS the typed fact: equal text, else — for a country —
+    the plain long form, never a territory that merely starts the same way."""
+    want = _squash(query)
+    exact = [o for o in options if _squash(o) == want]
+    if exact:
+        return exact[0]
+    if want in ("united states", "usa"):
+        return next(
+            (
+                o
+                for o in options
+                if _squash(o) in ("united states of america", "usa", "us", "u s", "u s a")
+            ),
+            None,
+        )
+    return None
+
+
 def answer(
     label: str, job: dict, profile: dict, options: list[str] | None = None, numeric: bool = False
 ) -> str:
     """The night shift's ONE way to answer a form question.
 
-    Profile facts first (pay, website), then the shared answerer. `numeric` is for inputs
+    What we KNOW first (pay, website, where the application came from, where the person
+    lives), then the shared answerer in its unattended mode. `numeric` is for inputs
     that accept digits only — Ashby's "How many years…" is `type=number`, and the prose
     the answerer returns ("About 5 years, spanning…") cannot be typed into it at all.
     """
@@ -422,7 +545,17 @@ def answer(
     # give, repeated the LinkedIn URL the form had already been given one field above.
     if not options and _WEBSITE_Q.search(label) and not _LINKEDIN_Q.search(label):
         return str(profile.get("portfolio_url") or "").strip()
-    reply = answer_screener_question(label, job=job, profile=profile, options=options)
+    if _SOURCE_Q.search(label):
+        return source_answer(options)
+    where = residence_answer(label, profile, options)
+    if where is not None:
+        return where
+    # Nobody reads a night-shift answer before the employer does: the answerer runs in
+    # its unattended mode, where a question about the person's circumstances that the
+    # résumé and the profile do not settle comes back empty instead of argued.
+    reply = answer_screener_question(
+        label, job=job, profile=profile, options=options, unattended=True
+    )
     # The net under pay_question: a pay phrasing it did not recognise still reached the
     # model, and a money figure in the reply is one the user never gave.
     invented_pay = (

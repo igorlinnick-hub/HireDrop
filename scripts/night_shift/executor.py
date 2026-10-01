@@ -49,6 +49,8 @@ from common import (  # noqa: E402
     is_knockout,
     is_opt_in,
     log,
+    long_list_fact,
+    pick_from_long_list,
     pick_typeahead,
     same_value,
     typeahead_kind,
@@ -588,24 +590,26 @@ async def choose(
     log(f"  ▾ {label[:60]} → {settled or option}{note}")
 
 
-async def fill_typeahead(page, box, kind: str, profile: dict) -> str:
-    """Type the profile's fact into a search-fed react-select and take the option that
-    IS that fact. Returns what the widget holds afterwards, "" = left empty.
+async def type_and_pick(page, box, queries: list[str], pick) -> str:
+    """Type a known fact into a search-fed (or merely too-long) react-select and take the
+    option `pick(query, options)` names. Returns what the widget holds afterwards, "" =
+    left empty.
     """
     box_id = (await box.get_attribute("id")) or ""
     # Scoped by the input's id, like every other dropdown here. The caller's locator is
-    # no use: it was resolved while the menu was still empty.
+    # no use: it was resolved before anything was typed.
     opts = (
         page.locator(f'[id^="react-select-{box_id}-option"]')
         if box_id
         else page.locator('[class*="select__menu"] [class*="select__option"]')
     )
-    for query in typeahead_queries(kind, profile):
+    for query in queries:
         # Nothing is chosen yet at this point, so emptying the input is safe — after a
         # choice it would clear it (see close_menu).
         await box.fill("")
         await box.type(query, delay=35)
-        # The options arrive from a search request; wait for rows, not for a timer.
+        # The options arrive from a search request (or a client-side filter); wait for
+        # rows, not for a timer.
         texts: list[str] = []
         for _ in range(12):
             await page.wait_for_timeout(500)
@@ -615,18 +619,29 @@ async def fill_typeahead(page, box, kind: str, profile: dict) -> str:
             ]
             if any(texts):
                 break
-        target = pick_typeahead(kind, query, [t for t in texts if t], profile)
+        shown = [t for t in texts if t]
+        target = pick(query, shown)
         if not target:
             continue
         await opts.nth(texts.index(target)).click(timeout=8000)
         await page.wait_for_timeout(300)
         # Same read-back rule as every other dropdown here: report the field, not intent.
         settled = await held_value(box)
-        if same_value(target, settled, [t for t in texts if t]):
+        if same_value(target, settled, shown):
             await close_menu(page)
             return settled
     await close_menu(page)
     return ""
+
+
+async def fill_typeahead(page, box, kind: str, profile: dict) -> str:
+    """The profile's fact for a school / city search box (see common.typeahead_*)."""
+    return await type_and_pick(
+        page,
+        box,
+        typeahead_queries(kind, profile),
+        lambda query, shown: pick_typeahead(kind, query, shown, profile),
+    )
 
 
 async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
@@ -756,6 +771,21 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
                     log(f"  ⌕ {label[:60]} → {settled}")
                 else:
                     _miss(missed, label, optional)
+                continue
+
+            # A LIST TOO LONG TO READ. Only the first forty rows were read above; asked to
+            # "choose the best option", the model chose among Afghanistan–Cambodia for a
+            # country of residence. Such a list is typed into from the profile, or left.
+            if await opts.count() >= 40:
+                queries = long_list_fact(label, profile)
+                settled = (
+                    await type_and_pick(page, box, queries, pick_from_long_list) if queries else ""
+                )
+                if settled:
+                    log(f"  ⌕ {label[:60]} → {settled}")
+                else:
+                    _miss(missed, label, optional)
+                    await close_menu(page)
                 continue
 
             if not texts:

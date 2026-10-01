@@ -175,10 +175,32 @@ _DECLINES = re.compile(
 )
 
 
+# A signature typed into a box: "I certify that the information in this application is
+# true and complete" with the name underneath. Wikimedia's form got "Igor Linnik" there —
+# a signature its owner never made.
+_SIGNS_Q = re.compile(
+    r"\bi (?:hereby )?certify\b|\bsignature\b|\bsign (?:here|below)\b"
+    r"|\btype (?:your )?(?:full |legal )?name\b",
+    re.I,
+)
+# The same attestation hidden in the ANSWERS: "Which of the following best describes
+# you?" → "I am a human being" (Grafana Labs, dry walk 10-01). The question is innocent;
+# the options are the declaration.
+_HUMAN_OPTION = re.compile(
+    r"\bi am (?:a |an )?(?:human|real person|robot|bot|ai\b|automated)|human being"
+    r"|\b(?:not|am) (?:a |an )?(?:ro)?bot\b|artificial intelligence|automated (?:bot|tool|system)",
+    re.I,
+)
+
+
 def _only_the_person(question: str, options: list[str]) -> str | None:
-    """ "" to refuse, the list's own "prefer not to say" for pronouns, or None when the
-    question is not one of these and normal handling should continue."""
+    """Empty string to refuse, the list's own "prefer not to say" for pronouns, or None
+    when the question is not one of these and normal handling should continue."""
     if _ATTESTS_HUMAN_Q.search(question) or _SAYS_OWN_NAME_Q.search(question):
+        return ""
+    if any(_HUMAN_OPTION.search(o) for o in options):
+        return ""
+    if not options and _SIGNS_Q.search(question):
         return ""
     if _PRONOUNS_Q.search(question):
         return next((o for o in options if _DECLINES.search(o)), "")
@@ -264,11 +286,59 @@ copied verbatim with no extra text. When two options are both defensible, pick t
 more favorable to the candidate."""
 
 
-def answer_screener_question(question, job=None, profile=None, options=None):
+# UNATTENDED = nobody reads the answer before the employer does (the night shift). The
+# standing rule — "answer in the candidate's favor wherever the résumé makes it
+# defensible" — was written for screeners about EXPERIENCE. Left alone with a whole form,
+# the same model also answered for the person's circumstances, which no résumé states:
+# dry walks 09-30/10-01 had it say "Yes" to "located on the West Coast?" for someone in
+# Hawaii, "LinkedIn" to "how did you hear about us?", and "Yes" to in-person attendance
+# three thousand miles away. In this mode such questions come back UNKNOWN (→ "", the
+# field stays blank and a required one hands the form to the person).
+_UNATTENDED_RULES = """
+
+UNATTENDED MODE — nobody will review this answer before the employer reads it.
+Experience, skills and motivation questions are answered as above. But reply with exactly \
+UNKNOWN (that one word, nothing else — also instead of picking an option) when the question \
+is about the candidate's own circumstances and neither the résumé nor the FACTS ON FILE \
+state the answer:
+- where they live, or whether they are in / near a given city, region, coast or time zone
+- how they heard about the job or the company
+- what they are willing or available to do: travel, relocate, attend an office, work a \
+schedule or shift, a start date, a notice period
+- memberships, affiliations, whether they know or were referred by someone, whether they \
+have applied or interviewed here before
+- facts about themselves they are asked to certify, declare or sign
+Never stretch a fact to fit the question: Hawaii is not "the West Coast", a remote job \
+search is not a promise to attend an office.
+Two things are NOT unknown: acknowledging that a notice or a process has been read \
+(privacy notice, background check, interview steps) — answer those; and whether the \
+candidate has worked for THIS company before — the résumé's work history answers it \
+(not listed there = no).
+UNKNOWN is a good answer: the form goes back to the person, who can answer truthfully."""
+
+
+def _facts_on_file(profile: dict) -> str:
+    """What the user told us about their circumstances, for the unattended prompt — so a
+    location question is answered from where they live, not from a guess."""
+    home = ", ".join(str(profile.get(k) or "").strip() for k in ("city", "state") if profile.get(k))
+    lines = [
+        f"Lives in: {home}" if home else "",
+        f"Country of residence: {profile.get('country')}" if profile.get("country") else "",
+        f"Searching for jobs in: {profile.get('location')}" if profile.get("location") else "",
+        f"Work arrangement asked for: {profile.get('work_setting')}"
+        if profile.get("work_setting")
+        else "",
+    ]
+    return "\n".join(line for line in lines if line)
+
+
+def answer_screener_question(question, job=None, profile=None, options=None, unattended=False):
     """Return a string answer for one screener question.
 
     options: list[str] for dropdown/radio questions → return one option verbatim.
              None/empty for open text → return a short generated answer.
+    unattended: no human will see the answer before it is sent (see _UNATTENDED_RULES);
+             questions about the person's circumstances then come back "".
     Returns "" when no API key (caller then skips the field).
     """
     if not ANTHROPIC_API_KEY:
@@ -337,18 +407,23 @@ Candidate background (from resume):
         prompt += (
             "\n\nStated by the candidate directly (same standing as the resume):\n" + confirmed
         )
+    if unattended:
+        prompt += "\n\nFACTS ON FILE:\n" + (_facts_on_file(profile) or "(none)")
 
     try:
         client = get_anthropic_client()
         message = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=256,
-            system=_system_prompt(),
+            system=_system_prompt() + (_UNATTENDED_RULES if unattended else ""),
             messages=[{"role": "user", "content": prompt}],
         )
         answer = (message.content[0].text or "").strip()
     except Exception as e:
         print(f"[answer_question] AI generation failed: {e}")
+        return ""
+
+    if unattended and re.match(r"\W*unknown\b", answer, re.I):
         return ""
 
     # For multiple choice, snap the model's answer back to a real option in case it
