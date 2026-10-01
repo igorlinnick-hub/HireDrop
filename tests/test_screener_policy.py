@@ -308,7 +308,8 @@ def test_unattended_mode_turns_unknown_into_no_answer_and_shows_the_facts():
 
     out, system, prompt = ask("UNKNOWN", unattended=True)
     assert out == ""
-    assert "UNATTENDED MODE" in system and "Lives in: Honolulu, HI" in prompt
+    assert "UNATTENDED MODE" in system
+    assert "Lives in (and works from, when the job is remote): Honolulu, HI" in prompt
     assert ask("Yes", unattended=True)[0] == "Yes"
     # The extension's path is untouched: same rules, same prompt as before.
     out, system, prompt = ask("Yes")

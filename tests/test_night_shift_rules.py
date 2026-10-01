@@ -547,6 +547,13 @@ def test_a_list_too_long_to_read_is_typed_into_from_the_profile():
         "USA",
     ]
     assert long_list_fact("In which state do you hold permanent residency?", HOME) == ["Hawaii"]
+    # Muck Rack's "Where do you currently live?" is a list of states on that form and
+    # may be countries on the next: both are tried, only an exact row is taken.
+    assert long_list_fact("Where do you currently live?", HOME) == [
+        "Hawaii",
+        "United States",
+        "USA",
+    ]
     # No fact for the field → nothing is typed and the model is not asked either.
     assert long_list_fact("Country", {"country": "Outside US"}) == []
     assert long_list_fact("Preferred office", HOME) == []

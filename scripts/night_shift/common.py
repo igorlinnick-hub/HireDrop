@@ -490,6 +490,9 @@ def residence_answer(label: str, profile: dict, options: list[str] | None) -> st
 # "country of residence → Afghanistan"). These are typed from the profile instead.
 _COUNTRY_Q = re.compile(r"\bcountry\b|\bcountries\b|\bnation\b", re.I)
 _STATE_Q = re.compile(r"\bstate\b|\bprovince\b", re.I)
+# "Where do you currently live?" over a long list: states on one form, countries on the
+# next. Both spellings of the answer are tried; only an exact row is ever taken.
+_LIVES_Q = re.compile(r"\bwhere do you (?:currently )?(?:live|reside)\b|\bresidence\b", re.I)
 
 
 def long_list_fact(label: str, profile: dict) -> list[str]:
@@ -500,9 +503,12 @@ def long_list_fact(label: str, profile: dict) -> list[str]:
 
     if _COUNTRY_Q.search(label or ""):
         return ["United States", "USA"] if is_us(profile.get("country")) else []
+    home = parse_user_location(f"x, {profile.get('state') or ''}")
+    state = [s.title() for s in (home.get("state_name"),) if s]
     if _STATE_Q.search(label or ""):
-        home = parse_user_location(f"x, {profile.get('state') or ''}")
-        return [s.title() for s in (home.get("state_name"),) if s]
+        return state
+    if _LIVES_Q.search(label or ""):
+        return state + (["United States", "USA"] if is_us(profile.get("country")) else [])
     return []
 
 

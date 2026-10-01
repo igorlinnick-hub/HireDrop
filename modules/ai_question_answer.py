@@ -321,8 +321,11 @@ def _facts_on_file(profile: dict) -> str:
     """What the user told us about their circumstances, for the unattended prompt — so a
     location question is answered from where they live, not from a guess."""
     home = ", ".join(str(profile.get(k) or "").strip() for k in ("city", "state") if profile.get(k))
+    if home and profile.get("postal_code"):
+        home += f" {str(profile['postal_code']).strip()}"
     lines = [
-        f"Lives in: {home}" if home else "",
+        # For a remote job this is also where they would work from.
+        f"Lives in (and works from, when the job is remote): {home}" if home else "",
         f"Country of residence: {profile.get('country')}" if profile.get("country") else "",
         f"Searching for jobs in: {profile.get('location')}" if profile.get("location") else "",
         f"Work arrangement asked for: {profile.get('work_setting')}"
