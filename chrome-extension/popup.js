@@ -467,6 +467,21 @@ $("btn-dash").addEventListener("click", () => {
   chrome.tabs.create({ url: CONFIG.DASHBOARD_URL + "/dashboard" });
 });
 
+// Edge pill (pill.js) can be hidden per site from its "−" chip; this is the way back.
+async function renderPillHidden() {
+  const { pillHiddenHosts } = await chrome.storage.local.get("pillHiddenHosts");
+  const list = Array.isArray(pillHiddenHosts) ? pillHiddenHosts : [];
+  $("pill-hidden").style.display = list.length ? "" : "none";
+  $("pill-hidden-hosts").textContent = list.map((h) => h.replace(/^www\./, "")).join(", ");
+}
+
+$("btn-pill-show").addEventListener("click", async () => {
+  await chrome.storage.local.set({ pillHiddenHosts: [] });
+  renderPillHidden();
+});
+
+renderPillHidden();
+
 // ---------------------------------------------------------------------------
 // Message listener — LOG, AUTH_EXPIRED, DETECTION_TRIPPED
 // ---------------------------------------------------------------------------
