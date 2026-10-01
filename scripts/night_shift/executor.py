@@ -1,4 +1,4 @@
-"""Night-shift MVP: server-side Greenhouse apply, one job at a time.
+"""Night shift: server-side apply on Greenhouse and Ashby, for when the user's machine sleeps.
 
 WHY THIS EXISTS (decision 2026-09-21..23): the extension can only apply while the
 user's machine is awake — measured 09-23: an "overnight" browser run found 3 discovered
@@ -23,6 +23,10 @@ RULES BAKED IN:
 
 Usage (from jobflow/, venv active, SUPABASE_* + ANTHROPIC_API_KEY exported):
   python scripts/night_shift/executor.py --user <uuid> [--job-url URL] [--live] [--headful]
+                                         [--platform greenhouse|ashby|all] [--max N]
+
+`--max N` is how many applications ONE run may send (default 1). The walk ends earlier
+when the cap is reached or three submits in a row are refused (walk_verdict).
 """
 
 import argparse
@@ -32,15 +36,30 @@ import os
 import re
 import sys
 import tempfile
+from collections import Counter
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 
 import ashby  # noqa: E402
 import httpx  # noqa: E402
-from common import _DECLINE_OPT, _DEMOGRAPHIC_Q, is_knockout, log  # noqa: E402
+from common import (  # noqa: E402
+    _DECLINE_OPT,
+    _DEMOGRAPHIC_Q,
+    _NO_OPT,
+    _OPT_IN_Q,
+    is_knockout,
+    log,
+    pick_typeahead,
+    same_value,
+    typeahead_kind,
+    typeahead_queries,
+    walk_verdict,
+)
+from common import answer as night_answer  # noqa: E402
 from playwright.async_api import async_playwright  # noqa: E402
 
 from app.db import applications as apps_db  # noqa: E402
+from app.db import handbacks as handbacks_db  # noqa: E402
 from app.db import jobs as jobs_db  # noqa: E402
 from app.db import resume as resume_storage  # noqa: E402
 from app.db.client import get_supabase  # noqa: E402
@@ -49,11 +68,11 @@ from app.db.subscriptions import check_can_apply, increment_free_apps  # noqa: E
 from app.routers.jobs import fresh_enough, on_search_filter  # noqa: E402
 from modules.ai_cover_letter import generate_cover_letter  # noqa: E402
 from modules.ai_fit_judge import assess_fit  # noqa: E402
-from modules.ai_question_answer import answer_screener_question  # noqa: E402
 from modules.job_identity import job_identity, normalized_link  # noqa: E402
 from modules.job_location import (  # noqa: E402
     location_verdict,
     matches_work_setting,
+    names_foreign_country,
     parse_user_location,
 )
 
@@ -92,6 +111,12 @@ def pick_jobs(
             if r.get("platform") in platforms and (r.get("status") or "new") == "new"
         ]
         rows = [r for r in on_search_filter(rows, profile) if fresh_enough(r)]
+        # A job already handed back is WAITING ON THE PERSON. Without this the walk
+        # re-opens the same form every night, fills it to the same wall and stops there
+        # — live 09-30 the freshest fit was a DoorDash form two fields short, and it
+        # would have been the first pick of every run after it.
+        waiting = open_handback_keys(user_id)
+        rows = [r for r in rows if _job_key(r.get("link") or "") not in waiting]
     if not rows:
         raise SystemExit(f"no matching {'/'.join(platforms)} job in this user's pool")
     # Prefer GH-HOSTED apply pages (job-boards.greenhouse.io — the form lives right on
@@ -114,6 +139,55 @@ def pick_jobs(
         reverse=True,
     )
     return rows
+
+
+def _job_key(link: str) -> str:
+    return job_identity(link) or (normalized_link(link) or link)
+
+
+def open_handback_keys(user_id: str) -> set[str]:
+    try:
+        return {_job_key(h.get("url") or "") for h in handbacks_db.list_open(user_id, limit=100)}
+    except Exception as exc:  # noqa: BLE001 — worst case we meet the same wall once more
+        log(f"  ! hand-back lookup failed ({exc}) — walking without it")
+        return set()
+
+
+def record_handback(user_id: str, job: dict, platform: str, unfilled: list[str]) -> None:
+    """A required field with no honest answer is a QUESTION FOR THE PERSON, not a log line.
+
+    Until 09-30 this path only printed and exited: nothing reached History, the dashboard
+    never asked, and the 30-day hand-back measurement that decides which questions signup
+    asks (modules/employer_answers.py) could not see a field the night shift kept dying
+    on. Written exactly like the extension's hand-back — the durable row the dashboard
+    asks from, plus the tagged activity line `handback_stats` counts.
+    """
+    labels = [str(q)[:300] for q in unfilled][:12]
+    reason = "No answer on file for: " + ", ".join(labels[:6])
+    try:
+        handbacks_db.add(
+            user_id,
+            {
+                "job_title": job.get("title") or "",
+                "company": job.get("company") or "",
+                "url": job.get("link") or "",
+                "platform": platform,
+                "reason": reason,
+                "questions": labels,
+                "job_id": job.get("id"),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        # Said out loud: a swallowed failure here is how the hand-back table sat empty
+        # for six days (09-21 → 09-27) while every caller believed it was being written.
+        log(f"  ! hand-back NOT recorded ({str(exc).splitlines()[0][:120]})")
+    _note(
+        user_id,
+        "warn",
+        f"🌙 Night shift needs your hands [outcome=handback board={platform}]:"
+        f" {job.get('title')} @ {job.get('company', '?')} — {reason}.",
+        {"type": "handback", "platform": platform, "unfilled": labels},
+    )
 
 
 def download_resume(user_id: str, profile: dict) -> str:
@@ -284,15 +358,16 @@ async def fill_greenhouse(
                     "e => [...e.options].map(o => o.textContent.trim())"
                     ".filter(t => t && !/^select/i.test(t))"
                 )
-            answer = answer_screener_question(
+            answer = night_answer(
                 label,
-                job={
+                {
                     "title": job.get("title"),
                     "company": job.get("company"),
                     "description": job.get("description") or "",
                 },
-                profile=profile,
-                options=options or None,
+                profile,
+                options or None,
+                numeric=typ == "number",
             )
             if not answer:
                 if required:
@@ -422,6 +497,113 @@ async def fill_cover_letter(page, form, profile: dict, job: dict) -> str:
     return typed
 
 
+# What a react-select actually HOLDS. The chosen value is rendered inside the control as a
+# sibling of the input's own container, so the old `closest('div[class*=select]')` stopped
+# at `select__input-container` and found nothing — on every Greenhouse dropdown, always.
+# Measured on the live DoorDash form 09-30: "already answered" never fired and the
+# read-back after each click returned "", so the log printed the answer we MEANT.
+_HELD_JS = (
+    "e => { const c = e.closest('[class*=\"select__control\"]')"
+    " || e.closest('div[class*=select]');"
+    " const v = c && c.querySelector('[class*=\"single-value\"], [class*=singleValue]');"
+    " return v ? v.textContent.trim() : ''; }"
+)
+
+
+async def held_value(box) -> str:
+    with contextlib.suppress(Exception):
+        return (await box.evaluate(_HELD_JS)) or ""
+    return ""
+
+
+async def close_menu(page) -> None:
+    """Escape — but ONLY while a menu is open. On a closed react-select the same key (and
+    an emptied input) clears the value that was just chosen: live 09-30 a correctly
+    picked "Honolulu, Hawaii, United States" was wiped by its own clean-up."""
+    with contextlib.suppress(Exception):
+        if await page.locator('[class*="select__menu"]').count():
+            await page.keyboard.press("Escape")
+            await page.wait_for_timeout(150)
+
+
+def _miss(missed: list[str], label: str, optional: bool) -> None:
+    """An unanswered dropdown blocks the submit only where the form requires an answer.
+    Greenhouse marks its optional ones (`aria-required="false"` — School and Degree on
+    most forms); blank there is an honest application, not a hand-back."""
+    if optional:
+        log(f"  – {label[:60]}: left blank (optional, no answer on file)")
+    else:
+        missed.append(label)
+
+
+async def choose(
+    page,
+    box,
+    opts,
+    index: int,
+    option: str,
+    label: str,
+    note: str,
+    missed: list[str],
+    optional: bool,
+) -> None:
+    """Click the option at `index`, shut the menu, and log what the WIDGET now holds."""
+    await opts.nth(index).click(timeout=8000)
+    await page.wait_for_timeout(300)
+    # Leave no menu open behind us — the next combobox has to be clickable.
+    await close_menu(page)
+    # Clicking is not choosing, and a log line that reports our intent instead of the
+    # field's state is how a wrong answer reaches an employer looking correct in the
+    # transcript.
+    settled = await held_value(box)
+    if settled and not same_value(option, settled):
+        _miss(missed, label, optional)
+        log(f"  ! {label[:50]}: wanted {option[:30]!r}, widget holds {settled[:30]!r}")
+        return
+    log(f"  ▾ {label[:60]} → {settled or option}{note}")
+
+
+async def fill_typeahead(page, box, kind: str, profile: dict) -> str:
+    """Type the profile's fact into a search-fed react-select and take the option that
+    IS that fact. Returns what the widget holds afterwards, "" = left empty.
+    """
+    box_id = (await box.get_attribute("id")) or ""
+    # Scoped by the input's id, like every other dropdown here. The caller's locator is
+    # no use: it was resolved while the menu was still empty.
+    opts = (
+        page.locator(f'[id^="react-select-{box_id}-option"]')
+        if box_id
+        else page.locator('[class*="select__menu"] [class*="select__option"]')
+    )
+    for query in typeahead_queries(kind, profile):
+        # Nothing is chosen yet at this point, so emptying the input is safe — after a
+        # choice it would clear it (see close_menu).
+        await box.fill("")
+        await box.type(query, delay=35)
+        # The options arrive from a search request; wait for rows, not for a timer.
+        texts: list[str] = []
+        for _ in range(12):
+            await page.wait_for_timeout(500)
+            texts = [
+                re.sub(r"\s+", " ", (await opts.nth(j).inner_text()) or "").strip()
+                for j in range(min(await opts.count(), 40))
+            ]
+            if any(texts):
+                break
+        target = pick_typeahead(kind, query, [t for t in texts if t], profile)
+        if not target:
+            continue
+        await opts.nth(texts.index(target)).click(timeout=8000)
+        await page.wait_for_timeout(300)
+        # Same read-back rule as every other dropdown here: report the field, not intent.
+        settled = await held_value(box)
+        if same_value(target, settled):
+            await close_menu(page)
+            return settled
+    await close_menu(page)
+    return ""
+
+
 async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
     """Greenhouse's required dropdowns are react-select comboboxes, not <select>.
 
@@ -436,6 +618,7 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
     for i in range(await boxes.count()):
         box = boxes.nth(i)
         label = ""
+        optional = False
         try:
             if not await box.is_visible():
                 continue
@@ -447,13 +630,11 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
             label = re.sub(r"\s+", " ", label or "").replace("*", "").strip()
             if not label:
                 continue
-            # Already answered? react-select renders the choice as singleValue text.
-            chosen = await box.evaluate(
-                "e => { const w = e.closest('div[class*=select]');"
-                " const v = w && w.querySelector('[class*=singleValue]');"
-                " return v ? v.textContent.trim() : ''; }"
-            )
-            if chosen:
+            # Only an explicit "false" is optional; a form that says nothing is treated
+            # as requiring the answer, which errs toward the hand-back.
+            optional = (await box.get_attribute("aria-required")) == "false"
+            # Already answered (Greenhouse's own resume autofill, or an earlier pass)?
+            if await held_value(box):
                 continue
 
             # Close whatever menu is still hanging open before touching this one.
@@ -462,10 +643,7 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
             # 30 seconds and gave up, and every question after it stayed blank. An open
             # menu is also why scoping matters below: two menus open at once means the
             # page-wide option locator reads someone else's answers.
-            with contextlib.suppress(Exception):
-                if await page.locator('[class*="select__menu"]').count():
-                    await page.keyboard.press("Escape")
-                    await page.wait_for_timeout(200)
+            await close_menu(page)
 
             await box.click(timeout=8000)
             await page.wait_for_timeout(600)
@@ -506,31 +684,70 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
             if texts and _DEMOGRAPHIC_Q.search(label):
                 decline = next((t for t in texts if _DECLINE_OPT.search(t)), None)
                 if decline:
-                    await opts.nth(pairs[texts.index(decline)][0]).click(timeout=8000)
-                    await page.wait_for_timeout(250)
-                    with contextlib.suppress(Exception):
-                        if await page.locator('[class*="select__menu"]').count():
-                            await page.keyboard.press("Escape")
-                    log(f"  ▾ {label[:50]} → {decline[:40]} (declined on purpose)")
+                    await choose(
+                        page,
+                        box,
+                        opts,
+                        pairs[texts.index(decline)][0],
+                        decline,
+                        label,
+                        " (declined on purpose)",
+                        missed,
+                        optional,
+                    )
                     continue
 
-            if not texts:
-                missed.append(label)
-                await page.keyboard.press("Escape")
+            # AN OPT-IN IS NOT A QUESTION ABOUT THE CANDIDATE. "May we text you?" is the
+            # board asking for a channel, and nothing about the application depends on
+            # it — the extension has always answered No (content.js, the SMS rule). Here
+            # the model answered instead: live 09-30 it opted Igor into SMS and WhatsApp
+            # messages from an employer, a consent he was never asked for.
+            if texts and _OPT_IN_Q.search(label):
+                no = next((t for t in texts if _NO_OPT.match(t)), None)
+                if no:
+                    await choose(
+                        page,
+                        box,
+                        opts,
+                        pairs[texts.index(no)][0],
+                        no,
+                        label,
+                        " (opt-in declined)",
+                        missed,
+                        optional,
+                    )
+                    continue
+
+            # A SEARCH BOX, NOT A LIST: the fact comes from the profile and is typed in.
+            # School always (its menu opens on an arbitrary first page of thousands);
+            # location only when the menu opened empty — a fixed list of offices is an
+            # ordinary question for the answerer below.
+            kind = typeahead_kind(label)
+            if kind == "school" or (kind == "location" and not texts):
+                settled = await fill_typeahead(page, box, kind, profile)
+                if settled:
+                    log(f"  ⌕ {label[:60]} → {settled}")
+                else:
+                    _miss(missed, label, optional)
                 continue
-            answer = answer_screener_question(
+
+            if not texts:
+                _miss(missed, label, optional)
+                await close_menu(page)
+                continue
+            answer = night_answer(
                 label,
-                job={
+                {
                     "title": job.get("title"),
                     "company": job.get("company"),
                     "description": job.get("description") or "",
                 },
-                profile=profile,
-                options=texts,
+                profile,
+                texts,
             )
             if not answer:
-                missed.append(label)
-                await page.keyboard.press("Escape")
+                _miss(missed, label, optional)
+                await close_menu(page)
                 continue
             # The answerer returns one option verbatim; fall back to the closest match
             # rather than typing free text into a closed list.
@@ -540,31 +757,12 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
                 else next((t for t in texts if answer.lower() in t.lower()), None)
             )
             if not target:
-                missed.append(label)
-                await page.keyboard.press("Escape")
+                _miss(missed, label, optional)
+                await close_menu(page)
                 continue
-            await opts.nth(pairs[texts.index(target)][0]).click(timeout=8000)
-            await page.wait_for_timeout(300)
-            # Leave no menu open behind us — the next combobox has to be clickable.
-            with contextlib.suppress(Exception):
-                if await page.locator('[class*="select__menu"]').count():
-                    await page.keyboard.press("Escape")
-                    await page.wait_for_timeout(150)
-            # Read back what the widget actually holds — clicking is not choosing, and a
-            # log line that reports our intent instead of the field's state is how a wrong
-            # answer reaches an employer looking correct in the transcript.
-            settled = ""
-            with contextlib.suppress(Exception):
-                settled = await box.evaluate(
-                    "e => { const w = e.closest('div[class*=select]');"
-                    " const v = w && w.querySelector('[class*=singleValue]');"
-                    " return v ? v.textContent.trim() : ''; }"
-                )
-            if settled and target.lower() not in settled.lower():
-                missed.append(label)
-                log(f"  ! {label[:50]}: wanted {target[:30]!r}, widget holds {settled[:30]!r}")
-                continue
-            log(f"  ▾ {label[:60]} → {settled or target}")
+            await choose(
+                page, box, opts, pairs[texts.index(target)][0], target, label, "", missed, optional
+            )
         except Exception as exc:  # noqa: BLE001
             # A combobox that blew up is UNANSWERED, and the pre-submit gate has to hear
             # about it: the Amplitude run swallowed nine failures and still offered the
@@ -572,10 +770,9 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
             # question below it.
             short = str(exc).split("\n")[0][:90]
             log(f"  ! combobox #{i} failed: {short}")
-            with contextlib.suppress(Exception):
-                await page.keyboard.press("Escape")
+            await close_menu(page)
             if label:
-                missed.append(label)
+                _miss(missed, label, optional)
     return missed
 
 
@@ -700,9 +897,170 @@ async def submit_outcome(page, form, watch: "SubmitWatch | None" = None) -> tupl
     )
 
 
+# Page-loads a walk may spend per application it is allowed to send.
+WALK_PER_SUBMIT = 40
+
+
+def _note(user_id: str, level: str, message: str, metadata: dict | None = None) -> None:
+    """One night-shift line in the user's activity log. Never raises: the application
+    either went or it did not, and a logging failure must not change which."""
+    with contextlib.suppress(Exception):
+        get_supabase().table("activity_log").insert(
+            {
+                "user_id": user_id,
+                "level": level,
+                "phase": "night-shift",
+                "message": message,
+                "metadata_json": metadata or {},
+            }
+        ).execute()
+
+
+async def apply_one(
+    page, form, job: dict, profile: dict, user_id: str, resume_path: str, live: bool
+) -> str:
+    """Fill ONE live form and — in live mode — send it. Returns the outcome word.
+
+    Live: `sent`, `knockout`, `handback`, `no_submit`, `capped`, or the board's refusal
+    (`invalid` | `captcha_code` | `flagged` | `unknown`). Dry-run never clicks Submit and
+    answers what a live run WOULD have done up to that click: `dry` (ready to send),
+    `knockout` or `handback`.
+    """
+    platform = job.get("platform") or "greenhouse"
+    if platform == "ashby":
+        unfilled, letter, knocked = await ashby.fill(page, form, profile, job, resume_path)
+    else:
+        unfilled, letter = await fill_greenhouse(page, form, profile, job, resume_path)
+        knocked = await knockout_answers(form)
+
+    # KNOCKOUT: the form asked a hard requirement and our honest answer was "no".
+    # Sending anyway spends a daily slot on a guaranteed rejection and tells the
+    # employer we did not read their posting. Live 09-26 (Igor): an SF hybrid role
+    # asked "are you currently located in the Bay Area and able to work from our
+    # office?", the honest answer was No — and the run was about to submit.
+    if knocked:
+        log(f"KNOCKOUT — the form's own requirement rules this candidate out: {knocked[0]}")
+        if live:
+            _note(
+                user_id,
+                "info",
+                f"🌙 Night shift stood down [outcome=knockout]: {job['title']}"
+                f" @ {job.get('company', '?')} — {knocked[0]}",
+            )
+            return "knockout"
+
+    shot = os.path.join(SHOTS, f"{job['id']}-filled.png")
+    await page.screenshot(path=shot, full_page=True)
+    log(f"screenshot: {shot}")
+
+    if unfilled:
+        log(f"required-but-empty: {unfilled}")
+        if live and REQUIRED_EMPTY_IS_FATAL:
+            record_handback(user_id, job, platform, unfilled)
+            log(
+                "LIVE ABORTED — a required field has no honest answer (handed back to"
+                " the user, not guessed)."
+            )
+            return "handback"
+
+    if not live:
+        log("dry-run complete — nothing submitted.")
+        return "knockout" if knocked else "handback" if unfilled else "dry"
+
+    submit = (
+        form.locator(ashby.SUBMIT)
+        if platform == "ashby"
+        else form.locator('button[type="submit"], button:has-text("Submit application")')
+    )
+    if not await submit.count():
+        log("LIVE ABORTED — no submit button found")
+        return "no_submit"
+
+    # THE CAP IS THE BACKEND'S, AND THIS PATH HAS TO ASK IT TOO.
+    # Until now the night shift wrote `applications` rows straight through the
+    # service_role client, so the only real gate in the product — check_can_apply
+    # behind POST /applications/save, which counts today's rows and 429s the 31st —
+    # never saw a server-side submit. One writer obeyed the 30/day, 15/platform,
+    # free-taste and expired-subscription limits; the other did not know they existed.
+    # Asked HERE, immediately before the click: the answer must be as fresh as
+    # possible, since the extension may have been applying on the user's machine
+    # while this walk was reading forms.
+    gate = check_can_apply(user_id, platform, profile.get("email"))
+    if not gate.get("allowed"):
+        log(f"LIVE ABORTED — cap reached: {gate.get('reason')}")
+        _note(
+            user_id,
+            "info",
+            f"🌙 Night shift stood down [outcome=capped]: {gate.get('reason')}"
+            f" ({gate.get('used_today')}/{gate.get('daily_limit')} today).",
+        )
+        return "capped"
+    watch = SubmitWatch()
+    watch.attach(page)  # armed BEFORE the click — the verdict rides the submit XHR
+    await submit.first.click()
+    judge = ashby.submit_outcome if platform == "ashby" else submit_outcome
+    confirmed, why, outcome = await judge(page, form, watch)
+    await page.screenshot(path=os.path.join(SHOTS, f"{job['id']}-after-submit.png"), full_page=True)
+    log(f"submit outcome: {outcome.upper()} — {why} | http {watch.status} | {page.url}")
+
+    if not confirmed:
+        # NOT SENT is not a weaker kind of applied — it is a hand-back. Live 09-23
+        # recorded a Zocdoc application the employer never received (three required
+        # comboboxes were empty, the page simply re-rendered with validation errors)
+        # because the old detector matched the word "submitted" in the button label.
+        # A row written without proof of sending makes silent failure look like work.
+        #
+        # The outcome word is machine-countable on purpose: `outcome=captcha_code`
+        # per hundred submits IS the reputation metric (P2), and `outcome=invalid`
+        # separates our own filling bugs from Greenhouse's judgement of us.
+        _note(
+            user_id,
+            "warn",
+            f"🌙 Night shift could NOT send [outcome={outcome} http={watch.status} board={platform}]:"
+            f" {job['title']} @ {job.get('company', '?')} — {why}."
+            " Nothing recorded as applied.",
+        )
+        return outcome if outcome != "sent" else "unknown"
+
+    status = "applied"
+    jobs_db.mark_applied_by_link(user_id, job["link"], status)
+    apps_db.save_application(
+        user_id=user_id,
+        job_id=job["id"],
+        cover_letter=letter,
+        status=status,
+        job_title=job["title"],
+        company=job.get("company") or "",
+        platform=platform,
+        job_url=job["link"],
+    )
+    # The lifetime free-taste counter lives beside the daily cap and is advanced by
+    # POST /applications/save, which this path bypasses. Without this a free user's
+    # night submits would never count toward FREE_APP_LIMIT — the gate would stay
+    # open forever for exactly the applications nobody is watching.
+    if gate.get("tier") == "free":
+        with contextlib.suppress(Exception):
+            increment_free_apps(user_id)
+    _note(
+        user_id,
+        "info",
+        f"🌙 Night shift applied (server) [outcome=sent http={watch.status} board={platform}]:"
+        f" {job['title']} @ {job.get('company', '?')} [{status}]",
+    )
+    log("recorded: applications + jobs status + activity line")
+    return "sent"
+
+
 async def run(
-    user_id: str, job_url: str | None, live: bool, headful: bool, platforms: tuple = PLATFORMS
-) -> None:
+    user_id: str,
+    job_url: str | None,
+    live: bool,
+    headful: bool,
+    platforms: tuple = PLATFORMS,
+    max_jobs: int = 1,
+) -> list[str]:
+    """Walk the candidates and apply to up to `max_jobs` of them. Returns one outcome
+    word per form that was actually filled (see apply_one)."""
     profile = get_profile(user_id)
     # Email lives in Supabase auth, not profiles (same gap content.js patches from the JWT).
     if not profile.get("email"):
@@ -720,11 +1078,14 @@ async def run(
                 " Pick it on the dashboard, then run again."
             )
         log("! work setting not chosen — dry-run continues as 'any'; --live would refuse")
+    max_jobs = max(1, max_jobs)
     candidates = pick_jobs(user_id, job_url, profile, platforms)
     user_loc = parse_user_location(profile.get("location") or "")
     resume_path = download_resume(user_id, profile)
-    log(f"resume: {resume_path} | candidates: {len(candidates)}")
+    log(f"resume: {resume_path} | candidates: {len(candidates)} | to send: up to {max_jobs}")
 
+    outcomes: list[str] = []
+    capped: set[str] = set()
     os.makedirs(SHOTS, exist_ok=True)
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=not headful)
@@ -737,12 +1098,24 @@ async def run(
         )
         page = await ctx.new_page()
 
-        job = form = None
-        for cand in candidates[:40]:  # bounded walk — this is a one-job MVP, not a sweep
-            is_ashby = cand.get("platform") == "ashby"
+        # Bounded walk: a night may send `max_jobs`, and may not open the whole pool
+        # looking for them.
+        for cand in candidates[: WALK_PER_SUBMIT * max_jobs]:
+            platform = cand.get("platform") or "greenhouse"
+            is_ashby = platform == "ashby"
+            if platform in capped:
+                continue
+            # US ONLY, AND THE TITLE CAN SAY OTHERWISE. "Influencer Marketing Coordinator
+            # (Canada)" sits in the pool with the location "Remote", which the country
+            # gate reads as fine. Dry-run 09-30: the form asked "Are you legally
+            # authorized to work in Canada?" and the answer on its way out was Yes.
+            if not job_url and names_foreign_country(cand.get("title") or ""):
+                log(f"skip (title names another country): {cand['title']}")
+                continue
             url = ashby.application_url(cand["link"]) if is_ashby else cand["link"]
             log(
-                f"try: [{cand.get('platform')}] {cand['title']} @ {cand.get('company', '?')}\n     {url}"
+                f"try: [{cand.get('platform')}] {cand['title']} @ {cand.get('company', '?')}"
+                f" — {cand.get('location') or 'no location'}\n     {url}"
             )
             try:
                 await page.goto(url, wait_until="domcontentloaded", timeout=45000)
@@ -815,163 +1188,35 @@ async def run(
                 log(f"  skip (fit {fit.get('fit_score')}): {str(fit.get('reason') or '')[:80]}")
                 continue
             log(f"  fit {fit.get('fit_score')} — proceeding")
-            job = cand
-            break
-        if job is None:
-            log("no candidate with a live application form in this batch — nothing to do")
-            await browser.close()
-            return
 
-        platform = job.get("platform") or "greenhouse"
-        if platform == "ashby":
-            unfilled, letter, knocked = await ashby.fill(page, form, profile, job, resume_path)
-        else:
-            unfilled, letter = await fill_greenhouse(page, form, profile, job, resume_path)
-            knocked = await knockout_answers(form)
-
-        # KNOCKOUT: the form asked a hard requirement and our honest answer was "no".
-        # Sending anyway spends a daily slot on a guaranteed rejection and tells the
-        # employer we did not read their posting. Live 09-26 (Igor): an SF hybrid role
-        # asked "are you currently located in the Bay Area and able to work from our
-        # office?", the honest answer was No — and the run was about to submit.
-        if knocked:
-            log(f"KNOCKOUT — the form's own requirement rules this candidate out: {knocked[0]}")
-            if live:
-                with contextlib.suppress(Exception):
-                    get_supabase().table("activity_log").insert(
-                        {
-                            "user_id": user_id,
-                            "level": "info",
-                            "phase": "night-shift",
-                            "message": (
-                                f"🌙 Night shift stood down [outcome=knockout]: {job['title']}"
-                                f" @ {job.get('company', '?')} — {knocked[0]}"
-                            ),
-                        }
-                    ).execute()
-                await browser.close()
-                return
-
-        shot = os.path.join(SHOTS, f"{job['id']}-filled.png")
-        await page.screenshot(path=shot, full_page=True)
-        log(f"screenshot: {shot}")
-
-        if unfilled:
-            log(f"required-but-empty: {unfilled}")
-            if live and REQUIRED_EMPTY_IS_FATAL:
+            try:
+                outcome = await apply_one(page, form, cand, profile, user_id, resume_path, live)
+            except Exception as exc:  # noqa: BLE001 — one broken form must not end the night
+                outcome = "error"
                 log(
-                    "LIVE ABORTED — a required field has no honest answer (hand-back, not a guess)."
+                    f"  ! this form broke the filler ({str(exc).splitlines()[0][:120]}) — moving on"
                 )
-                await browser.close()
-                return
-
-        if not live:
-            log("dry-run complete — nothing submitted.")
-            await browser.close()
-            return
-
-        submit = (
-            form.locator(ashby.SUBMIT)
-            if platform == "ashby"
-            else form.locator('button[type="submit"], button:has-text("Submit application")')
-        )
-        if not await submit.count():
-            log("LIVE ABORTED — no submit button found")
-            await browser.close()
-            return
-
-        # THE CAP IS THE BACKEND'S, AND THIS PATH HAS TO ASK IT TOO.
-        # Until now the night shift wrote `applications` rows straight through the
-        # service_role client, so the only real gate in the product — check_can_apply
-        # behind POST /applications/save, which counts today's rows and 429s the 31st —
-        # never saw a server-side submit. One writer obeyed the 30/day, 15/platform,
-        # free-taste and expired-subscription limits; the other did not know they existed.
-        # Asked HERE, immediately before the click: the answer must be as fresh as
-        # possible, since the extension may have been applying on the user's machine
-        # while this walk was reading forms.
-        gate = check_can_apply(user_id, platform, profile.get("email"))
-        if not gate.get("allowed"):
-            log(f"LIVE ABORTED — cap reached: {gate.get('reason')}")
+            outcomes.append(outcome)
+            log(f"outcome={outcome} [{len(outcomes)}] {cand['title']} @ {cand.get('company', '?')}")
+            if outcome == "capped":
+                capped.add(platform)
+            stop = walk_verdict(outcomes, max_jobs, capped, platforms)
+            if stop:
+                log(f"walk stops: {stop}")
+                break
+            # A fresh page per form: no half-filled inputs, listeners or leave-page
+            # prompts carried from one employer's application into the next.
             with contextlib.suppress(Exception):
-                get_supabase().table("activity_log").insert(
-                    {
-                        "user_id": user_id,
-                        "level": "info",
-                        "phase": "night-shift",
-                        "message": (
-                            f"🌙 Night shift stood down [outcome=capped]: {gate.get('reason')}"
-                            f" ({gate.get('used_today')}/{gate.get('daily_limit')} today)."
-                        ),
-                    }
-                ).execute()
-            await browser.close()
-            return
-        watch = SubmitWatch()
-        watch.attach(page)  # armed BEFORE the click — the verdict rides the submit XHR
-        await submit.first.click()
-        judge = ashby.submit_outcome if platform == "ashby" else submit_outcome
-        confirmed, why, outcome = await judge(page, form, watch)
-        await page.screenshot(
-            path=os.path.join(SHOTS, f"{job['id']}-after-submit.png"), full_page=True
-        )
-        log(f"submit outcome: {outcome.upper()} — {why} | http {watch.status} | {page.url}")
+                await page.close()
+            page = await ctx.new_page()
 
-        if not confirmed:
-            # NOT SENT is not a weaker kind of applied — it is a hand-back. Live 09-23
-            # recorded a Zocdoc application the employer never received (three required
-            # comboboxes were empty, the page simply re-rendered with validation errors)
-            # because the old detector matched the word "submitted" in the button label.
-            # A row written without proof of sending makes silent failure look like work.
-            get_supabase().table("activity_log").insert(
-                {
-                    "user_id": user_id,
-                    "level": "warn",
-                    "phase": "night-shift",
-                    # The outcome word is machine-countable on purpose: `outcome=captcha_code`
-                    # per hundred submits IS the reputation metric (P2), and `outcome=invalid`
-                    # separates our own filling bugs from Greenhouse's judgement of us.
-                    "message": (
-                        f"🌙 Night shift could NOT send [outcome={outcome} http={watch.status} board={platform}]:"
-                        f" {job['title']} @ {job.get('company', '?')} — {why}."
-                        " Nothing recorded as applied."
-                    ),
-                }
-            ).execute()
-            await browser.close()
-            return
-
-        status = "applied"
-        jobs_db.mark_applied_by_link(user_id, job["link"], status)
-        apps_db.save_application(
-            user_id=user_id,
-            job_id=job["id"],
-            cover_letter=letter,
-            status=status,
-            job_title=job["title"],
-            company=job.get("company") or "",
-            platform=platform,
-            job_url=job["link"],
-        )
-        # The lifetime free-taste counter lives beside the daily cap and is advanced by
-        # POST /applications/save, which this path bypasses. Without this a free user's
-        # night submits would never count toward FREE_APP_LIMIT — the gate would stay
-        # open forever for exactly the applications nobody is watching.
-        if gate.get("tier") == "free":
-            with contextlib.suppress(Exception):
-                increment_free_apps(user_id)
-        get_supabase().table("activity_log").insert(
-            {
-                "user_id": user_id,
-                "level": "info",
-                "phase": "night-shift",
-                "message": (
-                    f"🌙 Night shift applied (server) [outcome=sent http={watch.status} board={platform}]:"
-                    f" {job['title']} @ {job.get('company', '?')} [{status}]"
-                ),
-            }
-        ).execute()
-        log("recorded: applications + jobs status + activity line")
+        if not outcomes:
+            log("no candidate with a live application form in this batch — nothing to do")
+        else:
+            tally = ", ".join(f"{k}={n}" for k, n in Counter(outcomes).most_common())
+            log(f"walk finished: {len(outcomes)} form(s) — {tally}")
         await browser.close()
+    return outcomes
 
 
 if __name__ == "__main__":
@@ -981,6 +1226,12 @@ if __name__ == "__main__":
     ap.add_argument("--live", action="store_true")
     ap.add_argument("--headful", action="store_true")
     ap.add_argument("--platform", choices=[*PLATFORMS, "all"], default="all")
+    ap.add_argument(
+        "--max",
+        type=int,
+        default=1,
+        help="applications this run may send (dry-run: forms it may fill). Default 1.",
+    )
     args = ap.parse_args()
     boards = PLATFORMS if args.platform == "all" else (args.platform,)
-    asyncio.run(run(args.user, args.job_url, args.live, args.headful, boards))
+    asyncio.run(run(args.user, args.job_url, args.live, args.headful, boards, args.max))

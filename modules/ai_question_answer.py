@@ -60,6 +60,16 @@ def _status_from_profile(question: str, profile: dict, options: list[str]) -> st
     if not (is_sponsor or is_auth):
         return None
 
+    # BOTH PROFILE FLAGS ARE ABOUT THE UNITED STATES. A question that names another
+    # country and never the US is a different question, and the US answer is not an
+    # answer to it. Dry-run 09-30: "Are you legally authorized to work in Canada?" →
+    # Yes, off `work_authorized_us`, on a "(Canada)" role that had reached a US-only
+    # queue. That is a false statement about someone's legal status; refuse instead.
+    from modules.job_location import names_foreign_country
+
+    if names_foreign_country(question):
+        return ""
+
     # Sponsorship wins when a question mentions both ("are you authorized to work
     # without sponsorship?"): the sponsorship field is the more specific fact.
     flag = profile.get("needs_sponsorship") if is_sponsor else profile.get("work_authorized_us")
@@ -75,6 +85,26 @@ def _status_from_profile(question: str, profile: dict, options: list[str]) -> st
     # GitLab's sponsorship dropdown lists seven visa types, all starting "Yes, …", and
     # picking one would be inventing WHICH visa the person needs. Hand it back instead.
     return matches[0] if len(matches) == 1 else ""
+
+
+def _confirmed_facts(profile: dict) -> str:
+    """Education the candidate stated themselves (signup answers), for the prompt.
+
+    The résumé is not the only thing the candidate has told us. A résumé with no
+    education section used to leave the model two bad choices on a "Degree" dropdown:
+    invent one, or refuse a question the person had in fact already answered. What they
+    confirmed in the employer-answers form has the same standing as a résumé line — and
+    "no college degree" is itself such a statement.
+    """
+    if profile.get("no_degree"):
+        return "The candidate has no college degree."
+    school = str(profile.get("school") or "").strip()
+    degree = str(profile.get("degree") or "").strip()
+    return "\n".join(
+        line
+        for line in (f"School: {school}" if school else "", f"Degree: {degree}" if degree else "")
+        if line
+    )
 
 
 def _system_prompt() -> str:
@@ -199,6 +229,11 @@ Company: {job.get("company", "")}
 Candidate name: {name or "the applicant"}
 Candidate background (from resume):
 {resume_text if resume_text else "Not provided."}"""
+    confirmed = _confirmed_facts(profile)
+    if confirmed:
+        prompt += (
+            "\n\nStated by the candidate directly (same standing as the resume):\n" + confirmed
+        )
 
     try:
         client = get_anthropic_client()

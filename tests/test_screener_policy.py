@@ -128,3 +128,42 @@ def test_non_status_questions_are_untouched():
         "What is your notice period?",
     ):
         assert _status_from_profile(q, {}, ["Yes", "No"]) is None, q
+
+
+def test_work_status_for_another_country_is_refused_not_answered_from_the_us_flag():
+    """Live 09-30: "(Canada)" role, US-only profile, and the answer going out was Yes."""
+    from modules.ai_question_answer import _status_from_profile
+
+    profile = {"work_authorized_us": True, "needs_sponsorship": False}
+    opts = ["Yes", "No"]
+    assert (
+        _status_from_profile("Are you legally authorized to work in Canada?", profile, opts) == ""
+    )
+    assert (
+        _status_from_profile("Do you require visa sponsorship to work in the UK?", profile, opts)
+        == ""
+    )
+    # The US question, and one that names no country at all, are answered as before.
+    assert (
+        _status_from_profile(
+            "Are you legally authorized to work in the United States?", profile, opts
+        )
+        == "Yes"
+    )
+    assert (
+        _status_from_profile(
+            "Will you now or in the future require sponsorship for employment visa status?",
+            profile,
+            opts,
+        )
+        == "No"
+    )
+    # A US question that mentions other countries only as visa examples stays a US question.
+    assert (
+        _status_from_profile(
+            "Are you authorized to work in the US without sponsorship (e.g. TN for Canada/Mexico)?",
+            profile,
+            opts,
+        )
+        == "No"
+    )

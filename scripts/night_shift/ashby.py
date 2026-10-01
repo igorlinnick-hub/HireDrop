@@ -22,9 +22,9 @@ import contextlib
 import re
 
 from common import _DECLINE_OPT, _DEMOGRAPHIC_Q, is_knockout, log
+from common import answer as night_answer
 
 from modules.ai_cover_letter import generate_cover_letter
-from modules.ai_question_answer import answer_screener_question
 
 ENTRY = "[data-field-path]"
 SUBMIT = "button.ashby-application-form-submit-button, button:has-text('Submit Application')"
@@ -117,9 +117,7 @@ async def fill(page, form, profile: dict, job: dict, resume_path: str):
             if await yesno.count():
                 if await entry.locator('[aria-pressed="true"]').count():
                     continue
-                answer = answer_screener_question(
-                    label, job=_job_ctx(job), profile=profile, options=["Yes", "No"]
-                )
+                answer = night_answer(label, _job_ctx(job), profile, ["Yes", "No"])
                 pick = (answer or "").strip().lower()
                 if pick not in ("yes", "no"):
                     if required:
@@ -148,9 +146,7 @@ async def fill(page, form, profile: dict, job: dict, resume_path: str):
                     # Declined on principle, never inferred from a CV (same as GH).
                     choice = next((o for o in opts if _DECLINE_OPT.search(o)), None)
                 else:
-                    choice = answer_screener_question(
-                        label, job=_job_ctx(job), profile=profile, options=opts
-                    )
+                    choice = night_answer(label, _job_ctx(job), profile, opts)
                 if not choice or choice not in opts:
                     if required:
                         unfilled.append(label)
@@ -176,7 +172,7 @@ async def fill(page, form, profile: dict, job: dict, resume_path: str):
                         (profile.get("location") or "").split(",")[0].strip()
                     )
                 else:
-                    query = answer_screener_question(label, job=_job_ctx(job), profile=profile)
+                    query = night_answer(label, _job_ctx(job), profile)
                 picked = await _pick_option(page, combo.first, query)
                 if picked:
                     log(f"  · {label[:60]} → {picked[:60]}")
@@ -238,7 +234,7 @@ async def fill(page, form, profile: dict, job: dict, resume_path: str):
             if not value:
                 if (await box.input_value()).strip():
                     continue  # résumé autofill already answered it
-                value = answer_screener_question(label, job=_job_ctx(job), profile=profile)
+                value = night_answer(label, _job_ctx(job), profile, numeric=typ == "number")
                 if value and " " not in value.strip():
                     value = value.strip().rstrip(".")
             if not value:

@@ -81,6 +81,18 @@ def test_editing_the_profile_retires_the_answer():
     assert base != reuploaded
 
 
+def test_education_answers_retire_the_answer_but_their_absence_changes_nothing():
+    """The degree the user confirmed reaches the prompt, so it must reach the key —
+    and a profile that never had one keeps the key it was cached under."""
+    base = screener_cache.build_key("Highest degree?", OPTIONS, PROFILE)
+    assert base == screener_cache.build_key(
+        "Highest degree?", OPTIONS, {**PROFILE, "school": "", "degree": "", "no_degree": False}
+    )
+    with_degree = screener_cache.build_key("Highest degree?", OPTIONS, {**PROFILE, "degree": "BS"})
+    none = screener_cache.build_key("Highest degree?", OPTIONS, {**PROFILE, "no_degree": True})
+    assert len({base, with_degree, none}) == 3
+
+
 # ------------------------------------------------------------------- endpoint
 
 

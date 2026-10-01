@@ -59,6 +59,16 @@ def build_key(question: str, options: list[str] | None, profile: dict) -> str | 
     options_norm = "\x1f".join(sorted(o.lower() for o in options))
     # Any profile edit that could change the right answer must retire the row.
     fingerprint = f"{profile.get('resume_url') or ''}|{profile.get('updated_at') or ''}"
+    # The education answers reach the prompt (ai_question_answer._confirmed_facts), so a
+    # change to them changes the right answer to "Degree?" — named here field by field
+    # rather than trusted to `updated_at`. Appended only when present: a profile without
+    # them keeps the key it already has, so shipping this retired nobody's cache.
+    education = "|".join(
+        [str(profile.get("school") or ""), str(profile.get("degree") or "")]
+        + (["no_degree"] if profile.get("no_degree") else [])
+    )
+    if education.strip("|"):
+        fingerprint += f"|{education}"
 
     digest = hashlib.sha256(
         f"{question_norm}\x1e{options_norm}\x1e{fingerprint}".encode()
