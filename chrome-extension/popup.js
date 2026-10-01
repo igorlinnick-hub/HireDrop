@@ -482,6 +482,29 @@ $("btn-pill-show").addEventListener("click", async () => {
 
 renderPillHidden();
 
+// Edge pill on every site — optional <all_urls> access (pill-everywhere.js). request() must
+// be the first thing the click does: it needs the user gesture, and Chrome's prompt usually
+// closes this popup, so the background registers the script on permissions.onAdded instead
+// of anything here running after the answer.
+const PILL_ALL = { origins: ["<all_urls>"] };
+
+async function renderPillEverywhere() {
+  let on = false;
+  try { on = await chrome.permissions.contains(PILL_ALL); } catch {}
+  $("pill-everywhere").style.display = "";
+  $("pill-everywhere-text").textContent = on ? "Edge pill on every site" : "Edge pill on job sites only";
+  $("btn-pill-everywhere").textContent = on ? "Job sites only" : "Show it on every site";
+  $("btn-pill-everywhere").dataset.on = on ? "1" : "";
+}
+
+$("btn-pill-everywhere").addEventListener("click", () => {
+  const on = $("btn-pill-everywhere").dataset.on === "1";
+  const ask = on ? chrome.permissions.remove(PILL_ALL) : chrome.permissions.request(PILL_ALL);
+  ask.catch(() => {}).finally(renderPillEverywhere);
+});
+
+renderPillEverywhere();
+
 // ---------------------------------------------------------------------------
 // Message listener — LOG, AUTH_EXPIRED, DETECTION_TRIPPED
 // ---------------------------------------------------------------------------
