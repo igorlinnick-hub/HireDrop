@@ -70,6 +70,15 @@ check("a lookalike host is covered (not a suffix match by accident)", covers("ht
 check("chrome:// is not", covers("chrome://extensions/"), false);
 check("garbage is not", covers("not a url"), false);
 
+// --- 4. the dashboard's "Tracking pop-up" switch ---------------------------------------
+
+const read = (f) => fs.readFileSync(path.join(__dirname, "..", f), "utf8");
+check("the Allow window exists", fs.existsSync(path.join(__dirname, "..", "pill-allow.html")), true);
+check("the Allow window asks for the same origins", read("pill-allow.js").includes('origins: ["<all_urls>"]'), true);
+check("ping.js bridges GET and SET", ["HIREDROP_GET_PILL_EVERYWHERE", "HIREDROP_SET_PILL_EVERYWHERE", "HIREDROP_PILL_EVERYWHERE"].every((t) => read("ping.js").includes(t)), true);
+check("background answers both", ['case "PILL_EVERYWHERE_STATE"', 'case "PILL_EVERYWHERE_SET"'].every((t) => read("background.js").includes(t)), true);
+check("no web_accessible_resources (pages can't probe the extension)", "web_accessible_resources" in manifest, false);
+
 if (failures) {
   console.error(`\n${failures} check(s) failed`);
   process.exit(1);
