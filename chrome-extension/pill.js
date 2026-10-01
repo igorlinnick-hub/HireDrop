@@ -246,10 +246,30 @@ function hdPillBoot() {
       hostEl.addEventListener(t, (e) => e.stopPropagation());
     }
     document.documentElement.appendChild(hostEl);
+
+    // Boards that render the whole document with React (job-boards.greenhouse.io) replace
+    // the <html> element itself about a second after load, and the pill goes with the old
+    // one. Watch the document (an <html> swap) and the current <html> (a child sweep), and
+    // put the same host back — state and shadow root intact. Capped so a page that keeps
+    // removing it doesn't get a tug-of-war.
+    let returns = 0;
+    let watchedHtml = null;
+    const keep = () => {
+      if (!el || el.hostEl !== hostEl) return;
+      const html = document.documentElement;
+      if (html && html !== watchedHtml) { watchedHtml = html; el.keeper.observe(html, { childList: true }); }
+      if (hostEl.isConnected || !html || returns >= 20) return;
+      returns += 1;
+      html.appendChild(hostEl);
+    };
+    el.keeper = new MutationObserver(keep);
+    el.keeper.observe(document, { childList: true });
+    keep();
   }
 
   function unmount() {
     if (!el) return;
+    if (el.keeper) el.keeper.disconnect();
     el.hostEl.remove();
     el = null;
   }
@@ -290,7 +310,8 @@ function hdPillBoot() {
     el.lbl.textContent = v.label;
     el.ico.innerHTML = ICONS[v.action] || "";
     el.bar.style.width = `${v.pct}%`;
-    el.fill.style.height = `${Math.max(5, Math.round(v.pct * 0.55))}px`;
+    // Nothing sent today = an empty handle; a sliver at 0 would claim progress that isn't there.
+    el.fill.style.height = v.done > 0 ? `${Math.max(5, Math.round(v.pct * 0.55))}px` : "0";
     el.handle.setAttribute("aria-label", `Open HireDrop — ${v.done}${v.cap ? ` of ${v.cap}` : ""} today, ${v.line}`);
   }
 

@@ -259,8 +259,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
     </div>
 
   <button class="dash-btn" id="btn-dash">Open Dashboard</button>
-  <div class="pill-hidden" id="pill-hidden" style="display:none">Edge pill hidden on <span id="pill-hidden-hosts"></span> · <button id="btn-pill-show">Show again</button></div>
 </div>
+
+<!-- Outside #body-main: a signed-out popup hides that block, and the way back must still show. -->
+<div class="pill-hidden" id="pill-hidden" style="display:none;padding:0 16px 14px">Edge pill hidden on <span id="pill-hidden-hosts"></span> · <button id="btn-pill-show">Show again</button></div>
 
 <script src="config.js"></script>
 <script src="popup.js"></script>
