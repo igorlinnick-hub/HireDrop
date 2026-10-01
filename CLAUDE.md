@@ -46,6 +46,13 @@ node --check chrome-extension/background.js   # ДО загрузки в Chrome 
 `/activity/handbacks` (админский разбор незаполненных полей, только открытые и с лимитом —
 агрегата за период он НЕ даёт).
 
+**Сравнить прогоны между собой — `scripts/run_history.py`.** `.venv/bin/python
+scripts/run_history.py --email <почта> [--days 14] [--gap-min 20]` режет лог на прогоны по
+паузам и по каждому зовёт ТОТ ЖЕ `activity.run_report()` (с `until`), так что «до» и «после»
+правки посчитаны одной формулой. 09-30, база до очереди с судьёй (Игорь, 11 прогонов
+09-20…09-29): 643 мин, открыто 223 → подано 34 = **18.9 мин/заявку, 3.2/ч, 15% открытых**;
+главные потери — fit gate и title mismatch. Отчёт не делит по платформам: Indeed и ATS вместе.
+
 **Реклама (траты, подключения) — `scripts/ads_spend.py`, вкладка Ads в админ-борде.**
 `.venv/bin/python scripts/ads_spend.py status` — что подключено (Meta spend / Meta CAPI /
 Google ingest), строк и последний синк по платформам; `sync-meta --days N` — стянуть Meta
