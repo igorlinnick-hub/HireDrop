@@ -1,7 +1,7 @@
 // HireDrop service worker
 // All API communication, campaign state, and tab management
 
-importScripts("config.js");
+importScripts("config.js", "pill-everywhere.js");
 
 // ---------------------------------------------------------------------------
 // Auth helpers
@@ -403,6 +403,7 @@ const DEFAULT_PER_PLATFORM = 20;
 const DEFAULT_DAILY_TOTAL = 30; // matches the paid (pro) auto cap; real value fetched at campaign start
 
 chrome.runtime.onInstalled.addListener(async () => {
+  hdPillEverywhereSync(); // an update may move the job-board list the pill excludes
   await chrome.storage.local.set({
     campaignRunning: false,
     campaignFilters: {},
@@ -455,6 +456,7 @@ function localDay() {
 }
 
 chrome.runtime.onStartup.addListener(async () => {
+  hdPillEverywhereSync();
   const data = await chrome.storage.local.get("todayDate");
   const today = localDay();
   if (data.todayDate !== today) {
@@ -526,6 +528,13 @@ chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
 // Top-level, not inside onInstalled/onStartup: chrome.runtime.reload() (DEV_RELOAD) fires
 // NEITHER of those, and that reload is precisely when tabs lose their bridge.
 healPingBridges();
+
+// Edge pill on every site (pill-everywhere.js). The popup asks for the optional access; the
+// grant can also come from — or be taken back in — chrome://extensions "Site access", so the
+// registration follows the permission events, not the popup. The popup usually closes when
+// Chrome's prompt opens, so nothing after its request() call can be relied on to run.
+chrome.permissions.onAdded.addListener(() => hdPillEverywhereSync({ injectOpenTabs: true }));
+chrome.permissions.onRemoved.addListener(() => hdPillEverywhereSync());
 
 // ---------------------------------------------------------------------------
 // Badge
