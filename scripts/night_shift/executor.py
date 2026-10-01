@@ -168,17 +168,30 @@ def open_handback_keys(user_id: str) -> set[str]:
         return set()
 
 
-def record_handback(user_id: str, job: dict, platform: str, unfilled: list[str]) -> None:
-    """A required field with no honest answer is a QUESTION FOR THE PERSON, not a log line.
+def record_handback(
+    user_id: str,
+    job: dict,
+    platform: str,
+    unfilled: list[str],
+    reason: str = "",
+    outcome: str = "handback",
+) -> None:
+    """A form the night shift could not finish is a JOB FOR THE PERSON, not a log line.
 
     Until 09-30 this path only printed and exited: nothing reached History, the dashboard
     never asked, and the 30-day hand-back measurement that decides which questions signup
     asks (modules/employer_answers.py) could not see a field the night shift kept dying
     on. Written exactly like the extension's hand-back — the durable row the dashboard
     asks from, plus the tagged activity line `handback_stats` counts.
+
+    Two ways in: required fields with no honest answer (`unfilled`), and a submit the
+    board did not accept (`reason`, with the board's own `outcome` word). Either way the
+    open row also keeps the walk from re-opening the same form tomorrow night
+    (pick_jobs) — which for a refused submit matters twice: Greenhouse's refusal comes
+    with a verification code emailed to the user, and a blind retry is one more email.
     """
     labels = [str(q)[:300] for q in unfilled][:12]
-    reason = "No answer on file for: " + ", ".join(labels[:6])
+    reason = reason or ("No answer on file for: " + ", ".join(labels[:6]))
     try:
         handbacks_db.add(
             user_id,
@@ -199,7 +212,7 @@ def record_handback(user_id: str, job: dict, platform: str, unfilled: list[str])
     _note(
         user_id,
         "warn",
-        f"🌙 Night shift needs your hands [outcome=handback board={platform}]:"
+        f"🌙 Night shift needs your hands [outcome={outcome} board={platform}]:"
         f" {job.get('title')} @ {job.get('company', '?')} — {reason}.",
         {"type": "handback", "platform": platform, "unfilled": labels},
     )
@@ -1013,9 +1026,19 @@ async def apply_one(
     watch = SubmitWatch()
     watch.attach(page)  # armed BEFORE the click — the verdict rides the submit XHR
     await submit.first.click()
-    judge = ashby.submit_outcome if platform == "ashby" else submit_outcome
-    confirmed, why, outcome = await judge(page, form, watch)
-    await page.screenshot(path=os.path.join(SHOTS, f"{job['id']}-after-submit.png"), full_page=True)
+    # FROM HERE THE APPLICATION MAY ALREADY BE WITH THE EMPLOYER. Anything that goes wrong
+    # while reading the result must not leave the job looking untouched: the next walk
+    # would open it and send a second one. So a crash past this line is a hand-back too.
+    try:
+        judge = ashby.submit_outcome if platform == "ashby" else submit_outcome
+        confirmed, why, outcome = await judge(page, form, watch)
+        with contextlib.suppress(Exception):
+            await page.screenshot(
+                path=os.path.join(SHOTS, f"{job['id']}-after-submit.png"), full_page=True
+            )
+    except Exception as exc:  # noqa: BLE001
+        confirmed, outcome = False, "unknown"
+        why = f"Submit was clicked, but the result could not be read ({str(exc).splitlines()[0][:80]})"
     log(f"submit outcome: {outcome.upper()} — {why} | http {watch.status} | {page.url}")
 
     if not confirmed:
@@ -1028,14 +1051,19 @@ async def apply_one(
         # The outcome word is machine-countable on purpose: `outcome=captcha_code`
         # per hundred submits IS the reputation metric (P2), and `outcome=invalid`
         # separates our own filling bugs from Greenhouse's judgement of us.
-        _note(
+        outcome = outcome if outcome != "sent" else "unknown"
+        record_handback(
             user_id,
-            "warn",
-            f"🌙 Night shift could NOT send [outcome={outcome} http={watch.status} board={platform}]:"
-            f" {job['title']} @ {job.get('company', '?')} — {why}."
-            " Nothing recorded as applied.",
+            job,
+            platform,
+            [],
+            reason=(
+                f"We could not confirm this one was sent [http={watch.status}]: {why}."
+                " Nothing is recorded as applied — check your inbox, then finish it by hand"
+            ),
+            outcome=outcome,
         )
-        return outcome if outcome != "sent" else "unknown"
+        return outcome
 
     status = "applied"
     jobs_db.mark_applied_by_link(user_id, job["link"], status)
