@@ -61,5 +61,11 @@
 ## Следующий шаг
 
 Игорь: выбрать Work setting на дашборде → живая подача
-(`--live`; автоподбор теперь идёт по поиску, первой будет свежая remote-роль, не Twilio)
-и прислать вывод: строка `outcome=` — первая точка метрики `428`.
+(`--live`; автоподбор идёт по поиску, GH + Ashby) и прислать вывод: строка `outcome=` —
+первая точка метрики `428`. Затем: где живёт исполнитель (Railway-воркер с Playwright,
+токен уже есть) → автопереключение день↔ночь.
+
+Файлы лейна: `scripts/night_shift/{executor,ashby,common}.py`,
+`modules/job_location.py` (work setting), `app/routers/jobs.py` (`on_search_filter`).
+Смежное за заход: `modules/ai_question_answer.py` (#272), `modules/ai_cover_letter.py` (#275),
+US-only (#274) — см. `cover-letter.md`. Начинать следующую сессию моделью **Opus**.
