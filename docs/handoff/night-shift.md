@@ -48,3 +48,7 @@
 .venv/bin/python scripts/night_shift/executor.py --user a0775013-fdb1-4b1f-a7cd-06c01e78f6b3
 --platform greenhouse --live --max 5` — ждём до 4 `outcome=sent` (или `captcha_code` = первая
 точка метрики 428). Следующую сессию начинать моделью **Opus**.
+
+Файлы лейна: `scripts/night_shift/{executor,common,ashby}.py`, `modules/ai_question_answer.py`
+(отказы + `unattended`), `modules/job_location.py` (регионы), `app/db/{applications,handbacks}.py`,
+тесты `tests/test_night_shift_{rules,walk}.py`, `tests/test_screener_policy.py`.

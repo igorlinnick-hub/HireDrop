@@ -48,3 +48,9 @@ Education + Salary expectation в Settings, `/preview/answers` (`?dark=1`).
 
 Игорь смотрит `/preview/answers` (день и `?dark=1`) на превью #228 и говорит «мержи» — после
 мержа отвечает на три вопроса при первом Start. Следующую сессию начинать моделью **Opus**.
+
+Файлы: бэкенд — `modules/employer_answers.py`, `modules/ai_resume_facts.py`,
+`app/routers/{profile,campaign}.py`, `app/db/{profile,campaign}.py`; сайт (ветка
+`feat/answers-at-signup`) — `components/dashboard/EmployerAnswersForm.tsx`,
+`components/onboarding/{StepEmployerAnswers,OnboardingWizard}.tsx`, `lib/employerAnswers*.ts`,
+`lib/onboarding/steps.ts`, `app/preview/answers/`.
