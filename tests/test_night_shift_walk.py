@@ -31,6 +31,7 @@ except ImportError:  # pragma: no cover — CI
 import executor  # noqa: E402
 
 USER = "user-1"
+REAL = object()  # "do not fake the application history — let the real reader run"
 PROFILE = {
     "name": "Igor",
     "last_name": "L",
@@ -166,6 +167,7 @@ class Walk:
         self.handbacks.append((job["id"], outcome))
 
     def run(self, max_jobs=1, live=True):
+        real_history = self._history is REAL
         history = self._history if self._history is not None else (lambda *_a, **_k: [])
         with (
             patch.object(executor, "get_profile", return_value=dict(PROFILE)),
@@ -191,7 +193,15 @@ class Walk:
             patch.object(executor, "record_handback", side_effect=self._handback),
             patch.object(executor, "_note"),
             patch.object(executor.os, "makedirs"),
-            patch.object(executor.apps_db, "applied_job_urls", side_effect=history),
+            patch.object(
+                executor.apps_db,
+                "applied_job_urls",
+                **(
+                    {"wraps": executor.apps_db.applied_job_urls}
+                    if real_history
+                    else {"side_effect": history}
+                ),
+            ),
             patch.object(
                 executor.apps_db, "save_application", side_effect=self._save or self._default_save
             ),
@@ -268,6 +278,18 @@ def test_one_posting_under_two_spellings_is_one_application():
     assert not any("boards.greenhouse.io/acme/jobs/8095311?gh_jid" in url for url in walk.clicks)
 
 
+def test_a_posting_whose_submit_was_not_confirmed_is_not_tried_again_under_its_other_spelling():
+    """The case that matters: the first click MAY have gone through. Its twin, two rows
+    later in the pool, must not get a second one."""
+
+    async def judge(_page, _form, _watch):
+        return False, "no proof of sending (form still on screen, http 200)", "unknown"
+
+    walk = Walk(_jobs(4, twin=True), judge=judge)
+    walk.run(max_jobs=5)
+    assert sum("8095311" in url for url in walk.clicks) == 1
+
+
 def test_a_posting_already_in_the_history_is_skipped():
     walk = Walk(
         _jobs(3),
@@ -283,12 +305,15 @@ def test_a_live_walk_refuses_to_start_when_the_history_cannot_be_read():
     def boom(*_a, **_k):
         raise RuntimeError("upstream connect error / 503")
 
-    walk = Walk(_jobs(3), history=boom)
-    with pytest.raises(SystemExit, match="LIVE REFUSED"):
-        walk.run(max_jobs=2)
-    assert walk.clicks == []
-    # A dry-run may go on without it: it sends nothing.
-    assert Walk(_jobs(2), history=boom).run(max_jobs=1, live=False) == ["dry"]
+    # The REAL applied_job_urls runs here, over a read that fails underneath it: by
+    # default it swallows that and answers [] — which is exactly what must not happen.
+    walk = Walk(_jobs(3), history=REAL)
+    with patch("app.db.applications.fetch_paged", side_effect=boom):
+        with pytest.raises(SystemExit, match="LIVE REFUSED"):
+            walk.run(max_jobs=2)
+        assert walk.clicks == []
+        # A dry-run may go on without it: it sends nothing.
+        assert Walk(_jobs(2), history=REAL).run(max_jobs=1, live=False) == ["dry"]
 
 
 def test_a_sent_application_that_could_not_be_saved_is_still_one_application():
