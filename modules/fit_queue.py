@@ -13,8 +13,9 @@ This module moves the verdict up front for the postings the server can read whol
 
   * judge_pending() judges the rows that have no verdict for the CURRENT profile version
     (ai_fit_judge.verdict_version) and stores score + reason on the row;
-  * build_queue() turns verdicts into the queue: below the user's bar is out, "ideal"
-    (>= 70) on top, then the rest of what clears the bar, freshest first inside each band;
+  * build_queue() turns verdicts into the queue: below the user's bar is out, everything
+    else in ONE order — the freshest posting first (Igor, 09-30: the score is a gate, not a
+    rank; the list, auto and tap all go top to bottom in that order);
   * the company cap (Igor, 09-30): at most 2 applications to one company per 60 days,
     counting applications already sent AND what the queue itself would send.
 
@@ -30,7 +31,6 @@ import time
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-IDEAL_SCORE = 70
 COMPANY_CAP = 2
 COMPANY_WINDOW_DAYS = 60
 
@@ -208,32 +208,26 @@ def build_queue(
 ) -> dict:
     """Order already-judged rows into the queue the user sees and the run applies in.
 
-    Below the bar is out — "средними не добиваем". Ideal (>= IDEAL_SCORE and >= bar) on
-    top, then the rest above the bar; inside each band the freshest posting first. Rows
-    still unjudged follow for the live judge to decide. The company cap
-    runs over that final order, so the queue never sends a third application to an
-    employer — whether the first two went out last month or sit above it in this list.
+    Below the bar is out — "средними не добиваем". Everything else goes in ONE order, the
+    freshest posting first: the score decides whether a posting is in the list, never where
+    (Igor, 09-30 — until then "ideal >= 70" rode on top, and a week-old 80 sat above this
+    morning's 65 that is likelier to still be open). Rows without a verdict for this profile
+    (judge down, Indeed — not prejudged yet) take the same freshness order; the live judge
+    decides them at apply time, as before. The company cap runs over that final order, so
+    the queue never sends a third application to an employer — whether the first two went
+    out last month or sit above it in this list.
     """
-    passing, unjudged, below_bar = [], [], 0
+    kept_rows, below_bar = [], 0
     for row in rows:
-        if not has_current_verdict(row, version):
-            unjudged.append(row)
-        elif (row.get("fit_score") or 0) >= bar:
-            passing.append(row)
-        else:
+        if has_current_verdict(row, version) and (row.get("fit_score") or 0) < bar:
             below_bar += 1
-
-    ideal_at = max(IDEAL_SCORE, bar)
-    passing.sort(key=_freshness, reverse=True)
-    passing.sort(key=lambda r: 0 if (r.get("fit_score") or 0) >= ideal_at else 1)  # stable
-    # The unjudged tail has no verdict yet, only the pool scorer's coarse 0-10 — still the
-    # best guess at which of them the live judge will pass, so it leads; date breaks ties.
-    unjudged.sort(key=_freshness, reverse=True)
-    unjudged.sort(key=lambda r: r.get("score") or 0, reverse=True)  # stable
+        else:
+            kept_rows.append(row)
+    kept_rows.sort(key=_freshness, reverse=True)
 
     sent = Counter(company_key(c) for c in applied_companies if company_key(c))
     kept, company_capped = [], 0
-    for row in passing + unjudged:
+    for row in kept_rows:
         key = company_key(row.get("company"))
         if key and sent[key] >= COMPANY_CAP:
             company_capped += 1
