@@ -4,7 +4,8 @@ Why these tests exist: until 09-30 the fit judge ran inside the run, one posting
 time, and its verdict was thrown away. A 30-minute run opened 25 postings and applied to
 none (09-22). modules/fit_queue.py moves the verdict up front; what has to hold:
 
-  * the queue holds only what cleared the user's bar, ideal first, freshest first;
+  * the queue holds only what cleared the user's bar, freshest first — the score is a gate,
+    not a rank (Igor, 09-30);
   * a judge outage leaves rows UNJUDGED (live judge decides them), never stored as 0;
   * a stored verdict is only reused for the profile it was judged against;
   * at most 2 applications per company per 60 days, history and queue counted together.
@@ -73,40 +74,43 @@ def test_a_prompt_change_retires_every_stored_verdict():
 # --- ordering -----------------------------------------------------------------------------
 
 
-def test_ideal_first_then_the_rest_freshest_first_and_below_bar_out():
+def test_freshest_first_whatever_the_score_and_below_bar_out():
+    """Igor, 09-30: the score decides IN or OUT, never the position. A week-old 82 used to
+    sit above this morning's 60 — the one likelier to still be open."""
     rows = [
         _row("old-ideal", score=82, age=5),
         _row("new-good", score=60, age=0),
         _row("newer-ideal", score=75, age=1),
         _row("below", score=40, age=0),
-        _row("stale-version", score=90, version="v-old", age=0),
+        _row("stale-version", score=90, version="v-old", age=3),
         _row("never-judged", age=2),
     ]
     out = build_queue(rows, V, bar=55, applied_companies=[], limit=30)
     assert [r["id"] for r in out["jobs"]] == [
-        "newer-ideal",
-        "old-ideal",
         "new-good",
-        "stale-version",  # unjudged for THIS profile → tail, freshest first
-        "never-judged",
+        "newer-ideal",
+        "never-judged",  # unjudged for THIS profile → same freshness order, live judge decides
+        "stale-version",
+        "old-ideal",
     ]
     assert out["below_bar"] == 1
     assert out["passing"] == 3
     assert out["unjudged"] == 2
 
 
-def test_ideal_is_never_below_the_users_own_bar():
-    # precise (bar 70): a 70 is the bar itself, still "ideal" only from max(70, bar)
-    rows = [_row("a", score=72, age=3), _row("b", score=95, age=0)]
-    out = build_queue(rows, V, bar=70, applied_companies=[], limit=30)
-    assert [r["id"] for r in out["jobs"]] == ["b", "a"]
+def test_a_stale_verdict_below_the_bar_does_not_drop_the_row():
+    # Judged 40 against an OLD resume — that verdict is about someone else; re-judge, keep.
+    rows = [_row("a", score=40, version="v-old")]
+    out = build_queue(rows, V, bar=55, applied_companies=[], limit=30)
+    assert [r["id"] for r in out["jobs"]] == ["a"]
+    assert out["below_bar"] == 0
 
 
-def test_the_limit_cuts_the_tail_not_the_top():
-    rows = [_row(str(i), score=60 + i, age=i) for i in range(5)]
+def test_the_limit_cuts_the_oldest_not_the_lowest():
+    rows = [_row(str(i), score=95 - i * 10, age=4 - i) for i in range(5)]
     out = build_queue(rows, V, bar=55, applied_companies=[], limit=2)
-    # 60–64 are one band (none ideal), so freshness decides: age 0 and age 1.
-    assert [r["id"] for r in out["jobs"]] == ["0", "1"]
+    # "4" scores 55 and "3" 65 — the two freshest, so they lead over the 95 from four days ago.
+    assert [r["id"] for r in out["jobs"]] == ["4", "3"]
 
 
 # --- company cap ------------------------------------------------------------------------
@@ -120,10 +124,11 @@ def test_two_per_company_counting_what_was_already_sent():
 
 
 def test_two_per_company_inside_the_queue_itself():
-    rows = [_row(f"dd{i}", score=80, age=i, company="DoorDash") for i in range(4)]
+    rows = [_row(f"dd{i}", score=80, age=i + 1, company="DoorDash") for i in range(4)]
     rows.append(_row("other", score=60, age=0))
     out = build_queue(rows, V, bar=55, applied_companies=[], limit=30)
-    assert [r["id"] for r in out["jobs"]] == ["dd0", "dd1", "other"]
+    # The two FRESHEST DoorDash postings take the company's slots.
+    assert [r["id"] for r in out["jobs"]] == ["other", "dd0", "dd1"]
     assert out["company_capped"] == 2
 
 
@@ -261,7 +266,7 @@ def test_the_ats_queue_serves_the_prejudged_order():
         patch("app.db.applications.companies_applied_since", return_value=["DoorDash", "DoorDash"]),
     ):
         out = jobs_router.get_ats_queue(platform="greenhouse", user=_User())
-    assert [j["link"].rsplit("/", 1)[-1] for j in out["jobs"]] == ["older-ideal", "fresh-ok"]
+    assert [j["link"].rsplit("/", 1)[-1] for j in out["jobs"]] == ["fresh-ok", "older-ideal"]
     assert out["below_bar"] == 1
     assert out["company_capped"] == 1
     assert out["unjudged"] == 0

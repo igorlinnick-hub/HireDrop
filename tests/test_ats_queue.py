@@ -100,15 +100,16 @@ def test_only_applyable_rows_reach_the_queue():
     assert [j["link"] for j in _queue(pool, ["event manager"])["jobs"]] == ["https://x/live"]
 
 
-def test_cap_cuts_the_tail_best_fit_first():
+def test_cap_cuts_the_tail_freshest_first():
+    # The pool scorer's 0-10 no longer orders the queue (Igor, 09-30) — freshness does.
     pool = [
-        _row("Event Manager A", score=3, link="https://x/a"),
-        _row("Event Manager B", score=9, link="https://x/b"),
-        _row("Event Manager C", score=7, link="https://x/c"),
+        {**_row("Event Manager A", score=3, link="https://x/a"), "date_found": _days_ago(0)},
+        {**_row("Event Manager B", score=9, link="https://x/b"), "date_found": _days_ago(3)},
+        {**_row("Event Manager C", score=7, link="https://x/c"), "date_found": _days_ago(1)},
     ]
     out = _queue(pool, ["event manager"], limit=2)
 
-    assert [j["link"] for j in out["jobs"]] == ["https://x/b", "https://x/c"]
+    assert [j["link"] for j in out["jobs"]] == ["https://x/a", "https://x/c"]
     # pool/off_search describe the WHOLE pool, not the capped page.
     assert out["pool"] == 3
     assert out["off_search"] == 0

@@ -81,15 +81,34 @@ def test_only_swipeable_rows_reach_the_deck():
     assert out["off_search"] == 0
 
 
-def test_best_fit_first_with_the_fresher_posting_breaking_the_tie():
-    # score is a coarse 0-10, so whole bands tie; date is what separates a fresh posting
-    # from one nearing the deck's age cap.
-    old_tie = {**_row("AI Engineer", score=5, link="https://x/old"), "date_found": _days_ago(10)}
-    new_tie = {**_row("AI Engineer", score=5, link="https://x/new"), "date_found": _days_ago(1)}
-    best = _row("AI Engineer", score=9, link="https://x/best")
-    out = _deck([old_tie, new_tie, best], ["ai engineer"])
+def test_freshest_first_whatever_the_pool_score():
+    # Igor, 09-30: one order for the list, auto and tap — the freshest posting on top.
+    # The pool scorer's coarse 0-10 no longer ranks the deck.
+    old = {
+        **_row("AI Engineer", score=9, link="https://x/old"),
+        "company": "a",
+        "date_found": _days_ago(10),
+    }
+    new = {
+        **_row("AI Engineer", score=5, link="https://x/new"),
+        "company": "b",
+        "date_found": _days_ago(1),
+    }
+    mid = {**_row("AI Engineer", score=7, link="https://x/mid"), "company": "d"}
+    out = _deck([old, new, mid], ["ai engineer"])
 
-    assert [c["link"] for c in out["cards"]] == ["https://x/best", "https://x/new", "https://x/old"]
+    assert [c["link"] for c in out["cards"]] == ["https://x/new", "https://x/mid", "https://x/old"]
+
+
+def test_the_deck_keeps_two_per_company():
+    # Same build_queue() as the auto queue: a third posting from one employer is not offered.
+    rows = [
+        {**_row("AI Engineer", link=f"https://x/{i}"), "date_found": _days_ago(i)} for i in range(3)
+    ]
+    out = _deck(rows, ["ai engineer"])
+
+    assert [c["link"] for c in out["cards"]] == ["https://x/0", "https://x/1"]
+    assert out["company_capped"] == 1
 
 
 def test_the_deck_filters_with_the_same_rule_the_harvest_fills_with():

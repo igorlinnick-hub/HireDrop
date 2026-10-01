@@ -38,6 +38,15 @@ def _no_company_history_network():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _no_background_prejudge():
+    """The deck read starts a background judge pass when ATS rows lack a verdict
+    (app/routers/jobs.py::_prejudge_in_background). A thread outliving the test's patches
+    would read the real profile and pool. A test that cares patches it itself."""
+    with patch("app.routers.jobs._prejudge_in_background"):
+        yield
+
+
 @pytest.fixture
 def supabase_mock():
     """Replace the Supabase singleton with a MagicMock.

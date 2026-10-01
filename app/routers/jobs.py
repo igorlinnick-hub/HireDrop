@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import sys
 import threading
@@ -247,8 +249,8 @@ def get_ats_queue(platform: str, limit: int = 20, user=Depends(get_current_user)
     broken one (#113): the campaign logs "N of M" instead of a bare number.
 
     PREJUDGED since 09-30 (modules/fit_queue.py): the queue holds what the fit judge
-    already passed, in the order the user's list shows — ideal first, then the rest
-    above their bar, freshest first in each band — so the run opens postings it will
+    already passed, in the order the user's list shows — freshest first, the score is a
+    gate and not a rank (Igor, 09-30) — so the run opens postings it will
     apply to instead of opening 25 to skip 25. Rows without a verdict for the current
     profile are judged here within a short budget (the sweep pre-judges the rest in the
     background); whatever is still unjudged rides at the tail for the live judge, as
@@ -295,16 +297,19 @@ PREJUDGE_SECS = 150.0
 ATS_QUEUE_PLATFORMS = ("greenhouse", "lever", "ashby")
 
 
-def _ats_candidates(user_id: str, profile: dict, platform: str | None = None):
+def _ats_candidates(
+    user_id: str, profile: dict, platform: str | None = None, rows: list | None = None
+):
     """(pool, on_search, live) for the auto ATS walk — one platform, or all three.
 
     Age gate is the list's own DECK_MAX_AGE_DAYS (14): the queue and the list are one thing
-    now (daily-30, 09-30), and a posting older than that is outside both.
+    now (daily-30, 09-30), and a posting older than that is outside both. `rows` lets a
+    caller that already read the pool (the deck) skip a second paged read.
     """
     platforms = (platform,) if platform else ATS_QUEUE_PLATFORMS
     pool = [
         j
-        for j in jobs_db.get_jobs(user_id)
+        for j in (jobs_db.get_jobs(user_id) if rows is None else rows)
         if (j.get("status") or "new") == "new"
         and (j.get("link") or j.get("apply_url"))
         and j.get("platform") in platforms
@@ -316,7 +321,14 @@ def _ats_candidates(user_id: str, profile: dict, platform: str | None = None):
 
 
 def _prejudged_queue(
-    user_id: str, profile: dict, rows: list, *, limit: int, judge_calls: int, deadline_s: float
+    user_id: str,
+    profile: dict,
+    rows: list,
+    *,
+    limit: int,
+    judge_calls: int,
+    deadline_s: float,
+    version: str | None = None,
 ) -> dict:
     """Judge what is missing (bounded), then order the rows into the queue (fit_queue)."""
     from app.db import applications as apps_db
@@ -324,17 +336,21 @@ def _prejudged_queue(
     from modules.ai_fit_judge import mode_threshold, verdict_version
     from modules.fit_queue import COMPANY_WINDOW_DAYS, build_queue, judge_pending
 
-    resume_text = resume_text_for(profile)
-    version = verdict_version(profile, resume_text)
-    judge_pending(
-        user_id,
-        profile,
-        rows,
-        max_calls=judge_calls,
-        deadline_s=deadline_s,
-        resume_text=resume_text,
-        version=version,
-    )
+    # The resume is a storage read — skip it when the caller brought the version and
+    # asked for no judging (the deck's read).
+    if version is None or judge_calls > 0:
+        resume_text = resume_text_for(profile)
+        if version is None:
+            version = verdict_version(profile, resume_text)
+        judge_pending(
+            user_id,
+            profile,
+            rows,
+            max_calls=judge_calls,
+            deadline_s=deadline_s,
+            resume_text=resume_text,
+            version=version,
+        )
     try:
         applied = apps_db.companies_applied_since(user_id, COMPANY_WINDOW_DAYS)
     except Exception as e:  # noqa: BLE001 — in-list cap still holds; history read is best-effort
@@ -362,75 +378,141 @@ def prejudge_pool(user_id: str) -> int:
         return 0
 
 
+# A dashboard load after a resume edit finds every ATS row unjudged — judge them in the
+# background so the next read can say "N fit today". Throttled per user: the page polls,
+# and every pass re-reads the profile and the pool even when nothing is left to judge.
+_PREJUDGE_KICK_EVERY_S = 60.0
+_last_prejudge_kick: dict[str, float] = {}
+_prejudge_kick_lock = threading.Lock()
+
+
+def _prejudge_in_background(user_id: str) -> None:
+    now = time.monotonic()
+    with _prejudge_kick_lock:
+        if now - _last_prejudge_kick.get(user_id, -_PREJUDGE_KICK_EVERY_S) < _PREJUDGE_KICK_EVERY_S:
+            return
+        _last_prejudge_kick[user_id] = now
+    threading.Thread(target=prejudge_pool, args=(user_id,), daemon=True).start()
+
+
+# The deck is polled every 8 s and needs the verdict version, which hashes the resume
+# text — for an uploaded PDF that is a storage download + parse per poll. Cache the text
+# briefly, keyed by everything resume_text_for() reads, so an edit or re-upload under a
+# new path is seen at once; a same-path overwrite shows up within the TTL.
+_RESUME_TEXT_TTL_S = 120.0
+_resume_text_cache: dict[str, tuple[float, str]] = {}
+
+
+def _deck_resume_text(user_id: str, profile: dict) -> str:
+    from modules.ai_cover_letter import resume_text_for
+
+    key = "|".join(
+        (
+            user_id,
+            str(profile.get("resume_url") or ""),
+            str(profile.get("default_resume") or ""),
+            str(bool(profile.get("ats_approved"))),
+            hashlib.sha256(
+                json.dumps(profile.get("ats_structure"), sort_keys=True, default=str).encode()
+            ).hexdigest(),
+        )
+    )
+    now = time.monotonic()
+    hit = _resume_text_cache.get(key)
+    if hit and now - hit[0] < _RESUME_TEXT_TTL_S:
+        return hit[1]
+    text = resume_text_for(profile)
+    _resume_text_cache[key] = (now, text)
+    return text
+
+
+# The list the user sees: "N fit today" (daily-30, Igor 09-30). A ceiling, not a promise —
+# a welder's search may honestly hold 15, and the screen says 15 without "of 30".
+DAILY_LIST_SIZE = 30
+
+
 @router.get("/jobs/deck")
 def get_deck(user=Depends(get_current_user)):
-    """The Tap deck: the pool rows that match the CURRENT search, not the pool's history.
+    """Today's list — the one queue the dashboard shows, Tap swipes and auto applies in.
 
-    The pool is INSERT-only and never expires, so `GET /jobs` is an archive: every job
-    ever harvested under every keyword set the user has tried. The deck used to read that
-    archive and filter only on status/link/platform — so changing your keywords on the
-    dashboard did nothing to what you swipe. Measured on Igor's account 09-08: 535 rows
-    qualified for the deck, 341 of them off-search leftovers from other days' keywords,
-    the oldest six weeks old.
+    Since 09-30 (daily-30, step 2) this is the prejudged queue, not the pool: the ATS rows
+    pass through the same build_queue() as /jobs/ats-queue (below the user's bar is out,
+    two applications per company per 60 days, freshest first — the score is a gate, not a
+    rank), so the card on top of the screen is the posting auto opens next. Indeed rides
+    in the same list and the same order but is NOT prejudged yet (most Indeed rows carry
+    no description server-side); its cards say so, and the live judge decides them at
+    apply time. `fits_today` counts only the judge's passes — "N fit today" must not count
+    postings nobody checked (Igor, 09-30).
 
-    Relevance is decided with the SAME rule that filled the pool (ats_boards.keyword_match),
-    so "what we collect for you" and "what we show you" cannot drift apart. No keywords on
-    the profile = no filter, exactly as at harvest.
+    No judging on this read: the dashboard renders server-side and must not wait on the
+    judge. ATS rows without a current verdict ride as unjudged and a background pass
+    judges them for the next read.
 
-    Returns the cards plus the counts behind them, because a deck that silently shrank is
-    indistinguishable from a broken one (#113's lesson): the UI states how many were held
-    back and why.
+    Relevance is still decided by on_search_filter() (keywords, job_type, location,
+    salary, remote) — the same rule that filled the pool, shared with the auto queue —
+    and the counts ride along, because a list that silently shrank is indistinguishable
+    from a broken one (#113's lesson): the UI states how many were held back and why.
     """
     from app.db.profile import get_profile
+    from modules.ai_fit_judge import verdict_version
+    from modules.fit_queue import has_current_verdict
 
     profile = get_profile(user.id)
     keywords = [k for k in (profile.get("keywords") or []) if (k or "").strip()]
     wanted_type = (profile.get("job_type") or "").strip() or None
 
+    rows = jobs_db.get_jobs(user.id)
     swipeable = [
         j
-        for j in jobs_db.get_jobs(user.id)
+        for j in rows
         if (j.get("status") or "new") == "new"
         and (j.get("link") or j.get("apply_url"))
         and j.get("platform") in TAP_APPLY_PLATFORMS
     ]
-    # Four filters, not one — all in on_search_filter(), shared with the auto ATS queue.
-    # Keywords say WHAT the job is; job_type says on what terms — a contract role is a
-    # different answer to "should I apply" than a staff job with the same title, and the
-    # picker on the dashboard has been promising this since long before anything wrote the
-    # column (see modules/job_type.py). Rows harvested before that write carry no type and
-    # pass: emptying the deck to prove a point is the worse failure.
-    # Location joined the filters 09-11 (Igor: a Miami profile was swiping Zoox in CA).
-    # Three-way verdict from modules/job_location: "elsewhere" is hidden, "unknown"
-    # PASSES — the legacy pool carries free-text locations this parser can't always
-    # place, and an empty deck is the worse failure. No coordinates exist in the
-    # backend, so this is city/state/remote honesty, not a miles radius: the radius
-    # picker keeps steering the native searches only.
-    # Salary joined 09-26 — same "unknown passes" shape, and for a measured reason
-    # (~12% of rows state pay at all). See on_search_filter.
     on_search = on_search_filter(swipeable, profile)
-    # Age gate — the deck's own DECK_MAX_AGE_DAYS (14), stricter than the apply cap (45),
-    # because a swipe is a promise the freshest-first queue must be able to keep (see the
-    # constant's comment). The tie-break below could never do this job on its own: it only
-    # orders cards that already scored the same, so a 60-day-old row with score 8 still sat
-    # above a fresh row with score 6.
-    live = [j for j in on_search if fresh_enough(j, DECK_MAX_AGE_DAYS)]
-    # Best fit first, freshest as the tie-break: `score` is a coarse 0-10 from the Haiku
-    # scorer, so whole bands of cards tie and date is what separates a live posting from a
-    # six-week-old one. The client interleaves platforms on top of this order.
-    live.sort(key=lambda j: j.get("date_found") or "", reverse=True)
-    live.sort(key=lambda j: j.get("score") or 0, reverse=True)  # stable: date breaks ties
+    # ATS by the auto queue's own rule (zero-touch boards only), so the list never shows
+    # a Greenhouse card auto would refuse to open. Indeed by the deck's rule as before.
+    _ats_pool, _ats_on, live_ats = _ats_candidates(user.id, profile, rows=rows)
+    live_indeed = [
+        j for j in on_search if j.get("platform") == "indeed" and fresh_enough(j, DECK_MAX_AGE_DAYS)
+    ]
+
+    version = verdict_version(profile, _deck_resume_text(user.id, profile))
+    if any(not has_current_verdict(j, version) for j in live_ats):
+        _prejudge_in_background(user.id)
+
+    queue = _prejudged_queue(
+        user.id,
+        profile,
+        live_ats + live_indeed,
+        limit=DAILY_LIST_SIZE,
+        judge_calls=0,
+        deadline_s=0,
+        version=version,
+    )
+    cards = []
+    for j in queue["jobs"]:
+        current = has_current_verdict(j, version)
+        # A verdict reached against an older resume/bar is not "why this fits you" today.
+        cards.append(
+            {**j, "fit_current": current}
+            if current
+            else {**j, "fit_current": False, "fit_score": None, "fit_reason": None}
+        )
     return {
-        "cards": _with_captcha(live),
+        "cards": _with_captcha(cards),
+        "fits_today": sum(1 for c in cards if c["fit_current"]),
         "pool": len(swipeable),
         "off_search": len(swipeable) - len(on_search),
-        "stale": len(on_search) - len(live),
+        "stale": len(on_search) - len([j for j in on_search if fresh_enough(j, DECK_MAX_AGE_DAYS)]),
+        "below_bar": queue["below_bar"],
+        "company_capped": queue["company_capped"],
         "keywords": keywords,
         "job_type": wanted_type,
         "location": profile.get("location") or "",
-        # How much of the pool predates the job_type write and therefore can't be filtered
+        # How much of the list predates the job_type write and therefore can't be filtered
         # yet. Without this the type filter looks broken while it is merely uninformed.
-        "untyped_rows": sum(1 for j in live if not j.get("job_type")),
+        "untyped_rows": sum(1 for j in cards if not j.get("job_type")),
     }
 
 
