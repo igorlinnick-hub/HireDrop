@@ -99,7 +99,11 @@ def _categorize(msg: str) -> str | None:
 
 
 def summary(
-    user_id: str, window_hours: int = 24, cap: int = 2000, since: str | None = None
+    user_id: str,
+    window_hours: int = 24,
+    cap: int = 2000,
+    since: str | None = None,
+    until: str | None = None,
 ) -> dict:
     """Health snapshot for the dashboard (ROADMAP_E2E.md P3): turns the raw activity feed
     into at-a-glance counts so a silent failure (auth 401, resume fail, everything skipped)
@@ -108,7 +112,8 @@ def summary(
     `since` (ISO timestamp, e.g. the campaign's started_at) scopes the counts to the CURRENT
     run instead of a rolling 24h window — so a résumé-fail / fit-skip from a PRIOR run on a
     different platform doesn't leak into this campaign's health chips. Falls back to the
-    window if `since` is absent or unparseable."""
+    window if `since` is absent or unparseable. `until` closes the window for a PAST run
+    (scripts/run_history.py) — without it every report ran to "now"."""
     scoped_since = None
     if since:
         try:
@@ -122,7 +127,7 @@ def summary(
     # Paged: `cap` is 2000 and PostgREST hands back 1000 without a word, so a busy run's
     # health chips were counted from half the log they claimed to read.
     def build(start: int, end: int):
-        return (
+        q = (
             get_supabase()
             .table("activity_log")
             .select("timestamp, level, message")
@@ -132,6 +137,7 @@ def summary(
             .order("id")
             .range(start, end)
         )
+        return q.lte("timestamp", until) if until else q
 
     rows = fetch_paged(build, cap)
     by_level = {"info": 0, "warn": 0, "error": 0}
@@ -164,7 +170,9 @@ def summary(
     }
 
 
-def run_report(user_id: str, since: str | None = None, window_hours: int = 6) -> dict:
+def run_report(
+    user_id: str, since: str | None = None, window_hours: int = 6, until: str | None = None
+) -> dict:
     """What the last run actually PRODUCED, and where the time went.
 
     summary() answers "is something wrong"; this answers the question that costs real days:
@@ -177,7 +185,7 @@ def run_report(user_id: str, since: str | None = None, window_hours: int = 6) ->
     application), plus one sentence naming the dominant loss. A rate is what makes "it
     feels broken" checkable without reading a log.
     """
-    counts = summary(user_id, window_hours=window_hours, since=since)
+    counts = summary(user_id, window_hours=window_hours, since=since, until=until)
     by_type = counts["by_type"]
     opened = by_type.get("opened", 0)
     # Unconfirmed submits ARE submits (the employer got them); the funnel counts them
@@ -197,7 +205,7 @@ def run_report(user_id: str, since: str | None = None, window_hours: int = 6) ->
     }
     top_loss, top_n = max(losses.items(), key=lambda kv: kv[1], default=("", 0))
 
-    minutes = _minutes_spanned(user_id, since, window_hours)
+    minutes = _minutes_spanned(user_id, since, window_hours, until)
     per_application = round(minutes / applied, 1) if applied else None
 
     return {
@@ -214,26 +222,38 @@ def run_report(user_id: str, since: str | None = None, window_hours: int = 6) ->
     }
 
 
-def _minutes_spanned(user_id: str, since: str | None, window_hours: int) -> int:
+def _minutes_spanned(
+    user_id: str, since: str | None, window_hours: int, until: str | None = None
+) -> int:
     """Wall-clock the log actually covers — first line to last, not the window we asked for.
-    A run that stopped after 4 minutes must not be judged as if it had an hour."""
+    A run that stopped after 4 minutes must not be judged as if it had an hour. A live run
+    ends "now"; a past one (`until` given) ends at its last line inside the window."""
     cutoff = since or (datetime.now(UTC) - timedelta(hours=max(1, window_hours))).isoformat()
-    try:
-        res = (
+
+    def edge(desc: bool) -> str | None:
+        q = (
             get_supabase()
             .table("activity_log")
             .select("timestamp")
             .eq("user_id", user_id)
             .gte("timestamp", cutoff)
-            .order("timestamp")
-            .limit(1)
-            .execute()
         )
-        first = (res.data or [{}])[0].get("timestamp")
+        if until:
+            q = q.lte("timestamp", until)
+        res = q.order("timestamp", desc=desc).limit(1).execute()
+        return (res.data or [{}])[0].get("timestamp")
+
+    try:
+        first = edge(desc=False)
         if not first:
             return 0
         start = datetime.fromisoformat(first.replace("Z", "+00:00"))
-        return max(0, int((datetime.now(UTC) - start).total_seconds() // 60))
+        if until:
+            last = edge(desc=True) or first
+            end = datetime.fromisoformat(last.replace("Z", "+00:00"))
+        else:
+            end = datetime.now(UTC)
+        return max(0, int((end - start).total_seconds() // 60))
     except Exception:  # noqa: BLE001 — a report that can't measure time still reports counts
         return 0
 
