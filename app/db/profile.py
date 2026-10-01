@@ -49,6 +49,13 @@ _DEFAULTS = {
     # Answered once in the pre-Start form (modules/employer_answers.py).
     "country": "",
     "no_linkedin": False,
+    # Search gates read by on_search_filter (deck, auto ATS queue, night shift).
+    "salary_min": None,
+    "salary_max": None,
+    "salary_listed_only": False,
+    "work_setting": "",
+    # The stored structure behind the generated resume — resume_text_for() reads it.
+    "ats_structure": None,
 }
 
 
@@ -99,6 +106,17 @@ def get_profile(user_id: str) -> dict:
         "current_title": p.get("current_title") or "",
         "country": p.get("country") or "",
         "no_linkedin": bool(p.get("no_linkedin")),
+        # Written by update_salary / update_profile / update_ats but not returned here
+        # until 09-30, so every reader saw None: on_search_filter's salary and
+        # work-setting gates never fired (deck, auto queue, night shift), and
+        # resume_text_for() never read the resume the user corrected in the editor (#222).
+        # Tests patched get_profile with dicts that already carried these keys, which is
+        # how it stayed hidden — test_get_profile_fields.py runs the real function.
+        "salary_min": p.get("salary_min"),
+        "salary_max": p.get("salary_max"),
+        "salary_listed_only": bool(p.get("salary_listed_only")),
+        "work_setting": p.get("work_setting") or "",
+        "ats_structure": p.get("ats_structure"),
     }
 
 
