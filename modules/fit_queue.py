@@ -102,6 +102,12 @@ def judge_pending(
         resume_text = resume_text_for(profile)
     if version is None:
         version = verdict_version(profile, resume_text)
+    if not (resume_text or "").strip():
+        # The resume did not load (storage hiccup, nothing uploaded). A verdict reached
+        # against "Resume: not provided" is a verdict about nobody — storing it would fill
+        # the queue with confident rejections. Leave the rows unjudged; the live judge,
+        # which reads the resume again at apply time, decides them as it always has.
+        return 0
 
     with _IN_FLIGHT_LOCK:
         pending = sorted(

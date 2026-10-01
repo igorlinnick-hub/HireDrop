@@ -162,6 +162,18 @@ def test_a_judge_outage_leaves_the_row_unjudged_not_zero():
     assert [r["id"] for r in out["jobs"]] == ["a"]  # still offered — the live judge decides
 
 
+def test_no_resume_no_stored_verdicts():
+    rows = [_row("a")]
+    with (
+        patch("modules.ai_fit_judge.assess_fit", return_value=_verdict(10)) as judge,
+        patch("app.db.jobs.save_fit_verdict") as save,
+    ):
+        n = judge_pending("u1", {}, rows, max_calls=10, deadline_s=5, resume_text="  ", version=V)
+    assert n == 0
+    judge.assert_not_called()
+    save.assert_not_called()
+
+
 def test_the_budget_caps_calls_freshest_first():
     rows = [_row(str(i), age=i) for i in range(10)]
     with (
