@@ -10,7 +10,9 @@ from modules.ai_question_answer import answer_screener_question
 # these on principle rather than let a model infer a person's gender or race from a CV.
 _DEMOGRAPHIC_Q = re.compile(
     r"gender|race|ethnic|sexual orientation|lgbt|transgender|disability|veteran"
-    r"|self.?identif|demographic|pronoun",
+    # "Are you Hispanic or Latinx?" names no "ethnicity" — it reached the model, which
+    # happened to decline. Declining must not depend on the model's mood.
+    r"|hispanic|latin[oax]\b|self.?identif|demographic|pronoun",
     re.I,
 )
 _DECLINE_OPT = re.compile(
@@ -32,13 +34,29 @@ _OPT_IN_Q = re.compile(
 _NO_OPT = re.compile(r"^\s*no\b", re.I)
 
 
-def same_value(wanted: str, held: str) -> bool:
-    """Does the widget hold the option we clicked? Containment either way: a control may
-    show less than the option said (a phone-country option "United States +1" is held
-    as "+1") or more — but never something else."""
-    a = re.sub(r"\s+", " ", wanted or "").strip().lower()
-    b = re.sub(r"\s+", " ", held or "").strip().lower()
-    return bool(a and b) and (a in b or b in a)
+def _words(text: str) -> list[str]:
+    return re.sub(r"\s+", " ", text or "").strip().lower().split()
+
+
+def same_value(wanted: str, held: str, options: list[str] | tuple = ()) -> bool:
+    """Does the widget hold the option we clicked?
+
+    Equal text is the answer. The one tolerance is a control that shows LESS than its
+    option said — the phone-country option "United States +1" is held as "+1" — so a
+    held text that is the whole-word start or end of the wanted one also counts.
+    Never the other way round, and never loose containment: "No" is inside "None of the
+    above" and "Not sure", "Yes" starts "Yes, with sponsorship", and those are exactly
+    the wrong clicks this check exists to catch. A held text that is some OTHER option,
+    word for word, is that other option — whatever it happens to be a prefix of.
+    """
+    want, have = _words(wanted), _words(held)
+    if not want or not have:
+        return False
+    if want == have:
+        return True
+    if any(_words(o) == have for o in options if _words(o) != want):
+        return False
+    return len(have) < len(want) and (want[: len(have)] == have or want[-len(have) :] == have)
 
 
 def log(msg: str) -> None:
@@ -192,6 +210,8 @@ _SALARY_Q = re.compile(
     r"|expected (?:pay|rate)|desired (?:pay|rate)|hourly rate|rate expectation",
     re.I,
 )
+_WEBSITE_Q = re.compile(r"\b(?:website|portfolio|personal site|blog)\b", re.I)
+_LINKEDIN_Q = re.compile(r"linkedin", re.I)
 _OPEN_ABOVE = re.compile(r"\+|or more|and (?:up|above)|\babove\b|\bover\b|more than|at least", re.I)
 _OPEN_BELOW = re.compile(r"\bunder\b|\bbelow\b|less than|up to", re.I)
 _AMOUNT = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(k\b|m\b)?", re.I)
@@ -268,6 +288,10 @@ def answer(
     """
     if _SALARY_Q.search(label or ""):
         return salary_answer(profile, options, numeric)
+    # "Website" is the candidate's own site or portfolio. The answerer, having none to
+    # give, repeated the LinkedIn URL the form had already been given one field above.
+    if not options and _WEBSITE_Q.search(label or "") and not _LINKEDIN_Q.search(label or ""):
+        return str(profile.get("portfolio_url") or "").strip()
     reply = answer_screener_question(label, job=job, profile=profile, options=options)
     if numeric and reply:
         m = re.search(r"\d+(?:\.\d+)?", reply)

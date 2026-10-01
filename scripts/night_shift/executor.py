@@ -570,6 +570,7 @@ async def choose(
     opts,
     index: int,
     option: str,
+    options: list[str],
     label: str,
     note: str,
     missed: list[str],
@@ -584,7 +585,7 @@ async def choose(
     # field's state is how a wrong answer reaches an employer looking correct in the
     # transcript.
     settled = await held_value(box)
-    if settled and not same_value(option, settled):
+    if settled and not same_value(option, settled, options):
         _miss(missed, label, optional)
         log(f"  ! {label[:50]}: wanted {option[:30]!r}, widget holds {settled[:30]!r}")
         return
@@ -625,7 +626,7 @@ async def fill_typeahead(page, box, kind: str, profile: dict) -> str:
         await page.wait_for_timeout(300)
         # Same read-back rule as every other dropdown here: report the field, not intent.
         settled = await held_value(box)
-        if same_value(target, settled):
+        if same_value(target, settled, [t for t in texts if t]):
             await close_menu(page)
             return settled
     await close_menu(page)
@@ -718,6 +719,7 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
                         opts,
                         pairs[texts.index(decline)][0],
                         decline,
+                        texts,
                         label,
                         " (declined on purpose)",
                         missed,
@@ -739,6 +741,7 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
                         opts,
                         pairs[texts.index(no)][0],
                         no,
+                        texts,
                         label,
                         " (opt-in declined)",
                         missed,
@@ -789,7 +792,16 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
                 await close_menu(page)
                 continue
             await choose(
-                page, box, opts, pairs[texts.index(target)][0], target, label, "", missed, optional
+                page,
+                box,
+                opts,
+                pairs[texts.index(target)][0],
+                target,
+                texts,
+                label,
+                "",
+                missed,
+                optional,
             )
         except Exception as exc:  # noqa: BLE001
             # A combobox that blew up is UNANSWERED, and the pre-submit gate has to hear

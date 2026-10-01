@@ -118,9 +118,14 @@ def test_location_pick_needs_the_state_when_the_city_is_ambiguous():
     ("wanted", "held", "same"),
     [
         ("Bachelor's Degree", "Bachelor's Degree", True),
-        # The phone-country control shows less than its option said.
+        ("Honolulu, Hawaii, United States", "honolulu,  hawaii, united states", True),
+        # The phone-country control shows LESS than its option said.
         ("United States +1", "+1", True),
-        ("Yes", "Yes, I am authorized", True),
+        # Loose containment would have passed every one of these wrong clicks.
+        ("No", "None of the above", False),
+        ("No", "Not sure", False),
+        ("Yes", "Yes, with sponsorship", False),
+        ("Male", "Female", False),
         ("Onsite", "Hybrid", False),
         # Nothing readable is NOT a match — the caller decides what an empty read means.
         ("Yes", "", False),
@@ -128,6 +133,15 @@ def test_location_pick_needs_the_state_when_the_city_is_ambiguous():
 )
 def test_same_value(wanted, held, same):
     assert same_value(wanted, held) is same
+
+
+def test_a_held_text_that_is_another_option_is_that_other_option():
+    """Wanted the long answer, the widget holds the short one that is ALSO on the list."""
+    options = ["Yes", "Yes, with sponsorship", "No"]
+    assert same_value("Yes, with sponsorship", "Yes", options) is False
+    assert same_value("Yes", "Yes", options) is True
+    # …while a genuinely abbreviated display, which is nobody's option, still passes.
+    assert same_value("United States +1", "+1", ["United States +1", "Canada +1"]) is True
 
 
 def test_sms_opt_in_is_declined_not_answered():
@@ -260,3 +274,31 @@ def test_language_the_role_is_built_on_is_a_knockout():
     assert is_knockout(q, "No")
     assert not is_knockout(q, "Yes")
     assert is_knockout("Are you fluent in German?", "No")
+
+
+def test_website_is_the_candidates_own_site_or_nothing():
+    """Tia's form (09-30): "Website" was answered with the LinkedIn URL a second time."""
+    with patch.object(common, "answer_screener_question") as model:
+        assert night_answer("Website", JOB, {"linkedin_url": "linkedin.com/in/x"}) == ""
+        assert night_answer("Website", JOB, {"portfolio_url": " https://igor.example "}) == (
+            "https://igor.example"
+        )
+        assert night_answer("Portfolio URL", JOB, {}) == ""
+        model.assert_not_called()
+    with patch.object(
+        common, "answer_screener_question", return_value="linkedin.com/in/x"
+    ) as model:
+        # A LinkedIn field is not a website field, and a dropdown is not a URL box.
+        assert night_answer("LinkedIn Profile / Website", JOB, {}) == "linkedin.com/in/x"
+        night_answer("Which website did you find us on?", JOB, {}, ["LinkedIn", "Indeed"])
+        assert model.call_count == 2
+
+
+def test_hispanic_question_is_self_identification():
+    """DoorDash and Later ask it without the word "ethnicity" (live forms, 09-30)."""
+    from common import _DECLINE_OPT, _DEMOGRAPHIC_Q
+
+    for q in ("Are you Hispanic or Latinx?", "Are you Hispanic/Latino?", "Hispanic or Latina"):
+        assert _DEMOGRAPHIC_Q.search(q), q
+    assert not _DEMOGRAPHIC_Q.search("Do you speak Latin American Spanish?")
+    assert _DECLINE_OPT.search("Decline To Self Identify")
