@@ -2984,6 +2984,35 @@ async function handleMessage(msg, sender) {
     }
 
     // ----- Status (popup polls this) -----
+    // ----- Edge pill (pill.js) -----
+    // The pill needs to know which tab it sits in (it never shows in the campaign's own
+    // tab/window — CDP hovers there would open it under a dispatched click), and it can't
+    // open or focus tabs itself from a content script.
+    case "PILL_TAB":
+      return { tabId: sender?.tab?.id ?? null, windowId: sender?.tab?.windowId ?? null };
+
+    case "PILL_OPEN": {
+      const PATHS = { dashboard: "/dashboard", history: "/dashboard/history" };
+      await chrome.tabs.create({ url: CONFIG.DASHBOARD_URL + (PATHS[msg.page] || PATHS.dashboard) });
+      return { opened: true };
+    }
+
+    case "PILL_FOCUS_HANDOFF": {
+      // Bring the human to the wall that is waiting for them: the tab that raised it if it
+      // still exists, else the wall's URL in a new tab.
+      const { captchaWaiting } = await chrome.storage.local.get("captchaWaiting");
+      if (!captchaWaiting) return { focused: false };
+      try {
+        if (captchaWaiting.tabId) {
+          const tab = await chrome.tabs.update(captchaWaiting.tabId, { active: true });
+          await chrome.windows.update(tab.windowId, { focused: true });
+          return { focused: true };
+        }
+      } catch {}
+      if (captchaWaiting.url) await chrome.tabs.create({ url: captchaWaiting.url });
+      return { focused: !!captchaWaiting.url };
+    }
+
     case "GET_STATUS": {
       const data = await chrome.storage.local.get([
         "campaignRunning",
