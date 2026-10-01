@@ -141,12 +141,15 @@ def test_split_location_variants():
     assert _split_location("Brooklyn, NY 11201-1234") == ("Brooklyn", "NY", "11201")
 
 
-def _seed_education(existing: dict, school: str, degree: str) -> dict:
-    written = {}
+def test_education_is_offered_in_the_form_never_written_from_a_resume():
+    """A resume's first "education" row is as often a certificate as a degree. Written
+    straight into the profile it would count as answered and never be shown to the person
+    (adversarial pass, 10-01: "Coursera / Google Data Analytics Certificate" → gate closed)."""
+    written: list[dict] = []
 
     class _Chain:
         def update(self, payload):
-            written.update(payload)
+            written.append(payload)
             return self
 
         def eq(self, *_a, **_k):
@@ -159,33 +162,22 @@ def _seed_education(existing: dict, school: str, degree: str) -> dict:
         def table(self, _name):
             return _Chain()
 
+    data = {
+        "experience": [{"company": "Acme", "title": "Analyst"}],
+        "education": [{"school": "Coursera", "degree": "Google Data Analytics Certificate"}],
+    }
+    blank = {
+        "current_employer": "",
+        "current_title": "",
+        "city": "",
+        "state": "",
+        "postal_code": "",
+    }
     with (
-        patch.object(profile_db, "get_profile", return_value=existing),
+        patch.object(profile_db, "get_profile", return_value=blank),
         patch.object(profile_db, "get_supabase", return_value=_Client()),
     ):
-        profile_db.fill_education_if_blank("u1", school, degree)
-    return written
-
-
-def test_education_seeds_blank_fields_only():
-    assert _seed_education({"school": "", "degree": ""}, "UT Austin", "BA") == {
-        "school": "UT Austin",
-        "degree": "BA",
-    }
-    assert _seed_education({"school": "MIT", "degree": ""}, "UT Austin", "BA") == {"degree": "BA"}
-
-
-def test_education_never_contradicts_no_degree():
-    """Someone who said "no college degree" is not handed one by a parsed resume line."""
-    assert _seed_education({"school": "", "degree": "", "no_degree": True}, "UT Austin", "BA") == {}
-
-
-def test_router_seed_reads_education_zero():
-    data = {"education": [{"school": "UT Austin", "degree": "BA Communications"}, {"school": "X"}]}
-    with (
-        patch.object(profile_db, "fill_current_employment_if_blank", return_value={}),
-        patch.object(profile_db, "fill_address_if_blank", return_value={}),
-        patch.object(profile_db, "fill_education_if_blank", return_value={}) as fill,
-    ):
         _seed_employment_from_resume("u1", data)
-    fill.assert_called_once_with("u1", "UT Austin", "BA Communications")
+    assert written, "employer/title are still seeded"
+    assert not any("school" in w or "degree" in w for w in written)
+    assert not hasattr(profile_db, "fill_education_if_blank")

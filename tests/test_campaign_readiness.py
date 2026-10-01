@@ -258,7 +258,15 @@ def test_clean_takes_both_opt_outs():
     from modules.employer_answers import clean
 
     out = clean({"no_degree": True, "no_linkedin": "yes", "school": " MIT ", "degree": "BS"})
-    assert out == {"school": "MIT", "degree": "BS", "no_degree": True, "no_linkedin": False}
+    # "No degree" takes the school that was on file with it: a later write that reset the
+    # flag would otherwise put a school the person disowned back on their applications.
+    assert out == {"school": "", "degree": "", "no_degree": True, "no_linkedin": False}
+    assert clean({"no_salary_expectation": True}) == {
+        "no_salary_expectation": True,
+        "salary_expectation": "",
+    }
+    # Un-ticking it blanks nothing.
+    assert clean({"no_degree": False, "school": "MIT"}) == {"school": "MIT", "no_degree": False}
 
 
 def test_the_salary_floor_is_offered_never_filed():
@@ -275,3 +283,27 @@ def test_the_salary_floor_is_offered_never_filed():
     # True is not a salary (bool is an int in Python).
     assert "suggestion" not in missing({**blank, "salary_min": True})[0]
     assert missing({**blank, "no_salary_expectation": True}) == []
+
+
+def test_a_client_that_cannot_draw_a_question_is_not_asked_it():
+    """A dashboard tab loaded before the three new questions existed has no "I don't have
+    one" tickbox for them: asked anyway, it kept Start shut until the user typed "N/A"."""
+    from modules.employer_answers import ANSWERS_UI, missing
+
+    old_account = {**ANSWERED, "school": "", "degree": "", "salary_expectation": ""}
+    assert missing(old_account, 1) == []
+    assert [m["key"] for m in missing(old_account, ANSWERS_UI)] == [
+        "school",
+        "degree",
+        "salary_expectation",
+    ]
+    # Old questions are asked of everyone.
+    assert [m["key"] for m in missing({**old_account, "city": ""}, 1)] == ["city"]
+
+    args = (False, "pro", "auto", None, 40)
+    assert _ready(build_readiness(_profile(**old_account), *args))[0]  # says nothing = old
+    assert _ready(build_readiness(_profile(**old_account), *args, answers_ui=1))[0]
+    new = build_readiness(_profile(**old_account), *args, answers_ui=ANSWERS_UI)
+    assert not new["ready"]
+    check = next(c for c in new["checks"] if c["id"] == "employer_answers")
+    assert [m["key"] for m in check["missing"]] == ["school", "degree", "salary_expectation"]

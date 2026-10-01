@@ -53,6 +53,17 @@ QUESTIONS: tuple[tuple[str, str, str], ...] = (
     ("salary_expectation", "Salary expectation — what we tell employers who ask", "text"),
 )
 
+# WHICH CLIENTS MAY BE ASKED WHICH QUESTIONS.
+# The three questions added on 2026-09-30 come with an "I don't have one" tickbox, and a
+# website tab loaded before that day cannot draw it: it would show three bare text boxes
+# and keep Start closed until the user typed SOMETHING — "N/A", "none", "negotiable" —
+# which the fillers would then put on real applications. So a question is only counted
+# as missing for a client that says it can ask it properly (`answers_ui`, sent by the
+# website on /campaign/readiness, /campaign/start and the save). A client that says
+# nothing is an old one and sees the list it has always seen.
+ANSWERS_UI = 2
+SINCE: dict[str, int] = {"school": 2, "degree": 2, "salary_expectation": 2}
+
 # "I don't have one" IS the answer — the filler then hands a required field back
 # honestly instead of inventing a URL or a university. flag -> the questions it answers.
 OPT_OUT: dict[str, tuple[str, ...]] = {
@@ -139,12 +150,16 @@ def own_suggestions(profile: dict) -> dict[str, str]:
     return {}
 
 
-def missing(profile: dict) -> list[dict]:
-    """The unanswered questions, in form order. Empty list = ready."""
+def missing(profile: dict, ui: int = ANSWERS_UI) -> list[dict]:
+    """The unanswered questions, in form order. Empty list = ready.
+
+    `ui` is what the asking client can draw (see SINCE): questions newer than it are
+    left out — for that client they are not missing, they are not askable.
+    """
     hints = suggestions(profile)
     out: list[dict] = []
     for key, label, kind in QUESTIONS:
-        if _answered(profile, key, kind):
+        if SINCE.get(key, 1) > ui or _answered(profile, key, kind):
             continue
         row = _row(key, label, kind)
         if key in hints:
@@ -193,7 +208,12 @@ def clean(body: dict) -> dict:
                 out[key] = US if raw else OUTSIDE_US
         else:
             out[key] = str(raw or "").strip()[: (500 if key == "linkedin_url" else _MAX_TEXT)]
-    for flag in OPT_OUT:
+    for flag, keys in OPT_OUT.items():
         if flag in body:
             out[flag] = body[flag] is True
+            # "I don't have a degree" over a school already on file (the ATS step, an
+            # earlier answer) must not leave that school behind: any later write that
+            # reset the flag would bring it back onto applications, unasked.
+            if out[flag]:
+                out.update(dict.fromkeys(keys, ""))
     return out

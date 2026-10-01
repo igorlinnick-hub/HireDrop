@@ -225,23 +225,6 @@ def fill_current_employment_if_blank(user_id: str, employer: str, title: str) ->
     return filled
 
 
-def fill_education_if_blank(user_id: str, school: str, degree: str) -> dict:
-    """Seed school / degree from the resume's education block — same contract as
-    fill_current_employment_if_blank: only EMPTY fields, user input always wins, and a
-    user who said "no college degree" is never contradicted by a parsed resume line."""
-    filled = {}
-    current = get_profile(user_id)
-    if current.get("no_degree"):
-        return filled
-    if school and school.strip() and not current.get("school"):
-        filled["school"] = school.strip()[:200]
-    if degree and degree.strip() and not current.get("degree"):
-        filled["degree"] = degree.strip()[:200]
-    if filled:
-        get_supabase().table("profiles").update(filled).eq("user_id", user_id).execute()
-    return filled
-
-
 def fill_address_if_blank(user_id: str, city: str, state: str, postal_code: str) -> dict:
     """Seed city/state/zip from the resume's contact block — same contract as
     fill_current_employment_if_blank: only EMPTY fields, user input always wins.
