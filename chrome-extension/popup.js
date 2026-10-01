@@ -436,7 +436,7 @@ async function renderHandbacks() {
       const d = Math.max(0, Number(h.steps_done) || 0);
       const pct = d > 0 ? Math.round((d / (d + 1)) * 100) : null;
       return '<div class="hb-item"><div class="hb-job"><b>' +
-        escapeHtml(h.job_title || "Application") + '</b>' +
+        escapeHtml(h.job_title || h.company || (h.platform ? h.platform[0].toUpperCase() + h.platform.slice(1) + " application" : "Application")) + '</b>' +
         (pct === null ? '<span>' + escapeHtml(h.company || "") + '</span>'
           : '<div class="hb-bar"><i style="width:' + pct + '%"></i></div>' +
             '<span>' + pct + '% done</span>') +

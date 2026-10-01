@@ -99,23 +99,23 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .hb-head{display:flex;align-items:center;gap:7px;margin-bottom:8px}
 .hb-dot{width:7px;height:7px;border-radius:50%;background:#fbbf24;flex-shrink:0;animation:hbPulse 1.8s ease-in-out infinite}
 @keyframes hbPulse{0%,100%{opacity:1;box-shadow:0 0 0 0 rgba(251,191,36,.55)}50%{opacity:.75;box-shadow:0 0 0 6px rgba(251,191,36,0)}}
-.hb-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:#fbbf24}
+.hb-title{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--accent)}
 .hb-item{display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid rgba(251,191,36,.18)}
 .hb-item:first-of-type{border-top:none}
 .hb-job{flex:1;min-width:0}
-.hb-job b{display:block;font-size:12px;font-weight:600;color:#f3f1ff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.hb-job span{display:block;font-size:10.5px;color:#c9c5e2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.hb-bar{height:3px;border-radius:2px;background:rgba(255,255,255,.18);overflow:hidden;margin:3px 0 2px}
+.hb-job b{display:block;font-size:12px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hb-job span{display:block;font-size:10.5px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hb-bar{height:3px;border-radius:2px;background:rgba(16,16,20,.08);overflow:hidden;margin:3px 0 2px}
 .hb-bar i{display:block;height:100%;background:#fbbf24;border-radius:2px}
 .hb-go{flex-shrink:0;padding:5px 10px;border:none;border-radius:6px;background:#fbbf24;color:#1a1a2e;font-size:11px;font-weight:700;cursor:pointer}
 .hb-go:hover{opacity:.85}
 /* Ask-on-return: we cannot see the employer's side, so finishing is the user's own
    tick, not something we claim to have verified. */
 .hb-ask{padding:7px 0;border-top:1px solid rgba(251,191,36,.18)}
-.hb-ask p{font-size:11.5px;color:#f3f1ff;margin-bottom:6px}
+.hb-ask p{font-size:11.5px;color:var(--text);margin-bottom:6px}
 .hb-ask button{padding:4px 9px;border:none;border-radius:6px;font-size:11px;font-weight:700;cursor:pointer;margin-right:6px}
 .hb-yes{background:#0e9f6e;color:#fff}
-.hb-no{background:rgba(255,255,255,.14);color:#f3f1ff}
+.hb-no{background:rgba(16,16,20,.06);color:var(--text)}
 .dash-btn{display:block;width:100%;padding:10px;border:none;border-radius:8px;background:var(--btn);color:#fff;font-size:13px;font-weight:600;cursor:pointer;text-align:center;transition:opacity .15s}
 .dash-btn:hover{opacity:.85}
 .pill-hidden{margin-top:10px;font-size:11px;color:var(--text2);text-align:center}
