@@ -86,3 +86,52 @@ def test_unset_columns_read_as_no_preference():
         assert p["salary_listed_only"] is False
         assert p["work_setting"] == ""
         assert p["ats_structure"] is None
+
+
+# ── A resume path is only ever the user's own ───────────────────────────────────────
+# profiles.resume_url is written by the browser, and RLS lets a user set it to anything.
+# The server reads the path with the service key — so "anything" used to include another
+# user's file.
+
+ME, VICTIM = "user-1", "9b2f6c1e-0000-4000-8000-000000000042"
+
+
+def test_a_path_inside_the_users_folder_is_theirs():
+    assert _profile_from_row(_row(resume_url=f"{ME}/Jane_Roe_Resume.pdf"))["resume_url"] == (
+        f"{ME}/Jane_Roe_Resume.pdf"
+    )
+
+
+def test_a_path_in_someone_elses_folder_is_no_resume_at_all():
+    for stolen in (
+        f"{VICTIM}/resume.pdf",
+        f"{ME}/../{VICTIM}/resume.pdf",
+        f"{ME}\\..\\{VICTIM}\\resume.pdf",
+        f"/{ME}/resume.pdf",
+        "resume.pdf",
+        f"{ME}x/resume.pdf",
+    ):
+        assert _profile_from_row(_row(resume_url=stolen))["resume_url"] == "", stolen
+
+
+def test_the_signed_download_never_resolves_to_a_foreign_file():
+    """The reader that mattered most: GET /profile/resume/url signs whatever
+    resolved_resume_path returns."""
+    from app.db import resume as resume_storage
+
+    looked_up: list[str] = []
+
+    def exists(path):
+        looked_up.append(path)
+        return path == f"{VICTIM}/resume.pdf"  # the victim's file is really there
+
+    client = MagicMock()
+    client.table.return_value.select.return_value.eq.return_value.execute.return_value = MagicMock(
+        data=[_row(resume_url=f"{VICTIM}/resume.pdf")]
+    )
+    with (
+        patch("app.db.profile.get_supabase", return_value=client),
+        patch.object(resume_storage, "_object_exists", side_effect=exists),
+    ):
+        assert resume_storage.resolved_resume_path(ME) is None
+    assert f"{VICTIM}/resume.pdf" not in looked_up
