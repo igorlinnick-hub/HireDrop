@@ -87,6 +87,67 @@ def _status_from_profile(question: str, profile: dict, options: list[str]) -> st
     return matches[0] if len(matches) == 1 else ""
 
 
+# ---------------------------------------------------------------------------
+# What only the PERSON can say
+#
+# Three kinds of question have no honest answer from a program, whatever the résumé says.
+# All three were answered anyway on one live form (Muck Rack, dry walk 2026-09-30):
+#
+#   "I hereby confirm that I am a real human being and not an automated bot or artificial
+#    intelligence … all information … has been created and submitted by me, personally."
+#        → "I Agree"       — the attestation was agreed to by the thing it asks about
+#   "What are your personal pronouns?"            → "He/him"   — inferred from a first name
+#   "What is the phonetic spelling of your name?" → "EE-gor LIN-ik" — a guess at how
+#                                                    someone says their own name
+#
+# The first is a false statement under the user's name and the reason this exists; the
+# other two are facts about a person that nobody told us. None of them is "answered in
+# the candidate's favor" — they are refused ("" → the caller leaves the field blank and
+# a required one hands the form back to the human, who can answer truthfully).
+_AI = r"(?:ai|a\.i\.|chatgpt|gpt|artificial intelligence|generative|llm|copilot)"
+# "this application", "your answers", "my responses" — the determiner is what separates
+# the document being attested from the verb in "used AI to answer customer questions".
+_APPLICATION = (
+    r"(?:this|your|my|the|these|those|any) "
+    r"(?:application|answers?|responses?|resume|résumé|cover letter|submission)"
+)
+_ATTESTS_HUMAN_Q = re.compile(
+    r"(?:real|actual) (?:human|person)\b|human being|\bi am (?:a )?human\b"
+    r"|\bare you (?:a |an )?(?:real )?(?:human|robot|bot)\b"
+    r"|\bnot (?:a |an )?(?:automated |ai )?(?:ro)?bot\b"
+    r"|automated (?:bot|tool|system|program|agent)"
+    # "created / completed / submitted … by me, personally"
+    r"|(?:created|written|completed|prepared|submitted|authored)\b.{0,40}"
+    r"\b(?:by me|myself|personally|on my own)\b"
+    r"|\bmy own (?:work|words|writing)\b"
+    # AI and the application in one breath, either order: "did you use AI to complete this
+    # application?", "were any of your responses AI-generated?", "written without the use
+    # of ChatGPT". A question about using AI at WORK names no application and passes.
+    rf"|\b(?:use|used|using|help|aid|assistance)\b.{{0,40}}\b{_AI}\b.{{0,80}}\b{_APPLICATION}\b"
+    rf"|\b{_APPLICATION}\b.{{0,80}}\b{_AI}\b[- ]?(?:generated|written|assisted|tools?)?"
+    rf"|\bwithout (?:the )?(?:use|help|aid|assistance) of\b.{{0,20}}\b{_AI}\b"
+    rf"|\b{_AI}\b[- ](?:generated|written|assisted)\b",
+    re.I,
+)
+_PRONOUNS_Q = re.compile(r"\bpronouns?\b", re.I)
+_SAYS_OWN_NAME_Q = re.compile(r"phonetic|pronounc|pronunciation", re.I)
+# The way out a self-identification list always offers; taken instead of guessing.
+_DECLINES = re.compile(
+    r"don'?t wish|do not wish|decline|prefer not|rather not|not to (?:answer|disclose|say)",
+    re.I,
+)
+
+
+def _only_the_person(question: str, options: list[str]) -> str | None:
+    """ "" to refuse, the list's own "prefer not to say" for pronouns, or None when the
+    question is not one of these and normal handling should continue."""
+    if _ATTESTS_HUMAN_Q.search(question) or _SAYS_OWN_NAME_Q.search(question):
+        return ""
+    if _PRONOUNS_Q.search(question):
+        return next((o for o in options if _DECLINES.search(o)), "")
+    return None
+
+
 def _confirmed_facts(profile: dict) -> str:
     """Education the candidate stated themselves (signup answers), for the prompt.
 
@@ -188,6 +249,11 @@ def answer_screener_question(question, job=None, profile=None, options=None):
     status = _status_from_profile(question, profile, options)
     if status is not None:
         return status
+
+    # Attestations of being human, pronouns, how a name is said. (See _only_the_person.)
+    personal = _only_the_person(question, options)
+    if personal is not None:
+        return personal
 
     resume_text = resume_text_for(profile)
     about = re.sub(r"\s+", " ", str(job.get("description") or "")).strip()[:_MAX_POSTING_CHARS]

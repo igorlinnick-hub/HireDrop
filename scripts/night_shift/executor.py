@@ -65,9 +65,18 @@ from app.db import resume as resume_storage  # noqa: E402
 from app.db.client import get_supabase  # noqa: E402
 from app.db.profile import get_profile  # noqa: E402
 from app.db.subscriptions import check_can_apply, increment_free_apps  # noqa: E402
-from app.routers.jobs import fresh_enough, on_search_filter  # noqa: E402
-from modules.ai_cover_letter import generate_cover_letter  # noqa: E402
-from modules.ai_fit_judge import assess_fit  # noqa: E402
+from app.routers.jobs import (  # noqa: E402
+    PREJUDGE_CALLS,
+    PREJUDGE_SECS,
+    _ats_candidates,
+    _prejudged_queue,
+)
+from modules.ai_cover_letter import (
+    generate_cover_letter,  # noqa: E402
+    resume_text_for,  # noqa: E402
+)
+from modules.ai_fit_judge import assess_fit, mode_threshold, verdict_version  # noqa: E402
+from modules.fit_queue import has_current_verdict  # noqa: E402
 from modules.job_identity import job_identity, normalized_link  # noqa: E402
 from modules.job_location import (  # noqa: E402
     location_verdict,
@@ -98,43 +107,49 @@ def pick_jobs(
         q = sb.table("jobs").select("*").eq("user_id", user_id).in_("platform", list(platforms))
         rows = q.eq("link", job_url).limit(5).execute().data or []
     else:
-        # ONE RULE FOR EVERY APPLY PATH. The deck and the extension's auto queue read
-        # the pool through on_search_filter (keywords, other-profession titles, job
-        # type, country, city, salary, work setting) + the age gate; this walk used to
-        # read a raw 200-row slice of `status=new` and re-check only the city — so a row
-        # the user's own search had excluded (old keyword set, pay below the floor) was
-        # still eligible for an unwatched submit. The pool is read whole and paged: a
-        # bare select stops at PostgREST's 1000-row cap.
-        rows = [
-            r
-            for r in jobs_db.get_jobs(user_id)
-            if r.get("platform") in platforms and (r.get("status") or "new") == "new"
-        ]
-        rows = [r for r in on_search_filter(rows, profile) if fresh_enough(r)]
+        # ONE QUEUE FOR EVERY EXECUTOR. The night shift is the second executor of the
+        # queue the extension walks by day — not a second opinion about it. So it reads
+        # the pool through the SAME three steps as /jobs/ats-queue: the search filter +
+        # age gate (_ats_candidates), then the prejudged queue (_prejudged_queue): rows
+        # already judged below the user's bar are out without a model call, the rest go
+        # freshest first, and the company cap (2 per 60 days, Igor 09-30) counts both
+        # what was already sent and what this very list would send.
+        # Until 09-30 this walk kept its own copy of those rules and judged every
+        # candidate again, live: a dry walk lined up THREE DoorDash applications for one
+        # night, and scored the same posting 38 on one pass and 42 on the next — a
+        # different list from the one the user is shown.
+        _pool, _on_search, live = _ats_candidates(user_id, profile)
+        live = [r for r in live if r.get("platform") in platforms]
         # A job already handed back is WAITING ON THE PERSON. Without this the walk
         # re-opens the same form every night, fills it to the same wall and stops there
         # — live 09-30 the freshest fit was a DoorDash form two fields short, and it
         # would have been the first pick of every run after it.
         waiting = open_handback_keys(user_id)
-        rows = [r for r in rows if _job_key(r.get("link") or "") not in waiting]
+        live = [r for r in live if _job_key(r.get("link") or "") not in waiting]
+        queue = _prejudged_queue(
+            user_id,
+            profile,
+            live,
+            limit=len(live),
+            judge_calls=PREJUDGE_CALLS,
+            deadline_s=PREJUDGE_SECS,
+        )
+        rows = queue["jobs"]
+        log(
+            f"queue: {len(rows)} to walk ({queue['passing']} prejudged, {queue['unjudged']}"
+            f" to judge at the form) | below the bar: {queue['below_bar']}"
+            f" | over the company cap: {queue['company_capped']}"
+        )
     if not rows:
-        raise SystemExit(f"no matching {'/'.join(platforms)} job in this user's pool")
-    # Prefer GH-HOSTED apply pages (job-boards.greenhouse.io — the form lives right on
-    # the page). Old-style boards.greenhouse.io links often redirect to a company's
-    # CUSTOM careers site with no form at all — dry-run #1 landed on Cloudflare's
-    # marketing page and "filled" its search box. Those rows are still walkable later
-    # via a per-company adapter; today they are skipped, not guessed at.
-    # FRESHNESS BEFORE SCORE: dry-run #3 walked the twelve best-scored rows and every
-    # one was already closed (`?error=true`) — high score correlates with AGE in this
-    # pool (median 11 days), so score-first ordering serves corpses first. A fresh row
-    # is at least likely to exist; the fit judge decides quality later anyway.
+        raise SystemExit(f"no matching {'/'.join(platforms)} job in this user's queue")
+    # Board-hosted apply pages first (job-boards.greenhouse.io, jobs.ashbyhq.com — the
+    # form lives right on the page). Old-style boards.greenhouse.io links often redirect
+    # to a company's CUSTOM careers site with no form at all — dry-run #1 landed on
+    # Cloudflare's marketing page and "filled" its search box. A STABLE partition: inside
+    # each half the queue's own order (freshest first) is untouched.
     rows.sort(
-        key=lambda r: (
-            # Ashby postings are always board-hosted (jobs.ashbyhq.com), so they rank
-            # with GH-hosted ones.
-            any(h in (r.get("link") or "") for h in ("job-boards.greenhouse.io", "ashbyhq.com")),
-            (r.get("date_found") or r.get("created_at") or ""),
-            r.get("score") or 0,
+        key=lambda r: any(
+            h in (r.get("link") or "") for h in ("job-boards.greenhouse.io", "ashbyhq.com")
         ),
         reverse=True,
     )
@@ -1080,6 +1095,9 @@ async def run(
         log("! work setting not chosen — dry-run continues as 'any'; --live would refuse")
     max_jobs = max(1, max_jobs)
     candidates = pick_jobs(user_id, job_url, profile, platforms)
+    # What a stored verdict was judged against (resume, mode, search) — a row carrying
+    # another version goes back to the judge instead of being trusted.
+    version = verdict_version(profile, resume_text_for(profile))
     user_loc = parse_user_location(profile.get("location") or "")
     resume_path = download_resume(user_id, profile)
     log(f"resume: {resume_path} | candidates: {len(candidates)} | to send: up to {max_jobs}")
@@ -1183,11 +1201,22 @@ async def run(
                 log("  skip (already applied to this posting — server's own record)")
                 continue
 
-            fit = assess_fit(job=cand, profile=profile)
-            if fit.get("decision") != "apply":
-                log(f"  skip (fit {fit.get('fit_score')}): {str(fit.get('reason') or '')[:80]}")
-                continue
-            log(f"  fit {fit.get('fit_score')} — proceeding")
+            # The verdict the queue already holds is THE verdict: it is the score the
+            # user sees next to this job, and build_queue has dropped everything below
+            # their bar. Only a row nobody could judge yet is judged here, at the form.
+            if has_current_verdict(cand, version):
+                # Queue rows are above the bar by construction; an explicit --job-url
+                # pick did not come through the queue, so the bar is checked here too.
+                if (cand.get("fit_score") or 0) < mode_threshold(profile):
+                    log(f"  skip (fit {cand.get('fit_score')}, prejudged — below the bar)")
+                    continue
+                log(f"  fit {cand.get('fit_score')} (prejudged) — proceeding")
+            else:
+                fit = assess_fit(job=cand, profile=profile)
+                if fit.get("decision") != "apply":
+                    log(f"  skip (fit {fit.get('fit_score')}): {str(fit.get('reason') or '')[:80]}")
+                    continue
+                log(f"  fit {fit.get('fit_score')} — proceeding")
 
             try:
                 outcome = await apply_one(page, form, cand, profile, user_id, resume_path, live)
