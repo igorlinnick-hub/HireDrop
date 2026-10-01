@@ -1066,17 +1066,35 @@ async def apply_one(
         return outcome
 
     status = "applied"
-    jobs_db.mark_applied_by_link(user_id, job["link"], status)
-    apps_db.save_application(
-        user_id=user_id,
-        job_id=job["id"],
-        cover_letter=letter,
-        status=status,
-        job_title=job["title"],
-        company=job.get("company") or "",
-        platform=platform,
-        job_url=job["link"],
-    )
+    try:
+        jobs_db.mark_applied_by_link(user_id, job["link"], status)
+        apps_db.save_application(
+            user_id=user_id,
+            job_id=job["id"],
+            cover_letter=letter,
+            status=status,
+            job_title=job["title"],
+            company=job.get("company") or "",
+            platform=platform,
+            job_url=job["link"],
+        )
+    except Exception as exc:  # noqa: BLE001
+        # SENT AND UNRECORDED is the one state that produces a duplicate: the dedup reads
+        # the applications table, and this posting is not in it. The employer has the
+        # application; the open hand-back is what keeps tomorrow's walk away from it.
+        log(f"  ! SENT but NOT recorded ({str(exc).splitlines()[0][:120]})")
+        record_handback(
+            user_id,
+            job,
+            platform,
+            [],
+            reason=(
+                "This application WAS sent, but we could not save it to your history."
+                " Do not apply to it again"
+            ),
+            outcome="sent_unrecorded",
+        )
+        return "sent"
     # The lifetime free-taste counter lives beside the daily cap and is advanced by
     # POST /applications/save, which this path bypasses. Without this a free user's
     # night submits would never count toward FREE_APP_LIMIT — the gate would stay
