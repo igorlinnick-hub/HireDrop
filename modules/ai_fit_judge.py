@@ -26,6 +26,7 @@ measured agreement between the two models, and `judge_model` / `escalated` are
 returned on every verdict so that agreement can be measured before anyone tunes it.
 """
 
+import hashlib
 import json
 import os
 
@@ -55,6 +56,38 @@ _MODE_THRESHOLDS = {
     "standard": 55,
     "precise": 70,
 }
+
+# Bump when the prompt or the scale changes. Stored verdicts (jobs.fit_*) carry the
+# version they were judged under; a row judged under another one goes back to the judge.
+PROMPT_VERSION = "2026-09-30"
+
+
+def mode_threshold(profile: dict | None) -> int:
+    """The bar the user's apply mode sets — unknown mode reads as standard, as in assess_fit."""
+    mode = (profile or {}).get("apply_mode") or "standard"
+    return _MODE_THRESHOLDS.get(mode, _MODE_THRESHOLDS["standard"])
+
+
+def verdict_version(profile: dict | None, resume_text: str | None = None) -> str:
+    """Fingerprint of everything a verdict depends on besides the posting itself.
+
+    A stored verdict is only true for the resume, preferences and bar it was judged
+    against. Edit the resume, switch the mode, change the keywords — and "why this fits
+    you" starts lying. The fingerprint is stored with the verdict, and a mismatch sends
+    the row back to the judge instead of showing a stale reason.
+    """
+    profile = profile or {}
+    mode = profile.get("apply_mode") or "standard"
+    if mode not in _MODE_THRESHOLDS:
+        mode = "standard"
+    parts = [
+        PROMPT_VERSION,
+        mode,
+        (profile.get("ideal_job_description") or "") if mode == "precise" else "",
+        _prefs_line(profile),
+        resume_text if resume_text is not None else resume_text_for(profile),
+    ]
+    return hashlib.sha256("\x1f".join(parts).encode()).hexdigest()[:16]
 
 
 def _prefs_line(profile: dict) -> str:
@@ -184,8 +217,12 @@ def _parse_score(data: dict | None) -> int | None:
         return None
 
 
-def assess_fit(job=None, profile=None, screener_questions=None):
-    """Return {fit_score, decision, reason, concerns, judged, apply_mode}."""
+def assess_fit(job=None, profile=None, screener_questions=None, resume_text=None):
+    """Return {fit_score, decision, reason, concerns, judged, apply_mode}.
+
+    `resume_text` lets a batch caller (modules/fit_queue.py) read the resume once instead
+    of downloading and parsing the PDF again for every posting it judges.
+    """
     if not ANTHROPIC_API_KEY:
         return _fallback(job or {})
 
@@ -198,7 +235,8 @@ def assess_fit(job=None, profile=None, screener_questions=None):
 
     questions = [str(q).strip() for q in (screener_questions or []) if str(q).strip()][:_MAX_Q]
 
-    resume_text = resume_text_for(profile)
+    if resume_text is None:
+        resume_text = resume_text_for(profile)
     description = (job.get("description") or "")[:_MAX_DESC_CHARS]
     q_block = (
         ("\nScreener questions the employer asks:\n" + "\n".join(f"- {q}" for q in questions))

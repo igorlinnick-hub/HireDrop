@@ -349,6 +349,34 @@ def update_job_description(job_id: str, user_id: str, description: str) -> None:
         print(f"[jobs] update_job_description skipped: {e}")
 
 
+def save_fit_verdict(
+    job_id: str, user_id: str, score: int, reason: str, model: str, version: str
+) -> bool:
+    """Store the fit judge's verdict on the pool row (migrations/add_job_fit_verdict.sql).
+
+    `version` is ai_fit_judge.verdict_version() — the resume/preferences/bar the verdict
+    was reached against; a row whose version no longer matches is judged again. user_id-
+    scoped like every write here. Returns False instead of raising: a verdict that did
+    not land just means the row gets judged again later.
+    """
+    from datetime import UTC, datetime
+
+    try:
+        get_supabase().table("jobs").update(
+            {
+                "fit_score": int(score),
+                "fit_reason": (reason or "")[:300],
+                "fit_model": model or "",
+                "fit_version": version,
+                "fit_judged_at": datetime.now(UTC).isoformat(),
+            }
+        ).eq("id", job_id).eq("user_id", user_id).execute()
+        return True
+    except Exception as e:
+        print(f"[jobs] save_fit_verdict skipped (run migration?): {e}")
+        return False
+
+
 def update_tailored_resume(job_id: str, user_id: str, tailored_resume: str) -> None:
     try:
         get_supabase().table("jobs").update(

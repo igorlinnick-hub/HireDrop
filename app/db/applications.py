@@ -155,6 +155,36 @@ def active_user_ids(since_days: int, cap: int = 20_000) -> list[str]:
     return list(dict.fromkeys(r["user_id"] for r in rows if r.get("user_id")))
 
 
+def companies_applied_since(user_id: str, since_days: int, cap: int = 5000) -> list[str]:
+    """Company name of every application in the last `since_days`, one entry per
+    application (repeats are the point — modules/fit_queue.py counts them against the
+    per-company cap). Falls back to the joined job row for history written before the
+    company snapshot existed. Raises on a read failure: the caller decides whether a
+    queue without this guard is acceptable."""
+    from datetime import UTC, datetime, timedelta
+
+    since = (datetime.now(UTC) - timedelta(days=since_days)).isoformat()
+
+    def build(start: int, end: int):
+        return (
+            get_supabase()
+            .table("applications")
+            .select("company, jobs(company)")
+            .eq("user_id", user_id)
+            .gte("date_applied", since)
+            .order("date_applied", desc=True)
+            .order("id")
+            .range(start, end)
+        )
+
+    out = []
+    for r in fetch_paged(build, cap):
+        name = r.get("company") or ((r.get("jobs") or {}).get("company") or "")
+        if name:
+            out.append(name)
+    return out
+
+
 def count_applications(user_id: str) -> int:
     res = (
         get_supabase()

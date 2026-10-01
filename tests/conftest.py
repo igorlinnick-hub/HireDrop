@@ -28,6 +28,16 @@ def fake_user():
     return FakeUser()
 
 
+@pytest.fixture(autouse=True)
+def _no_company_history_network():
+    """The auto ATS queue reads application history for the per-company cap
+    (modules/fit_queue.py). Many tests call that router directly without supabase_mock,
+    and would reach for the network. A test that cares patches it itself — the inner
+    patch wins."""
+    with patch("app.db.applications.companies_applied_since", return_value=[]):
+        yield
+
+
 @pytest.fixture
 def supabase_mock():
     """Replace the Supabase singleton with a MagicMock.
