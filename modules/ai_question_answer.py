@@ -44,9 +44,48 @@ _SPONSORSHIP_Q = re.compile(r"sponsor|visa\b|h-?1b|immigration (case|status)|wor
 _AUTHORIZATION_Q = re.compile(
     r"(authoriz|eligible|legally (permitted|authorized|able)|right to work|"
     r"permanent work|work authoriz).{0,40}(work|employ)|"
-    r"(work|employ).{0,40}(authoriz|eligible|legally)|citizenship status",
+    r"(work|employ).{0,40}(authoriz|eligible|legally)|citizenship status"
+    # "Do you have the right to work in Germany?" ends on the place, with no second
+    # "work" for the pattern above to find — so it used to go to the model.
+    r"|\bright to work\b",
     re.I,
 )
+
+
+# "…work IN <place>": the place the question is actually about, when it says so.
+_WORK_IN = re.compile(
+    r"\b(?:work|working|employment|employed)\b[^.?!]{0,60}?\b(?:in|within)\s+"
+    r"((?:the\s+)?[^.?!,;()]{2,60})",
+    re.I,
+)
+_US_NAMED = re.compile(r"\b(?:u\.s\.a?\.?|usa?|united states(?: of america)?)\b", re.I)
+# Wider than the US: "authorized to work in the Americas" is not answered by a US flag.
+_WIDER_THAN_US = re.compile(r"\b(?:the americas|north america|worldwide|globally)\b", re.I)
+
+
+def _asks_about_another_place(question: str) -> bool:
+    """Is this work-status question about somewhere other than the United States?
+
+    Where the question says "work in <place>", that place decides: the US → ours to
+    answer, a foreign country / city / region → not. A US mention elsewhere in the
+    sentence does not rescue it ("…work in Canada? US-based applicants see below"), and a
+    foreign mention elsewhere does not sink a US question ("…work in the US without
+    sponsorship, e.g. TN for Canada/Mexico"). With no "work in" to go by, any foreign
+    place and no US at all is enough to refuse. A question that names nowhere is about
+    the job's country, which for this product is the US.
+    """
+    from modules.job_location import names_non_us_place
+
+    anchored = _WORK_IN.search(question)
+    if anchored:
+        place = anchored.group(1)
+        if _US_NAMED.search(place):
+            return False
+        if names_non_us_place(place) or _WIDER_THAN_US.search(place):
+            return True
+    return (
+        names_non_us_place(question) or bool(_WIDER_THAN_US.search(question))
+    ) and not _US_NAMED.search(question)
 
 
 def _status_from_profile(question: str, profile: dict, options: list[str]) -> str | None:
@@ -60,14 +99,12 @@ def _status_from_profile(question: str, profile: dict, options: list[str]) -> st
     if not (is_sponsor or is_auth):
         return None
 
-    # BOTH PROFILE FLAGS ARE ABOUT THE UNITED STATES. A question that names another
-    # country and never the US is a different question, and the US answer is not an
-    # answer to it. Dry-run 09-30: "Are you legally authorized to work in Canada?" →
-    # Yes, off `work_authorized_us`, on a "(Canada)" role that had reached a US-only
-    # queue. That is a false statement about someone's legal status; refuse instead.
-    from modules.job_location import names_foreign_country
-
-    if names_foreign_country(question):
+    # BOTH PROFILE FLAGS ARE ABOUT THE UNITED STATES. A question about working somewhere
+    # else is a different question, and the US answer is not an answer to it. Dry-run
+    # 09-30: "Are you legally authorized to work in Canada?" → Yes, off
+    # `work_authorized_us`, on a "(Canada)" role that had reached a US-only queue. That
+    # is a false statement about someone's legal status; refuse instead.
+    if _asks_about_another_place(question):
         return ""
 
     # Sponsorship wins when a question mentions both ("are you authorized to work
@@ -85,6 +122,89 @@ def _status_from_profile(question: str, profile: dict, options: list[str]) -> st
     # GitLab's sponsorship dropdown lists seven visa types, all starting "Yes, …", and
     # picking one would be inventing WHICH visa the person needs. Hand it back instead.
     return matches[0] if len(matches) == 1 else ""
+
+
+# ---------------------------------------------------------------------------
+# What only the PERSON can say
+#
+# Three kinds of question have no honest answer from a program, whatever the résumé says.
+# All three were answered anyway on one live form (Muck Rack, dry walk 2026-09-30):
+#
+#   "I hereby confirm that I am a real human being and not an automated bot or artificial
+#    intelligence … all information … has been created and submitted by me, personally."
+#        → "I Agree"       — the attestation was agreed to by the thing it asks about
+#   "What are your personal pronouns?"            → "He/him"   — inferred from a first name
+#   "What is the phonetic spelling of your name?" → "EE-gor LIN-ik" — a guess at how
+#                                                    someone says their own name
+#
+# The first is a false statement under the user's name and the reason this exists; the
+# other two are facts about a person that nobody told us. None of them is "answered in
+# the candidate's favor" — they are refused ("" → the caller leaves the field blank and
+# a required one hands the form back to the human, who can answer truthfully).
+_AI = r"(?:ai|a\.i\.|chatgpt|gpt|artificial intelligence|generative|llm|copilot)"
+# "this application", "your answers", "my responses" — the determiner is what separates
+# the document being attested from the verb in "used AI to answer customer questions".
+_APPLICATION = (
+    r"(?:this|your|my|the|these|those|any) "
+    r"(?:application|answers?|responses?|resume|résumé|cover letter|submission)"
+)
+_ATTESTS_HUMAN_Q = re.compile(
+    r"(?:real|actual) (?:human|person)\b|human being|\bi am (?:a )?human\b"
+    r"|\bare you (?:a |an )?(?:real )?(?:human|robot|bot)\b"
+    r"|\bnot (?:a |an )?(?:automated |ai )?(?:ro)?bot\b"
+    r"|automated (?:bot|tool|system|program|agent)"
+    # "created / completed / submitted … by me, personally"
+    r"|(?:created|written|completed|prepared|submitted|authored)\b.{0,40}"
+    r"\b(?:by me|myself|personally|on my own)\b"
+    r"|\bmy own (?:work|words|writing)\b"
+    # AI and the application in one breath, either order: "did you use AI to complete this
+    # application?", "were any of your responses AI-generated?", "written without the use
+    # of ChatGPT". A question about using AI at WORK names no application and passes.
+    rf"|\b(?:use|used|using|help|aid|assistance)\b.{{0,40}}\b{_AI}\b.{{0,80}}\b{_APPLICATION}\b"
+    rf"|\b{_APPLICATION}\b.{{0,80}}\b{_AI}\b[- ]?(?:generated|written|assisted|tools?)?"
+    rf"|\bwithout (?:the )?(?:use|help|aid|assistance) of\b.{{0,20}}\b{_AI}\b"
+    rf"|\b{_AI}\b[- ](?:generated|written|assisted)\b",
+    re.I,
+)
+_PRONOUNS_Q = re.compile(r"\bpronouns?\b", re.I)
+_SAYS_OWN_NAME_Q = re.compile(r"phonetic|pronounc|pronunciation", re.I)
+# The way out a self-identification list always offers; taken instead of guessing.
+_DECLINES = re.compile(
+    r"don'?t wish|do not wish|decline|prefer not|rather not|not to (?:answer|disclose|say)",
+    re.I,
+)
+
+
+# A signature typed into a box: "I certify that the information in this application is
+# true and complete" with the name underneath. Wikimedia's form got "Igor Linnik" there —
+# a signature its owner never made.
+_SIGNS_Q = re.compile(
+    r"\bi (?:hereby )?certify\b|\bsignature\b|\bsign (?:here|below)\b"
+    r"|\btype (?:your )?(?:full |legal )?name\b",
+    re.I,
+)
+# The same attestation hidden in the ANSWERS: "Which of the following best describes
+# you?" → "I am a human being" (Grafana Labs, dry walk 10-01). The question is innocent;
+# the options are the declaration.
+_HUMAN_OPTION = re.compile(
+    r"\bi am (?:a |an )?(?:human|real person|robot|bot|ai\b|automated)|human being"
+    r"|\b(?:not|am) (?:a |an )?(?:ro)?bot\b|artificial intelligence|automated (?:bot|tool|system)",
+    re.I,
+)
+
+
+def _only_the_person(question: str, options: list[str]) -> str | None:
+    """Empty string to refuse, the list's own "prefer not to say" for pronouns, or None
+    when the question is not one of these and normal handling should continue."""
+    if _ATTESTS_HUMAN_Q.search(question) or _SAYS_OWN_NAME_Q.search(question):
+        return ""
+    if any(_HUMAN_OPTION.search(o) for o in options):
+        return ""
+    if not options and _SIGNS_Q.search(question):
+        return ""
+    if _PRONOUNS_Q.search(question):
+        return next((o for o in options if _DECLINES.search(o)), "")
+    return None
 
 
 def _confirmed_facts(profile: dict) -> str:
@@ -166,11 +286,62 @@ copied verbatim with no extra text. When two options are both defensible, pick t
 more favorable to the candidate."""
 
 
-def answer_screener_question(question, job=None, profile=None, options=None):
+# UNATTENDED = nobody reads the answer before the employer does (the night shift). The
+# standing rule — "answer in the candidate's favor wherever the résumé makes it
+# defensible" — was written for screeners about EXPERIENCE. Left alone with a whole form,
+# the same model also answered for the person's circumstances, which no résumé states:
+# dry walks 09-30/10-01 had it say "Yes" to "located on the West Coast?" for someone in
+# Hawaii, "LinkedIn" to "how did you hear about us?", and "Yes" to in-person attendance
+# three thousand miles away. In this mode such questions come back UNKNOWN (→ "", the
+# field stays blank and a required one hands the form to the person).
+_UNATTENDED_RULES = """
+
+UNATTENDED MODE — nobody will review this answer before the employer reads it.
+Experience, skills and motivation questions are answered as above. But reply with exactly \
+UNKNOWN (that one word, nothing else — also instead of picking an option) when the question \
+is about the candidate's own circumstances and neither the résumé nor the FACTS ON FILE \
+state the answer:
+- where they live, or whether they are in / near a given city, region, coast or time zone
+- how they heard about the job or the company
+- what they are willing or available to do: travel, relocate, attend an office, work a \
+schedule or shift, a start date, a notice period
+- memberships, affiliations, whether they know or were referred by someone, whether they \
+have applied or interviewed here before
+- facts about themselves they are asked to certify, declare or sign
+Never stretch a fact to fit the question: Hawaii is not "the West Coast", a remote job \
+search is not a promise to attend an office.
+Two things are NOT unknown: acknowledging that a notice or a process has been read \
+(privacy notice, background check, interview steps) — answer those; and whether the \
+candidate has worked for THIS company before — the résumé's work history answers it \
+(not listed there = no).
+UNKNOWN is a good answer: the form goes back to the person, who can answer truthfully."""
+
+
+def _facts_on_file(profile: dict) -> str:
+    """What the user told us about their circumstances, for the unattended prompt — so a
+    location question is answered from where they live, not from a guess."""
+    home = ", ".join(str(profile.get(k) or "").strip() for k in ("city", "state") if profile.get(k))
+    if home and profile.get("postal_code"):
+        home += f" {str(profile['postal_code']).strip()}"
+    lines = [
+        # For a remote job this is also where they would work from.
+        f"Lives in (and works from, when the job is remote): {home}" if home else "",
+        f"Country of residence: {profile.get('country')}" if profile.get("country") else "",
+        f"Searching for jobs in: {profile.get('location')}" if profile.get("location") else "",
+        f"Work arrangement asked for: {profile.get('work_setting')}"
+        if profile.get("work_setting")
+        else "",
+    ]
+    return "\n".join(line for line in lines if line)
+
+
+def answer_screener_question(question, job=None, profile=None, options=None, unattended=False):
     """Return a string answer for one screener question.
 
     options: list[str] for dropdown/radio questions → return one option verbatim.
              None/empty for open text → return a short generated answer.
+    unattended: no human will see the answer before it is sent (see _UNATTENDED_RULES);
+             questions about the person's circumstances then come back "".
     Returns "" when no API key (caller then skips the field).
     """
     if not ANTHROPIC_API_KEY:
@@ -188,6 +359,11 @@ def answer_screener_question(question, job=None, profile=None, options=None):
     status = _status_from_profile(question, profile, options)
     if status is not None:
         return status
+
+    # Attestations of being human, pronouns, how a name is said. (See _only_the_person.)
+    personal = _only_the_person(question, options)
+    if personal is not None:
+        return personal
 
     resume_text = resume_text_for(profile)
     about = re.sub(r"\s+", " ", str(job.get("description") or "")).strip()[:_MAX_POSTING_CHARS]
@@ -234,18 +410,23 @@ Candidate background (from resume):
         prompt += (
             "\n\nStated by the candidate directly (same standing as the resume):\n" + confirmed
         )
+    if unattended:
+        prompt += "\n\nFACTS ON FILE:\n" + (_facts_on_file(profile) or "(none)")
 
     try:
         client = get_anthropic_client()
         message = client.messages.create(
             model="claude-sonnet-4-6",
             max_tokens=256,
-            system=_system_prompt(),
+            system=_system_prompt() + (_UNATTENDED_RULES if unattended else ""),
             messages=[{"role": "user", "content": prompt}],
         )
         answer = (message.content[0].text or "").strip()
     except Exception as e:
         print(f"[answer_question] AI generation failed: {e}")
+        return ""
+
+    if unattended and re.match(r"\W*unknown\b", answer, re.I):
         return ""
 
     # For multiple choice, snap the model's answer back to a real option in case it

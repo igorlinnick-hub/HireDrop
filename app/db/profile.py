@@ -67,6 +67,25 @@ _DEFAULTS = {
 }
 
 
+def _own_path(user_id: str, path) -> str:
+    """A stored resume path — only if it lies inside this user's own storage folder.
+
+    `profiles.resume_url` is written by the BROWSER (the wizard uploads the file and saves
+    the path through supabase-js; RLS lets a user update any column of their own row).
+    The server then reads that path with the service key, which no storage policy
+    restrains: `resolved_resume_path` signs a download URL for it, `load_resume_text`
+    feeds it to every model call. So a user who saved someone else's
+    `<uuid>/resume.pdf` as their own path was handed that person's resume — as a file,
+    and as text inside their cover letters and answers.
+
+    Every upload this product has ever made is `<user_id>/…` (checked on the live table:
+    15 of 15), so a path anywhere else is not a resume of theirs and is read as "none".
+    """
+    path = str(path or "")
+    inside = path.startswith(f"{user_id}/") and ".." not in path and "\\" not in path
+    return path if inside else ""
+
+
 def get_profile(user_id: str) -> dict:
     res = get_supabase().table("profiles").select("*").eq("user_id", user_id).execute()
     if not res.data:
@@ -82,7 +101,7 @@ def get_profile(user_id: str) -> dict:
         "job_type": p.get("job_type") or "full-time",
         "platforms": p.get("platforms") or ["remoteok"],
         "writing_style": p.get("writing_style") or "",
-        "resume_url": p.get("resume_url") or "",
+        "resume_url": _own_path(user_id, p.get("resume_url")),
         "onboarding_completed": p.get("onboarding_completed") or False,
         "ats_score": p.get("ats_score"),
         "ats_issues": p.get("ats_issues") or [],

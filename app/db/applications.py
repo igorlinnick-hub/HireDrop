@@ -208,7 +208,7 @@ def _valid_since(since_iso: str | None) -> str | None:
         return None
 
 
-def applied_job_urls(user_id: str, limit: int = 2000) -> list[str]:
+def applied_job_urls(user_id: str, limit: int = 2000, strict: bool = False) -> list[str]:
     """Every URL this user has actually applied to. The server's own answer to "already
     done", independent of the extension's browser-local appliedUrls set — which is empty
     on a fresh Chrome profile and was the only thing standing between a stuck pool row and
@@ -233,6 +233,11 @@ def applied_job_urls(user_id: str, limit: int = 2000) -> list[str]:
     try:
         rows = fetch_paged(build, limit)
     except Exception:  # noqa: BLE001 — the queue must still build without this guard
+        # …but a caller about to SUBMIT must not mistake "could not read" for "nothing
+        # sent": `strict` lets it refuse instead (the night shift's fail-closed branch
+        # was written against this function and could never fire).
+        if strict:
+            raise
         return []
     return [r["job_url"] for r in rows if r.get("job_url")]
 

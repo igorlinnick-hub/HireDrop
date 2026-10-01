@@ -46,9 +46,11 @@ from common import (  # noqa: E402
     _DECLINE_OPT,
     _DEMOGRAPHIC_Q,
     _NO_OPT,
-    _OPT_IN_Q,
     is_knockout,
+    is_opt_in,
     log,
+    long_list_fact,
+    pick_from_long_list,
     pick_typeahead,
     same_value,
     typeahead_kind,
@@ -65,9 +67,18 @@ from app.db import resume as resume_storage  # noqa: E402
 from app.db.client import get_supabase  # noqa: E402
 from app.db.profile import get_profile  # noqa: E402
 from app.db.subscriptions import check_can_apply, increment_free_apps  # noqa: E402
-from app.routers.jobs import fresh_enough, on_search_filter  # noqa: E402
-from modules.ai_cover_letter import generate_cover_letter  # noqa: E402
-from modules.ai_fit_judge import assess_fit  # noqa: E402
+from app.routers.jobs import (  # noqa: E402
+    PREJUDGE_CALLS,
+    PREJUDGE_SECS,
+    _ats_candidates,
+    _prejudged_queue,
+)
+from modules.ai_cover_letter import (
+    generate_cover_letter,  # noqa: E402
+    resume_text_for,  # noqa: E402
+)
+from modules.ai_fit_judge import assess_fit, mode_threshold, verdict_version  # noqa: E402
+from modules.fit_queue import has_current_verdict  # noqa: E402
 from modules.job_identity import job_identity, normalized_link  # noqa: E402
 from modules.job_location import (  # noqa: E402
     location_verdict,
@@ -98,43 +109,49 @@ def pick_jobs(
         q = sb.table("jobs").select("*").eq("user_id", user_id).in_("platform", list(platforms))
         rows = q.eq("link", job_url).limit(5).execute().data or []
     else:
-        # ONE RULE FOR EVERY APPLY PATH. The deck and the extension's auto queue read
-        # the pool through on_search_filter (keywords, other-profession titles, job
-        # type, country, city, salary, work setting) + the age gate; this walk used to
-        # read a raw 200-row slice of `status=new` and re-check only the city — so a row
-        # the user's own search had excluded (old keyword set, pay below the floor) was
-        # still eligible for an unwatched submit. The pool is read whole and paged: a
-        # bare select stops at PostgREST's 1000-row cap.
-        rows = [
-            r
-            for r in jobs_db.get_jobs(user_id)
-            if r.get("platform") in platforms and (r.get("status") or "new") == "new"
-        ]
-        rows = [r for r in on_search_filter(rows, profile) if fresh_enough(r)]
+        # ONE QUEUE FOR EVERY EXECUTOR. The night shift is the second executor of the
+        # queue the extension walks by day — not a second opinion about it. So it reads
+        # the pool through the SAME three steps as /jobs/ats-queue: the search filter +
+        # age gate (_ats_candidates), then the prejudged queue (_prejudged_queue): rows
+        # already judged below the user's bar are out without a model call, the rest go
+        # freshest first, and the company cap (2 per 60 days, Igor 09-30) counts both
+        # what was already sent and what this very list would send.
+        # Until 09-30 this walk kept its own copy of those rules and judged every
+        # candidate again, live: a dry walk lined up THREE DoorDash applications for one
+        # night, and scored the same posting 38 on one pass and 42 on the next — a
+        # different list from the one the user is shown.
+        _pool, _on_search, live = _ats_candidates(user_id, profile)
+        live = [r for r in live if r.get("platform") in platforms]
         # A job already handed back is WAITING ON THE PERSON. Without this the walk
         # re-opens the same form every night, fills it to the same wall and stops there
         # — live 09-30 the freshest fit was a DoorDash form two fields short, and it
         # would have been the first pick of every run after it.
         waiting = open_handback_keys(user_id)
-        rows = [r for r in rows if _job_key(r.get("link") or "") not in waiting]
+        live = [r for r in live if _job_key(r.get("link") or "") not in waiting]
+        queue = _prejudged_queue(
+            user_id,
+            profile,
+            live,
+            limit=len(live),
+            judge_calls=PREJUDGE_CALLS,
+            deadline_s=PREJUDGE_SECS,
+        )
+        rows = queue["jobs"]
+        log(
+            f"queue: {len(rows)} to walk ({queue['passing']} prejudged, {queue['unjudged']}"
+            f" to judge at the form) | below the bar: {queue['below_bar']}"
+            f" | over the company cap: {queue['company_capped']}"
+        )
     if not rows:
-        raise SystemExit(f"no matching {'/'.join(platforms)} job in this user's pool")
-    # Prefer GH-HOSTED apply pages (job-boards.greenhouse.io — the form lives right on
-    # the page). Old-style boards.greenhouse.io links often redirect to a company's
-    # CUSTOM careers site with no form at all — dry-run #1 landed on Cloudflare's
-    # marketing page and "filled" its search box. Those rows are still walkable later
-    # via a per-company adapter; today they are skipped, not guessed at.
-    # FRESHNESS BEFORE SCORE: dry-run #3 walked the twelve best-scored rows and every
-    # one was already closed (`?error=true`) — high score correlates with AGE in this
-    # pool (median 11 days), so score-first ordering serves corpses first. A fresh row
-    # is at least likely to exist; the fit judge decides quality later anyway.
+        raise SystemExit(f"no matching {'/'.join(platforms)} job in this user's queue")
+    # Board-hosted apply pages first (job-boards.greenhouse.io, jobs.ashbyhq.com — the
+    # form lives right on the page). Old-style boards.greenhouse.io links often redirect
+    # to a company's CUSTOM careers site with no form at all — dry-run #1 landed on
+    # Cloudflare's marketing page and "filled" its search box. A STABLE partition: inside
+    # each half the queue's own order (freshest first) is untouched.
     rows.sort(
-        key=lambda r: (
-            # Ashby postings are always board-hosted (jobs.ashbyhq.com), so they rank
-            # with GH-hosted ones.
-            any(h in (r.get("link") or "") for h in ("job-boards.greenhouse.io", "ashbyhq.com")),
-            (r.get("date_found") or r.get("created_at") or ""),
-            r.get("score") or 0,
+        key=lambda r: any(
+            h in (r.get("link") or "") for h in ("job-boards.greenhouse.io", "ashbyhq.com")
         ),
         reverse=True,
     )
@@ -147,23 +164,36 @@ def _job_key(link: str) -> str:
 
 def open_handback_keys(user_id: str) -> set[str]:
     try:
-        return {_job_key(h.get("url") or "") for h in handbacks_db.list_open(user_id, limit=100)}
+        return {_job_key(url) for url in handbacks_db.open_urls(user_id)}
     except Exception as exc:  # noqa: BLE001 — worst case we meet the same wall once more
         log(f"  ! hand-back lookup failed ({exc}) — walking without it")
         return set()
 
 
-def record_handback(user_id: str, job: dict, platform: str, unfilled: list[str]) -> None:
-    """A required field with no honest answer is a QUESTION FOR THE PERSON, not a log line.
+def record_handback(
+    user_id: str,
+    job: dict,
+    platform: str,
+    unfilled: list[str],
+    reason: str = "",
+    outcome: str = "handback",
+) -> None:
+    """A form the night shift could not finish is a JOB FOR THE PERSON, not a log line.
 
     Until 09-30 this path only printed and exited: nothing reached History, the dashboard
     never asked, and the 30-day hand-back measurement that decides which questions signup
     asks (modules/employer_answers.py) could not see a field the night shift kept dying
     on. Written exactly like the extension's hand-back — the durable row the dashboard
     asks from, plus the tagged activity line `handback_stats` counts.
+
+    Two ways in: required fields with no honest answer (`unfilled`), and a submit the
+    board did not accept (`reason`, with the board's own `outcome` word). Either way the
+    open row also keeps the walk from re-opening the same form tomorrow night
+    (pick_jobs) — which for a refused submit matters twice: Greenhouse's refusal comes
+    with a verification code emailed to the user, and a blind retry is one more email.
     """
     labels = [str(q)[:300] for q in unfilled][:12]
-    reason = "No answer on file for: " + ", ".join(labels[:6])
+    reason = reason or ("No answer on file for: " + ", ".join(labels[:6]))
     try:
         handbacks_db.add(
             user_id,
@@ -184,7 +214,7 @@ def record_handback(user_id: str, job: dict, platform: str, unfilled: list[str])
     _note(
         user_id,
         "warn",
-        f"🌙 Night shift needs your hands [outcome=handback board={platform}]:"
+        f"🌙 Night shift needs your hands [outcome={outcome} board={platform}]:"
         f" {job.get('title')} @ {job.get('company', '?')} — {reason}.",
         {"type": "handback", "platform": platform, "unfilled": labels},
     )
@@ -206,25 +236,19 @@ def download_resume(user_id: str, profile: dict) -> str:
     return path
 
 
-def already_applied(user_id: str, link: str) -> bool:
-    """Has this user already applied to this posting, by the SERVER's record?
+def applied_keys(user_id: str) -> set[str]:
+    """Every posting this user has already applied to, by the SERVER's record, as keys.
 
     Identity, not string equality: the same Greenhouse posting reaches the pool as
     `boards.greenhouse.io/x/jobs/123`, `job-boards.greenhouse.io/x/jobs/123?gh_jid=123`
     and with tracking params, so comparing URLs literally misses the duplicate that
     matters. job_identity() reduces all of them to one key — the same reduction
     /campaign/queue uses to stop the extension re-applying.
+
+    RAISES when the history cannot be read (strict): "could not tell" must never look
+    like "nothing sent" to a caller that is about to send.
     """
-    target = job_identity(link) or (normalized_link(link) or link)
-    try:
-        applied = apps_db.applied_job_urls(user_id)
-    except Exception as exc:  # noqa: BLE001
-        # Fail CLOSED: if we cannot tell whether this was already sent, do not send it.
-        # A skipped job costs one slot; a duplicate costs the user's credibility with an
-        # employer, which is the thing the product exists to protect.
-        log(f"  ! dedup lookup failed ({exc}) — refusing to apply blind")
-        return True
-    return any((job_identity(url) or (normalized_link(url) or url)) == target for url in applied)
+    return {_job_key(url) for url in apps_db.applied_job_urls(user_id, strict=True)}
 
 
 async def knockout_answers(form) -> list[str]:
@@ -542,6 +566,7 @@ async def choose(
     opts,
     index: int,
     option: str,
+    options: list[str],
     label: str,
     note: str,
     missed: list[str],
@@ -556,31 +581,35 @@ async def choose(
     # field's state is how a wrong answer reaches an employer looking correct in the
     # transcript.
     settled = await held_value(box)
-    if settled and not same_value(option, settled):
-        _miss(missed, label, optional)
+    if settled and not same_value(option, settled, options):
+        # ALWAYS a miss, optional or not: the widget is not blank, it holds an answer
+        # nobody chose, and that is what the employer would receive.
+        missed.append(label)
         log(f"  ! {label[:50]}: wanted {option[:30]!r}, widget holds {settled[:30]!r}")
         return
     log(f"  ▾ {label[:60]} → {settled or option}{note}")
 
 
-async def fill_typeahead(page, box, kind: str, profile: dict) -> str:
-    """Type the profile's fact into a search-fed react-select and take the option that
-    IS that fact. Returns what the widget holds afterwards, "" = left empty.
+async def type_and_pick(page, box, queries: list[str], pick) -> str:
+    """Type a known fact into a search-fed (or merely too-long) react-select and take the
+    option `pick(query, options)` names. Returns what the widget holds afterwards, "" =
+    left empty.
     """
     box_id = (await box.get_attribute("id")) or ""
     # Scoped by the input's id, like every other dropdown here. The caller's locator is
-    # no use: it was resolved while the menu was still empty.
+    # no use: it was resolved before anything was typed.
     opts = (
         page.locator(f'[id^="react-select-{box_id}-option"]')
         if box_id
         else page.locator('[class*="select__menu"] [class*="select__option"]')
     )
-    for query in typeahead_queries(kind, profile):
+    for query in queries:
         # Nothing is chosen yet at this point, so emptying the input is safe — after a
         # choice it would clear it (see close_menu).
         await box.fill("")
         await box.type(query, delay=35)
-        # The options arrive from a search request; wait for rows, not for a timer.
+        # The options arrive from a search request (or a client-side filter); wait for
+        # rows, not for a timer.
         texts: list[str] = []
         for _ in range(12):
             await page.wait_for_timeout(500)
@@ -590,18 +619,29 @@ async def fill_typeahead(page, box, kind: str, profile: dict) -> str:
             ]
             if any(texts):
                 break
-        target = pick_typeahead(kind, query, [t for t in texts if t], profile)
+        shown = [t for t in texts if t]
+        target = pick(query, shown)
         if not target:
             continue
         await opts.nth(texts.index(target)).click(timeout=8000)
         await page.wait_for_timeout(300)
         # Same read-back rule as every other dropdown here: report the field, not intent.
         settled = await held_value(box)
-        if same_value(target, settled):
+        if same_value(target, settled, shown):
             await close_menu(page)
             return settled
     await close_menu(page)
     return ""
+
+
+async def fill_typeahead(page, box, kind: str, profile: dict) -> str:
+    """The profile's fact for a school / city search box (see common.typeahead_*)."""
+    return await type_and_pick(
+        page,
+        box,
+        typeahead_queries(kind, profile),
+        lambda query, shown: pick_typeahead(kind, query, shown, profile),
+    )
 
 
 async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
@@ -690,6 +730,7 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
                         opts,
                         pairs[texts.index(decline)][0],
                         decline,
+                        texts,
                         label,
                         " (declined on purpose)",
                         missed,
@@ -702,7 +743,7 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
             # it — the extension has always answered No (content.js, the SMS rule). Here
             # the model answered instead: live 09-30 it opted Igor into SMS and WhatsApp
             # messages from an employer, a consent he was never asked for.
-            if texts and _OPT_IN_Q.search(label):
+            if texts and is_opt_in(label):
                 no = next((t for t in texts if _NO_OPT.match(t)), None)
                 if no:
                     await choose(
@@ -711,6 +752,7 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
                         opts,
                         pairs[texts.index(no)][0],
                         no,
+                        texts,
                         label,
                         " (opt-in declined)",
                         missed,
@@ -729,6 +771,21 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
                     log(f"  ⌕ {label[:60]} → {settled}")
                 else:
                     _miss(missed, label, optional)
+                continue
+
+            # A LIST TOO LONG TO READ. Only the first forty rows were read above; asked to
+            # "choose the best option", the model chose among Afghanistan–Cambodia for a
+            # country of residence. Such a list is typed into from the profile, or left.
+            if await opts.count() >= 40:
+                queries = long_list_fact(label, profile)
+                settled = (
+                    await type_and_pick(page, box, queries, pick_from_long_list) if queries else ""
+                )
+                if settled:
+                    log(f"  ⌕ {label[:60]} → {settled}")
+                else:
+                    _miss(missed, label, optional)
+                    await close_menu(page)
                 continue
 
             if not texts:
@@ -761,7 +818,16 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
                 await close_menu(page)
                 continue
             await choose(
-                page, box, opts, pairs[texts.index(target)][0], target, label, "", missed, optional
+                page,
+                box,
+                opts,
+                pairs[texts.index(target)][0],
+                target,
+                texts,
+                label,
+                "",
+                missed,
+                optional,
             )
         except Exception as exc:  # noqa: BLE001
             # A combobox that blew up is UNANSWERED, and the pre-submit gate has to hear
@@ -802,8 +868,11 @@ class SubmitWatch:
     def __init__(self) -> None:
         self.status: int | None = None
         self.url: str = ""
+        self.page_before: str = ""
 
     def attach(self, page) -> None:
+        # Where the page stood BEFORE the click: a confirmation is a page we arrived at.
+        self.page_before = page.url
         page.on("response", self._on_response)
 
     def _on_response(self, response) -> None:
@@ -836,8 +905,16 @@ async def submit_outcome(page, form, watch: "SubmitWatch | None" = None) -> tupl
     would otherwise be filed under "captcha", and a reputation metric poisoned by our
     own bugs is worse than no metric.
     """
+    # A confirmation URL is one we were SENT to. Matched on the address alone, a posting
+    # that already lives under ".../customer-success/..." or a company called Thankful
+    # confirms itself before anything was submitted.
+    before = watch.page_before if watch else ""
+
+    def arrived(url: str) -> bool:
+        return url != before and bool(re.search(r"confirmation|thank|success", url))
+
     with contextlib.suppress(Exception):  # no navigation = the normal in-place GH submit
-        await page.wait_for_url(re.compile(r"confirmation|thank|success"), timeout=25000)
+        await page.wait_for_url(arrived, timeout=25000)
         return True, "confirmation url", "sent"
     await page.wait_for_timeout(6000)
 
@@ -947,6 +1024,12 @@ async def apply_one(
                 f"🌙 Night shift stood down [outcome=knockout]: {job['title']}"
                 f" @ {job.get('company', '?')} — {knocked[0]}",
             )
+            # The employer's own requirement rules this user out, tonight and tomorrow.
+            # Left `new`, the form is filled again every night — paid for each time, and
+            # one differently-worded answer away from being sent.
+            with contextlib.suppress(Exception):
+                n = jobs_db.mark_dead_link(user_id, job["link"])
+                log(f"  retired {n} pool row(s) — not a job this form will take")
             return "knockout"
 
     shot = os.path.join(SHOTS, f"{job['id']}-filled.png")
@@ -998,9 +1081,19 @@ async def apply_one(
     watch = SubmitWatch()
     watch.attach(page)  # armed BEFORE the click — the verdict rides the submit XHR
     await submit.first.click()
-    judge = ashby.submit_outcome if platform == "ashby" else submit_outcome
-    confirmed, why, outcome = await judge(page, form, watch)
-    await page.screenshot(path=os.path.join(SHOTS, f"{job['id']}-after-submit.png"), full_page=True)
+    # FROM HERE THE APPLICATION MAY ALREADY BE WITH THE EMPLOYER. Anything that goes wrong
+    # while reading the result must not leave the job looking untouched: the next walk
+    # would open it and send a second one. So a crash past this line is a hand-back too.
+    try:
+        judge = ashby.submit_outcome if platform == "ashby" else submit_outcome
+        confirmed, why, outcome = await judge(page, form, watch)
+        with contextlib.suppress(Exception):
+            await page.screenshot(
+                path=os.path.join(SHOTS, f"{job['id']}-after-submit.png"), full_page=True
+            )
+    except Exception as exc:  # noqa: BLE001
+        confirmed, outcome = False, "unknown"
+        why = f"Submit was clicked, but the result could not be read ({str(exc).splitlines()[0][:80]})"
     log(f"submit outcome: {outcome.upper()} — {why} | http {watch.status} | {page.url}")
 
     if not confirmed:
@@ -1013,27 +1106,50 @@ async def apply_one(
         # The outcome word is machine-countable on purpose: `outcome=captcha_code`
         # per hundred submits IS the reputation metric (P2), and `outcome=invalid`
         # separates our own filling bugs from Greenhouse's judgement of us.
-        _note(
+        outcome = outcome if outcome != "sent" else "unknown"
+        record_handback(
             user_id,
-            "warn",
-            f"🌙 Night shift could NOT send [outcome={outcome} http={watch.status} board={platform}]:"
-            f" {job['title']} @ {job.get('company', '?')} — {why}."
-            " Nothing recorded as applied.",
+            job,
+            platform,
+            [],
+            reason=(
+                f"We could not confirm this one was sent [http={watch.status}]: {why}."
+                " Nothing is recorded as applied — check your inbox, then finish it by hand"
+            ),
+            outcome=outcome,
         )
-        return outcome if outcome != "sent" else "unknown"
+        return outcome
 
     status = "applied"
-    jobs_db.mark_applied_by_link(user_id, job["link"], status)
-    apps_db.save_application(
-        user_id=user_id,
-        job_id=job["id"],
-        cover_letter=letter,
-        status=status,
-        job_title=job["title"],
-        company=job.get("company") or "",
-        platform=platform,
-        job_url=job["link"],
-    )
+    try:
+        jobs_db.mark_applied_by_link(user_id, job["link"], status)
+        apps_db.save_application(
+            user_id=user_id,
+            job_id=job["id"],
+            cover_letter=letter,
+            status=status,
+            job_title=job["title"],
+            company=job.get("company") or "",
+            platform=platform,
+            job_url=job["link"],
+        )
+    except Exception as exc:  # noqa: BLE001
+        # SENT AND UNRECORDED is the one state that produces a duplicate: the dedup reads
+        # the applications table, and this posting is not in it. The employer has the
+        # application; the open hand-back is what keeps tomorrow's walk away from it.
+        log(f"  ! SENT but NOT recorded ({str(exc).splitlines()[0][:120]})")
+        record_handback(
+            user_id,
+            job,
+            platform,
+            [],
+            reason=(
+                "This application WAS sent, but we could not save it to your history."
+                " Do not apply to it again"
+            ),
+            outcome="sent_unrecorded",
+        )
+        return "sent"
     # The lifetime free-taste counter lives beside the daily cap and is advanced by
     # POST /applications/save, which this path bypasses. Without this a free user's
     # night submits would never count toward FREE_APP_LIMIT — the gate would stay
@@ -1080,12 +1196,28 @@ async def run(
         log("! work setting not chosen — dry-run continues as 'any'; --live would refuse")
     max_jobs = max(1, max_jobs)
     candidates = pick_jobs(user_id, job_url, profile, platforms)
+    # What a stored verdict was judged against (resume, mode, search) — a row carrying
+    # another version goes back to the judge instead of being trusted.
+    version = verdict_version(profile, resume_text_for(profile))
     user_loc = parse_user_location(profile.get("location") or "")
     resume_path = download_resume(user_id, profile)
     log(f"resume: {resume_path} | candidates: {len(candidates)} | to send: up to {max_jobs}")
 
+    # What is already with an employer, read ONCE and kept current as the walk sends.
+    # No answer is not "nothing sent": a live walk refuses to start without it.
+    try:
+        applied = applied_keys(user_id)
+    except Exception as exc:  # noqa: BLE001
+        if live:
+            raise SystemExit(
+                "LIVE REFUSED — this user's application history could not be read"
+                f" ({str(exc).splitlines()[0][:100]}); not applying blind."
+            ) from exc
+        log(f"! application history unreadable ({exc}) — dry-run continues without dedup")
+        applied = set()
     outcomes: list[str] = []
     capped: set[str] = set()
+    opened: set[str] = set()  # postings this walk has already put a form through
     os.makedirs(SHOTS, exist_ok=True)
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=not headful)
@@ -1179,16 +1311,34 @@ async def run(
             # crash, a repeated test — send the employer a SECOND real application.
             # The server already knows better: applied_job_urls + job_identity is the
             # same answer /campaign/queue uses to keep the extension honest.
-            if already_applied(user_id, cand["link"]):
+            key = _job_key(cand["link"])
+            if key in applied:
                 log("  skip (already applied to this posting — server's own record)")
                 continue
-
-            fit = assess_fit(job=cand, profile=profile)
-            if fit.get("decision") != "apply":
-                log(f"  skip (fit {fit.get('fit_score')}): {str(fit.get('reason') or '')[:80]}")
+            # The pool holds the same posting under two spellings often enough (harvest
+            # vs browser URL) that one walk could meet it twice.
+            if key in opened:
+                log("  skip (same posting, already handled earlier in this walk)")
                 continue
-            log(f"  fit {fit.get('fit_score')} — proceeding")
 
+            # The verdict the queue already holds is THE verdict: it is the score the
+            # user sees next to this job, and build_queue has dropped everything below
+            # their bar. Only a row nobody could judge yet is judged here, at the form.
+            if has_current_verdict(cand, version):
+                # Queue rows are above the bar by construction; an explicit --job-url
+                # pick did not come through the queue, so the bar is checked here too.
+                if (cand.get("fit_score") or 0) < mode_threshold(profile):
+                    log(f"  skip (fit {cand.get('fit_score')}, prejudged — below the bar)")
+                    continue
+                log(f"  fit {cand.get('fit_score')} (prejudged) — proceeding")
+            else:
+                fit = assess_fit(job=cand, profile=profile)
+                if fit.get("decision") != "apply":
+                    log(f"  skip (fit {fit.get('fit_score')}): {str(fit.get('reason') or '')[:80]}")
+                    continue
+                log(f"  fit {fit.get('fit_score')} — proceeding")
+
+            opened.add(key)
             try:
                 outcome = await apply_one(page, form, cand, profile, user_id, resume_path, live)
             except Exception as exc:  # noqa: BLE001 — one broken form must not end the night
@@ -1198,6 +1348,8 @@ async def run(
                 )
             outcomes.append(outcome)
             log(f"outcome={outcome} [{len(outcomes)}] {cand['title']} @ {cand.get('company', '?')}")
+            if outcome == "sent":
+                applied.add(key)
             if outcome == "capped":
                 capped.add(platform)
             stop = walk_verdict(outcomes, max_jobs, capped, platforms)
