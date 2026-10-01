@@ -260,3 +260,30 @@ def test_on_search_filter_applies_remote_only_setting():
     assert len(on_search_filter(rows, base)) == 2
     kept = on_search_filter(rows, {**base, "work_setting": "remote"})
     assert [r["location"] for r in kept] == ["Remote - US"]
+
+
+def test_a_foreign_region_is_abroad_and_americas_is_not():
+    """ "Remote - EMEA" read as plain remote — a fit — for a US-only user (10-01)."""
+    from modules.job_location import (
+        location_verdict,
+        names_foreign_country,
+        names_non_us_place,
+        parse_user_location,
+    )
+
+    user = parse_user_location("Houston, Texas, US")
+    for row in ("Remote - EMEA", "Remote (Europe)", "Remote - LATAM", "Remote - APAC", "EU"):
+        assert names_foreign_country(row), row
+        assert location_verdict(row, user) == "elsewhere", row
+    for row in ("Remote", "Remote - United States", "Remote, Americas", "Remote - US or EMEA"):
+        assert not names_foreign_country(row), row
+        assert location_verdict(row, user) == "fits", row
+    # A job TITLE can carry the region the location left out.
+    assert names_foreign_country("Account Executive, EMEA")
+    assert not names_foreign_country("Account Executive, Americas")
+    # An airport code is not Southeast Asia, and Georgia is a state.
+    assert not names_foreign_country("Seattle (SEA)")
+    assert not names_foreign_country("Field Rep - Georgia")
+    # The raw fact, for questions: a foreign place is named even when the US is too.
+    assert names_non_us_place("authorized to work in Canada? US applicants see above")
+    assert not names_non_us_place("authorized to work in the United States")

@@ -21,7 +21,7 @@ messages is a consent only the person can give.
 import contextlib
 import re
 
-from common import _DECLINE_OPT, _DEMOGRAPHIC_Q, is_knockout, log
+from common import _DECLINE_OPT, _DEMOGRAPHIC_Q, is_knockout, log, pick_typeahead
 from common import answer as night_answer
 
 from modules.ai_cover_letter import generate_cover_letter
@@ -168,12 +168,18 @@ async def fill(page, form, profile: dict, job: dict, resume_path: str):
                 if (await combo.first.input_value()).strip():
                     continue
                 if path == "_systemfield_location":
-                    query = (profile.get("city") or "").strip() or (
-                        (profile.get("location") or "").split(",")[0].strip()
-                    )
+                    # Where they LIVE. `profile.location` is where they search.
+                    query = (profile.get("city") or "").strip()
                 else:
                     query = night_answer(label, _job_ctx(job), profile)
-                picked = await _pick_option(page, combo.first, query)
+                picked = await _pick_option(
+                    page,
+                    combo.first,
+                    query,
+                    (lambda found, q=query: pick_typeahead("location", q, found, profile))
+                    if path == "_systemfield_location"
+                    else None,
+                )
                 if picked:
                     log(f"  · {label[:60]} → {picked[:60]}")
                 elif required:
@@ -258,9 +264,30 @@ async def fill(page, form, profile: dict, job: dict, resume_path: str):
     return unfilled, letter, knocked
 
 
-async def _pick_option(page, box, query: str) -> str:
-    """Type into an Ashby autocomplete and click the first suggestion. Returns the text
-    now in the box, or "" — never leaves free text that is not one of the options."""
+def _the_typed_one(query: str, texts: list[str]) -> str | None:
+    """The suggestion that IS what was typed: equal text, or the only one that carries it
+    as whole words. Not simply the first on the list."""
+    want = _clean(query).lower()
+    exact = [t for t in texts if _clean(t).lower() == want]
+    if exact:
+        return exact[0]
+    words = want.split()
+    near = [
+        t
+        for t in texts
+        if any(
+            _clean(t).lower().split()[i : i + len(words)] == words
+            for i in range(len(_clean(t).split()) - len(words) + 1)
+        )
+    ]
+    return near[0] if len(near) == 1 else None
+
+
+async def _pick_option(page, box, query: str, choose=None) -> str:
+    """Type into an Ashby autocomplete and click the suggestion `choose` names. Returns
+    the text now in the box, or "" — never leaves free text that is not one of the
+    options, and never takes "whatever came first": for a city that is how Portland,
+    Oregon gets picked for someone in Maine."""
     if not query:
         return ""
     await box.click()
@@ -271,10 +298,12 @@ async def _pick_option(page, box, query: str) -> str:
         if await opt.count():
             break
         await page.wait_for_timeout(500)
-    if not await opt.count():
+    texts = [_clean(t) for t in await opt.all_inner_texts()][:40]
+    target = (choose or (lambda found: _the_typed_one(query, found)))(texts)
+    if not target or target not in texts:
         await box.fill("")
         return ""
-    await opt.first.click()
+    await opt.nth(texts.index(target)).click()
     await page.wait_for_timeout(500)
     return (await box.input_value()).strip()
 

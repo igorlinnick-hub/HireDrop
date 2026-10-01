@@ -44,9 +44,48 @@ _SPONSORSHIP_Q = re.compile(r"sponsor|visa\b|h-?1b|immigration (case|status)|wor
 _AUTHORIZATION_Q = re.compile(
     r"(authoriz|eligible|legally (permitted|authorized|able)|right to work|"
     r"permanent work|work authoriz).{0,40}(work|employ)|"
-    r"(work|employ).{0,40}(authoriz|eligible|legally)|citizenship status",
+    r"(work|employ).{0,40}(authoriz|eligible|legally)|citizenship status"
+    # "Do you have the right to work in Germany?" ends on the place, with no second
+    # "work" for the pattern above to find — so it used to go to the model.
+    r"|\bright to work\b",
     re.I,
 )
+
+
+# "…work IN <place>": the place the question is actually about, when it says so.
+_WORK_IN = re.compile(
+    r"\b(?:work|working|employment|employed)\b[^.?!]{0,60}?\b(?:in|within)\s+"
+    r"((?:the\s+)?[^.?!,;()]{2,60})",
+    re.I,
+)
+_US_NAMED = re.compile(r"\b(?:u\.s\.a?\.?|usa?|united states(?: of america)?)\b", re.I)
+# Wider than the US: "authorized to work in the Americas" is not answered by a US flag.
+_WIDER_THAN_US = re.compile(r"\b(?:the americas|north america|worldwide|globally)\b", re.I)
+
+
+def _asks_about_another_place(question: str) -> bool:
+    """Is this work-status question about somewhere other than the United States?
+
+    Where the question says "work in <place>", that place decides: the US → ours to
+    answer, a foreign country / city / region → not. A US mention elsewhere in the
+    sentence does not rescue it ("…work in Canada? US-based applicants see below"), and a
+    foreign mention elsewhere does not sink a US question ("…work in the US without
+    sponsorship, e.g. TN for Canada/Mexico"). With no "work in" to go by, any foreign
+    place and no US at all is enough to refuse. A question that names nowhere is about
+    the job's country, which for this product is the US.
+    """
+    from modules.job_location import names_non_us_place
+
+    anchored = _WORK_IN.search(question)
+    if anchored:
+        place = anchored.group(1)
+        if _US_NAMED.search(place):
+            return False
+        if names_non_us_place(place) or _WIDER_THAN_US.search(place):
+            return True
+    return (
+        names_non_us_place(question) or bool(_WIDER_THAN_US.search(question))
+    ) and not _US_NAMED.search(question)
 
 
 def _status_from_profile(question: str, profile: dict, options: list[str]) -> str | None:
@@ -60,14 +99,12 @@ def _status_from_profile(question: str, profile: dict, options: list[str]) -> st
     if not (is_sponsor or is_auth):
         return None
 
-    # BOTH PROFILE FLAGS ARE ABOUT THE UNITED STATES. A question that names another
-    # country and never the US is a different question, and the US answer is not an
-    # answer to it. Dry-run 09-30: "Are you legally authorized to work in Canada?" →
-    # Yes, off `work_authorized_us`, on a "(Canada)" role that had reached a US-only
-    # queue. That is a false statement about someone's legal status; refuse instead.
-    from modules.job_location import names_foreign_country
-
-    if names_foreign_country(question):
+    # BOTH PROFILE FLAGS ARE ABOUT THE UNITED STATES. A question about working somewhere
+    # else is a different question, and the US answer is not an answer to it. Dry-run
+    # 09-30: "Are you legally authorized to work in Canada?" → Yes, off
+    # `work_authorized_us`, on a "(Canada)" role that had reached a US-only queue. That
+    # is a false statement about someone's legal status; refuse instead.
+    if _asks_about_another_place(question):
         return ""
 
     # Sponsorship wins when a question mentions both ("are you authorized to work

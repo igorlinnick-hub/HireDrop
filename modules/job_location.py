@@ -71,6 +71,31 @@ _NON_US_CITY_RE = re.compile(
     re.I,
 )
 
+# REGIONS that are not the US and do not contain it. A board writes "Remote - EMEA",
+# "Remote (Europe)", "Remote - LATAM"; neither regex above knows those words, so each read
+# as plain remote — a fit — for a US-only user (adversarial pass, 10-01). "Americas" and
+# "North America" are deliberately not here: they contain the US and stay US hints.
+_NON_US_REGION_RE = re.compile(
+    r"\b(emea|apac|latam|eu|e\.u\.|europe|european(?: union)?|asia(?:[- ]pacific)?|"
+    r"latin america|south america|central america|middle east|africa|oceania|"
+    r"nordics?|benelux|dach|anz|mena)\b",
+    re.I,
+)
+
+
+def names_non_us_place(text: str) -> bool:
+    """A foreign country, hub city or region is NAMED in this text — whatever else is.
+
+    The raw fact, with no "but the US is mentioned too" override: names_foreign_country()
+    answers "is this LOCATION abroad", and a question such as "authorized to work in
+    Canada? (US applicants see above)" needs the first answer, not the second.
+    """
+    low = " " + (text or "").lower() + " "
+    return bool(
+        _NON_US_RE.search(low) or _NON_US_CITY_RE.search(low) or _NON_US_REGION_RE.search(low)
+    )
+
+
 _STATE_CODES = {
     "al": "alabama",
     "ak": "alaska",
@@ -152,7 +177,9 @@ def names_foreign_country(row_location: str) -> bool:
         return False
     if _US_STATE_NAME_HINT_RE.search(low):
         return False
-    return bool(_NON_US_RE.search(low) or _NON_US_CITY_RE.search(low))
+    return bool(
+        _NON_US_RE.search(low) or _NON_US_CITY_RE.search(low) or _NON_US_REGION_RE.search(low)
+    )
 
 
 def parse_user_location(location: str) -> dict:
@@ -215,7 +242,7 @@ def location_verdict(row_location: str, user: dict) -> str:
     # Plainly somewhere else (a named foreign country, or US text that matched nothing
     # of the user's) — but only call it elsewhere when the text really names a place:
     # shapes like "Hybrid" carry no geography at all and stay unknown.
-    if _NON_US_RE.search(low):
+    if _NON_US_RE.search(low) or _NON_US_REGION_RE.search(low):
         return "elsewhere"
     # Bare work-mode words carry no geography at all — they must stay unknown, not
     # become a miss (the trailing-space padding above means .strip() here, not equality).

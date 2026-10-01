@@ -7,6 +7,8 @@ half is just as binding: employers, titles, certifications, licenses, degrees, c
 are never invented — a faked credential surfaces at the interview and burns the candidate.
 """
 
+import pytest
+
 from modules.ai_question_answer import _system_prompt
 
 
@@ -130,43 +132,56 @@ def test_non_status_questions_are_untouched():
         assert _status_from_profile(q, {}, ["Yes", "No"]) is None, q
 
 
-def test_work_status_for_another_country_is_refused_not_answered_from_the_us_flag():
-    """Live 09-30: "(Canada)" role, US-only profile, and the answer going out was Yes."""
+@pytest.mark.parametrize(
+    "question",
+    [
+        # Live 09-30: "(Canada)" role, US-only profile, and the answer going out was Yes.
+        "Are you legally authorized to work in Canada?",
+        "Do you require visa sponsorship to work in the UK?",
+        "Do you have the right to work in Germany?",
+        # Regions, which the first version of this refusal did not know (adversarial pass).
+        "Are you authorized to work in the EU?",
+        "Are you authorized to work in the European Union?",
+        "Are you eligible to work in the EMEA region?",
+        "Are you authorized to work in any LATAM country?",
+        "Are you authorized to work in Brazil or elsewhere in South America?",
+        "Are you eligible to work in the Americas?",
+        # A US mention elsewhere in the sentence does not make Canada the United States.
+        "Are you legally authorized to work in Canada? Note: US-based applicants should"
+        " apply to the US posting.",
+    ],
+)
+def test_work_status_somewhere_else_is_refused_not_answered_from_the_us_flag(question):
     from modules.ai_question_answer import _status_from_profile
 
     profile = {"work_authorized_us": True, "needs_sponsorship": False}
-    opts = ["Yes", "No"]
-    assert (
-        _status_from_profile("Are you legally authorized to work in Canada?", profile, opts) == ""
-    )
-    assert (
-        _status_from_profile("Do you require visa sponsorship to work in the UK?", profile, opts)
-        == ""
-    )
-    # The US question, and one that names no country at all, are answered as before.
-    assert (
-        _status_from_profile(
-            "Are you legally authorized to work in the United States?", profile, opts
-        )
-        == "Yes"
-    )
-    assert (
-        _status_from_profile(
-            "Will you now or in the future require sponsorship for employment visa status?",
-            profile,
-            opts,
-        )
-        == "No"
-    )
-    # A US question that mentions other countries only as visa examples stays a US question.
-    assert (
-        _status_from_profile(
+    assert _status_from_profile(question, profile, ["Yes", "No"]) == ""
+
+
+@pytest.mark.parametrize(
+    ("question", "answer"),
+    [
+        ("Are you legally authorized to work in the United States?", "Yes"),
+        ("Are you authorized to work in the U.S.?", "Yes"),
+        ("Do you have the right to work in the US?", "Yes"),
+        ("Will you now or in the future require sponsorship for employment visa status?", "No"),
+        # Other countries named only as visa examples: still a US question.
+        (
             "Are you authorized to work in the US without sponsorship (e.g. TN for Canada/Mexico)?",
-            profile,
-            opts,
-        )
-        == "No"
-    )
+            "No",
+        ),
+        # Names nowhere → the job's country, which for this product is the US.
+        ("Are you legally authorized to work in the country in which this job is located?", "Yes"),
+        # A US state is not a foreign country.
+        ("Are you legally authorized to work in Georgia?", "Yes"),
+        ("Will you require sponsorship to work for us?", "No"),
+    ],
+)
+def test_us_work_status_is_still_answered_from_the_profile(question, answer):
+    from modules.ai_question_answer import _status_from_profile
+
+    profile = {"work_authorized_us": True, "needs_sponsorship": False}
+    assert _status_from_profile(question, profile, ["Yes", "No"]) == answer
 
 
 # Labels copied from the live Muck Rack form (Greenhouse), dry walk 2026-09-30.

@@ -23,15 +23,40 @@ _DECLINE_OPT = re.compile(
 
 
 # "May we text / email you?" — the board asking for a channel, not the employer asking
-# about the candidate. The pattern is content.js's own (the Marketing/SMS opt-in rule),
-# kept identical on purpose: one user must not get two different answers to the same
-# question depending on which executor reached the form.
+# about the candidate. content.js answers these No, and so does the night shift.
+#
+# The pattern is NOT content.js's (`text message|sms|opt.?in|…|newsletter`): that one
+# fires on the word alone, and an adversarial pass (09-30) showed what the word alone
+# catches — "Have you managed email and SMS programs in Klaviyo?" was answered No for a
+# marketing candidate without the model ever being asked, and `opt.?in` matches
+# "adopting". An opt-in has a SHAPE: someone asking leave to contact you. A question
+# about experience with the channel is not one.
+_CHANNEL = (
+    r"(?:\bsms\b|text messages?|\btexts?\b|whatsapp|phone calls?|\bcalls?\b|e-?mails?"
+    r"|newsletters?|job alerts?|communications?|updates|marketing"
+    r"|talent (?:community|network|pool))"
+)
 _OPT_IN_Q = re.compile(
-    r"text message|sms|opt.?in|receive (calls|messages|texts)"
-    r"|talent (community|network|pool)|newsletter",
+    r"\bopt[- ]?in\b"
+    r"|(?:would you like|do you (?:want|wish|agree|consent)|may we|can we|i (?:agree|consent)"
+    r"|consent to|sign me up|subscribe|keep me (?:posted|updated|informed)|join (?:our|the))\b"
+    rf".{{0,80}}{_CHANNEL}"
+    rf"|\b(?:receive|get)\b.{{0,40}}{_CHANNEL}.{{0,60}}"
+    r"\b(?:from us|from our|about (?:your|my|this) application|to the number|to my (?:phone|number|email))",
+    re.I,
+)
+_ABOUT_EXPERIENCE = re.compile(
+    r"\bexperience\b|\bdescribe\b|\bhow many\b|\byears?\b|\bcampaigns?\b|\bprograms?\b"
+    r"|\bhave you (?:ever )?(?:managed|run|led|built|written|created|used|worked|launched|owned)",
     re.I,
 )
 _NO_OPT = re.compile(r"^\s*no\b", re.I)
+
+
+def is_opt_in(label: str) -> bool:
+    """Is this the board asking leave to contact the user (→ No), rather than a question
+    about the candidate that merely mentions a channel?"""
+    return bool(_OPT_IN_Q.search(label or "")) and not _ABOUT_EXPERIENCE.search(label or "")
 
 
 def _words(text: str) -> list[str]:
@@ -94,12 +119,19 @@ def is_knockout(question: str, answer: str) -> bool:
 # 2026-09-30: the first server-side submit filled a whole DoorDash form and stopped on
 # exactly these two. Neither is a question for a model: picking a university out of the
 # first forty rows of an alphabetical list is how a wrong school reaches an employer.
-_SCHOOL_Q = re.compile(r"\b(school|university|college|institution)\b", re.I)
+# The school FIELD — its whole label, not any label that mentions a school. "Highest level
+# of school completed" is a fixed list and "Did you graduate from college?" a yes/no;
+# typing a university into those picked "Other" and handed the second one back.
+_SCHOOL_FIELD = re.compile(
+    r"^\W*(?:name of (?:your )?)?(?:school|university|college|institution)"
+    r"(?:\s*(?:/|or|and)\s*(?:school|university|college|institution))?(?:\s+name)?\W*$",
+    re.I,
+)
 _LOCATION_Q = re.compile(r"\b(location|city)\b", re.I)
 
 
 def typeahead_kind(label: str) -> str | None:
-    if _SCHOOL_Q.search(label or ""):
+    if _SCHOOL_FIELD.match(label or ""):
         return "school"
     if _LOCATION_Q.search(label or ""):
         return "location"
@@ -117,10 +149,10 @@ def typeahead_queries(kind: str, profile: dict) -> list[str]:
         # the honest answer when the real one is not offered.
         return [school, "Other"]
     if kind == "location":
-        city = (profile.get("city") or "").strip() or (
-            (profile.get("location") or "").split(",")[0].strip()
-        )
-        return [city] if city and city.lower() not in ("remote", "anywhere") else []
+        # Where the person LIVES. `profile.location` is where they are searching, and a
+        # relocating user would be declared a resident of the city they want to move to.
+        city = (profile.get("city") or "").strip()
+        return [city] if city else []
     return []
 
 
@@ -128,10 +160,16 @@ def _squash(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
 
 
+def _within(needle: list[str], hay: list[str]) -> bool:
+    """`needle` as consecutive whole words inside `hay`."""
+    n = len(needle)
+    return bool(n) and any(hay[i : i + n] == needle for i in range(len(hay) - n + 1))
+
+
 def pick_typeahead(kind: str, query: str, options: list[str], profile: dict) -> str | None:
     """The one option that IS the typed fact, or None. Never the nearest-looking one:
-    a search box answers "Portland" with both Oregon and Maine, and "University of
-    Hawaii" with every campus."""
+    a search box answers "Portland" with both Oregon and Maine, "University of Hawaii"
+    with every campus, and "MIT" with Smith College."""
     want = _squash(query)
     if not want or not options:
         return None
@@ -139,9 +177,16 @@ def pick_typeahead(kind: str, query: str, options: list[str], profile: dict) -> 
         exact = [o for o in options if _squash(o) == want]
         if exact:
             return exact[0]
-        # One — and only one — option that contains the whole name (or is contained in
-        # it): "University of Hawaii at Manoa" for "University of Hawaii at Manoa (UH)".
-        near = [o for o in options if want in _squash(o) or _squash(o) in want]
+        # A near match is whole WORDS, and only for a name long enough to be one: the
+        # letters of "MIT" are inside "Smith", and "Other" inside "Mother Teresa".
+        words = want.split()
+        if len(words) < 2 or len(want) < 8:
+            return None
+        near = [
+            o
+            for o in options
+            if _within(words, _squash(o).split()) or _within(_squash(o).split(), words)
+        ]
         return near[0] if len(near) == 1 else None
 
     from modules.job_location import parse_user_location
@@ -150,17 +195,14 @@ def pick_typeahead(kind: str, query: str, options: list[str], profile: dict) -> 
     hits = [o for o in options if _squash(o.split(",")[0]) == want]
     if not hits:
         return None
-    state = [
-        o
-        for o in hits
-        if any(
-            s and s in [_squash(p) for p in o.split(",")[1:]]
-            for s in (user.get("state_name"), user.get("state_code"))
-        )
-    ]
-    if state:
-        return state[0]
-    # No state on file (or none of the hits names it): only an unambiguous city passes.
+    known = [s for s in (user.get("state_name"), user.get("state_code")) if s]
+    if known:
+        # The user's state is on file: a hit that does not name it is another city with
+        # the same name, however alone it stands on the list (Portland, Oregon is not
+        # the answer for someone in Maine).
+        named = [o for o in hits if any(s in [_squash(p) for p in o.split(",")[1:]] for s in known)]
+        return named[0] if named else None
+    # No state on file: only an unambiguous US city passes.
     usa = [o for o in hits if re.search(r"\b(united states|usa|us)\b", o, re.I)]
     pool = usa or hits
     return pool[0] if len(pool) == 1 else None
@@ -170,11 +212,12 @@ def pick_typeahead(kind: str, query: str, options: list[str], profile: dict) -> 
 # What apply_one answers when the BOARD refused a submit we made: `invalid` (our own
 # filling), `captcha_code` (Greenhouse asked for an emailed code), `flagged`, `unknown`.
 REFUSALS = ("invalid", "captcha_code", "flagged", "unknown")
-# One refusal is a data point. A streak is the board telling us something every further
-# application would hear too — our address's score, or a filling bug all these forms
-# share — so the walk stops instead of spending the user's name on it. A filler that
-# crashes three forms running is the same signal from our side.
-MAX_REFUSALS_IN_A_ROW = 3
+# Refused submits ONE RUN may spend, in total. Not "in a row": a hand-back or a knockout
+# between two refusals is not good news about the board, and counting streaks let a
+# simulated walk click Submit twenty times without one confirmed send. Each refusal is
+# either a verification email to the user or an application we cannot prove was not
+# received — three of those is the board (or our own filler) telling us to stop.
+MAX_REFUSALS = 3
 
 
 def walk_verdict(outcomes: list[str], max_jobs: int, capped: set[str], platforms: tuple) -> str:
@@ -187,13 +230,11 @@ def walk_verdict(outcomes: list[str], max_jobs: int, capped: set[str], platforms
         return f"sent the {max_jobs} this run was allowed"
     if capped and capped >= set(platforms):
         return "the cap is reached on every board"
-    streak = 0
-    for o in reversed(outcomes):
-        if o not in REFUSALS and o != "error":
-            break
-        streak += 1
-    if streak >= MAX_REFUSALS_IN_A_ROW:
-        return f"{streak} in a row ended in {outcomes[-1]} — not feeding it more"
+    refused = [o for o in outcomes if o in REFUSALS or o == "error"]
+    if len(refused) >= MAX_REFUSALS:
+        return (
+            f"{len(refused)} submits refused or broken ({', '.join(refused)}) — not feeding it more"
+        )
     return ""
 
 
@@ -205,76 +246,161 @@ def walk_verdict(outcomes: list[str], max_jobs: int, capped: set[str], platforms
 # field for the human; this is the same rule on the server. The number comes from what
 # the user told us to say (profile.salary_expectation, asked once at signup) or the
 # question is not answered at all.
-_SALARY_Q = re.compile(
-    r"salary|compensation|\bwage|pay (?:range|rate|expectation|requirement)"
-    r"|expected (?:pay|rate)|desired (?:pay|rate)|hourly rate|rate expectation",
+_PAY = (
+    r"(?:salary|salaries|compensation|\bwages?\b|\bpay\b|\bpaid\b|\bOTE\b|\bincome\b|\bearnings\b"
+    r"|\bremuneration\b|(?:hourly|pay|day) rate|rate of pay)"
+)
+_PAY_WORD = re.compile(_PAY, re.I)
+# An ASK about pay: the word next to expect / desire / require / range, or the stock
+# phrasings. The word alone is not one — "experience with compensation and benefits
+# administration" got "100000" typed into a years-of-experience box.
+_PAY_ASK = re.compile(
+    rf"(?:expect\w*|desir\w*|requir\w*|target\w*|preferred|minimum|looking for|seeking)\b.{{0,40}}{_PAY}"
+    rf"|{_PAY}.{{0,40}}\b(?:expect\w*|requir\w*|desir\w*|range|target\w*)"
+    r"|how much (?:do|would|are) you (?:expect|want|like|need|looking)"
+    rf"|what (?:is|are) your (?:\w+ ){{0,2}}{_PAY}",
     re.I,
 )
+# What they earn NOW is a different fact, and nobody told us that one either.
+_PAY_CURRENT = re.compile(
+    rf"\b(?:current|present|most recent|last|previous)\b.{{0,30}}{_PAY}", re.I
+)
+_NOT_ABOUT_MY_PAY = re.compile(
+    r"\bexperience\b|\byears?\b|\bdescribe\b|\bhow many\b|\badministration\b|\bdesign\w*\b",
+    re.I,
+)
+_MONEY = re.compile(r"\$\s?\d|\d\s?k\b|\d{2,3},\d{3}", re.I)
 _WEBSITE_Q = re.compile(r"\b(?:website|portfolio|personal site|blog)\b", re.I)
 _LINKEDIN_Q = re.compile(r"linkedin", re.I)
 _OPEN_ABOVE = re.compile(r"\+|or more|and (?:up|above)|\babove\b|\bover\b|more than|at least", re.I)
 _OPEN_BELOW = re.compile(r"\bunder\b|\bbelow\b|less than|up to", re.I)
-_AMOUNT = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(k\b|m\b)?", re.I)
+_AMOUNT = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*([km])?\b", re.I)
+_UNITS = (
+    ("hour", re.compile(r"/\s*h(?:ou)?r\b|\bper hour\b|\bhourly\b|\ban hour\b|\bhrs?\b", re.I)),
+    ("month", re.compile(r"/\s*mo(?:nth)?\b|\bper month\b|\bmonthly\b|\ba month\b", re.I)),
+    (
+        "year",
+        re.compile(
+            r"/\s*y(?:ea)?r\b|\bper year\b|\bper annum\b|\bannual\w*\b|\byearly\b|\ba year\b", re.I
+        ),
+    ),
+)
+
+
+def pay_question(label: str) -> str | None:
+    """ "expectation", "current", or None when the label is not asking about the
+    candidate's pay at all (and the ordinary answerer should take it)."""
+    label = label or ""
+    if not _PAY_WORD.search(label) or _NOT_ABOUT_MY_PAY.search(label):
+        return None
+    if _PAY_CURRENT.search(label):
+        return "current"
+    # A bare field label — "Salary", "Desired salary", "Compensation" — is the ask itself.
+    return "expectation" if _PAY_ASK.search(label) or len(label.split()) <= 3 else None
+
+
+def amounts(text: str) -> list[int]:
+    """Every money figure in a phrase, a trailing k/m carried back over a range:
+    "85-95k" is 85,000 to 95,000, not eighty-five dollars."""
+    found = [
+        (float(m.group(1).replace(",", "")), (m.group(2) or "").lower())
+        for m in _AMOUNT.finditer(text or "")
+    ]
+    scale = {"k": 1_000, "m": 1_000_000, "": 1}
+    out: list[int] = []
+    for i, (value, unit) in enumerate(found):
+        if not unit and value < 1000:
+            unit = next((u for _v, u in found[i + 1 :] if u), "")
+        if value:
+            out.append(int(value * scale[unit]))
+    return out
 
 
 def parse_amount(text: str) -> int | None:
     """The first money figure in a phrase: "$100,000 per year" → 100000, "85k" → 85000."""
-    m = _AMOUNT.search(text or "")
-    if not m:
-        return None
-    try:
-        value = float(m.group(1).replace(",", ""))
-    except ValueError:
-        return None
-    unit = (m.group(2) or "").lower()
-    return int(value * (1_000 if unit == "k" else 1_000_000 if unit == "m" else 1))
+    found = amounts(text)
+    return found[0] if found else None
 
 
-def _all_amounts(text: str) -> list[int]:
-    out = []
-    for m in _AMOUNT.finditer(text or ""):
-        value = parse_amount(m.group(0))
-        if value:
-            out.append(value)
-    return out
+def pay_unit(text: str, figures: list[int] | None = None) -> str | None:
+    """hour / month / year, as written — else by size when the size leaves no doubt
+    (nobody is paid $100,000 an hour or $35 a year). None = we cannot tell."""
+    for unit, pattern in _UNITS:
+        if pattern.search(text or ""):
+            return unit
+    figures = amounts(text) if figures is None else figures
+    if figures and min(figures) >= 10_000:
+        return "year"
+    if figures and max(figures) <= 500:
+        return "hour"
+    return None
 
 
-def salary_answer(profile: dict, options: list[str] | None = None, numeric: bool = False) -> str:
+def salary_answer(
+    profile: dict, options: list[str] | None = None, numeric: bool = False, label: str = ""
+) -> str:
     """What the USER said to tell employers about pay, shaped for the control — or "".
 
-    "" means nothing on file, or they chose not to name a number: the field stays blank
-    and a required one hands the form back. Never a figure of ours.
+    "" means nothing on file, they chose not to name a number, or their figure does not
+    fit this control (other unit, no bracket that holds it): the field stays blank and a
+    required one hands the form back. Never a figure of ours — and never the NEAREST
+    bracket: "$70,000 – $85,000" is not what someone asking for $100,000 said.
     """
     stated = str(profile.get("salary_expectation") or "").strip()
     if not stated or profile.get("no_salary_expectation"):
         return ""
-    amount = parse_amount(stated)
+    figures = amounts(stated)
+    amount = figures[0] if figures else None
+    unit = pay_unit(stated, figures)
     if numeric:
-        return str(amount) if amount else ""
+        # A bare number carries no unit, so it is only typed where the field's unit is
+        # the user's: salary boxes are annual unless the label says otherwise.
+        wanted = pay_unit(label, []) or "year"
+        return str(amount) if amount and unit == wanted else ""
     if not options:
         return stated
-    if not amount:
+    if not amount or not unit:
         return ""
-    # A list of ranges: the one that contains the figure, else the nearest bound — but
-    # never across units (an annual figure against hourly brackets is not "nearest").
-    best: tuple[float, str] | None = None
-    for option in options:
-        bounds = _all_amounts(option)
-        if not bounds:
+    # Brackets are half-open — "$75,000 – $100,000" then "$100,000 – $125,000" puts
+    # $100,000 in the second — with one inclusive pass left for the top of the last one.
+    for inclusive in (False, True):
+        for option in options:
+            bounds = amounts(option)
+            if not bounds or pay_unit(option, bounds) != unit:
+                continue
+            low, high = min(bounds), max(bounds)
+            if (
+                len(bounds) >= 2
+                and low <= amount
+                and (amount < high or (inclusive and amount == high))
+            ):
+                return option
+            # An open end: "$110,000+" holds every figure from there up, "Under $60,000"
+            # every figure below.
+            if len(bounds) == 1 and (
+                (_OPEN_ABOVE.search(option) and amount >= low)
+                or (_OPEN_BELOW.search(option) and amount < low)
+            ):
+                return option
+    return ""
+
+
+def number_from(reply: str, label: str = "") -> str:
+    """The number a digits-only input should get out of the answerer's sentence.
+
+    "Since 2019 I've run paid social … about 6 years" is 6, not 2019: the figure next to
+    "years" wins, a calendar year is never an amount, and "how many years" cannot be 2019.
+    """
+    stated = re.search(r"(\d+(?:\.\d+)?)\s*\+?\s*(?:years?|yrs?)\b", reply or "", re.I)
+    if stated:
+        return stated.group(1)
+    asks_years = bool(re.search(r"\byears?\b|how long", label or "", re.I))
+    for m in re.finditer(r"\d+(?:\.\d+)?", reply or ""):
+        value = float(m.group(0))
+        if 1900 <= value <= 2100 or (asks_years and value > 60):
             continue
-        if len(bounds) >= 2 and min(bounds) <= amount <= max(bounds):
-            return option
-        # An open end: "$110,000+" holds every figure above it, "Under $60,000" every
-        # figure below — distance to the bound is the wrong measure for these.
-        if len(bounds) == 1 and (
-            (_OPEN_ABOVE.search(option) and amount >= bounds[0])
-            or (_OPEN_BELOW.search(option) and amount <= bounds[0])
-        ):
-            return option
-        gap = min(abs(b - amount) for b in bounds) / amount
-        if best is None or gap < best[0]:
-            best = (gap, option)
-    return best[1] if best and best[0] <= 0.5 else ""
+        return m.group(0)
+    return ""
 
 
 def answer(
@@ -282,18 +408,32 @@ def answer(
 ) -> str:
     """The night shift's ONE way to answer a form question.
 
-    Profile facts first (pay), then the shared answerer. `numeric` is for inputs that
-    accept digits only — Ashby's "How many years…" is `type=number`, and the prose the
-    answerer returns ("About 5 years, spanning…") cannot be typed into it at all.
+    Profile facts first (pay, website), then the shared answerer. `numeric` is for inputs
+    that accept digits only — Ashby's "How many years…" is `type=number`, and the prose
+    the answerer returns ("About 5 years, spanning…") cannot be typed into it at all.
     """
-    if _SALARY_Q.search(label or ""):
-        return salary_answer(profile, options, numeric)
+    label = label or ""
+    pay = pay_question(label)
+    if pay == "expectation":
+        return salary_answer(profile, options, numeric, label)
+    if pay == "current":
+        return ""
     # "Website" is the candidate's own site or portfolio. The answerer, having none to
     # give, repeated the LinkedIn URL the form had already been given one field above.
-    if not options and _WEBSITE_Q.search(label or "") and not _LINKEDIN_Q.search(label or ""):
+    if not options and _WEBSITE_Q.search(label) and not _LINKEDIN_Q.search(label):
         return str(profile.get("portfolio_url") or "").strip()
     reply = answer_screener_question(label, job=job, profile=profile, options=options)
+    # The net under pay_question: a pay phrasing it did not recognise still reached the
+    # model, and a money figure in the reply is one the user never gave.
+    invented_pay = (
+        bool(reply)
+        and not options
+        and _PAY_WORD.search(label)
+        and not _NOT_ABOUT_MY_PAY.search(label)
+        and _MONEY.search(reply)
+    )
+    if invented_pay:
+        return ""
     if numeric and reply:
-        m = re.search(r"\d+(?:\.\d+)?", reply)
-        return m.group(0) if m else ""
+        return number_from(reply, label)
     return reply

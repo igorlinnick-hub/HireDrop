@@ -46,8 +46,8 @@ from common import (  # noqa: E402
     _DECLINE_OPT,
     _DEMOGRAPHIC_Q,
     _NO_OPT,
-    _OPT_IN_Q,
     is_knockout,
+    is_opt_in,
     log,
     pick_typeahead,
     same_value,
@@ -162,7 +162,7 @@ def _job_key(link: str) -> str:
 
 def open_handback_keys(user_id: str) -> set[str]:
     try:
-        return {_job_key(h.get("url") or "") for h in handbacks_db.list_open(user_id, limit=100)}
+        return {_job_key(url) for url in handbacks_db.open_urls(user_id)}
     except Exception as exc:  # noqa: BLE001 — worst case we meet the same wall once more
         log(f"  ! hand-back lookup failed ({exc}) — walking without it")
         return set()
@@ -234,25 +234,19 @@ def download_resume(user_id: str, profile: dict) -> str:
     return path
 
 
-def already_applied(user_id: str, link: str) -> bool:
-    """Has this user already applied to this posting, by the SERVER's record?
+def applied_keys(user_id: str) -> set[str]:
+    """Every posting this user has already applied to, by the SERVER's record, as keys.
 
     Identity, not string equality: the same Greenhouse posting reaches the pool as
     `boards.greenhouse.io/x/jobs/123`, `job-boards.greenhouse.io/x/jobs/123?gh_jid=123`
     and with tracking params, so comparing URLs literally misses the duplicate that
     matters. job_identity() reduces all of them to one key — the same reduction
     /campaign/queue uses to stop the extension re-applying.
+
+    RAISES when the history cannot be read (strict): "could not tell" must never look
+    like "nothing sent" to a caller that is about to send.
     """
-    target = job_identity(link) or (normalized_link(link) or link)
-    try:
-        applied = apps_db.applied_job_urls(user_id)
-    except Exception as exc:  # noqa: BLE001
-        # Fail CLOSED: if we cannot tell whether this was already sent, do not send it.
-        # A skipped job costs one slot; a duplicate costs the user's credibility with an
-        # employer, which is the thing the product exists to protect.
-        log(f"  ! dedup lookup failed ({exc}) — refusing to apply blind")
-        return True
-    return any((job_identity(url) or (normalized_link(url) or url)) == target for url in applied)
+    return {_job_key(url) for url in apps_db.applied_job_urls(user_id, strict=True)}
 
 
 async def knockout_answers(form) -> list[str]:
@@ -586,7 +580,9 @@ async def choose(
     # transcript.
     settled = await held_value(box)
     if settled and not same_value(option, settled, options):
-        _miss(missed, label, optional)
+        # ALWAYS a miss, optional or not: the widget is not blank, it holds an answer
+        # nobody chose, and that is what the employer would receive.
+        missed.append(label)
         log(f"  ! {label[:50]}: wanted {option[:30]!r}, widget holds {settled[:30]!r}")
         return
     log(f"  ▾ {label[:60]} → {settled or option}{note}")
@@ -732,7 +728,7 @@ async def fill_comboboxes(page, form, profile: dict, job: dict) -> list[str]:
             # it — the extension has always answered No (content.js, the SMS rule). Here
             # the model answered instead: live 09-30 it opted Igor into SMS and WhatsApp
             # messages from an employer, a consent he was never asked for.
-            if texts and _OPT_IN_Q.search(label):
+            if texts and is_opt_in(label):
                 no = next((t for t in texts if _NO_OPT.match(t)), None)
                 if no:
                     await choose(
@@ -842,8 +838,11 @@ class SubmitWatch:
     def __init__(self) -> None:
         self.status: int | None = None
         self.url: str = ""
+        self.page_before: str = ""
 
     def attach(self, page) -> None:
+        # Where the page stood BEFORE the click: a confirmation is a page we arrived at.
+        self.page_before = page.url
         page.on("response", self._on_response)
 
     def _on_response(self, response) -> None:
@@ -876,8 +875,16 @@ async def submit_outcome(page, form, watch: "SubmitWatch | None" = None) -> tupl
     would otherwise be filed under "captcha", and a reputation metric poisoned by our
     own bugs is worse than no metric.
     """
+    # A confirmation URL is one we were SENT to. Matched on the address alone, a posting
+    # that already lives under ".../customer-success/..." or a company called Thankful
+    # confirms itself before anything was submitted.
+    before = watch.page_before if watch else ""
+
+    def arrived(url: str) -> bool:
+        return url != before and bool(re.search(r"confirmation|thank|success", url))
+
     with contextlib.suppress(Exception):  # no navigation = the normal in-place GH submit
-        await page.wait_for_url(re.compile(r"confirmation|thank|success"), timeout=25000)
+        await page.wait_for_url(arrived, timeout=25000)
         return True, "confirmation url", "sent"
     await page.wait_for_timeout(6000)
 
@@ -987,6 +994,12 @@ async def apply_one(
                 f"🌙 Night shift stood down [outcome=knockout]: {job['title']}"
                 f" @ {job.get('company', '?')} — {knocked[0]}",
             )
+            # The employer's own requirement rules this user out, tonight and tomorrow.
+            # Left `new`, the form is filled again every night — paid for each time, and
+            # one differently-worded answer away from being sent.
+            with contextlib.suppress(Exception):
+                n = jobs_db.mark_dead_link(user_id, job["link"])
+                log(f"  retired {n} pool row(s) — not a job this form will take")
             return "knockout"
 
     shot = os.path.join(SHOTS, f"{job['id']}-filled.png")
@@ -1160,8 +1173,21 @@ async def run(
     resume_path = download_resume(user_id, profile)
     log(f"resume: {resume_path} | candidates: {len(candidates)} | to send: up to {max_jobs}")
 
+    # What is already with an employer, read ONCE and kept current as the walk sends.
+    # No answer is not "nothing sent": a live walk refuses to start without it.
+    try:
+        applied = applied_keys(user_id)
+    except Exception as exc:  # noqa: BLE001
+        if live:
+            raise SystemExit(
+                "LIVE REFUSED — this user's application history could not be read"
+                f" ({str(exc).splitlines()[0][:100]}); not applying blind."
+            ) from exc
+        log(f"! application history unreadable ({exc}) — dry-run continues without dedup")
+        applied = set()
     outcomes: list[str] = []
     capped: set[str] = set()
+    opened: set[str] = set()  # postings this walk has already put a form through
     os.makedirs(SHOTS, exist_ok=True)
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=not headful)
@@ -1255,8 +1281,14 @@ async def run(
             # crash, a repeated test — send the employer a SECOND real application.
             # The server already knows better: applied_job_urls + job_identity is the
             # same answer /campaign/queue uses to keep the extension honest.
-            if already_applied(user_id, cand["link"]):
+            key = _job_key(cand["link"])
+            if key in applied:
                 log("  skip (already applied to this posting — server's own record)")
+                continue
+            # The pool holds the same posting under two spellings often enough (harvest
+            # vs browser URL) that one walk could meet it twice.
+            if key in opened:
+                log("  skip (same posting, already handled earlier in this walk)")
                 continue
 
             # The verdict the queue already holds is THE verdict: it is the score the
@@ -1276,6 +1308,7 @@ async def run(
                     continue
                 log(f"  fit {fit.get('fit_score')} — proceeding")
 
+            opened.add(key)
             try:
                 outcome = await apply_one(page, form, cand, profile, user_id, resume_path, live)
             except Exception as exc:  # noqa: BLE001 — one broken form must not end the night
@@ -1285,6 +1318,8 @@ async def run(
                 )
             outcomes.append(outcome)
             log(f"outcome={outcome} [{len(outcomes)}] {cand['title']} @ {cand.get('company', '?')}")
+            if outcome == "sent":
+                applied.add(key)
             if outcome == "capped":
                 capped.add(platform)
             stop = walk_verdict(outcomes, max_jobs, capped, platforms)
