@@ -246,35 +246,120 @@ def get_ats_queue(platform: str, limit: int = 20, user=Depends(get_current_user)
     Counts ride along because a queue that silently shrank is indistinguishable from a
     broken one (#113): the campaign logs "N of M" instead of a bare number.
 
-    Ordering mirrors the deck — best fit first, freshest as the tie-break — so the cap
-    cuts the tail, not the middle. `already_applied` dedup stays client-side: the
-    extension holds the authoritative appliedUrls/appliedJobKeys sets.
+    PREJUDGED since 09-30 (modules/fit_queue.py): the queue holds what the fit judge
+    already passed, in the order the user's list shows — ideal first, then the rest
+    above their bar, freshest first in each band — so the run opens postings it will
+    apply to instead of opening 25 to skip 25. Rows without a verdict for the current
+    profile are judged here within a short budget (the sweep pre-judges the rest in the
+    background); whatever is still unjudged rides at the tail for the live judge, as
+    before. `already_applied` dedup stays client-side: the extension holds the
+    authoritative appliedUrls/appliedJobKeys sets.
     """
     from app.db.profile import get_profile
 
-    pool = [
-        j
-        for j in jobs_db.get_jobs(user.id)
-        if (j.get("status") or "new") == "new"
-        and (j.get("link") or j.get("apply_url"))
-        and j.get("platform") == platform
-        and (platform == "lever" or is_zero_touch(platform, j.get("company", "")))
-    ]
-    on_search = on_search_filter(pool, get_profile(user.id))
-    # Age gate (MAX_POOL_AGE_DAYS): the archive keeps the row, the queue does not open it.
-    # Applying to a posting that closed a month ago costs a page load and produces nothing.
-    live = [j for j in on_search if fresh_enough(j)]
-    live.sort(key=lambda j: j.get("date_found") or "", reverse=True)
-    live.sort(key=lambda j: j.get("score") or 0, reverse=True)  # stable: date breaks ties
+    profile = get_profile(user.id)
+    pool, on_search, live = _ats_candidates(user.id, profile, platform)
+    queue = _prejudged_queue(
+        user.id,
+        profile,
+        live,
+        limit=max(1, min(limit, 100)),
+        judge_calls=QUEUE_SYNC_JUDGE_CALLS,
+        deadline_s=QUEUE_SYNC_JUDGE_SECS,
+    )
     return {
-        "jobs": _with_captcha(live[: max(1, min(limit, 100))]),
+        "jobs": _with_captcha(queue["jobs"]),
         "pool": len(pool),
         "off_search": len(pool) - len(on_search),
         # Separate from off_search on purpose: "your search matches 40 jobs, 12 of them are
         # too old to still be open" is a different sentence than "40 don't match your
         # search", and a queue that silently shrank must never look like a broken one.
         "stale": len(on_search) - len(live),
+        # Same rule for the judge's cut: "below your bar" and "already two applications
+        # to this company" are reasons, not a shrinking queue.
+        "below_bar": queue["below_bar"],
+        "company_capped": queue["company_capped"],
+        "unjudged": queue["unjudged"],
     }
+
+
+# How much judging a queue READ may do while the campaign waits on it. The sweep that
+# precedes every run pre-judges in the background (prejudge_pool); this budget only covers
+# what it has not reached yet — a brand-new account, or the first read after a resume edit.
+QUEUE_SYNC_JUDGE_CALLS = 30
+QUEUE_SYNC_JUDGE_SECS = 20.0
+# What one background pass (after a sweep, nightly or on a search change) may spend.
+# Cost follows novelty: only rows without a verdict for the current profile are judged.
+PREJUDGE_CALLS = 60
+PREJUDGE_SECS = 150.0
+ATS_QUEUE_PLATFORMS = ("greenhouse", "lever", "ashby")
+
+
+def _ats_candidates(user_id: str, profile: dict, platform: str | None = None):
+    """(pool, on_search, live) for the auto ATS walk — one platform, or all three.
+
+    Age gate is the list's own DECK_MAX_AGE_DAYS (14): the queue and the list are one thing
+    now (daily-30, 09-30), and a posting older than that is outside both.
+    """
+    platforms = (platform,) if platform else ATS_QUEUE_PLATFORMS
+    pool = [
+        j
+        for j in jobs_db.get_jobs(user_id)
+        if (j.get("status") or "new") == "new"
+        and (j.get("link") or j.get("apply_url"))
+        and j.get("platform") in platforms
+        and (j.get("platform") == "lever" or is_zero_touch(j.get("platform"), j.get("company", "")))
+    ]
+    on_search = on_search_filter(pool, profile)
+    live = [j for j in on_search if fresh_enough(j, DECK_MAX_AGE_DAYS)]
+    return pool, on_search, live
+
+
+def _prejudged_queue(
+    user_id: str, profile: dict, rows: list, *, limit: int, judge_calls: int, deadline_s: float
+) -> dict:
+    """Judge what is missing (bounded), then order the rows into the queue (fit_queue)."""
+    from app.db import applications as apps_db
+    from modules.ai_cover_letter import resume_text_for
+    from modules.ai_fit_judge import mode_threshold, verdict_version
+    from modules.fit_queue import COMPANY_WINDOW_DAYS, build_queue, judge_pending
+
+    resume_text = resume_text_for(profile)
+    version = verdict_version(profile, resume_text)
+    judge_pending(
+        user_id,
+        profile,
+        rows,
+        max_calls=judge_calls,
+        deadline_s=deadline_s,
+        resume_text=resume_text,
+        version=version,
+    )
+    try:
+        applied = apps_db.companies_applied_since(user_id, COMPANY_WINDOW_DAYS)
+    except Exception as e:  # noqa: BLE001 — in-list cap still holds; history read is best-effort
+        print(f"[ats-queue] company history unreadable: {e}", file=sys.stderr)
+        applied = []
+    return build_queue(rows, version, mode_threshold(profile), applied, limit)
+
+
+def prejudge_pool(user_id: str) -> int:
+    """Background pass: judge the ATS candidates that lack a verdict for the current
+    profile, so the next queue read is instant. Called after every sweep (nightly, search
+    change, campaign start). Never raises — a failed pass only means the queue read
+    judges a little more itself."""
+    from app.db.profile import get_profile
+    from modules.fit_queue import judge_pending
+
+    try:
+        profile = get_profile(user_id)
+        _pool, _on_search, live = _ats_candidates(user_id, profile)
+        return judge_pending(
+            user_id, profile, live, max_calls=PREJUDGE_CALLS, deadline_s=PREJUDGE_SECS
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[prejudge] {user_id}: {type(e).__name__}: {e}", file=sys.stderr)
+        return 0
 
 
 @router.get("/jobs/deck")
@@ -514,6 +599,10 @@ def _run_ats_discovery(user_id: str) -> None:
             _backfill_thin_ats_scores(user_id, profile, resume_text, cap=40, desc_source=fresh_desc)
         except Exception as e:
             print(f"[find-ats bg] backfill skipped: {e}", file=sys.stderr)
+
+        # Judge what this sweep brought in while nobody is waiting on it — the next
+        # queue read (the campaign, the list) then finds verdicts instead of judging.
+        prejudge_pool(user_id)
     except Exception as e:
         print(f"[find-ats bg] worker error: {e}", file=sys.stderr)
     finally:
