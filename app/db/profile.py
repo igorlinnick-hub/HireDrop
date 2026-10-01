@@ -49,6 +49,14 @@ _DEFAULTS = {
     # Answered once in the pre-Start form (modules/employer_answers.py).
     "country": "",
     "no_linkedin": False,
+    # Education — Greenhouse's "School" / "Degree" (migrations/add_employer_answer_fields.sql).
+    "school": "",
+    "degree": "",
+    "no_degree": False,
+    # What the user said to tell an employer who asks about pay — NOT the salary_min
+    # filter below, which only decides which jobs they see.
+    "salary_expectation": "",
+    "no_salary_expectation": False,
     # Search gates read by on_search_filter (deck, auto ATS queue, night shift).
     "salary_min": None,
     "salary_max": None,
@@ -106,6 +114,11 @@ def get_profile(user_id: str) -> dict:
         "current_title": p.get("current_title") or "",
         "country": p.get("country") or "",
         "no_linkedin": bool(p.get("no_linkedin")),
+        "school": p.get("school") or "",
+        "degree": p.get("degree") or "",
+        "no_degree": bool(p.get("no_degree")),
+        "salary_expectation": p.get("salary_expectation") or "",
+        "no_salary_expectation": bool(p.get("no_salary_expectation")),
         # Written by update_salary / update_profile / update_ats but not returned here
         # until 09-30, so every reader saw None: on_search_filter's salary and
         # work-setting gates never fired (deck, auto queue, night shift), and
@@ -150,6 +163,11 @@ def update_profile(user_id: str, data: dict) -> dict:
         "current_title",
         "work_setting",
         "country",
+        "school",
+        "degree",
+        "no_degree",
+        "salary_expectation",
+        "no_salary_expectation",
     ):
         if k in data:
             payload[k] = data[k]
@@ -183,6 +201,23 @@ def fill_current_employment_if_blank(user_id: str, employer: str, title: str) ->
         filled["current_employer"] = employer.strip()[:200]
     if title and title.strip() and not current.get("current_title"):
         filled["current_title"] = title.strip()[:200]
+    if filled:
+        get_supabase().table("profiles").update(filled).eq("user_id", user_id).execute()
+    return filled
+
+
+def fill_education_if_blank(user_id: str, school: str, degree: str) -> dict:
+    """Seed school / degree from the resume's education block — same contract as
+    fill_current_employment_if_blank: only EMPTY fields, user input always wins, and a
+    user who said "no college degree" is never contradicted by a parsed resume line."""
+    filled = {}
+    current = get_profile(user_id)
+    if current.get("no_degree"):
+        return filled
+    if school and school.strip() and not current.get("school"):
+        filled["school"] = school.strip()[:200]
+    if degree and degree.strip() and not current.get("degree"):
+        filled["degree"] = degree.strip()[:200]
     if filled:
         get_supabase().table("profiles").update(filled).eq("user_id", user_id).execute()
     return filled

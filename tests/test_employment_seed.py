@@ -139,3 +139,53 @@ def test_split_location_variants():
     assert _split_location("") == ("", "", "")
     # ZIP+4 collapses to the 5-digit form the profile stores.
     assert _split_location("Brooklyn, NY 11201-1234") == ("Brooklyn", "NY", "11201")
+
+
+def _seed_education(existing: dict, school: str, degree: str) -> dict:
+    written = {}
+
+    class _Chain:
+        def update(self, payload):
+            written.update(payload)
+            return self
+
+        def eq(self, *_a, **_k):
+            return self
+
+        def execute(self):
+            return None
+
+    class _Client:
+        def table(self, _name):
+            return _Chain()
+
+    with (
+        patch.object(profile_db, "get_profile", return_value=existing),
+        patch.object(profile_db, "get_supabase", return_value=_Client()),
+    ):
+        profile_db.fill_education_if_blank("u1", school, degree)
+    return written
+
+
+def test_education_seeds_blank_fields_only():
+    assert _seed_education({"school": "", "degree": ""}, "UT Austin", "BA") == {
+        "school": "UT Austin",
+        "degree": "BA",
+    }
+    assert _seed_education({"school": "MIT", "degree": ""}, "UT Austin", "BA") == {"degree": "BA"}
+
+
+def test_education_never_contradicts_no_degree():
+    """Someone who said "no college degree" is not handed one by a parsed resume line."""
+    assert _seed_education({"school": "", "degree": "", "no_degree": True}, "UT Austin", "BA") == {}
+
+
+def test_router_seed_reads_education_zero():
+    data = {"education": [{"school": "UT Austin", "degree": "BA Communications"}, {"school": "X"}]}
+    with (
+        patch.object(profile_db, "fill_current_employment_if_blank", return_value={}),
+        patch.object(profile_db, "fill_address_if_blank", return_value={}),
+        patch.object(profile_db, "fill_education_if_blank", return_value={}) as fill,
+    ):
+        _seed_employment_from_resume("u1", data)
+    fill.assert_called_once_with("u1", "UT Austin", "BA Communications")

@@ -24,6 +24,11 @@ class ProfileUpdate(BaseModel):
     current_employer: str = ""
     current_title: str = ""
     country: str = ""
+    school: str = ""
+    degree: str = ""
+    no_degree: bool = False
+    salary_expectation: str = ""
+    no_salary_expectation: bool = False
 
 
 class LetterPreviewRequest(BaseModel):

@@ -12,6 +12,9 @@ ANSWERED = {
     "current_title": "Marketing Manager",
     "current_employer": "Acme",
     "linkedin_url": "https://linkedin.com/in/x",
+    "school": "University of Hawaii at Manoa",
+    "degree": "BA Communications",
+    "salary_expectation": "$100,000 per year",
 }
 
 
@@ -179,3 +182,96 @@ def test_clean_keeps_known_keys_typed_and_ignores_the_rest():
     assert out["work_authorized_us"] is False
     assert "tier" not in out
     assert len(out["city"]) == 200 and out["no_linkedin"] is True
+
+
+def test_no_degree_answers_both_education_questions():
+    from modules.employer_answers import missing
+
+    blank = {**ANSWERED, "school": "", "degree": ""}
+    assert [m["key"] for m in missing(blank)] == ["school", "degree"]
+    assert missing({**blank, "no_degree": True}) == []
+
+
+RESUME = {
+    "contact": {"linkedin": "linkedin.com/in/jane"},
+    "experience": [
+        {"title": "Social Media Manager", "company": "Acme"},
+        {"title": "Intern", "company": "Older Co"},
+    ],
+    "education": [{"degree": "BA Communications", "school": "UT Austin", "year": "2018"}],
+}
+
+
+def test_missing_offers_what_the_resume_already_says():
+    """Offered for the person to confirm — the profile itself stays blank until they do."""
+    from modules.employer_answers import missing
+
+    profile = {**ANSWERED, "school": "", "degree": "", "city": "", "ats_structure": RESUME}
+    by_key = {m["key"]: m for m in missing(profile)}
+    assert by_key["school"]["suggestion"] == "UT Austin"
+    assert by_key["degree"]["suggestion"] == "BA Communications"
+    # The "I don't have one" tickbox travels with the question it answers.
+    assert by_key["school"]["opt_out"] == {
+        "flag": "no_degree",
+        "label": "I don't have a college degree",
+    }
+    assert "opt_out" not in by_key["city"]
+    # The resume has no fact for a city question, so nothing is offered.
+    assert "suggestion" not in by_key["city"]
+    assert profile["school"] == ""
+
+
+def test_form_lists_every_question_with_the_answer_on_file():
+    """Signup draws ALL of it, in the server's order, in the form's own terms."""
+    from modules.employer_answers import QUESTIONS, form
+
+    rows = form(
+        {**ANSWERED, "current_title": "", "needs_sponsorship": None, "ats_structure": RESUME}
+    )
+    assert [r["key"] for r in rows] == [k for k, _, _ in QUESTIONS]
+    by_key = {r["key"]: r for r in rows}
+    assert by_key["country"]["value"] is True  # "United States" -> Yes
+    assert by_key["work_authorized_us"]["value"] is True
+    assert by_key["needs_sponsorship"]["value"] is None
+    assert by_key["current_title"] == {
+        "key": "current_title",
+        "label": "Most recent job title",
+        "kind": "text",
+        "value": "",
+        "suggestion": "Social Media Manager",
+    }
+    # An answer on file is never second-guessed by the resume.
+    assert "suggestion" not in by_key["school"]
+    assert form({"country": "Outside US"})[0]["value"] is False
+    assert form({})[0]["value"] is None
+
+
+def test_suggestions_survive_a_malformed_structure():
+    from modules.employer_answers import suggestions
+
+    assert suggestions({"ats_structure": None}) == {}
+    assert suggestions({"ats_structure": {"education": "MIT", "experience": [None]}}) == {}
+    assert suggestions({"ats_structure": {"education": [{"school": "  "}]}}) == {}
+
+
+def test_clean_takes_both_opt_outs():
+    from modules.employer_answers import clean
+
+    out = clean({"no_degree": True, "no_linkedin": "yes", "school": " MIT ", "degree": "BS"})
+    assert out == {"school": "MIT", "degree": "BS", "no_degree": True, "no_linkedin": False}
+
+
+def test_the_salary_floor_is_offered_never_filed():
+    """`salary_min` filters which jobs the user sees. As an EXPECTATION it is a guess —
+    shown in the form for them to confirm, with a way to decline naming one at all."""
+    from modules.employer_answers import missing
+
+    blank = {**ANSWERED, "salary_expectation": ""}
+    assert [m["key"] for m in missing(blank)] == ["salary_expectation"]
+    row = missing({**blank, "salary_min": 100_000})[0]
+    assert row["suggestion"] == "$100,000 per year"
+    assert row["opt_out"]["flag"] == "no_salary_expectation"
+    assert "suggestion" not in missing({**blank, "salary_min": None})[0]
+    # True is not a salary (bool is an int in Python).
+    assert "suggestion" not in missing({**blank, "salary_min": True})[0]
+    assert missing({**blank, "no_salary_expectation": True}) == []
