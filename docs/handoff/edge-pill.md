@@ -26,7 +26,10 @@ https://claude.ai/artifact/7VnKDd4so2bJ8Mm1qdhXsF:
   Логика в `pill-everywhere.js` (`importScripts`). Исключено всё, что уже покрыто
   статическими `content_scripts`; список берётся из манифеста. Уже открытые вкладки получают
   полоску через `executeScript`. Сверка регистрации идёт в `onInstalled`/`onStartup`/
-  `onAdded`/`onRemoved`. Зип `dist/hiredrop-ext-1.8.26.zip` собран из всей папки.
+  `onAdded`/`onRemoved`. Зип `dist/hiredrop-ext-1.8.27.zip` собран из всей папки.
+- **1.8.27:** у карточки «N to finish» в попапе были цвета ночной темы (#215 вышел через
+  день после дневного попапа #200), поэтому название читалось белым по кремовому. Цвета
+  переведены на токены попапа. Пустое название заменяется на «Indeed application».
 - Проверено живьём настоящим расширением в изолированном Chromium на Indeed, Lever и
   Greenhouse, светлая и тёмная тема: наведение, Start, «−», reload, «Show again».
   **В бою, во время кампании, НЕ проверено.**
@@ -69,6 +72,6 @@ https://claude.ai/artifact/7VnKDd4so2bJ8Mm1qdhXsF:
 1. Живьём в Chrome Игоря, после «давай» и только когда не идёт прогон ext-сессии: синк →
    OFF/ON → в попапе «Show it on every site» → «Разрешить» → полоска на gmail/любом сайте
    без перезагрузки → «Job sites only» → после перезагрузки страницы полоски нет.
-2. Когда стор одобрит 1.8.24: `cws_publish.py ship dist/hiredrop-ext-1.8.26.zip`. В
+2. Когда стор одобрит 1.8.24: `cws_publish.py ship dist/hiredrop-ext-1.8.27.zip`. В
    витрине (Privacy) дописать обоснование optional `<all_urls>`: «показать дневной счётчик
    по желанию юзера; страница не читается». Широкий доступ может удлинить ревью.
