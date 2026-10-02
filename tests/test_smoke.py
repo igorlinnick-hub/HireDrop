@@ -44,6 +44,7 @@ def test_stats_with_mock_user(auth_client):
         patch("app.db.jobs.count_jobs", return_value=0),
         patch("app.db.jobs.count_jobs_found_today", return_value=0),
         patch("app.db.applications.count_applications", return_value=0),
+        patch("app.db.applications.count_last_hours", return_value=3),
         patch("app.db.applications.count_today", return_value=0),
         patch("app.db.applications.count_today_by_platform", return_value={}),
         patch("app.db.subscriptions.get_tier", return_value="free"),
@@ -54,6 +55,7 @@ def test_stats_with_mock_user(auth_client):
     assert "total_jobs" in body
     assert "total_applications" in body
     assert "new_today" in body
+    assert body["applications_last_24h"] == 3
 
 
 def test_applications_history_returns_list(auth_client, supabase_mock):
