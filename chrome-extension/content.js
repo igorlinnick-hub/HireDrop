@@ -3855,6 +3855,50 @@
     }
   }
 
+  // Indeed resume-selection: once a parsed upload has been refused on this browser
+  // (indeedSdrRefusedAt), pick the Indeed Resume card instead of uploading. True = chosen.
+  async function preferIndeedResume(filled) {
+    if (detectPlatform() !== "indeed" || !/resume-selection/.test(location.pathname)) return false;
+    const card = document.querySelector('[data-testid="resume-selection-structured-resume-radio-card-input"]');
+    if (!card) return false;
+    const { indeedSdrRefusedAt } = await storageGet("indeedSdrRefusedAt");
+    if (!indeedSdrRefusedAt) return false;
+    if (!card.checked) {
+      await humanClick(document.querySelector('[data-testid="resume-selection-structured-resume-radio-card-label"]') || card);
+      await sleep(humanDelay(600, 1200));
+    }
+    if (!card.checked) return false;
+    filled.push("indeed-resume");
+    await storageSet({ indeedLastResumeKind: "indeed" });
+    return true;
+  }
+
+  // Indeed's "Review your resume details" refuses Continue with no alert, no aria-invalid and
+  // no empty required input (#305 read all three as empty, 3/3 on 10-02). What it renders is
+  // the parsed resume as cards, so what we keep is the page's STRUCTURE: the data-testids
+  // present, the labels of its buttons/links, and short texts of anything badge-like
+  // (missing / required / incomplete / error). Never card bodies: they are the person's
+  // resume. Emails and phone-like numbers masked as in formBlockers.
+  function structuredReviewSnapshot() {
+    try {
+      const vis = (e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+      const mask = (t) => String(t || "").replace(/\s+/g, " ").trim()
+        .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, "<email>").replace(/\+?\d[\d\s().-]{6,}\d/g, "<num>").slice(0, 40);
+      const root = document.querySelector("main, [role='main']") || document.body;
+      const ids = [...new Set([...root.querySelectorAll("[data-testid]")].filter(vis).map((e) => e.getAttribute("data-testid")))].slice(0, 45);
+      const acts = [...root.querySelectorAll("button, a, [role='button'], [role='link']")].filter(vis)
+        .map((e) => mask(e.getAttribute("aria-label") || e.textContent) + (e.disabled || e.getAttribute("aria-disabled") === "true" ? "(off)" : ""))
+        .filter(Boolean).slice(0, 25);
+      const badges = [...root.querySelectorAll("[data-testid], [class], [role='status'], [role='alert']")].filter((e) =>
+        vis(e) && e.children.length <= 2 &&
+        /missing|required|incomplete|error|invalid|add |needs|warning/i.test(`${e.getAttribute("data-testid") || ""} ${e.className || ""} ${e.textContent.slice(0, 60)}`))
+        .map((e) => `${e.getAttribute("data-testid") || ""}:${mask(e.textContent)}`).filter((t) => t.length > 1);
+      return `ids=${JSON.stringify(ids)} acts=${JSON.stringify(acts)} badges=${JSON.stringify([...new Set(badges)].slice(0, 15))}`;
+    } catch (e) {
+      return `sdr=? (${String((e && e.message) || e).slice(0, 80)})`;
+    }
+  }
+
   function formBlockersLine(fb) {
     if (!fb || fb.error) return `blockers=? (${fb ? fb.error : "none"})`;
     const list = (a) => JSON.stringify(a);
@@ -4263,13 +4307,22 @@
         }
       }
 
+      // Indeed: a freshly uploaded PDF makes Indeed parse it and insert "Review your resume
+      // details" (structured-data-review), which refused Continue with no visible error on
+      // every upload of the 10-02 run (3/3; 14 of 17 blind hand-backs before it). Once that
+      // has happened on this browser, prefer the Indeed Resume the user already has there —
+      // no parse, no review step. The upload path stays for users without one.
+      const indeedResumeChosen = await preferIndeedResume(filled);
+      if (indeedResumeChosen) filledAny = true;
+
       // Resume upload
-      const resumeInput = findResumeInput();
+      const resumeInput = indeedResumeChosen ? null : findResumeInput();
       if (resumeInput && !resumeInput.files?.length) {
         try {
           await uploadResume(resumeInput);
           await sleep(humanDelay(1200, 2200));
           filledAny = true; filled.push("resume");
+          if (detectPlatform() === "indeed") storageSet({ indeedLastResumeKind: "file" });
         } catch (e) {
           log("Resume upload failed: " + e.message, "err");
         }
@@ -4327,6 +4380,11 @@
         if (stallRounds >= 2) {
           // Whole line capped: POST /activity drops a message over 2000 chars (422).
           logBackend(Array.from(`🖐 ${dialogSnapshot()} ${formBlockersLine(formBlockers())}`).slice(0, 1950).join(""), "warn");
+          if (/structured-data-review/.test(location.pathname)) {
+            const { indeedLastResumeKind } = await storageGet("indeedLastResumeKind");
+            logBackend(Array.from(`🧾 sdr resume=${indeedLastResumeKind || "?"} ${structuredReviewSnapshot()}`).slice(0, 1950).join(""), "warn");
+            await storageSet({ indeedSdrRefusedAt: Date.now() });
+          }
           // The invariant: submitted-complete-and-honest OR handed back with a reason.
           // handBackJob is the right channel (records the reason + unfilled labels and
           // advances the walk) — NOT DETECTION_TRIPPED, which means "a human check is
