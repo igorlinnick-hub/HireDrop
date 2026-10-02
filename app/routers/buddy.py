@@ -26,7 +26,8 @@ from modules import buddy
 
 router = APIRouter(prefix="/buddy", tags=["buddy"])
 
-DAILY_QUESTIONS = 40
+# ~$0.012/answer on Sonnet 5.5 (measured 2026-10-01) -> worst case ~$7/month per user.
+DAILY_QUESTIONS = 20
 
 
 class AskBody(BaseModel):

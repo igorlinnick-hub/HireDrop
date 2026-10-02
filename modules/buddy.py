@@ -31,7 +31,9 @@ from modules.ai_cover_letter import get_anthropic_client
 from modules.buddy_facts import FACTS
 
 # Configurable so the price/quality trade can be changed on Railway without a deploy.
-MODEL = os.getenv("BUDDY_MODEL", "claude-opus-5-5")
+# A/B 2026-10-01, 7 questions on a live account: Sonnet 5.5 matched Opus 5.5 on every fact
+# at ~55% of the price; Haiku 4.5 invented product claims and refused a refund on its own.
+MODEL = os.getenv("BUDDY_MODEL", "claude-sonnet-5-5")
 MAX_TOOL_ROUNDS = 4  # a support answer that needs more lookups than this is a bug
 MAX_TOKENS = 4000
 HISTORY_TURNS = 10  # earlier turns the client may send back
