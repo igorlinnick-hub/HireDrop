@@ -30,14 +30,23 @@
   гейт email-кода GH. Остальной заполнитель — этот лейн. jobflow-8f — сервер/очередь (#306:
   очередь пропускает открытые хендбэки).
 
-## Последний заход (10-01…10-02)
+## Последний заход (10-02)
 
-- Синкнул 1.8.23 (#280) на Рабочий стол; прогоны вела jobflow-8f (GH 25 мин: 2 подано).
-- Живой съём structured-data-review: дошёл до questions/1 заявки SKIN Kahala
-  (jk=63efdacc3718814e) — вкладка оставлена в окне дашборда 639093092. **Классификатор
-  auto-mode запретил жать Continue в настоящей заявке** («Real-World Transactions»). Чтение
-  страницы разрешено. Увидел: бот выбирает резюме-файл, не «Indeed Resume»; Indeed помнит
-  ответы прошлой попытки.
+- **Прогон Indeed на 1.8.30** (21:21–21:46Z, `/tools/run-report`): 26 мин, открыто 4, подано 1
+  (без подтверждения), хендбэк 3; потери: fit gate 12, title mismatch 7, dead links 3.
+- **Все 3 хендбэка — `structured-data-review`**, тот же след, что 14 из 17 старых: «Review details» →
+  Continue ×2 → отказ. Строка 🖐 (#305) пустая: `alerts=[] invalid=[] reqEmpty=[]`,
+  notes=«Review your resume details», кнопка Continue есть. Т.е. отказ без видимой ошибки — диагностика
+  #305 здесь ничего не ловит. (`metadata_json.diag` = null — для Indeed хендбэки в таблицу `handbacks`
+  не пишутся, только `activity_log`.)
+- **Зацепка (гипотеза, не доказана):** на `resume-selection` бот выбирает загруженный `resume.pdf`, а
+  не «Use your Indeed Resume» (Indeed помечает его Recommended). Шаг structured-data-review Indeed
+  вставляет именно для разобранного файла. Проверка: выбрать Indeed Resume и посмотреть, исчезает ли
+  шаг — нужен живой клик Continue в настоящей заявке (классификатор auto-mode запрещает) → Игорь
+  руками один раз, или прогон с правкой выбора резюме.
+- `drive.py` сошёл на 98-й секунде: «page has no data-testid» — после Start дашборд уходит на
+  `/dashboard/campaign`, а драйвер, похоже, смотрит не ту вкладку/путь. Кампания шла дальше; Stop
+  нажат таймером по `data-testid=btn-stop` в 21:46Z.
 
 ## Сломано / не доделано
 
@@ -51,9 +60,11 @@
 
 ## Следующий шаг
 
-Модель: **Opus**. Прогон auto по Indeed на 1.8.30 (Игорь залогинен, крышка открыта, «давай»;
-объявить соседям — GH-замер ведёт jobflow-2f) → прочитать `metadata.diag` новых хендбэков
-(`activity_log`, type=handback) против 17 «без зацепки».
+Модель: **Opus**. Решить structured-data-review: (1) Игорь один раз руками на Indeed выбирает «Use
+your Indeed Resume» и смотрит, есть ли шаг «Review details»; или (2) снять разметку шага
+`structured-data-review` (Игорь доходит до него, сессия читает DOM без кликов) — что там требует
+действия без aria-invalid. Затем фикс выбора резюме / шага. Отдельно: починить `drive.py` для
+`/dashboard/campaign`.
 
 Файлы лейна: `chrome-extension/content.js` (formBlockers ~L3500, fillTextQuestions ~L2990,
 pay/school helpers перед isDemographicQuestion, fillComboboxes, fillCheckboxes),
