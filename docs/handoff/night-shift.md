@@ -78,7 +78,7 @@
 
 Нет — лейн закрыт (см. ⛔ выше). Из «Сломано» живо только то, что касается расширения
 (Yes на «authorized to work in <любая страна>», No на «managed SMS programs») — это ext-лейну.
-Открытый вопрос: удалить ли Railway-сервис `night-shift` или оставить спящим — решение Игоря.
+Railway-сервис `night-shift` оставлен спящим (`NS_LIVE=0`, решение Игоря 10-02) — не удалять, не будить.
 
 Файлы лейна: `scripts/night_shift/{executor,common,ashby}.py`, `modules/ai_question_answer.py`
 (отказы + `unattended`), `modules/job_location.py` (регионы), `app/db/{applications,handbacks}.py`,
