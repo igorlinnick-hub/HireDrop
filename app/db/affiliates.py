@@ -50,6 +50,45 @@ def _affiliate(affiliate_id: str) -> dict | None:
     return res.data[0] if res.data else None
 
 
+def affiliate_for_user(user_id: str) -> dict | None:
+    """The CALLER's own affiliate row, or None.
+
+    Every Connect endpoint (app/routers/affiliate.py) looks itself up through
+    this — filtered by the verified user_id, never by an affiliate/account id
+    the request body could name — so a signed-in affiliate can only ever touch
+    their own payout account.
+    """
+    res = (
+        get_supabase()
+        .table("affiliates")
+        .select("id, user_id, code, status, stripe_account_id, payouts_enabled")
+        .eq("user_id", user_id)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0] if res.data else None
+
+
+def save_stripe_account(user_id: str, account_id: str) -> None:
+    """Attach a Connect account id to the caller's OWN row — filtered by
+    user_id, not by the affiliate id, so this can never write someone else's."""
+    get_supabase().table("affiliates").update({"stripe_account_id": account_id}).eq(
+        "user_id", user_id
+    ).execute()
+
+
+def set_payouts_enabled(stripe_account_id: str, enabled: bool) -> None:
+    """Flip payouts_enabled from a Stripe `account.updated` event.
+
+    stripe_account_id comes from the EVENT object, never from a request body —
+    a webhook delivers Stripe's own claim about Stripe's own account, so there
+    is no caller-supplied id here to misuse.
+    """
+    get_supabase().table("affiliates").update({"payouts_enabled": enabled}).eq(
+        "stripe_account_id", stripe_account_id
+    ).execute()
+
+
 def accrue_from_invoice(user_id: str, invoice: dict) -> None:
     """A referred user paid an invoice — write the affiliate's commission.
 

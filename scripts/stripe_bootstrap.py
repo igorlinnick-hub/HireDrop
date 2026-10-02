@@ -10,12 +10,13 @@ Stdlib only (same pattern as cws_publish.py) — no SDK needed for these calls.
 What `ship` does:
   1. Ensure product "HireDrop Pro" + two recurring Prices ($9/week, $29/month,
      amounts imported from app/billing_config.py — single source of truth).
-  2. Ensure a webhook endpoint on <prod>/api/v1/billing/webhook with the 4 events
-     app/routers/billing.py handles. If the endpoint exists but we don't hold its
-     signing secret (Stripe only reveals it on create), recreate it.
-  3. Upsert STRIPE_PRICE_WEEKLY / STRIPE_PRICE_MONTHLY / STRIPE_WEBHOOK_SECRET
-     into jobflow/.env.
-  4. Push all 4 STRIPE_* vars to Railway (`railway variables --set`); if the CLI
+  2. Ensure TWO webhook endpoints on <prod>/api/v1/billing/webhook: the account
+     endpoint (payments) and a connect=true one (affiliate `account.updated`).
+     If an endpoint exists but we don't hold its signing secret (Stripe only
+     reveals it on create), recreate it.
+  3. Upsert STRIPE_PRICE_WEEKLY / STRIPE_PRICE_MONTHLY / STRIPE_WEBHOOK_SECRET /
+     STRIPE_CONNECT_WEBHOOK_SECRET into jobflow/.env.
+  4. Push the STRIPE_* vars to Railway (`railway variables --set`); if the CLI
      isn't logged in, print the exact commands to run after `railway login`.
   5. Verify prod: POST /billing/webhook with a junk body must return 400
      ("Invalid signature" = configured), not 503 ("Billing not configured").
@@ -43,6 +44,13 @@ WEBHOOK_EVENTS = [
     # Affiliate clawback — a refunded charge voids the commission it earned.
     "charge.refunded",
 ]
+# Affiliate Connect onboarding fires `account.updated` ON THE CONNECTED ACCOUNT.
+# An account endpoint (above) only ever hears the platform's own account, so these
+# need a second endpoint created with connect=true — same URL, own signing secret
+# (STRIPE_CONNECT_WEBHOOK_SECRET). The API object carries no `connect` flag, so we
+# tell the two apart by metadata.
+CONNECT_WEBHOOK_EVENTS = ["account.updated"]
+CONNECT_ROLE = "affiliate-connect"
 LOOKUP_KEYS = {"weekly": "hiredrop_pro_weekly", "monthly": "hiredrop_pro_monthly"}
 
 sys.path.insert(0, str(JOBFLOW))
@@ -157,36 +165,40 @@ def ensure_prices(secret: str) -> dict:
     return out
 
 
-def ensure_webhook(secret: str, have_signing_secret: bool) -> str | None:
+def _is_connect(endpoint: dict) -> bool:
+    return (endpoint.get("metadata") or {}).get("role") == CONNECT_ROLE
+
+
+def ensure_webhook(secret: str, have_signing_secret: bool, connect: bool = False) -> str | None:
     """Return the signing secret if (re)created, None if kept as-is."""
+    events = CONNECT_WEBHOOK_EVENTS if connect else WEBHOOK_EVENTS
+    label = "connect webhook" if connect else "webhook"
     endpoints = stripe_call(secret, "GET", "/v1/webhook_endpoints", [("limit", "100")])["data"]
-    ours = [e for e in endpoints if e["url"] == WEBHOOK_URL]
+    ours = [e for e in endpoints if e["url"] == WEBHOOK_URL and _is_connect(e) == connect]
     if ours and have_signing_secret:
         # Keep the endpoint (Stripe never re-shows a signing secret), but make sure
         # it still listens to everything we handle — a new event type added to
-        # WEBHOOK_EVENTS is silently never delivered otherwise.
-        missing = [ev for ev in WEBHOOK_EVENTS if ev not in ours[0].get("enabled_events", [])]
+        # the list is silently never delivered otherwise.
+        missing = [ev for ev in events if ev not in ours[0].get("enabled_events", [])]
         if missing:
             stripe_call(
                 secret,
                 "POST",
                 f"/v1/webhook_endpoints/{ours[0]['id']}",
-                [("enabled_events[]", ev) for ev in WEBHOOK_EVENTS],
+                [("enabled_events[]", ev) for ev in events],
             )
-            print(f"  webhook: exists ({ours[0]['id']}), subscribed to {', '.join(missing)}")
+            print(f"  {label}: exists ({ours[0]['id']}), subscribed to {', '.join(missing)}")
         else:
-            print(f"  webhook: exists ({ours[0]['id']}), secret already in .env — keeping")
+            print(f"  {label}: exists ({ours[0]['id']}), secret already in .env — keeping")
         return None
     for e in ours:  # exists but we don't hold its secret — Stripe won't re-show it
         stripe_call(secret, "DELETE", f"/v1/webhook_endpoints/{e['id']}")
-        print(f"  webhook: recreating {e['id']} (signing secret not on file)")
-    ep = stripe_call(
-        secret,
-        "POST",
-        "/v1/webhook_endpoints",
-        [("url", WEBHOOK_URL)] + [("enabled_events[]", ev) for ev in WEBHOOK_EVENTS],
-    )
-    print(f"  webhook: created {ep['id']} -> {WEBHOOK_URL}")
+        print(f"  {label}: recreating {e['id']} (signing secret not on file)")
+    params = [("url", WEBHOOK_URL)] + [("enabled_events[]", ev) for ev in events]
+    if connect:
+        params += [("connect", "true"), ("metadata[role]", CONNECT_ROLE)]
+    ep = stripe_call(secret, "POST", "/v1/webhook_endpoints", params)
+    print(f"  {label}: created {ep['id']} -> {WEBHOOK_URL}")
     return ep["secret"]
 
 
@@ -201,7 +213,7 @@ def push_railway(updates: dict) -> bool:
     except FileNotFoundError:
         res = None
     if res and res.returncode == 0:
-        print("  railway: 4 vars set (redeploy will follow)")
+        print(f"  railway: {len(updates)} vars set (redeploy will follow)")
         return True
     print("  railway: CLI not available/logged in — run after `railway login`:")
     print(
@@ -257,7 +269,11 @@ def main() -> None:
             )["data"]
             print(f"prices: {[(p['lookup_key'], p['id']) for p in prices] or 'none'}")
             eps = stripe_call(secret, "GET", "/v1/webhook_endpoints", [("limit", "100")])["data"]
-            print(f"webhook: {[e['id'] for e in eps if e['url'] == WEBHOOK_URL] or 'none'}")
+            for connect in (False, True):
+                ids = [
+                    e["id"] for e in eps if e["url"] == WEBHOOK_URL and _is_connect(e) == connect
+                ]
+                print(f"{'connect webhook' if connect else 'webhook'}: {ids or 'none'}")
         print(f"prod probe: {probe_prod()} (400=configured, 503=not configured)")
         return
 
@@ -272,6 +288,9 @@ def main() -> None:
     price_ids = ensure_prices(secret)
     print("2/4 webhook")
     signing = ensure_webhook(secret, bool(env.get("STRIPE_WEBHOOK_SECRET")))
+    connect_signing = ensure_webhook(
+        secret, bool(env.get("STRIPE_CONNECT_WEBHOOK_SECRET")), connect=True
+    )
 
     updates = {
         "STRIPE_PRICE_WEEKLY": price_ids["weekly"],
@@ -279,11 +298,14 @@ def main() -> None:
     }
     if signing:
         updates["STRIPE_WEBHOOK_SECRET"] = signing
+    if connect_signing:
+        updates["STRIPE_CONNECT_WEBHOOK_SECRET"] = connect_signing
     upsert_env(updates)
     print(f"3/4 .env updated ({', '.join(updates)})")
 
     railway_vars = {**updates, "STRIPE_SECRET_KEY": secret}
-    railway_vars.setdefault("STRIPE_WEBHOOK_SECRET", env.get("STRIPE_WEBHOOK_SECRET", ""))
+    for key in ("STRIPE_WEBHOOK_SECRET", "STRIPE_CONNECT_WEBHOOK_SECRET"):
+        railway_vars.setdefault(key, env.get(key, ""))
     print("4/4 railway")
     pushed = push_railway(railway_vars)
     if pushed:

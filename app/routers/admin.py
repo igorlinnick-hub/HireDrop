@@ -1235,7 +1235,7 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
     affiliates = _rows("affiliates", "id, code, status, commission_pct, paypal_email")
     referrals = _rows("referrals", "affiliate_id, first_seen_at, first_paid_at")
     # The whole ledger, not just the period: "owed" is an all-time liability.
-    commissions = _rows("commissions", "affiliate_id, amount_cents, status, created_at")
+    commissions = _rows("commissions", "affiliate_id, amount_cents, status, created_at, payout_id")
     payouts = _rows("payouts", "affiliate_id, amount_cents, paid_at")
     # The inbox: people asking for a link. Approval is a human decision made
     # on this board (POST /admin/affiliates/decide), never automatic.
@@ -1266,6 +1266,12 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
 
     live = [c for c in commissions if c.get("status") != "reversed"]
     accrued = [c for c in commissions if c.get("status") == "accrued"]
+    # Still 'accrued' but already bundled into a Connect payout
+    # (scripts/run_affiliate_payouts.py claims BEFORE Stripe confirms) is money
+    # that would be sent twice if this board's "payable" led Igor to also send
+    # it by hand — "owed" below is a lifetime liability and rightly still
+    # counts it, "payable" must not (blast-radius review, 2026-10-01).
+    accrued_unclaimed = [c for c in accrued if not c.get("payout_id")]
 
     earned_period = sum(c["amount_cents"] for c in live if in_period(c.get("created_at")))
     reversed_period = sum(
@@ -1275,7 +1281,7 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
     )
     owed_total = sum(c["amount_cents"] for c in accrued)
     payable_now = sum(
-        c["amount_cents"] for c in accrued if (c.get("created_at") or "") < payable_cutoff
+        c["amount_cents"] for c in accrued_unclaimed if (c.get("created_at") or "") < payable_cutoff
     )
     paid_period = sum(p["amount_cents"] for p in payouts if in_period(p.get("paid_at")))
 
@@ -1284,6 +1290,7 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
         mine = [r for r in referrals if r.get("affiliate_id") == a["id"]]
         cs = [c for c in commissions if c.get("affiliate_id") == a["id"]]
         mine_accrued = [c for c in cs if c.get("status") == "accrued"]
+        mine_unclaimed = [c for c in mine_accrued if not c.get("payout_id")]
         rows.append(
             {
                 "code": a.get("code"),
@@ -1298,10 +1305,13 @@ def _section_affiliates(from_ts: str, to_ts: str) -> dict:
                 "paying": len([r for r in mine if r.get("first_paid_at")]),
                 "earned": _usd(sum(c["amount_cents"] for c in cs if c.get("status") != "reversed")),
                 "owed": _usd(sum(c["amount_cents"] for c in mine_accrued)),
+                # Excludes anything already claimed by an in-flight Connect payout
+                # (payout_id set, status still 'accrued') — paying that by hand
+                # too would be the same money twice.
                 "payable": _usd(
                     sum(
                         c["amount_cents"]
-                        for c in mine_accrued
+                        for c in mine_unclaimed
                         if (c.get("created_at") or "") < payable_cutoff
                     )
                 ),

@@ -1,9 +1,10 @@
 """The affiliate program's front door: applications in, decisions out.
 
-Five surfaces, three audiences:
-  POST /affiliate/click        public  — someone opened a ?ref= link (counted, not tracked)
-  POST /affiliate/apply        public  — a stranger with a QR code asks for a link
-  GET  /affiliate/application  user    — "what happened to my application?"
+Six surfaces, three audiences:
+  POST /affiliate/click         public  — someone opened a ?ref= link (counted, not tracked)
+  POST /affiliate/apply         public  — a stranger with a QR code asks for a link
+  GET  /affiliate/application   user    — "what happened to my application?"
+  POST /affiliate/payouts/connect user  — connect their own Stripe Express account
   POST /admin/affiliates/decide admin  — approve or reject, from the admin board
   POST /admin/affiliates/issue  admin  — hand a link to someone who never applied
   POST /admin/affiliates/resend admin  — send that approval email again
@@ -34,12 +35,14 @@ from types import SimpleNamespace
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from app.db import affiliates as affiliates_db
 from app.db.client import get_supabase
 from app.deps import get_current_user
 from app.disposable_email import is_disposable_email
-from config import FRONTEND_URL
+from config import FRONTEND_URL, STRIPE_SECRET_KEY
 from modules.email_sender import affiliate_approved_html, send_email
 
 router = APIRouter(tags=["affiliate"])
@@ -318,6 +321,89 @@ def my_application(user=Depends(get_current_user)) -> dict:
         .execute()
     )
     return {"application": res.data[0] if res.data else None}
+
+
+def _stripe():
+    """Lazy import + configure the Stripe SDK, same shape as billing.py's helper
+    (duplicated, not shared — the two routers must not accidentally couple)."""
+    if not STRIPE_SECRET_KEY:
+        return None
+    import stripe
+
+    stripe.api_key = STRIPE_SECRET_KEY
+    return stripe
+
+
+@router.post("/affiliate/payouts/connect")
+def connect_payouts(user=Depends(get_current_user)) -> dict:
+    """Return a Stripe-hosted onboarding link for the CALLER's own payouts.
+
+    This is the only Connect write this program makes from the browser — the
+    rest (payouts_enabled, the actual transfer) happens off a signed Stripe
+    webhook and the daily job (scripts/run_affiliate_payouts.py). The whole
+    IDOR surface here is one lookup: affiliate_for_user(user.id) is always the
+    caller's own row, so there is no id in this request an affiliate could
+    swap to reach someone else's account.
+
+    Safe to call again before onboarding finishes: the Express account is
+    created once and reused; only a fresh (short-lived) AccountLink is made
+    each time.
+    """
+    stripe = _stripe()
+    if stripe is None:
+        return JSONResponse(status_code=503, content={"error": "Payouts not configured"})
+
+    affiliate = affiliates_db.affiliate_for_user(user.id)
+    if not affiliate:
+        raise HTTPException(status_code=404, detail="Not an affiliate")
+
+    account_id = affiliate.get("stripe_account_id")
+    if not account_id:
+        try:
+            account = stripe.Account.create(
+                type="express",
+                country="US",
+                email=getattr(user, "email", None),
+                capabilities={"transfers": {"requested": True}},
+                business_type="individual",
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[affiliate.payouts] account create failed for {user.id}: {exc}", file=sys.stderr
+            )
+            return JSONResponse(status_code=502, content={"error": "Could not start onboarding"})
+        account_id = account.id
+        try:
+            # Filtered by the caller's own user_id — this affiliate's row, never
+            # another one's, whatever account_id Stripe happened to hand back.
+            affiliates_db.save_stripe_account(user.id, account_id)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[affiliate.payouts] saving account {account_id} for {user.id} failed: {exc}",
+                file=sys.stderr,
+            )
+            return JSONResponse(status_code=502, content={"error": "Could not start onboarding"})
+
+    try:
+        link = stripe.AccountLink.create(
+            account=account_id,
+            refresh_url=f"{FRONTEND_URL}/dashboard/affiliate?connect=refresh",
+            return_url=f"{FRONTEND_URL}/dashboard/affiliate?connect=return",
+            type="account_onboarding",
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[affiliate.payouts] account link failed for {account_id}: {exc}", file=sys.stderr)
+        return JSONResponse(status_code=502, content={"error": "Could not start onboarding"})
+
+    # Belt-and-braces: this URL is about to get a full-page redirect from the
+    # browser (AffiliateView.tsx). It always comes straight from Stripe's own
+    # response today — nothing here echoes request input — but a future edit
+    # that changes that must not turn into a silent open redirect.
+    if not link.url.startswith("https://connect.stripe.com/"):
+        print(f"[affiliate.payouts] unexpected AccountLink host: {link.url!r}", file=sys.stderr)
+        return JSONResponse(status_code=502, content={"error": "Could not start onboarding"})
+
+    return {"url": link.url}
 
 
 class DecisionRequest(BaseModel):
