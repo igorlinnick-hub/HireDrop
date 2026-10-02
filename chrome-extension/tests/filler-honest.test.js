@@ -58,7 +58,7 @@ check("pay + school helpers found", payStart > 0 && payEnd > payStart);
 const helpers = SRC.slice(payStart, payEnd);
 const pure = {};
 vm.createContext(pure);
-vm.runInContext(`${helpers}\nglobalThis.H = { payQuestion, payAmounts, salaryAnswer, pickSchoolOption, SCHOOL_FIELD_RE };`, pure);
+vm.runInContext(`${helpers}\nglobalThis.H = { payQuestion, payAmounts, salaryAnswer, pickSchoolOption, SCHOOL_FIELD_RE, stateListPick };`, pure);
 const H = pure.H;
 
 const PQ = [
@@ -130,6 +130,35 @@ check("a longer name is a different school, not a near match",
   H.pickSchoolOption("Texas A&M University Corpus Christi", ["Texas A&M University", "Other"]) === null);
 check("the same name with a note in brackets is taken",
   H.pickSchoolOption("University of Hawaii at Manoa", ["University of Hawaii at Manoa (Honolulu)", "Chaminade University"]) === "University of Hawaii at Manoa (Honolulu)");
+
+// ---- 2b. State of residence: the profile's state or nothing ----------------------------
+// Option lists copied from the captured Greenhouse schemas (data/gh_form_schemas.jsonl):
+// codes (oura), names (affirm, + Canadian provinces), "(US) "-prefixed (instacart).
+{
+  const schemas = fs.readFileSync(path.join(__dirname, "..", "..", "data", "gh_form_schemas.jsonl"), "utf8")
+    .split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const listOf = (board) => {
+    for (const d of schemas) {
+      if (d.board !== board) continue;
+      for (const q of d.questions) {
+        const f = q.fields[0];
+        if (f.type === "multi_value_single_select" && /\bstate\b/i.test(q.label) && f.values.length > 40)
+          return f.values.map((v) => ({ text: v.label }));
+      }
+    }
+    return null;
+  };
+  const codes = listOf("oura"), names = listOf("affirm"), prefixed = listOf("instacart");
+  check("captured state lists found", codes && names && prefixed);
+  const pick = (opts, state) => H.stateListPick(opts, { state }).option?.text ?? null;
+  check("a Californian is not Alabama (the old first-row fallback)",
+    pick(names, "California") === "California" && pick(codes, "California") === "CA" && pick(prefixed, "California") === "(US) California");
+  check("a code on file finds the name, and HI is not Michigan (the old substring)",
+    pick(names, "HI") === "Hawaii" && pick(prefixed, "TX") === "(US) Texas" && pick(codes, "HI") === "HI");
+  check("no state on file → nothing, never a guess", pick(names, "") === null && pick(codes, "Ontario") === null);
+  check("a short list is not a state list (yes/no stays with the other rules)",
+    H.stateListPick([{ text: "Yes" }, { text: "No" }], { state: "CA" }).isList === false);
+}
 
 // ---- 3. Dropdowns: a choice counts only once it took ---------------------------------
 const comboParts = [
@@ -275,6 +304,23 @@ function comboWorld(html, { want } = {}) {
   const choose = extract("  async function chooseOption(label, options, profile, jobInfo) {") || "";
   check("a pay dropdown never reaches the model or the first-option fallback",
     /if \(payQuestion\(label\)\) return chosen \|\| null;/.test(choose) && choose.indexOf("payQuestion(label)") < choose.indexOf("ANSWER_QUESTION"));
+
+  {
+    // The real chooseOption with the AI budget spent — the path that put Alabama on a
+    // Californian (skeptic B, 10-01). The model must not be reached at all.
+    const ctx = { _aiAnswersUsed: 99, MAX_AI_ANSWERS_PER_FORM: 15, _aiBudgetNotified: true,
+      logBackend() {}, chrome: { runtime: { sendMessage() { throw new Error("model reached"); } } } };
+    vm.createContext(ctx);
+    vm.runInContext(`${helpers}\n${extract("  function isDemographicQuestion(label, optionTexts) {")}\n` +
+      `${extract("  function pickOptionDeterministic(label, options, profile) {")}\n${choose}\n` +
+      "globalThis.choose = chooseOption;", ctx);
+    const opts = ["Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut", "Delaware",
+      "Florida", "Georgia", "Hawaii", "Texas", "Not in the US"].map((text) => ({ text }));
+    const got = await ctx.choose("Please select your current state of residence.", opts, { state: "CA" }, {});
+    const none = await ctx.choose("What state do you live in?", opts, { state: "" }, {});
+    check("chooseOption: state of residence = the profile's, budget or not; none on file → nothing",
+      got?.text === "California" && none === null, `${got?.text} / ${none?.text}`);
+  }
 
   console.log(failures ? `\n${failures} failure(s)` : "\nall good");
   process.exit(failures ? 1 : 0);

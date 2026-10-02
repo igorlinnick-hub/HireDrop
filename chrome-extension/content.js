@@ -3091,7 +3091,7 @@
       } else if (!isCombo && /^\W*(?:highest\s+)?degree(?:\s+(?:type|level|earned|obtained))?\W*$/i.test(rawLabel)) {
         value = profile.no_degree ? "" : String(profile.degree || "").trim();
         if (!value) continue;
-      } else if (label.includes("salary") || label.includes("compensation") || label.includes("pay") || label.includes("wage")) {
+      } else if (payQuestion(rawLabel) || label.includes("salary") || label.includes("compensation") || label.includes("pay") || label.includes("wage")) {
         // NEVER invent a number here. This used to read `profile.desired_salary || "65000"`,
         // a field that exists nowhere, so every user told employers 65000. salary_min is not
         // a substitute either: it filters which jobs to see, it states no expectation.
@@ -3336,6 +3336,38 @@
     return near.length === 1 ? near[0] : null;
   }
 
+  // US states as a form lists them: by name ("Alabama", "(US) Alabama") or USPS code ("AL").
+  // The profile holds either — the address seed copies the resume's "City, ST ZIP" line.
+  const US_STATES = {
+    AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas", CA: "California", CO: "Colorado",
+    CT: "Connecticut", DE: "Delaware", DC: "District of Columbia", FL: "Florida", GA: "Georgia",
+    HI: "Hawaii", ID: "Idaho", IL: "Illinois", IN: "Indiana", IA: "Iowa", KS: "Kansas",
+    KY: "Kentucky", LA: "Louisiana", ME: "Maine", MD: "Maryland", MA: "Massachusetts",
+    MI: "Michigan", MN: "Minnesota", MS: "Mississippi", MO: "Missouri", MT: "Montana",
+    NE: "Nebraska", NV: "Nevada", NH: "New Hampshire", NJ: "New Jersey", NM: "New Mexico",
+    NY: "New York", NC: "North Carolina", ND: "North Dakota", OH: "Ohio", OK: "Oklahoma",
+    OR: "Oregon", PA: "Pennsylvania", RI: "Rhode Island", SC: "South Carolina", SD: "South Dakota",
+    TN: "Tennessee", TX: "Texas", UT: "Utah", VT: "Vermont", VA: "Virginia", WA: "Washington",
+    WV: "West Virginia", WI: "Wisconsin", WY: "Wyoming",
+  };
+  const stateKey = (t) => {
+    const s = String(t || "").replace(/^\s*\(\s*(?:us|usa)\s*\)\s*/i, "").replace(/[^a-z ]+/gi, " ")
+      .replace(/\s+/g, " ").trim().toLowerCase();
+    if (US_STATES[s.toUpperCase()]) return s.toUpperCase();
+    const code = Object.keys(US_STATES).find((c) => US_STATES[c].toLowerCase() === s);
+    return code || "";
+  };
+  // A state-of-residence list (Greenhouse: 46–61 rows) → the profile's state, matched as a
+  // whole name or code, or null. A substring put "HI" on Michigan; the first row put
+  // Alabama on a Californian. `isList` tells chooseOption no model and no fallback either.
+  function stateListPick(options, profile) {
+    const keys = options.map((o) => stateKey(o.text));
+    if (keys.filter(Boolean).length < 10) return { isList: false, option: null };
+    const want = stateKey(profile.state);
+    const hits = want ? options.filter((_, i) => keys[i] === want) : [];
+    return { isList: true, option: hits.length === 1 ? hits[0] : null };
+  }
+
   // Demographic / EEO self-identification — we auto-decline (most privacy-preserving,
   // and these are legally voluntary). Matches the question label OR the option set.
   function isDemographicQuestion(label, optionTexts) {
@@ -3452,6 +3484,9 @@
     // Pay is the user's figure or nothing: no model, and none of the fallbacks below (the
     // "first real option" one would put a bracket of ours on the application).
     if (payQuestion(label)) return chosen || null;
+    // Where the user lives is the profile's state or nothing — same reasoning.
+    const stateList = stateListPick(options, profile);
+    if (stateList.isList) return stateList.option;
     if (!chosen && _aiAnswersUsed >= MAX_AI_ANSWERS_PER_FORM) {
       if (!_aiBudgetNotified) { logBackend(`Too many custom questions (>${MAX_AI_ANSWERS_PER_FORM}) — leaving the rest for you (faster than auto-answering all)`, "warn"); _aiBudgetNotified = true; }
       // fall through to the SAFE no-AI fallbacks below (neutral/eligibility/blank)
