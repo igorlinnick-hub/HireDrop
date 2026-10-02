@@ -56,13 +56,26 @@ _COMPANY_SUFFIXES = {
 }
 
 
+# Tails an ATS board token glues onto the employer's name ("doordashusa", "grafanalabs").
+# Matched on the space-free key, so "Grafana Labs" and "grafanalabs" land on one key.
+_BOARD_TAILS = ("careers", "jobs", "labs", "usa", "hq")
+# A tail is only cut when this much name is left: "Medusa" must not become "med".
+_MIN_STEM = 4
+
+
 def company_key(name: str | None) -> str:
-    """One key per employer across boards: "DoorDash, Inc." on Greenhouse and "DoorDash"
-    on Indeed are the same company to the recruiter reading both applications."""
+    """One key per employer across boards: "DoorDash, Inc." on Indeed and "doordashusa"
+    (the board token Greenhouse rows carry as company) are the same company to the
+    recruiter reading both applications. Spaces are dropped ("Muck Rack" = "Muckrack"),
+    because a board token never has them. A false merge only makes the cap stricter."""
     tokens = re.findall(r"[a-z0-9]+", (name or "").lower())
     while len(tokens) > 1 and tokens[-1] in _COMPANY_SUFFIXES:
         tokens.pop()
-    return " ".join(tokens)
+    key = "".join(tokens)
+    for tail in _BOARD_TAILS:
+        if key.endswith(tail) and len(key) - len(tail) >= _MIN_STEM:
+            return key[: -len(tail)]
+    return key
 
 
 def has_current_verdict(row: dict, version: str) -> bool:
