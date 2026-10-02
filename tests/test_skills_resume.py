@@ -284,3 +284,33 @@ def test_ampersands_survive_the_pdf_intact():
     for expected in ["P&L", "R&D", "AT&T", "A&B Co", "Finance & Ops"]:
         assert expected in text
     assert "&;" not in text and "P&L;" not in text and "R&D;" not in text
+
+
+def test_symbols_helvetica_cannot_draw_are_mapped_not_misprinted():
+    """Helvetica is single-byte: "SDR → AE" rendered AND extracted as "SDR fi AE", ✓ as
+    "3", ★ as "H" (measured 2026-10-02). Extraction is how an ATS reads the resume, so
+    a wrong glyph is a wrong word. The tailor writes "→" on its own."""
+    import io
+
+    import pdfplumber
+
+    from modules.ats_pdf_generator import generate_ats_pdf
+
+    data = {
+        "name": "Ana Núñez",
+        "summary": "SDR → AE ✓ ★ top 5% ≥ 3 quarters • Café — “quoted” €10",
+        "experience": [],
+        "education": [],
+    }
+    with pdfplumber.open(io.BytesIO(generate_ats_pdf(data=data))) as pdf:
+        text = pdf.pages[0].extract_text().replace("\n", " ")
+    for expected in [
+        "ANA NÚÑEZ",
+        "SDR -> AE",
+        "* top 5%",
+        ">= 3 quarters",
+        "· Café",
+        "— “quoted” €10",
+    ]:
+        assert expected in text
+    assert "fi AE" not in text and "(cid:" not in text

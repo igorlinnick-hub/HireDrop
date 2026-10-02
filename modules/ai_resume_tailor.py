@@ -93,6 +93,11 @@ RULES — non-negotiable:
   at the top. The candidate is not a "Field Marketing Manager" because they applied to be
   one.
 - Do NOT invent metrics, percentages or team sizes. Keep the numbers the resume gives.
+- Do NOT upgrade the candidate's scope to match the posting: mid-market is not
+  "enterprise", support is not "customer success", a contributor is not a "leader". Use
+  the posting's words only where the resume shows that exact scope.
+- Do NOT add an outcome or result a bullet doesn't state ("…driving adoption", "…improving
+  retention"). Reword what was done; never append what it supposedly led to.
 - DO reorder bullet points to lead with most relevant achievements
 - DO reframe language to mirror the job description's vocabulary
 - DO move the most relevant experience/skills to the top

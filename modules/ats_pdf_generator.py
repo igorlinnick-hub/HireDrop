@@ -19,6 +19,7 @@ Flow:
 import io
 import json
 import re
+import unicodedata
 
 import pdfplumber
 from reportlab.lib import colors
@@ -407,7 +408,55 @@ def esc(value) -> str:
     carries our own tags would print the tags instead of applying them. The .docx
     path needs none of this (python-docx escapes when it writes the XML).
     """
-    return str(value or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    text = pdf_text(str(value or ""))
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+# Helvetica is a standard PDF font with a single-byte encoding: a character outside it
+# is drawn as some other glyph AND extracted as that glyph — and text extraction is
+# exactly how an ATS reads the resume. Round-trip measured 2026-10-02 (render ->
+# pdfplumber): "SDR → AE" came back as "SDR fi AE", ✓ as "3", ★ as "H", ≥ as "‡",
+# Cyrillic as "n". The tailor writes arrows on its own (it turned "SDR -> AE" into "→").
+# Accents, curly quotes, dashes, €, ©, ™ and · round-trip fine; "•" does not.
+_PDF_SUBSTITUTES = {
+    "→": "->",
+    "➔": "->",
+    "➜": "->",
+    "⇒": "->",
+    "⟶": "->",
+    "←": "<-",
+    "•": "·",
+    "●": "·",
+    "▪": "·",
+    "◦": "·",
+    "■": "·",
+    "◆": "·",
+    "✓": "",
+    "✔": "",
+    "★": "*",
+    "☆": "*",
+    "≥": ">=",
+    "≤": "<=",
+    "≈": "~",
+    "≠": "!=",
+}
+
+
+def pdf_text(text: str) -> str:
+    """Map characters Helvetica cannot carry to ones it can; drop what has no stand-in."""
+    out = []
+    for ch in text:
+        if ch in _PDF_SUBSTITUTES:
+            out.append(_PDF_SUBSTITUTES[ch])
+            continue
+        try:
+            ch.encode("cp1252")
+            out.append(ch)
+        except UnicodeEncodeError:
+            # "ﬁ" -> "fi", "①" -> "1"; anything without an ASCII form is dropped rather
+            # than printed as a wrong letter.
+            out.append(unicodedata.normalize("NFKD", ch).encode("ascii", "ignore").decode())
+    return "".join(out)
 
 
 def dedupe_certifications(education: list, certifications: list) -> list:
