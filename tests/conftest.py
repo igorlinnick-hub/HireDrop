@@ -39,6 +39,13 @@ def _no_company_history_network():
 
 
 @pytest.fixture(autouse=True)
+def _no_handback_network():
+    """Same for the open hand-backs the ATS queue leaves alone (jobs._waiting_on_person)."""
+    with patch("app.db.handbacks.open_urls", return_value=[]):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _no_background_prejudge():
     """The deck read starts a background judge pass when ATS rows lack a verdict
     (app/routers/jobs.py::_prejudge_in_background). A thread outliving the test's patches
