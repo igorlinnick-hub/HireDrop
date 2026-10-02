@@ -40,3 +40,26 @@ def test_tools_are_read_only_names():
 
 def test_facts_never_promise_unsupported_platforms():
     assert "NOT supported today: LinkedIn, Workday, Google Jobs" in FACTS
+
+
+def test_tool_times_reach_the_model_local_with_age():
+    """The model got UTC and did the clock math itself: with thinking off it printed the
+    arithmetic, wrote "Oct 30" for Sep 30 and counted 24.4h-old applications as "the last
+    24 hours" (A/B 2026-10-02). Code converts; free text and plain dates are left alone."""
+    from datetime import UTC, datetime
+    from zoneinfo import ZoneInfo
+
+    now = datetime(2026, 10, 2, 9, 12, tzinfo=UTC)
+    out = buddy.localize_times(
+        {
+            "rows": [{"date_applied": "2026-10-01T08:46:00+00:00"}, {"at": "2026-10-02T01:15:30"}],
+            "since": "2026-10-02",
+            "message": "stopped at 2026-10-01T08:46",
+        },
+        ZoneInfo("Pacific/Honolulu"),
+        now,
+    )
+    assert out["rows"][0]["date_applied"] == "Wed Sep 30, 10:46 PM (24.4h ago)"
+    assert out["rows"][1]["at"] == "Thu Oct 1, 3:15 PM (7.9h ago)"
+    assert out["since"] == "2026-10-02"
+    assert out["message"] == "stopped at 2026-10-01T08:46"

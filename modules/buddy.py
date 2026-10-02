@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -67,8 +68,9 @@ How you work:
 Style: like a chat with a helpful person. Lead with the answer in one plain sentence, then
 only what they need to act — usually 2-4 sentences, or up to 3 short bullet steps when there
 are real steps. Offer more detail instead of dumping it ("want the details?"). Plain text
-(no headings, no tables). Times in the user's local time zone, given in the question header
-— never UTC. Reply in the user's language.
+(no headings, no tables). Tool results already show times in the user's local time with
+how long ago they were ("Wed Oct 1, 3:15 PM (6h ago)") — use those as given; never convert,
+never show UTC, never show your working. Reply in the user's language.
 
 PRODUCT FACTS
 {FACTS}"""
@@ -248,12 +250,52 @@ _RUN = {
 }
 
 
-def run_tool(user, name: str, args: dict) -> str:
+# Rows carry UTC ISO strings. Left to the model, the conversion went wrong in the
+# 2026-10-02 A/B: with thinking off it printed its arithmetic to the user ("Converting the
+# timestamps (Hawaii is UTC-10)…"), wrote "Oct 30" for Sep 30 and counted six applications
+# from 24.4h ago as "the last 24 hours". So code does the clock math, the model reads it.
+_ISO = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:?\d{2})?$")
+
+
+def _ago(seconds: float) -> str:
+    future, s = seconds < 0, abs(seconds)
+    if s < 3600:
+        span = f"{max(1, int(s // 60))}m"
+    elif s < 48 * 3600:
+        span = f"{s / 3600:.1f}".rstrip("0").rstrip(".") + "h"
+    else:
+        span = f"{int(s // 86400)}d"
+    return f"in {span}" if future else f"{span} ago"
+
+
+def localize_times(value, zone, now: datetime | None = None):
+    """Every ISO timestamp in a tool result -> "Wed Oct 1, 3:15 PM (6h ago)" in `zone`.
+    Naive timestamps are UTC (that is how the tables store them)."""
+    now = now or datetime.now(UTC)
+    if isinstance(value, dict):
+        return {k: localize_times(v, zone, now) for k, v in value.items()}
+    if isinstance(value, list):
+        return [localize_times(v, zone, now) for v in value]
+    if isinstance(value, str) and _ISO.match(value):
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        local = dt.astimezone(zone)
+        clock = f"{local:%a %b} {local.day}, {local:%I:%M %p}".replace(" 0", " ")
+        return f"{clock} ({_ago((now - dt).total_seconds())})"
+    return value
+
+
+def run_tool(user, name: str, args: dict, zone=UTC) -> str:
     fn = _RUN.get(name)
     if not fn:
         return json.dumps({"error": f"unknown tool {name}"})
     try:
-        return json.dumps(fn(user, args or {}), default=str)[:12000]
+        result = json.loads(json.dumps(fn(user, args or {}), default=str))
+        return json.dumps(localize_times(result, zone))[:12000]
     except Exception as e:  # noqa: BLE001 — tell the model, let it answer honestly
         return json.dumps({"error": f"lookup failed: {str(e)[:200]}"})
 
@@ -288,7 +330,7 @@ def ask(user, question: str, history: list | None = None, tz: str | None = None)
         zone = ZoneInfo(tz) if tz else UTC
     except (ZoneInfoNotFoundError, ValueError):
         zone = UTC
-    now = f"{datetime.now(zone):%Y-%m-%d %H:%M} ({tz or 'UTC'}; log times are UTC)"
+    now = f"{datetime.now(zone):%a %b %d %Y, %I:%M %p} ({tz or 'UTC'})"
     messages = clean_history(history) + [
         {"role": "user", "content": f"[now: {now}]\n{question[:MAX_QUESTION_CHARS]}"}
     ]
@@ -329,7 +371,7 @@ def ask(user, question: str, history: list | None = None, tz: str | None = None)
                 {
                     "type": "tool_result",
                     "tool_use_id": c.id,
-                    "content": run_tool(user, c.name, c.input),
+                    "content": run_tool(user, c.name, c.input, zone),
                 }
             )
         messages.append({"role": "user", "content": results})
