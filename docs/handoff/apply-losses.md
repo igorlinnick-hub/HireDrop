@@ -1,6 +1,6 @@
 # apply-losses — где теряются подачи: хендбэки, потерянные записи, вход в Indeed
 
-Обновлено: 2026-10-02 · ветка: main (смержены #305, #318 filler-honest; ext 1.8.30 живая у Игоря)
+Обновлено: 2026-10-02 · ветка: main (#318 1.8.30 живая; #320 1.8.31 СМЕРЖЕН f7aadf3, в Chrome НЕ доехал)
 
 ## Состояние
 
@@ -32,40 +32,50 @@
 
 ## Последний заход (10-02)
 
-- **Прогон Indeed на 1.8.30** (21:21–21:46Z, `/tools/run-report`): 26 мин, открыто 4, подано 1
-  (без подтверждения), хендбэк 3; потери: fit gate 12, title mismatch 7, dead links 3.
-- **Все 3 хендбэка — `structured-data-review`**, тот же след, что 14 из 17 старых: «Review details» →
-  Continue ×2 → отказ. Строка 🖐 (#305) пустая: `alerts=[] invalid=[] reqEmpty=[]`,
-  notes=«Review your resume details», кнопка Continue есть. Т.е. отказ без видимой ошибки — диагностика
-  #305 здесь ничего не ловит. (`metadata_json.diag` = null — для Indeed хендбэки в таблицу `handbacks`
-  не пишутся, только `activity_log`.)
-- **Зацепка (гипотеза, не доказана):** на `resume-selection` бот выбирает загруженный `resume.pdf`, а
-  не «Use your Indeed Resume» (Indeed помечает его Recommended). Шаг structured-data-review Indeed
-  вставляет именно для разобранного файла. Проверка: выбрать Indeed Resume и посмотреть, исчезает ли
-  шаг — нужен живой клик Continue в настоящей заявке (классификатор auto-mode запрещает) → Игорь
-  руками один раз, или прогон с правкой выбора резюме.
-- `drive.py` сошёл на 98-й секунде: «page has no data-testid» — после Start дашборд уходит на
-  `/dashboard/campaign`, а драйвер, похоже, смотрит не ту вкладку/путь. Кампания шла дальше; Stop
-  нажат таймером по `data-testid=btn-stop` в 21:46Z.
+- **Прогон Indeed на 1.8.30** (21:21–21:46Z, `/tools/run-report`): открыто 4, подано 1, хендбэк 3.
+  **Все 3 = загружен PDF (`filled=[resume]`) → structured-data-intro → structured-data-review →
+  Continue ×3 → отказ**, без alert/aria-invalid/пустых полей. Единственная подача — без загрузки
+  (сразу review-module). Т.е. не «через раз», а каждый раз, когда грузим PDF.
+- **#320 смержен (f7aadf3), ext 1.8.31**, 3 скептика (все блокеры закрыты):
+  - `preferIndeedResume()` — после первого отказа на structured-data-review (`indeedSdrRefusedAt`,
+    14 дней, user-scoped) на resume-selection берём «Use your Indeed Resume» вместо загрузки;
+    прогресс только при смене выбора (иначе stall guard не срабатывал → 20 кругов без хендбэка).
+  - `structuredReviewSnapshot()` — на отказе строка `🧾 sdr resume=<file|indeed> badges=… acts=… ids=…`
+    (только листовые бейджи и 2 слова действий — без текста резюме). Следующий прогон скажет, чего
+    ждёт шаг → потом вернуть tailored PDF на Indeed.
+  - `forgetHandedBackFromApplied()` (background) — находка jobflow-2f: «applied» ставится ДО Submit,
+    хендбэк после клика его не снимал → buildAtsQueue выкидывал вакансию навсегда (7 из 9 GH).
+    Теперь перед фильтром очереди снимаем отметки ТОЛЬКО у ОТВЕЧЕННЫХ хендбэков (`requeued_at`).
+    Неотвеченные — нет: человек мог дослать руками («введи код и отправь»), снятие = двойная подача.
+  - Тесты: `indeed-resume-choice.test.js` (фикстура снята с живой страницы
+    `tests/fixtures/indeed-resume-selection.html`), `applied-rollback.test.js`; сьюта 30/30.
+- `drive.py` сходит на 98-й секунде: «page has no data-testid» — после Start дашборд на
+  `/dashboard/campaign`. Кампания шла; Stop нажат по `data-testid=btn-stop`.
 
 ## Сломано / не доделано
 
-- ✅ GH-хендбэки переочередены правилом продукта: #319 (jobflow-2f) — новой сборке ext одна
-  попытка на открытый хендбэк. 9 хендбэков Игоря отпущены под 1.8.30.
-- Не блокеры из ревью (в файле ревью): 2 DOM-теста filler-honest проходят и на старом коде —
-  ужесточить; свободный текст зарплаты не пересчитывает месяц/INR.
-- structured-data-review: причина не снята. Нужен Игорь (дойти до «Review details» руками)
-  или первый хендбэк после релиза — `metadata.diag` скажет.
-- #280 (продление сессии Indeed) живьём не доказан. Кап по локальному дню — не начат.
+- **1.8.31 НЕ в Chrome Игоря (пинг = 1.8.30).** `~/Desktop/HireDrop-Ext/*` = **dataless (iCloud
+  Optimize Storage выгрузил Рабочий стол)** — `stat -f "%b %Sf"` → `0 compressed,dataless`. Чтение
+  виснет, Chrome не может перечитать файлы при DEV_RELOAD. `sync-ext.sh` запущен заново в фоне —
+  результат не проверен. Решение по-настоящему: перенести папку расширения из iCloud (`~/Code/...`)
+  и перезагрузить unpacked оттуда (Игорь: «Load unpacked» один раз) ИЛИ отключить iCloud для Desktop.
+  ⚠️ Не делать `sync-ext.sh | head` — SIGPIPE рвёт синк.
+- **Продуктовый вопрос Игорю:** 7 GH-хендбэков Игоря неотвеченные → остаются «applied» локально и
+  в очередь этого браузера не вернутся. Авто-повтор неотвеченных = риск двойной подачи. Варианты:
+  кнопка «повторить новой версией» на карточке хендбэка (= requeued_at без ответов) или ничего.
+  Тот же риск у #319 на сервере для хендбэков ДО Submit (локальной отметки нет) — сказать jobflow-2f.
+- Indeed Resume у Игоря «Created more than a week ago» — после переключения работодатель получит
+  его, а не tailored PDF; ответы скринера всё ещё из резюме HireDrop.
+- Не блокеры filler-honest — в файле ревью.
 
 ## Следующий шаг
 
-Модель: **Opus**. Решить structured-data-review: (1) Игорь один раз руками на Indeed выбирает «Use
-your Indeed Resume» и смотрит, есть ли шаг «Review details»; или (2) снять разметку шага
-`structured-data-review` (Игорь доходит до него, сессия читает DOM без кликов) — что там требует
-действия без aria-invalid. Затем фикс выбора резюме / шага. Отдельно: починить `drive.py` для
-`/dashboard/campaign`.
+Модель: **Opus**. 1) Довезти 1.8.31: проверить `stat` файлов в `~/Desktop/HireDrop-Ext` (если
+dataless — перенос папки вне iCloud + один «Load unpacked» Игоря), DEV_RELOAD, пинг = 1.8.31
+(`GET /extension/ping` на `web-production-db45.up.railway.app`, токен из cookie дашборда).
+2) Прогон Indeed (объявить jobflow-2f, «давай» Игоря уже было) → строки `🧾 sdr` и доля подач.
+3) Вопрос Игорю про неотвеченные хендбэки (выше). 4) Починить `drive.py` для `/dashboard/campaign`.
 
-Файлы лейна: `chrome-extension/content.js` (formBlockers ~L3500, fillTextQuestions ~L2990,
+Файлы лейна: `chrome-extension/content.js` (preferIndeedResume/structuredReviewSnapshot ~L3860, step loop ~L4325), `background.js` forgetHandedBackFromApplied ~L1059, `tests/indeed-resume-choice.test.js`, `tests/applied-rollback.test.js`, `chrome-extension/content.js` (formBlockers ~L3500, fillTextQuestions ~L2990,
 pay/school helpers перед isDemographicQuestion, fillComboboxes, fillCheckboxes),
 `background.js` ATS_JOB_FAILED, `tests/form-blockers.test.js`, `tests/filler-honest.test.js`.
