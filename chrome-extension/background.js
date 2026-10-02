@@ -1051,21 +1051,30 @@ function pickNextStage(tried, selected, conns) {
 const SWEEP_WAIT_MS = 45_000;
 const SWEEP_POLL_MS = 5_000;
 
-// Self-heal (10-02): content.js marks a job applied BEFORE the Submit click, and a
-// hand-back after the click never undid it, so buildAtsQueue dropped the posting forever —
-// 7 of 9 released GH hand-backs never came back. An OPEN hand-back is by definition not
-// applied: take those out of the local sets. content.js forgetAppliedJob() stops new
-// cases; this repairs the ones already stored. A failed read repairs nothing.
+// The person's answer releases the local "applied" marks (10-02). content.js marks a job
+// applied BEFORE the Submit click, so a hand-back after the click left it marked, and this
+// queue dropped it even after the person answered its questions — 7 of 9 GH hand-backs
+// never came back. Only ANSWERED hand-backs (requeued_at) are released: an unanswered one
+// may have been finished by hand on the employer's site ("enter the code and submit"), and
+// releasing it would apply twice — the marks are the only guard there (skeptic, #320).
+// URLs compare without the query only on ATS hosts: every ZipRecruiter posting shares the
+// jobs-search path and differs only in its query. A failed read changes nothing.
 async function forgetHandedBackFromApplied() {
   const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
-  const bare = (u) => String(u || "").split("?")[0];
+  const ATS_HOST = /(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com)$/i;
+  const keyOf = (u) => {
+    try {
+      const x = new URL(String(u || ""));
+      return ATS_HOST.test(x.hostname) ? x.origin + x.pathname : x.href;
+    } catch { return String(u || ""); }
+  };
   try {
-    const open = ((await apiGet("/handbacks?limit=100")) || {}).handbacks || [];
+    const open = (((await apiGet("/handbacks?limit=100")) || {}).handbacks || []).filter((h) => h.requeued_at);
     if (!open.length) return;
     const s0 = await chrome.storage.local.get(["appliedUrls", "appliedJobKeys"]);
-    const urls = new Set(open.map((h) => bare(h.url)).filter(Boolean));
+    const urls = new Set(open.map((h) => keyOf(h.url)).filter(Boolean));
     const keys = new Set(open.map((h) => `${norm(h.job_title)}|${norm(h.company)}`).filter((k) => k !== "|"));
-    const keptUrls = (s0.appliedUrls || []).filter((u) => !urls.has(bare(u)));
+    const keptUrls = (s0.appliedUrls || []).filter((u) => !urls.has(keyOf(u)));
     const keptKeys = (s0.appliedJobKeys || []).filter((k) => !keys.has(k));
     if (keptUrls.length !== (s0.appliedUrls || []).length || keptKeys.length !== (s0.appliedJobKeys || []).length) {
       await chrome.storage.local.set({ appliedUrls: keptUrls, appliedJobKeys: keptKeys });

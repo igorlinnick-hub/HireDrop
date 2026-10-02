@@ -1802,32 +1802,8 @@
   // re-queues), and advance the walk. The invariant (council 2026-08-04): every approved
   // job ends submitted-complete-and-honest OR handed-back-with-a-reason — never a silent
   // half-death.
-  // A handed-back job was NOT applied: undo the pre-click "applied" marks (set before Submit
-  // so a navigating submit can't lose them). Left behind, they hid the posting from the
-  // server's ATS queue in this browser forever (background buildAtsQueue drops appliedUrls
-  // / appliedJobKeys): 7 of 9 released GH hand-backs never came back (jobflow-2f, 10-02),
-  // neither through #319 nor through the person's own answers.
-  async function forgetAppliedJob(urls, title, company) {
-    const bare = (u) => String(u || "").split("?")[0];
-    const drop = new Set(urls.filter(Boolean).map(bare));
-    const key = jobDedupKey(title, company);
-    const d = await storageGet(["appliedUrls", "appliedJobKeys"]);
-    const patch = {};
-    if (drop.size && (d.appliedUrls || []).some((u) => drop.has(bare(u)))) {
-      patch.appliedUrls = d.appliedUrls.filter((u) => !drop.has(bare(u)));
-    }
-    if (key !== "|" && (d.appliedJobKeys || []).includes(key)) {
-      patch.appliedJobKeys = d.appliedJobKeys.filter((k) => k !== key);
-    }
-    if (Object.keys(patch).length) await storageSet(patch);
-  }
-
   async function handBackJob(reason, extra = {}) {
     await addHandedBackKey(extra.title, extra.company);
-    // typeof guard: tests run handBackJob alone in a vm sandbox (as for formBlockers below).
-    if (typeof forgetAppliedJob === "function") {
-      await forgetAppliedJob([window.location.href, extra.url], extra.title, extra.company);
-    }
     await sendMsg({
       type: "ATS_JOB_FAILED",
       data: {
