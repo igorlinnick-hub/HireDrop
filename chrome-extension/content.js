@@ -1709,6 +1709,27 @@
     return [...keywordWords].some((w) => titleWords.has(w));
   }
 
+  // A react-select keeps its typing box `<input role=combobox>` at value "" even after a
+  // pick; the answer is rendered next to it as `.select__single-value` (Greenhouse
+  // job-boards, captured live 10-02: "Yes" shown, input.value === ""). Read that.
+  function reactSelectShownValue(el) {
+    if (el.tagName !== "INPUT" || el.getAttribute("role") !== "combobox") return "";
+    const box = el.closest('[class*="value-container"], [class*="ValueContainer"]');
+    if (!box) return "";
+    const shown = box.querySelector(
+      '[class*="single-value"], [class*="singleValue"], [class*="multi-value"], [class*="multiValue"]'
+    );
+    return shown ? (shown.textContent || "").trim() : "";
+  }
+
+  // Greenhouse escalates a low reCAPTCHA score to a code it emails the applicant; the
+  // form stays on the page and grows these boxes (night shift, live 10-01: 3/3).
+  function greenhouseAsksEmailCode() {
+    return !!document.querySelector(
+      '#security-input-0, [id^="security-input"], input[name*="security_code"]'
+    );
+  }
+
   function collectUnfilledRequired() {
     const labels = [];
     const scope = formScope();
@@ -1731,7 +1752,7 @@
       const val = (el.value || "").trim();
       const checked = el.type === "radio" || el.type === "checkbox"
         ? !!document.querySelector(`input[name="${el.name}"]:checked`) : null;
-      if (val || checked) continue;
+      if (val || checked || reactSelectShownValue(el)) continue;
       const lbl = (el.labels && el.labels[0] && el.labels[0].textContent) ||
         el.getAttribute("aria-label") ||
         (el.closest("label") && el.closest("label").textContent) ||
@@ -4988,6 +5009,16 @@
     // it before the click (nav-safe) — un-count it and hand the job back with the exact
     // unfilled fields, instead of lying "Applied (unconfirmed)".
     if (!result.verified && submitBtn.isConnected && window.location.href === jobUrl) {
+      // Checked first: with every field filled, the code prompt leaves no leftover and no
+      // invalid field, and the job would be counted "Applied (unconfirmed)" — unsent.
+      if (greenhouseAsksEmailCode()) {
+        await subtractLocalApplication(platform);
+        await handBackJob(
+          "Greenhouse asked for the verification code it just emailed you — nothing was sent. Open the posting, enter the code from your inbox and submit",
+          { title: jobTitle, company: jobCompany, platform }
+        );
+        return;
+      }
       const leftover = collectUnfilledRequired();
       // A REAL validation error = an aria-invalid field or a non-empty alert — NOT the
       // ubiquitous "* indicates a required field" legend (the old bare /required/ regex
