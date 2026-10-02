@@ -52,6 +52,8 @@ const USER_SCOPED_KEYS = [
   "appliedUrls", "appliedJobKeys", "todayCount", "platformCounts",
   "campaignFilters", "campaignStartedAt", "currentJob",
   "platformConnections", "captchaWaiting", "reviewMode",
+  // Indeed resume choice (content.js preferIndeedResume): learned on this user's runs.
+  "indeedSdrRefusedAt", "indeedLastResumeKind",
 ];
 
 // Self-bootstrap the durable key: any connected user has a (dashboard-pushed) Supabase

@@ -3856,22 +3856,28 @@
   }
 
   // Indeed resume-selection: once a parsed upload has been refused on this browser
-  // (indeedSdrRefusedAt), pick the Indeed Resume card instead of uploading. True = chosen.
+  // (indeedSdrRefusedAt, kept 14 days), use the Indeed Resume card instead of uploading.
+  // `chosen` = skip the upload; `changed` = this round moved the selection. Only `changed`
+  // is progress: counting an already-checked card every round kept the stall guard from
+  // ever firing, so a refused step spun 20 rounds instead of handing back.
+  const INDEED_SDR_TTL_MS = 14 * 24 * 3600 * 1000;
   async function preferIndeedResume(filled) {
-    if (detectPlatform() !== "indeed" || !/resume-selection/.test(location.pathname)) return false;
+    const none = { chosen: false, changed: false };
+    if (detectPlatform() !== "indeed" || !/resume-selection/.test(location.pathname)) return none;
     const card = document.querySelector('[data-testid="resume-selection-structured-resume-radio-card-input"]');
-    if (!card) return false;
+    if (!card) return none;
     const { indeedSdrRefusedAt } = await storageGet("indeedSdrRefusedAt");
-    if (!indeedSdrRefusedAt) return false;
-    if (!card.checked) {
-      await humanClick(document.querySelector('[data-testid="resume-selection-structured-resume-radio-card-label"]') || card);
-      await sleep(humanDelay(600, 1200));
-    }
-    if (!card.checked) return false;
+    if (!indeedSdrRefusedAt || Date.now() - indeedSdrRefusedAt > INDEED_SDR_TTL_MS) return none;
+    if (card.checked) return { chosen: true, changed: false };
+    await humanClick(document.querySelector('[data-testid="resume-selection-structured-resume-radio-card-label"]') || card);
+    await sleep(humanDelay(600, 1200));
+    // React may revert an uncontrolled click: re-read, and upload as before if it did.
+    if (!card.checked) return none;
     filled.push("indeed-resume");
     await storageSet({ indeedLastResumeKind: "indeed" });
-    return true;
+    return { chosen: true, changed: true };
   }
+
 
   // Indeed's "Review your resume details" refuses Continue with no alert, no aria-invalid and
   // no empty required input (#305 read all three as empty, 3/3 on 10-02). What it renders is
@@ -3882,22 +3888,29 @@
   function structuredReviewSnapshot() {
     try {
       const vis = (e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
-      const mask = (t) => String(t || "").replace(/\s+/g, " ").trim()
-        .replace(/[\w.+-]+@[\w-]+\.[\w.]+/g, "<email>").replace(/\+?\d[\d\s().-]{6,}\d/g, "<num>").slice(0, 40);
+      const flat = (t) => String(t || "").replace(/\s+/g, " ").trim();
       const root = document.querySelector("main, [role='main']") || document.body;
-      const ids = [...new Set([...root.querySelectorAll("[data-testid]")].filter(vis).map((e) => e.getAttribute("data-testid")))].slice(0, 45);
+      // A badge is a LEAF whose own short text opens with the keyword ("Missing info",
+      // "Add dates", "Needs attention") — never a container, whose text is the card.
+      const BADGE = /^(missing|required|incomplete|add|needs?|error|invalid|fix|update|confirm)\b/i;
+      const badges = [...new Set([...root.querySelectorAll("*")].filter((e) =>
+        e.children.length === 0 && vis(e) && flat(e.textContent).length <= 30 && BADGE.test(flat(e.textContent)))
+        .map((e) => `${e.getAttribute("data-testid") || e.tagName.toLowerCase()}:${flat(e.textContent)}`))].slice(0, 15);
+      // Actions by their first two words: "Edit Senior Software Engineer at Kaiser" → "Edit Senior".
       const acts = [...root.querySelectorAll("button, a, [role='button'], [role='link']")].filter(vis)
-        .map((e) => mask(e.getAttribute("aria-label") || e.textContent) + (e.disabled || e.getAttribute("aria-disabled") === "true" ? "(off)" : ""))
+        .map((e) => flat(e.getAttribute("aria-label") || e.textContent).split(" ").slice(0, 2).join(" ") +
+          (e.disabled || e.getAttribute("aria-disabled") === "true" ? "(off)" : ""))
         .filter(Boolean).slice(0, 25);
-      const badges = [...root.querySelectorAll("[data-testid], [class], [role='status'], [role='alert']")].filter((e) =>
-        vis(e) && e.children.length <= 2 &&
-        /missing|required|incomplete|error|invalid|add |needs|warning/i.test(`${e.getAttribute("data-testid") || ""} ${e.className || ""} ${e.textContent.slice(0, 60)}`))
-        .map((e) => `${e.getAttribute("data-testid") || ""}:${mask(e.textContent)}`).filter((t) => t.length > 1);
-      return `ids=${JSON.stringify(ids)} acts=${JSON.stringify(acts)} badges=${JSON.stringify([...new Set(badges)].slice(0, 15))}`;
+      let ids = JSON.stringify([...new Set([...root.querySelectorAll("[data-testid]")].filter(vis)
+        .map((e) => e.getAttribute("data-testid")))].slice(0, 60));
+      if (ids.length > 900) ids = ids.slice(0, 900) + "…";
+      // Badges and actions first: they are the diagnosis, ids are context the slice may cut.
+      return `badges=${JSON.stringify(badges)} acts=${JSON.stringify(acts)} ids=${ids}`;
     } catch (e) {
       return `sdr=? (${String((e && e.message) || e).slice(0, 80)})`;
     }
   }
+
 
   function formBlockersLine(fb) {
     if (!fb || fb.error) return `blockers=? (${fb ? fb.error : "none"})`;
@@ -4312,8 +4325,9 @@
       // every upload of the 10-02 run (3/3; 14 of 17 blind hand-backs before it). Once that
       // has happened on this browser, prefer the Indeed Resume the user already has there —
       // no parse, no review step. The upload path stays for users without one.
-      const indeedResumeChosen = await preferIndeedResume(filled);
-      if (indeedResumeChosen) filledAny = true;
+      const indeedResume = await preferIndeedResume(filled);
+      if (indeedResume.changed) filledAny = true;
+      const indeedResumeChosen = indeedResume.chosen;
 
       // Resume upload
       const resumeInput = indeedResumeChosen ? null : findResumeInput();
@@ -4322,7 +4336,7 @@
           await uploadResume(resumeInput);
           await sleep(humanDelay(1200, 2200));
           filledAny = true; filled.push("resume");
-          if (detectPlatform() === "indeed") storageSet({ indeedLastResumeKind: "file" });
+          if (detectPlatform() === "indeed") await storageSet({ indeedLastResumeKind: "file" });
         } catch (e) {
           log("Resume upload failed: " + e.message, "err");
         }
