@@ -1,6 +1,6 @@
 # apply-losses — где теряются подачи: хендбэки, потерянные записи, вход в Indeed
 
-Обновлено: 2026-10-02 · ветка: main (#318 1.8.30 живая; #320 1.8.31 СМЕРЖЕН f7aadf3, в Chrome НЕ доехал)
+Обновлено: 2026-10-02 · ветка: main (#318 1.8.30 живая; #320 1.8.31 f7aadf3 живая в Chrome, пинг 1.8.31)
 
 ## Состояние
 
@@ -54,12 +54,9 @@
 
 ## Сломано / не доделано
 
-- **1.8.31 НЕ в Chrome Игоря (пинг = 1.8.30).** `~/Desktop/HireDrop-Ext/*` = **dataless (iCloud
-  Optimize Storage выгрузил Рабочий стол)** — `stat -f "%b %Sf"` → `0 compressed,dataless`. Чтение
-  виснет, Chrome не может перечитать файлы при DEV_RELOAD. `sync-ext.sh` запущен заново в фоне —
-  результат не проверен. Решение по-настоящему: перенести папку расширения из iCloud (`~/Code/...`)
-  и перезагрузить unpacked оттуда (Игорь: «Load unpacked» один раз) ИЛИ отключить iCloud для Desktop.
-  ⚠️ Не делать `sync-ext.sh | head` — SIGPIPE рвёт синк.
+- 1.8.31 доехал (пинг 1.8.31) после повторного синка: `~/Desktop/HireDrop-Ext` был dataless (iCloud
+  выгрузил Рабочий стол) — перед релоадом `stat -f "%b %Sf"`; может выгрузиться снова. Не делать
+  `sync-ext.sh | head` — SIGPIPE рвёт синк.
 - **Продуктовый вопрос Игорю:** 7 GH-хендбэков Игоря неотвеченные → остаются «applied» локально и
   в очередь этого браузера не вернутся. Авто-повтор неотвеченных = риск двойной подачи. Варианты:
   кнопка «повторить новой версией» на карточке хендбэка (= requeued_at без ответов) или ничего.
@@ -70,10 +67,7 @@
 
 ## Следующий шаг
 
-Модель: **Opus**. 1) Довезти 1.8.31: проверить `stat` файлов в `~/Desktop/HireDrop-Ext` (если
-dataless — перенос папки вне iCloud + один «Load unpacked» Игоря), DEV_RELOAD, пинг = 1.8.31
-(`GET /extension/ping` на `web-production-db45.up.railway.app`, токен из cookie дашборда).
-2) Прогон Indeed (объявить jobflow-2f, «давай» Игоря уже было) → строки `🧾 sdr` и доля подач.
+Модель: **Opus**. 1) 1.8.31 живая. 2) Прогон Indeed (объявить jobflow-2f, «давай» Игоря уже было) → строки `🧾 sdr` и доля подач.
 3) Вопрос Игорю про неотвеченные хендбэки (выше). 4) Починить `drive.py` для `/dashboard/campaign`.
 
 Файлы лейна: `chrome-extension/content.js` (preferIndeedResume/structuredReviewSnapshot ~L3860, step loop ~L4325), `background.js` forgetHandedBackFromApplied ~L1059, `tests/indeed-resume-choice.test.js`, `tests/applied-rollback.test.js`, `chrome-extension/content.js` (formBlockers ~L3500, fillTextQuestions ~L2990,
