@@ -1,6 +1,6 @@
 # ats-form-filler
 
-Обновлено: 2026-09-26 · ветка: main (#244, #246, #264; ext 1.8.18 на ревью CWS)
+Обновлено: 2026-10-02 · ветка: main (#307, #303; content.js теперь у jobflow-10)
 
 ## Состояние
 
@@ -31,8 +31,20 @@
 
 - ⚠️ **#264 у юзеров НЕТ**: версия не бампнута, релиза не было → в бою хендбэк по залипанию
   по-прежнему не наступает. Это первое, что должен сделать ext-лейн.
-- **Suno и Twilio: «submit blocked — 9 required fields»** ×4 за прогон. Что за блок полей — не
-  смотрели (похоже demographic/EEO). Разбор через History / `/activity/handbacks` ДО хендлера.
+- **«submit blocked — 9 required fields» РАЗОБРАН 10-02 (#307).** Список полей был ложью гейта:
+  `collectUnfilledRequired()` судил react-select по `input.value`, а у job-boards.greenhouse.io он
+  `""` и после выбора (ответ в `.select__single-value`; пустой виджет несёт скрытый
+  `<input required class="…requiredInput">` = «(unlabeled)»). Замер 36ч: GH 13 хендбэков / 2 заявки,
+  12 из 14 с 09-28 — формы с блоком Country + Location(City). Реальный блок, судя по ночной смене
+  на тех же формах, — **email-код Greenhouse** (`#security-input-*`); теперь он ловится ДО leftover
+  и уходит хендбэком «nothing was sent». Фикстуры живой разметки — `tests/gh-react-select-honest.test.js`.
+- **Та же слепота в филлере** (`comboValue` ищет значение внутри `<input>`), мёртвая проверка
+  `hdDone` (~L3389/3393), клик по внешнему `li` вместо `role=option`, decline-фильтр чекбоксов,
+  combobox в текстовом шаге жжёт бюджет 15, профиль `salary_expectation/school/degree` не читается —
+  **всё у jobflow-10** (договорено 10-02, один писатель content.js). Он же релизит (#305+#307) и
+  переочередит 8 запаркованных GH-хендбэков (DoorDash×2, Twilio×2, Later×2, Muck Rack, Amwell).
+- Кэш ответов на скринеры не учитывал `work_authorized_us`/`needs_sponsorship` → после смены
+  визы уходил старый Yes/No. Закрыто #303 (флаги в отпечатке ключа).
 - `data/gh_form_schemas.jsonl` — 320 живых GH-схем, оффлайн-полигон: итерировать маппер здесь,
   а не на живых работодателях под именем Игоря.
 - React-select драйвер (#94) без живой проверки на GH-форме с обязательным sponsorship-селектом
@@ -41,5 +53,8 @@
 
 ## Следующий шаг
 
-Релиз (бамп → sync → живой прогон → `cws_publish.py ship`), затем 12 хендбэков прогона 09-24
-(History → «Answer N»), начиная с «9 required fields» — единственный повторяющийся класс.
+jobflow-10: фиксы филлера → релиз (бамп → sync → OFF/ON) → переочередь 8 GH-хендбэков. Затем
+живой прогон `drive.py run auto --platform greenhouse` (объявить соседям) и
+`measure_handback_share.py --days 2` + `run_history.py`: доля GH-хендбэков против 87% до, и сколько
+провалов теперь честно «email-код» с домашнего IP — от этого зависит, решаема ли GH-подача вообще.
+Модель — `opus`.
