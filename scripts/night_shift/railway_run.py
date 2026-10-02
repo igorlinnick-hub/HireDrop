@@ -54,7 +54,10 @@ def main() -> int:
     deadline = time.monotonic() + wait_min * 60
     while campaign_running(user):
         if time.monotonic() > deadline:
-            print(f"[night-shift] campaign still running after {wait_min} min — not walking", flush=True)
+            print(
+                f"[night-shift] campaign still running after {wait_min} min — not walking",
+                flush=True,
+            )
             return 0
         print("[night-shift] user's campaign is running — waiting for it to stop", flush=True)
         time.sleep(POLL_SECS)
@@ -62,9 +65,12 @@ def main() -> int:
     cmd = [
         sys.executable,
         os.path.join(os.path.dirname(__file__), "executor.py"),
-        "--user", user,
-        "--platform", platform,
-        "--max", str(max_n),
+        "--user",
+        user,
+        "--platform",
+        platform,
+        "--max",
+        str(max_n),
     ]
     if live:
         cmd.append("--live")
