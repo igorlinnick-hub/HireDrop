@@ -1,6 +1,6 @@
 """Все операции с таблицей applications в Supabase."""
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 from app.db.client import fetch_paged, get_supabase
 
@@ -191,6 +191,22 @@ def count_applications(user_id: str) -> int:
         .table("applications")
         .select("id", count="exact")
         .eq("user_id", user_id)
+        .execute()
+    )
+    return res.count or 0
+
+
+def count_last_hours(user_id: str, hours: int = 24) -> int:
+    """Applications in a rolling window ending now — the dashboard's "Last 24 hours"
+    tile. Deliberately NOT the cap counter (count_today / used_today): the cap counts
+    by the user's local day, this one slides, so at 9am it still shows last night."""
+    since = (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
+    res = (
+        get_supabase()
+        .table("applications")
+        .select("id", count="exact")
+        .eq("user_id", user_id)
+        .gte("date_applied", since)
         .execute()
     )
     return res.count or 0
