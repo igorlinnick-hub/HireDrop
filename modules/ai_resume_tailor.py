@@ -26,9 +26,7 @@ TAILOR_RESUME_CHARS = 8000
 
 def reply_text(message) -> str:
     """The text of a Messages reply, skipping thinking blocks (content[0] may be one)."""
-    return "".join(
-        b.text for b in message.content if getattr(b, "type", "text") == "text"
-    ).strip()
+    return "".join(b.text for b in message.content if getattr(b, "type", "text") == "text").strip()
 
 
 def tailor_resume(job: dict, profile: dict, resume_text: str) -> str:
