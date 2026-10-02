@@ -160,6 +160,23 @@ def answer_handback(handback_id: str, body: HandbackAnswersBody, user=Depends(ge
     return {"ok": True, "requeued": requeued, "handback": saved}
 
 
+@router.post("/handbacks/{handback_id}/retry")
+def retry_handback(handback_id: str, user=Depends(get_current_user)):
+    """The person asks for another try after an extension update — no answers needed.
+
+    Never automatic (Igor, 10-02): a form the person may already have finished by hand
+    must not be submitted a second time by a newer build on its own. Like answering, it
+    puts the job back in the queue (`requeued_at`; a pool row goes back to `approved`)
+    and leaves the hand-back open until the retry actually submits it.
+    """
+    row = handbacks_db.retry(user.id, handback_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="not_found")
+    if row.get("job_id"):
+        jobs_db.update_job_status(user.id, row["job_id"], "approved")
+    return {"ok": True, "requeued": handbacks_db.requeueable(row), "handback": row}
+
+
 @router.post("/handbacks/{handback_id}/resolve")
 def resolve_handback(handback_id: str, user=Depends(get_current_user)):
     """The user says they finished it themselves — drain it from both surfaces.

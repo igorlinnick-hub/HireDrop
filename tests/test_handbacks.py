@@ -167,82 +167,107 @@ def test_long_fields_are_truncated_not_rejected():
     assert len(calls["payload"]["url"]) == 1000
 
 
-# --- a hand-back waits on the person only while the build that wrote it still runs ---
+# --- an extension update OFFERS a retry; only the person sends it (Igor, 10-02) ---
 
 
 def _open_rows(*rows):
     return patch.object(hb, "fetch_paged", return_value=list(rows))
 
 
-def test_a_newer_build_gets_one_retry_at_an_old_hand_back():
-    """10-02: 1.8.30 taught the GH filler pay/school/state. Hand-backs left by 1.8.23
-    must reach the queue again, or they wait on the person for questions we now answer."""
+def test_a_newer_build_does_not_reopen_a_hand_back_by_itself():
+    """The person may have finished it by hand without pressing "done": a newer build
+    re-opening it on its own would submit to the same posting twice."""
+    rows = [{"url": "https://gh/old"}, {"url": "https://gh/same"}]
+    with _open_rows(*rows), patch.object(hb, "_current_build") as build:
+        assert _real_open_urls("u1", waiting_only=True) == ["https://gh/old", "https://gh/same"]
+    build.assert_not_called()
+
+
+def _listed(rows, build=("1.8.31", "2026-10-02T22:00:00+00:00")):
+    client, _calls, tbl = _fake_supabase()
+    tbl.execute.return_value = MagicMock(data=rows)
+    with (
+        patch.object(hb, "get_supabase", return_value=client),
+        patch.object(hb, "_current_build", return_value=build),
+    ):
+        return {r["id"]: r["newer_build"] for r in hb.list_open("u1")}
+
+
+def test_the_list_marks_what_an_update_could_now_finish():
     rows = [
         {
-            "url": "https://gh/old",
+            "id": "old-gh",
+            "platform": "greenhouse",
             "ext_version": "1.8.23",
             "created_at": "2026-10-01T10:00:00+00:00",
         },
         {
-            "url": "https://gh/same",
-            "ext_version": "1.8.30",
-            "created_at": "2026-10-02T10:00:00+00:00",
+            "id": "same-gh",
+            "platform": "greenhouse",
+            "ext_version": "1.8.31",
+            "created_at": "2026-10-02T23:00:00+00:00",
         },
-    ]
-    with (
-        _open_rows(*rows),
-        patch.object(hb, "_current_build", return_value=("1.8.30", "2026-10-02T09:00:00+00:00")),
-    ):
-        assert _real_open_urls("u1", waiting_only=True) == ["https://gh/same"]
-
-
-def test_rows_from_before_the_stamp_are_judged_by_when_the_build_first_pinged():
-    rows = [
         {
-            "url": "https://gh/before",
+            "id": "legacy-gh",
+            "platform": "greenhouse",
             "ext_version": None,
             "created_at": "2026-10-01T10:00:00+00:00",
         },
         {
-            "url": "https://gh/after",
-            "ext_version": None,
-            "created_at": "2026-10-02T10:00:00.5+00:00",
+            "id": "requeued",
+            "platform": "greenhouse",
+            "ext_version": "1.8.23",
+            "requeued_at": "2026-10-02T23:01:00+00:00",
+        },
+        # A native Indeed hand-back has no queue row to go back to — no promise to offer.
+        {
+            "id": "indeed",
+            "platform": "indeed",
+            "ext_version": "1.8.23",
+            "created_at": "2026-10-01T10:00:00+00:00",
         },
     ]
-    with (
-        _open_rows(*rows),
-        patch.object(
-            hb, "_current_build", return_value=("1.8.30", "2026-10-02T09:00:00.123456+00:00")
-        ),
-    ):
-        assert _real_open_urls("u1", waiting_only=True) == ["https://gh/after"]
+    assert _listed(rows) == {
+        "old-gh": True,
+        "same-gh": False,
+        "legacy-gh": True,
+        "requeued": False,
+        "indeed": False,
+    }
 
 
-def test_an_unknown_build_keeps_every_hand_back_waiting():
-    """No ping version (or an unreadable campaign_states): behave exactly as before."""
+def test_an_unknown_build_offers_nothing():
     rows = [
-        {"url": "https://gh/a", "ext_version": "1.8.3", "created_at": "2026-09-01T00:00:00+00:00"}
+        {
+            "id": "a",
+            "platform": "greenhouse",
+            "ext_version": "1.8.3",
+            "created_at": "2026-09-01T00:00:00+00:00",
+        }
     ]
-    with _open_rows(*rows), patch.object(hb, "_current_build", return_value=(None, None)):
-        assert _real_open_urls("u1", waiting_only=True) == ["https://gh/a"]
+    assert _listed(rows, build=(None, None)) == {"a": False}
 
 
-def test_the_night_shift_read_is_not_gated_by_builds():
-    """open_urls() without waiting_only means "every open hand-back" — unchanged."""
-    rows = [{"url": "https://gh/a"}]
-    with _open_rows(*rows), patch.object(hb, "_current_build") as build:
-        assert _real_open_urls("u1") == ["https://gh/a"]
-    build.assert_not_called()
+def test_retry_stamps_requeued_and_is_scoped_to_the_user():
+    client, calls, _tbl = _fake_supabase()
+    with patch.object(hb, "get_supabase", return_value=client):
+        assert hb.retry("u1", "h1") == {"id": "h1"}
+    assert "requeued_at" in calls["payload"]
+    assert ("eq", ("user_id", "u1")) in calls["filters"]
+    assert ("is_", ("resolved_at", "null")) in calls["filters"]
 
 
-def test_a_repeat_hand_back_is_restamped_so_the_retry_cannot_loop():
+def test_a_repeat_hand_back_waits_again_and_is_restamped():
+    """A re-queued job that hits the wall again must not stay re-queued — the queue
+    would serve the same wall on every run."""
     client, calls, _tbl = _fake_supabase()
     with (
         patch.object(hb, "get_supabase", return_value=client),
-        patch.object(hb, "_current_build", return_value=("1.8.30", "2026-10-02T09:00:00+00:00")),
+        patch.object(hb, "_current_build", return_value=("1.8.31", "2026-10-02T22:00:00+00:00")),
     ):
         hb.add("u1", {"job_title": "Ops", "url": "https://gh/form"})
-    assert calls["payload"]["ext_version"] == "1.8.30"
+    assert calls["payload"]["ext_version"] == "1.8.31"
+    assert calls["payload"]["requeued_at"] is None
 
 
 def test_a_missing_column_drops_the_stamp_not_the_hand_back():
@@ -284,3 +309,21 @@ def test_an_unidentifiable_url_closes_nothing():
     with patch.object(hb, "fetch_paged") as read:
         assert hb.resolve_for_posting("u1", "") == 0
     read.assert_not_called()
+
+
+def test_retry_endpoint_says_not_found_for_a_row_that_is_not_yours(auth_client):
+    with patch("app.db.handbacks.retry", return_value=None):
+        r = auth_client.post("/api/v1/handbacks/h-other/retry")
+    assert r.status_code == 404
+
+
+def test_retry_endpoint_requeues_an_ats_hand_back(auth_client):
+    row = {"id": "h1", "platform": "greenhouse", "job_id": None}
+    with (
+        patch("app.db.handbacks.retry", return_value=row) as retry,
+        patch("app.db.jobs.update_job_status") as status,
+    ):
+        r = auth_client.post("/api/v1/handbacks/h1/retry")
+    assert r.status_code == 200 and r.json()["requeued"] is True
+    retry.assert_called_once()
+    status.assert_not_called()  # no pool row to flip; the ATS queue serves it as `new`
