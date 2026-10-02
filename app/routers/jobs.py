@@ -307,6 +307,7 @@ def _ats_candidates(
     caller that already read the pool (the deck) skip a second paged read.
     """
     platforms = (platform,) if platform else ATS_QUEUE_PLATFORMS
+    waiting = _waiting_on_person(user_id)
     pool = [
         j
         for j in (jobs_db.get_jobs(user_id) if rows is None else rows)
@@ -314,10 +315,38 @@ def _ats_candidates(
         and (j.get("link") or j.get("apply_url"))
         and j.get("platform") in platforms
         and (j.get("platform") == "lever" or is_zero_touch(j.get("platform"), j.get("company", "")))
+        and _job_key(j.get("link") or j.get("apply_url")) not in waiting
     ]
     on_search = on_search_filter(pool, profile)
     live = [j for j in on_search if fresh_enough(j, DECK_MAX_AGE_DAYS)]
     return pool, on_search, live
+
+
+def _job_key(link: str) -> str:
+    from modules.job_identity import job_identity, normalized_link
+
+    return job_identity(link) or (normalized_link(link) or link)
+
+
+def _waiting_on_person(user_id: str) -> set[str]:
+    """Job keys of open hand-backs nobody has answered yet — the walk leaves them alone.
+
+    A hand-back is a form that stopped on something only the person can give. Until 10-02
+    only the night shift skipped them; the extension's queue and the list kept serving
+    the same posting, so DoorDash 8237299 was opened five times in one night (22:20 by the
+    night shift, then 00:24, 00:37, 01:03, 01:07 by the extension) and each time filled to
+    the same 9 empty fields. Hand-back rows from the extension carry no job_id, so the
+    match is by the posting's identity, the same key the night shift uses.
+
+    A failed read returns nothing to skip: the walk then behaves as before this rule.
+    """
+    from app.db import handbacks as handbacks_db
+
+    try:
+        return {_job_key(u) for u in handbacks_db.open_urls(user_id, waiting_only=True)}
+    except Exception as e:  # noqa: BLE001
+        print(f"[ats-queue] open hand-backs unreadable: {e}", file=sys.stderr)
+        return set()
 
 
 def _prejudged_queue(

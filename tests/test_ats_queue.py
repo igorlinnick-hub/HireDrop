@@ -130,3 +130,26 @@ def test_the_queue_does_not_open_a_posting_that_has_aged_out():
     assert [j["link"] for j in out["jobs"]] == ["https://x/live"]
     assert out["stale"] == 1
     assert out["off_search"] == 0
+
+
+def test_a_posting_waiting_on_the_person_is_not_walked_again():
+    """10-02: DoorDash 8237299 sat in an open hand-back (9 required fields empty) and the
+    queue served it five times in one night — every run filled it to the same wall. Hand-back
+    rows from the extension carry no job_id, so the match is by the posting's identity."""
+    pool = [
+        _row("Event Manager", link="https://job-boards.greenhouse.io/doordashusa/jobs/8237299"),
+        _row("Event Manager", link="https://job-boards.greenhouse.io/tia/jobs/8005735003"),
+    ]
+    waiting = ["https://job-boards.greenhouse.io/doordashusa/jobs/8237299?gh_src=abc"]
+    with patch("app.db.handbacks.open_urls", return_value=waiting) as reader:
+        out = _queue(pool, ["event manager"])
+    assert [j["link"] for j in out["jobs"]] == ["https://job-boards.greenhouse.io/tia/jobs/8005735003"]
+    # Only rows nobody answered yet: an answered hand-back is meant to run again.
+    assert reader.call_args.kwargs.get("waiting_only") is True
+
+
+def test_an_unreadable_handback_table_does_not_empty_the_queue():
+    pool = [_row("Event Manager", link="https://x/1")]
+    with patch("app.db.handbacks.open_urls", side_effect=RuntimeError("down")):
+        out = _queue(pool, ["event manager"])
+    assert len(out["jobs"]) == 1

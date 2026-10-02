@@ -129,24 +129,27 @@ def list_open(user_id: str, limit: int = 20) -> list[dict]:
     return res.data or []
 
 
-def open_urls(user_id: str, cap: int = 5000) -> list[str]:
+def open_urls(user_id: str, cap: int = 5000, waiting_only: bool = False) -> list[str]:
     """The URL of EVERY open hand-back — for a walk that must leave those jobs alone.
 
     list_open() is the dashboard's read and stops at 100 rows; past that the oldest
     hand-backs fell out of the exclusion and were re-opened every night.
+
+    `waiting_only` leaves out rows the person already answered (`requeued_at` set): those
+    are meant to run again, with the answers.
     """
 
     def build(start: int, end: int):
-        return (
+        q = (
             get_supabase()
             .table("handbacks")
             .select("url")
             .eq("user_id", user_id)
             .is_("resolved_at", "null")
-            .order("created_at", desc=True)
-            .order("id")
-            .range(start, end)
         )
+        if waiting_only:
+            q = q.is_("requeued_at", "null")
+        return q.order("created_at", desc=True).order("id").range(start, end)
 
     return [r["url"] for r in fetch_paged(build, cap) if r.get("url")]
 
