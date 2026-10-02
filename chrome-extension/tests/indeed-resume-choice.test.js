@@ -73,6 +73,9 @@ const q = (w, id) => w.document.querySelector(`[data-testid="${id}"]`);
     const r2 = await w.__prefer(again);
     check("next round on the same step: still chosen (no upload), but not progress",
       r2.chosen && !r2.changed && again.length === 0, JSON.stringify(r2));
+    w.__store.indeedLastResumeKind = "file";
+    await w.__prefer([]);
+    check("a pre-checked Indeed Resume is still recorded as kind=indeed", w.__store.indeedLastResumeKind === "indeed");
   }
   {
     const w = world({ indeedSdrRefusedAt: Date.now() - 15 * 24 * 3600 * 1000 });
@@ -116,7 +119,7 @@ const q = (w, id) => w.document.querySelector(`[data-testid="${id}"]`);
   check("the step loop asks preferIndeedResume before uploading",
     /const indeedResume = await preferIndeedResume\(filled\);\s*\n\s*if \(indeedResume\.changed\) filledAny = true;[\s\S]{0,200}const resumeInput = indeedResumeChosen \? null : findResumeInput\(\);/.test(SRC));
   check("a refusal on structured-data-review logs the snapshot and sets the flag",
-    /structured-data-review\/\.test\(location\.pathname\)\) \{[\s\S]{0,300}structuredReviewSnapshot\(\)[\s\S]{0,200}indeedSdrRefusedAt: Date\.now\(\)/.test(SRC));
+    /structured-data-review\/\.test\(location\.pathname\)\) \{[\s\S]{0,300}structuredReviewSnapshot\(\)[\s\S]{0,500}if \(indeedLastResumeKind !== "indeed"\) await storageSet\(\{ indeedSdrRefusedAt: Date\.now\(\) \}\)/.test(SRC));
 
   console.log(failures ? `\n${failures} failure(s)` : "\nall good");
   process.exit(failures ? 1 : 0);

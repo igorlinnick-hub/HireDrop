@@ -35,7 +35,9 @@ function run({ sweep, queues }) {
   const calls = { queueReads: 0, log: [] };
   const box = {
     apiPost: async () => sweep,
-    apiGet: async () => {
+    apiGet: async (p) => {
+      // Only queue reads count; the open hand-backs read (forgetHandedBackFromApplied) is not one.
+      if (!String(p).startsWith("/jobs/ats-queue")) return { handbacks: [] };
       const i = Math.min(calls.queueReads, queues.length - 1);
       calls.queueReads += 1;
       return queues[i];

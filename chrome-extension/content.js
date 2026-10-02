@@ -1802,8 +1802,32 @@
   // re-queues), and advance the walk. The invariant (council 2026-08-04): every approved
   // job ends submitted-complete-and-honest OR handed-back-with-a-reason — never a silent
   // half-death.
+  // A handed-back job was NOT applied: undo the pre-click "applied" marks (set before Submit
+  // so a navigating submit can't lose them). Left behind, they hid the posting from the
+  // server's ATS queue in this browser forever (background buildAtsQueue drops appliedUrls
+  // / appliedJobKeys): 7 of 9 released GH hand-backs never came back (jobflow-2f, 10-02),
+  // neither through #319 nor through the person's own answers.
+  async function forgetAppliedJob(urls, title, company) {
+    const bare = (u) => String(u || "").split("?")[0];
+    const drop = new Set(urls.filter(Boolean).map(bare));
+    const key = jobDedupKey(title, company);
+    const d = await storageGet(["appliedUrls", "appliedJobKeys"]);
+    const patch = {};
+    if (drop.size && (d.appliedUrls || []).some((u) => drop.has(bare(u)))) {
+      patch.appliedUrls = d.appliedUrls.filter((u) => !drop.has(bare(u)));
+    }
+    if (key !== "|" && (d.appliedJobKeys || []).includes(key)) {
+      patch.appliedJobKeys = d.appliedJobKeys.filter((k) => k !== key);
+    }
+    if (Object.keys(patch).length) await storageSet(patch);
+  }
+
   async function handBackJob(reason, extra = {}) {
     await addHandedBackKey(extra.title, extra.company);
+    // typeof guard: tests run handBackJob alone in a vm sandbox (as for formBlockers below).
+    if (typeof forgetAppliedJob === "function") {
+      await forgetAppliedJob([window.location.href, extra.url], extra.title, extra.company);
+    }
     await sendMsg({
       type: "ATS_JOB_FAILED",
       data: {
@@ -3868,11 +3892,17 @@
     if (!card) return none;
     const { indeedSdrRefusedAt } = await storageGet("indeedSdrRefusedAt");
     if (!indeedSdrRefusedAt || Date.now() - indeedSdrRefusedAt > INDEED_SDR_TTL_MS) return none;
-    if (card.checked) return { chosen: true, changed: false };
+    if (card.checked) {
+      // Indeed pre-checked it: no click, no progress, but the kind is still "indeed".
+      await storageSet({ indeedLastResumeKind: "indeed" });
+      return { chosen: true, changed: false };
+    }
     await humanClick(document.querySelector('[data-testid="resume-selection-structured-resume-radio-card-label"]') || card);
     await sleep(humanDelay(600, 1200));
-    // React may revert an uncontrolled click: re-read, and upload as before if it did.
-    if (!card.checked) return none;
+    // React may revert the click or re-mount the input: re-read the LIVE node, and upload
+    // as before if it isn't checked.
+    const live = document.querySelector('[data-testid="resume-selection-structured-resume-radio-card-input"]');
+    if (!live || !live.checked) return none;
     filled.push("indeed-resume");
     await storageSet({ indeedLastResumeKind: "indeed" });
     return { chosen: true, changed: true };
@@ -4397,7 +4427,10 @@
           if (/structured-data-review/.test(location.pathname)) {
             const { indeedLastResumeKind } = await storageGet("indeedLastResumeKind");
             logBackend(Array.from(`🧾 sdr resume=${indeedLastResumeKind || "?"} ${structuredReviewSnapshot()}`).slice(0, 1950).join(""), "warn");
-            await storageSet({ indeedSdrRefusedAt: Date.now() });
+            // Stamped only by a refusal of an UPLOADED file: if the Indeed Resume is refused
+            // too, re-stamping would keep the tailored PDF off Indeed forever for nothing,
+            // and the 14 days must be allowed to run out.
+            if (indeedLastResumeKind !== "indeed") await storageSet({ indeedSdrRefusedAt: Date.now() });
           }
           // The invariant: submitted-complete-and-honest OR handed back with a reason.
           // handBackJob is the right channel (records the reason + unfilled labels and

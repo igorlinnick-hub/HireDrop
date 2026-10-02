@@ -1051,6 +1051,28 @@ function pickNextStage(tried, selected, conns) {
 const SWEEP_WAIT_MS = 45_000;
 const SWEEP_POLL_MS = 5_000;
 
+// Self-heal (10-02): content.js marks a job applied BEFORE the Submit click, and a
+// hand-back after the click never undid it, so buildAtsQueue dropped the posting forever —
+// 7 of 9 released GH hand-backs never came back. An OPEN hand-back is by definition not
+// applied: take those out of the local sets. content.js forgetAppliedJob() stops new
+// cases; this repairs the ones already stored. A failed read repairs nothing.
+async function forgetHandedBackFromApplied() {
+  const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
+  const bare = (u) => String(u || "").split("?")[0];
+  try {
+    const open = ((await apiGet("/handbacks?limit=100")) || {}).handbacks || [];
+    if (!open.length) return;
+    const s0 = await chrome.storage.local.get(["appliedUrls", "appliedJobKeys"]);
+    const urls = new Set(open.map((h) => bare(h.url)).filter(Boolean));
+    const keys = new Set(open.map((h) => `${norm(h.job_title)}|${norm(h.company)}`).filter((k) => k !== "|"));
+    const keptUrls = (s0.appliedUrls || []).filter((u) => !urls.has(bare(u)));
+    const keptKeys = (s0.appliedJobKeys || []).filter((k) => !keys.has(k));
+    if (keptUrls.length !== (s0.appliedUrls || []).length || keptKeys.length !== (s0.appliedJobKeys || []).length) {
+      await chrome.storage.local.set({ appliedUrls: keptUrls, appliedJobKeys: keptKeys });
+    }
+  } catch (e) { /* hand-backs unreadable — filter as before */ }
+}
+
 async function buildAtsQueue(platform, perPlatformCap) {
   let sweep = null;
   try { sweep = await apiPost("/jobs/find-ats", {}); } catch (e) { /* discovery best-effort */ }
@@ -1083,10 +1105,12 @@ async function buildAtsQueue(platform, perPlatformCap) {
   // at the queue head used to dead-stop the walk: phase_ats skips it silently and only a
   // real submit advances the queue. Mirrors content.js's dedup (jobDedupKey format).
   // Stays client-side: the extension holds the authoritative applied sets.
+  const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
+  // typeof guard: tests run buildAtsQueue alone in a vm sandbox.
+  if (typeof forgetHandedBackFromApplied === "function") await forgetHandedBackFromApplied();
   const dd = await chrome.storage.local.get(["appliedUrls", "appliedJobKeys"]);
   const appliedUrls = new Set(dd.appliedUrls || []);
   const appliedKeys = new Set(dd.appliedJobKeys || []);
-  const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
   const queue = (res.jobs || [])
     .filter((j) => j.link || j.apply_url)
     .filter((j) => {
