@@ -143,7 +143,9 @@ def test_a_posting_waiting_on_the_person_is_not_walked_again():
     waiting = ["https://job-boards.greenhouse.io/doordashusa/jobs/8237299?gh_src=abc"]
     with patch("app.db.handbacks.open_urls", return_value=waiting) as reader:
         out = _queue(pool, ["event manager"])
-    assert [j["link"] for j in out["jobs"]] == ["https://job-boards.greenhouse.io/tia/jobs/8005735003"]
+    assert [j["link"] for j in out["jobs"]] == [
+        "https://job-boards.greenhouse.io/tia/jobs/8005735003"
+    ]
     # Only rows nobody answered yet: an answered hand-back is meant to run again.
     assert reader.call_args.kwargs.get("waiting_only") is True
 
