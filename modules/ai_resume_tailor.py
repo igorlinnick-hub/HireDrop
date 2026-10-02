@@ -1,6 +1,6 @@
 """AI resume tailoring — rewrites base resume to match a specific job.
 
-Runs only for jobs scoring 7+. Uses Sonnet (not Haiku) because resume
+Runs at apply time (GET /profile/resume/url/best). Uses Sonnet (not Haiku) because resume
 quality directly affects hire rate — worth the extra cost.
 
 ATS-aware: receives critical ATS keywords extracted by the scorer and
@@ -9,7 +9,24 @@ guarantees they appear naturally in the tailored output.
 
 from config import ANTHROPIC_API_KEY
 
-SONNET_MODEL = "claude-sonnet-4-6"
+# Measured 2026-10-01 on two live Ashby postings (same prompt, same resume):
+#   sonnet-4-6  tailor 11-14s + structure 9-10s; retitled the headline and wrote Meta
+#               ad-buying bullets the resume never mentions — both forbidden below.
+#   sonnet-5-5  tailor 5.7s + structure 6.3s; headline kept, bullets reordered, nothing added.
+# Both calls sit inside GET /profile/resume/url/best while the extension waits on the form.
+SONNET_MODEL = "claude-sonnet-5-5"
+# Sonnet 5.5 thinks by default. Here that only burns the max_tokens budget — with it on,
+# the tailored resume came back cut off mid-section (1500 of 1500 tokens spent).
+NO_THINKING = {"type": "between_tools"}
+# The tailored text IS the resume the employer receives, so it must see all of it.
+# resume_text_for() defaults to 3000 chars for prompts that only quote the resume; a
+# typical one-page resume is ~3000, so the tail (certifications, the oldest job) was cut.
+TAILOR_RESUME_CHARS = 8000
+
+
+def reply_text(message) -> str:
+    """The text of a Messages reply, skipping thinking blocks (content[0] may be one)."""
+    return "".join(b.text for b in message.content if getattr(b, "type", "text") == "text").strip()
 
 
 def tailor_resume(job: dict, profile: dict, resume_text: str) -> str:
@@ -89,10 +106,11 @@ Output the tailored resume text:"""
 
         message = client.messages.create(
             model=SONNET_MODEL,
-            max_tokens=1500,
+            max_tokens=2500,
+            thinking=NO_THINKING,
             messages=[{"role": "user", "content": prompt}],
         )
-        return message.content[0].text.strip()
+        return reply_text(message)
     except Exception as e:
         print(f"[tailor] Failed: {e}")
         return ""
