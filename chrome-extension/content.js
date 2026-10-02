@@ -2840,11 +2840,15 @@
     // refuses any label with "decline"/"don't" and skips unrequired members, so a required
     // race group was never answered and "Continue" was refused into a blind hand-back.
     // No decline option → left alone: never an identity value of ours.
+    // A group is its OWN boxes and its OWN legend: an outer fieldset that wraps a nested
+    // Race group plus an "I certify…" box must not inherit "Race" and swallow the attestation.
+    const groupOf = (c) => c.closest("fieldset, [role='group']");
     const demoGroups = new Set();
-    for (const g of new Set(boxes.map((c) => c.closest("fieldset, [role='group']")).filter(Boolean))) {
-      const all = Array.from(g.querySelectorAll('input[type="checkbox"]')).filter((c) => c.offsetParent);
+    for (const g of new Set(boxes.map(groupOf).filter(Boolean))) {
+      const all = Array.from(g.querySelectorAll('input[type="checkbox"]'))
+        .filter((c) => c.offsetParent && groupOf(c) === g);
       const texts = all.map(boxText);
-      const question = g.querySelector("legend")?.textContent || g.getAttribute("aria-label") || "";
+      const question = g.querySelector(":scope > legend")?.textContent || g.getAttribute("aria-label") || "";
       if (!isDemographicQuestion(question, texts)) continue;
       demoGroups.add(g);
       if (all.some((c) => c.checked)) continue;
@@ -2857,7 +2861,7 @@
       await sleep(humanDelay(200, 500));
     }
     for (const c of boxes) {
-      if (demoGroups.has(c.closest("fieldset, [role='group']"))) continue;
+      if (demoGroups.has(groupOf(c))) continue;
       const label = getFieldLabel(c) ||
         (c.closest("label, [class*='question' i], fieldset")?.textContent || "");
       const required = c.required || c.getAttribute("aria-required") === "true" ||
@@ -3323,13 +3327,12 @@
     if (!want || !optionTexts.length) return null;
     const exact = optionTexts.find((o) => squash(o) === want);
     if (exact) return exact;
-    const words = want.split(" ");
-    if (words.length < 2 || want.length < 8) return null;
-    const within = (n, h) => n.length > 0 && h.some((_, i) => n.every((w, j) => h[i + j] === w));
-    const near = optionTexts.filter((o) => {
-      const ow = squash(o).split(" ");
-      return within(words, ow) || within(ow, words);
-    });
+    // Beyond exact, only the same NAME with a note in brackets: "University of Hawaii at
+    // Manoa (Honolulu)". Never a word-subset either way — "Columbia College" (Missouri) is
+    // not "Columbia College Chicago" (same rule as night_shift pick_typeahead).
+    const unbracket = (t) => squash((t || "").replace(/\([^)]*\)|\[[^\]]*\]/g, " "));
+    const base = unbracket(query);
+    const near = base ? optionTexts.filter((o) => unbracket(o) === base) : [];
     return near.length === 1 ? near[0] : null;
   }
 

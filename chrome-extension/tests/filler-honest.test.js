@@ -124,7 +124,11 @@ check("exact school wins", H.pickSchoolOption("University of Florida", ["Univers
 check("MIT is not Smith College", H.pickSchoolOption("MIT", ["Smith College", "Mitchell College"]) === null);
 check("an ambiguous campus list gets nothing",
   H.pickSchoolOption("University of Hawaii", ["University of Hawaii at Manoa", "University of Hawaii at Hilo"]) === null);
-check("a unique whole-word near match is taken",
+check("a longer name is a different school, not a near match",
+  H.pickSchoolOption("Columbia College Chicago", ["Columbia College", "Columbia College Hollywood", "Other"]) === null &&
+  H.pickSchoolOption("Columbia College", ["Columbia College Chicago", "Other"]) === null &&
+  H.pickSchoolOption("Texas A&M University Corpus Christi", ["Texas A&M University", "Other"]) === null);
+check("the same name with a note in brackets is taken",
   H.pickSchoolOption("University of Hawaii at Manoa", ["University of Hawaii at Manoa (Honolulu)", "Chaminade University"]) === "University of Hawaii at Manoa (Honolulu)");
 
 // ---- 3. Dropdowns: a choice counts only once it took ---------------------------------
@@ -235,6 +239,20 @@ function comboWorld(html, { want } = {}) {
     const checked = Array.from(w.document.querySelectorAll("input:checked")).map((c) => c.id);
     check("the race group gets ONLY its decline box", checked.includes("r3") && !checked.includes("r1") && !checked.includes("r2"), checked.join(","));
     check("a required attestation outside it is still ticked", checked.includes("ok") && n === 2, `${checked.join(",")} n=${n}`);
+  }
+  {
+    // An outer wrapper must not inherit the nested "Race" legend and swallow the attestation
+    // (skeptic A, 10-02: checked=r2 only, n=1 before the fix).
+    const w = cbWorld(`
+      <div role="group">
+        <fieldset><legend>Race / Ethnicity</legend>
+          <label><input type="checkbox" id="r1" required> White</label>
+          <label><input type="checkbox" id="r2" required> I don't wish to answer</label></fieldset>
+        <label><input type="checkbox" id="ok" required> I certify the information above is true</label></div>`);
+    const n = await w.__fill();
+    const checked = Array.from(w.document.querySelectorAll("input:checked")).map((c) => c.id);
+    check("a nested race group inside an outer wrapper: decline + the wrapper's attestation",
+      checked.includes("r2") && checked.includes("ok") && !checked.includes("r1") && n === 2, `${checked.join(",")} n=${n}`);
   }
   {
     const w = cbWorld(`

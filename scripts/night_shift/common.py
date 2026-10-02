@@ -160,10 +160,7 @@ def _squash(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
 
 
-def _within(needle: list[str], hay: list[str]) -> bool:
-    """`needle` as consecutive whole words inside `hay`."""
-    n = len(needle)
-    return bool(n) and any(hay[i : i + n] == needle for i in range(len(hay) - n + 1))
+_BRACKETED = re.compile(r"\([^)]*\)|\[[^\]]*\]")
 
 
 def pick_typeahead(kind: str, query: str, options: list[str], profile: dict) -> str | None:
@@ -177,16 +174,12 @@ def pick_typeahead(kind: str, query: str, options: list[str], profile: dict) -> 
         exact = [o for o in options if _squash(o) == want]
         if exact:
             return exact[0]
-        # A near match is whole WORDS, and only for a name long enough to be one: the
-        # letters of "MIT" are inside "Smith", and "Other" inside "Mother Teresa".
-        words = want.split()
-        if len(words) < 2 or len(want) < 8:
-            return None
-        near = [
-            o
-            for o in options
-            if _within(words, _squash(o).split()) or _within(_squash(o).split(), words)
-        ]
+        # Beyond exact, only the same NAME with a note in brackets: "University of Hawaii
+        # at Manoa (Honolulu)". Never a name that is a word-subset of ours or the other
+        # way round — "Columbia College" (Missouri) is not "Columbia College Chicago", and
+        # "Texas A&M University" is not its Corpus Christi campus.
+        base = _squash(_BRACKETED.sub(" ", query))
+        near = [o for o in options if base and _squash(_BRACKETED.sub(" ", o)) == base]
         return near[0] if len(near) == 1 else None
 
     from modules.job_location import parse_user_location
