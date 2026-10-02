@@ -2623,6 +2623,9 @@ async function handleMessage(msg, sender) {
           job_title: f.title || "",
           company: f.company || "",
           job_url: f.url || "",
+          // What the page said at the refusal. Activity log only: not into /handbacks
+          // `questions` (those labels are user-facing and feed answers back to the filler).
+          ...(f.diag && typeof f.diag === "object" && JSON.stringify(f.diag).length <= 3000 ? { diag: f.diag } : {}),
         }
       );
       // Durable to-do row, read by BOTH the popup block and the dashboard rail badge.

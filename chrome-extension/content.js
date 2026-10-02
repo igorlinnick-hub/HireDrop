@@ -1755,6 +1755,8 @@
       data: {
         reason,
         unfilled: collectUnfilledRequired(),
+        // typeof guard: tests run this function alone in a vm sandbox.
+        diag: typeof formBlockers === "function" ? formBlockers() : null,
         url: window.location.href,
         title: extra.title || "", company: extra.company || "",
         platform: extra.platform || detectPlatform(),
@@ -3495,6 +3497,113 @@
     }).join(" ");
   }
 
+  // What the PAGE says is wrong when it refuses a step: its validation messages, the fields
+  // it marks invalid or required-and-empty, the step path and the button state. Without it
+  // 17 Indeed hand-backs (09-06…10-01) read "nothing left to fill" with no clue, and on a
+  // page-level form dialogSnapshot() is literally "dialogs=0". Field `.value` is never read
+  // (Indeed's structured-data-review step renders the user's parsed resume); page messages
+  // are kept, with emails and phone-like numbers masked in case a message echoes input.
+  function formBlockers() {
+    try {
+      const { btn, label } = classifyFormButton();
+      let scope = formScope();
+      const pageLevel = scope === document;
+      // Page-level form: the form holding the step's button, else <main>. NOT the first of
+      // "main, form" in document order — a header search <form> comes first on many boards.
+      if (pageLevel) {
+        const own = btn && btn.closest("form");
+        scope = (own && own.querySelector(FIELDISH_SELECTOR) && own) ||
+          document.querySelector("main, [role='main']") || document.body;
+      }
+      const vis = (e) => e.getClientRects().length > 0;
+      // By code point, not UTF-16 unit: half an emoji can fail the JSON insert.
+      const clip = (s, n) => Array.from((s || "").replace(/\s+/g, " ").replace(/\*/g, "").trim()).slice(0, n).join("");
+      const push = (arr, s, n, max) => { s = clip(s, n); if (s && arr.length < max && !arr.includes(s)) arr.push(s); };
+      const mask = (s) => (s || "").replace(/\S+@\S+\.\S+/g, "<email>").replace(/\+?\d[\d\s().-]{5,}\d/g, "<num>");
+      const textOf = (id) => { const n = id && document.getElementById(id); return n ? n.textContent : ""; };
+      // A radio/checkbox's own label is the OPTION ("Yes"); the question is the group's.
+      const nameOf = (el) => {
+        if (el.matches('input[type="radio"], input[type="checkbox"], [role="radio"], [role="checkbox"]')) {
+          const g = el.closest("fieldset, [role='radiogroup'], [role='group']");
+          const q = g && (g.querySelector("legend")?.textContent || g.getAttribute("aria-label") ||
+            textOf((g.getAttribute("aria-labelledby") || "").split(/\s+/)[0]));
+          if (q && q.trim()) return q;
+        }
+        return getFieldLabel(el) || el.getAttribute("role") || el.tagName.toLowerCase();
+      };
+
+      const alerts = [];
+      // Alerts page-wide on a page-level form: toasts are portaled to the end of <body>.
+      for (const el of (pageLevel ? document : scope).querySelectorAll('[role="alert"], [aria-live="assertive"]')) {
+        if (vis(el)) push(alerts, mask(el.textContent), 120, 5);
+      }
+      // Polite regions only inside the form, minus counters ("519 / 1500", "page 1 of 2").
+      const COUNTER_RE = /^(\d[\d\s,./]*|page\s*\d+\s*of\s*\d+.*)$/i;
+      for (const el of scope.querySelectorAll('[aria-live="polite"]')) {
+        const t = clip(el.textContent, 200);
+        if (vis(el) && t && !COUNTER_RE.test(t)) push(alerts, mask(t), 120, 5);
+      }
+      const invalid = [];
+      for (const el of scope.querySelectorAll('[aria-invalid="true"]')) {
+        if (!vis(el)) continue;
+        push(invalid, nameOf(el), 80, 8);
+        for (const attr of ["aria-errormessage", "aria-describedby"]) {
+          for (const id of (el.getAttribute(attr) || "").split(/\s+/).filter(Boolean)) {
+            const msg = document.getElementById(id);
+            if (msg && vis(msg)) push(alerts, mask(msg.textContent), 120, 5);
+          }
+        }
+      }
+      // Required-and-empty, ARIA widgets included: collectUnfilledRequired() keeps only
+      // native controls (its labels become user-facing questions), so a DIV combobox or
+      // radiogroup Indeed marks aria-required never shows up there.
+      const reqEmpty = [];
+      for (const el of scope.querySelectorAll('[required], [aria-required="true"]')) {
+        if (!vis(el)) continue;
+        const role = el.getAttribute("role") || "";
+        let empty;
+        if (el.matches('input[type="radio"], input[type="checkbox"]')) {
+          empty = el.name ? !document.querySelector(`input[name="${CSS.escape(el.name)}"]:checked`) : !el.checked;
+        } else if (el.matches("input, select, textarea")) {
+          if (el.type === "hidden" || el.type === "file") continue;
+          empty = !(el.value || "").trim();
+        } else if (role === "radiogroup" || role === "group") {
+          empty = !el.querySelector('[aria-checked="true"], :checked');
+        } else if (role === "checkbox" || role === "switch" || role === "radio") {
+          empty = el.getAttribute("aria-checked") !== "true";
+        } else if (role === "combobox" || role === "listbox") {
+          empty = !el.querySelector('[aria-selected="true"]') &&
+            /^(|select.*|choose.*|please.*|--.*)$/i.test(clip(el.textContent, 40));
+        } else continue;
+        if (empty) push(reqEmpty, `${nameOf(el)}${role ? ` (${role})` : ""}`, 80, 8);
+      }
+      // Nothing machine-readable: keep the page's own warning text and headings. Indeed's
+      // structured-data-review shows "missing info" on resume cards, not on inputs.
+      const notes = [];
+      if (!alerts.length && !invalid.length && !reqEmpty.length) {
+        for (const el of scope.querySelectorAll('[class*="error" i], [class*="warning" i], [class*="missing" i]')) {
+          if (vis(el) && el.children.length <= 3) push(notes, mask(el.textContent), 80, 5);
+        }
+        for (const h of scope.querySelectorAll("h1, h2")) if (vis(h)) push(notes, mask(h.textContent), 60, 8);
+      }
+      return {
+        path: clip(location.host + location.pathname, 160),
+        alerts, invalid, reqEmpty, notes,
+        btn: btn ? { label: clip(label, 40), disabled: !!(btn.disabled || btn.getAttribute("aria-disabled") === "true") } : null,
+      };
+    } catch (e) {
+      return { error: String((e && e.message) || e).slice(0, 120) };
+    }
+  }
+
+  function formBlockersLine(fb) {
+    if (!fb || fb.error) return `blockers=? (${fb ? fb.error : "none"})`;
+    const list = (a) => JSON.stringify(a);
+    return `path=${fb.path} alerts=${list(fb.alerts)} invalid=${list(fb.invalid)} reqEmpty=${list(fb.reqEmpty)}${
+      fb.notes && fb.notes.length ? ` notes=${list(fb.notes)}` : ""} btn=${
+      fb.btn ? `"${fb.btn.label}"${fb.btn.disabled ? "(disabled)" : ""}` : "none"}`;
+  }
+
   function findFormButton() {
     // Prefer the modal's own buttons (try every visible dialog); fall back to the whole
     // document (Indeed SmartApply iframe / ATS pages have no dialog wrapper).
@@ -3957,7 +4066,8 @@
         else stallRounds = 0;
         lastSig = sig;
         if (stallRounds >= 2) {
-          logBackend(`🖐 ${dialogSnapshot()}`, "warn");
+          // Whole line capped: POST /activity drops a message over 2000 chars (422).
+          logBackend(Array.from(`🖐 ${dialogSnapshot()} ${formBlockersLine(formBlockers())}`).slice(0, 1950).join(""), "warn");
           // The invariant: submitted-complete-and-honest OR handed back with a reason.
           // handBackJob is the right channel (records the reason + unfilled labels and
           // advances the walk) — NOT DETECTION_TRIPPED, which means "a human check is
@@ -3986,7 +4096,8 @@
         const where = !action.btn ? "none" : (dlgs.some((d) => d.contains(action.btn)) ? "dialog" : "page");
         const dt = ((Date.now() - prevStepAt) / 1000).toFixed(1);
         prevStepAt = Date.now();
-        logBackend(`STEP ${formStepCount} [${platformLabel()}] Δ${dt}s filled=[${filled.join(",")}]${profileGaps.length ? ` gaps=[${profileGaps.join(",")}]` : ""} btn="${action.label || "-"}" (${where}) → ${action.btn ? (action.submit ? "SUBMIT" : "continue") : "no button"} ${dialogSnapshot()}`, "info");
+        // The path: a hand-back row names only the page it died on, not the page each step was on.
+        logBackend(Array.from(`STEP ${formStepCount} [${platformLabel()}] Δ${dt}s @${location.pathname.slice(-70)} filled=[${filled.join(",")}]${profileGaps.length ? ` gaps=[${profileGaps.join(",")}]` : ""} btn="${action.label || "-"}" (${where}) → ${action.btn ? (action.submit ? "SUBMIT" : "continue") : "no button"} ${dialogSnapshot()}`).slice(0, 1950).join(""), "info");
       }
 
       // Check if this is the final submit step
