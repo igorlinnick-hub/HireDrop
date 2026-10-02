@@ -12,7 +12,20 @@ attempts, and it drains.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.db import handbacks as hb
+
+# conftest stubs open_urls for every test (the queue must not reach the network); these
+# tests exercise the real one, captured at import — before that fixture runs.
+_real_open_urls = hb.open_urls
+
+
+@pytest.fixture(autouse=True)
+def _no_build_read():
+    """add() and open_urls() read the running build; a test that cares patches it itself."""
+    with patch.object(hb, "_current_build", return_value=(None, None)):
+        yield
 
 
 class _User:
@@ -152,3 +165,122 @@ def test_long_fields_are_truncated_not_rejected():
     assert len(calls["payload"]["job_title"]) == 300
     assert len(calls["payload"]["reason"]) == 500
     assert len(calls["payload"]["url"]) == 1000
+
+
+# --- a hand-back waits on the person only while the build that wrote it still runs ---
+
+
+def _open_rows(*rows):
+    return patch.object(hb, "fetch_paged", return_value=list(rows))
+
+
+def test_a_newer_build_gets_one_retry_at_an_old_hand_back():
+    """10-02: 1.8.30 taught the GH filler pay/school/state. Hand-backs left by 1.8.23
+    must reach the queue again, or they wait on the person for questions we now answer."""
+    rows = [
+        {
+            "url": "https://gh/old",
+            "ext_version": "1.8.23",
+            "created_at": "2026-10-01T10:00:00+00:00",
+        },
+        {
+            "url": "https://gh/same",
+            "ext_version": "1.8.30",
+            "created_at": "2026-10-02T10:00:00+00:00",
+        },
+    ]
+    with (
+        _open_rows(*rows),
+        patch.object(hb, "_current_build", return_value=("1.8.30", "2026-10-02T09:00:00+00:00")),
+    ):
+        assert _real_open_urls("u1", waiting_only=True) == ["https://gh/same"]
+
+
+def test_rows_from_before_the_stamp_are_judged_by_when_the_build_first_pinged():
+    rows = [
+        {
+            "url": "https://gh/before",
+            "ext_version": None,
+            "created_at": "2026-10-01T10:00:00+00:00",
+        },
+        {
+            "url": "https://gh/after",
+            "ext_version": None,
+            "created_at": "2026-10-02T10:00:00.5+00:00",
+        },
+    ]
+    with (
+        _open_rows(*rows),
+        patch.object(
+            hb, "_current_build", return_value=("1.8.30", "2026-10-02T09:00:00.123456+00:00")
+        ),
+    ):
+        assert _real_open_urls("u1", waiting_only=True) == ["https://gh/after"]
+
+
+def test_an_unknown_build_keeps_every_hand_back_waiting():
+    """No ping version (or an unreadable campaign_states): behave exactly as before."""
+    rows = [
+        {"url": "https://gh/a", "ext_version": "1.8.3", "created_at": "2026-09-01T00:00:00+00:00"}
+    ]
+    with _open_rows(*rows), patch.object(hb, "_current_build", return_value=(None, None)):
+        assert _real_open_urls("u1", waiting_only=True) == ["https://gh/a"]
+
+
+def test_the_night_shift_read_is_not_gated_by_builds():
+    """open_urls() without waiting_only means "every open hand-back" — unchanged."""
+    rows = [{"url": "https://gh/a"}]
+    with _open_rows(*rows), patch.object(hb, "_current_build") as build:
+        assert _real_open_urls("u1") == ["https://gh/a"]
+    build.assert_not_called()
+
+
+def test_a_repeat_hand_back_is_restamped_so_the_retry_cannot_loop():
+    client, calls, _tbl = _fake_supabase()
+    with (
+        patch.object(hb, "get_supabase", return_value=client),
+        patch.object(hb, "_current_build", return_value=("1.8.30", "2026-10-02T09:00:00+00:00")),
+    ):
+        hb.add("u1", {"job_title": "Ops", "url": "https://gh/form"})
+    assert calls["payload"]["ext_version"] == "1.8.30"
+
+
+def test_a_missing_column_drops_the_stamp_not_the_hand_back():
+    from postgrest.exceptions import APIError
+
+    client, calls, tbl = _fake_supabase()
+    tbl.execute.side_effect = [
+        APIError({"code": "PGRST204", "message": "no ext_version column"}),
+        MagicMock(data=[{"id": "h1"}]),
+    ]
+    with (
+        patch.object(hb, "get_supabase", return_value=client),
+        patch.object(hb, "_current_build", return_value=("1.8.30", None)),
+    ):
+        assert hb.add("u1", {"url": "https://gh/form"}) == {"id": "h1"}
+    assert "ext_version" not in calls["payload"]
+
+
+def test_a_submitted_posting_leaves_the_to_do_list_by_identity():
+    """The retry saves the posting URL; the hand-back holds the form URL of the same job."""
+    client, calls, tbl = _fake_supabase()
+    open_rows = [
+        {"id": "h1", "url": "https://job-boards.greenhouse.io/doordashusa/jobs/8237299?gh_src=x"},
+        {"id": "h2", "url": "https://job-boards.greenhouse.io/tia/jobs/8005735003"},
+    ]
+    tbl.in_ = MagicMock(return_value=tbl)
+    with (
+        patch.object(hb, "get_supabase", return_value=client),
+        patch.object(hb, "fetch_paged", return_value=open_rows),
+    ):
+        n = hb.resolve_for_posting("u1", "https://boards.greenhouse.io/doordashusa/jobs/8237299")
+    assert n == 1
+    tbl.in_.assert_called_once_with("id", ["h1"])
+    assert ("eq", ("user_id", "u1")) in calls["filters"]
+    assert "resolved_at" in calls["payload"]
+
+
+def test_an_unidentifiable_url_closes_nothing():
+    with patch.object(hb, "fetch_paged") as read:
+        assert hb.resolve_for_posting("u1", "") == 0
+    read.assert_not_called()

@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from app.ads import meta_capi
 from app.db import applications as apps_db
+from app.db import handbacks as handbacks_db
 from app.db import interview_kit as kit_db
 from app.db import jobs as jobs_db
 from app.db import profile as profile_db
@@ -62,6 +63,12 @@ def save_application(req: ApplicationSaveRequest, user=Depends(get_current_user)
         platform=req.platform,
         job_url=req.job_url,
     )
+    # A retry that went through (often a newer build re-walking a hand-back) is no longer
+    # on the person's to-do list. Best-effort: the application itself is already saved.
+    try:
+        handbacks_db.resolve_for_posting(user.id, req.job_url)
+    except Exception as e:  # noqa: BLE001
+        print(f"[applications] hand-back close failed: {e}", file=sys.stderr)
     # Free taste: count ONLY real saved applications (this path), never scans/skips.
     free_used = check["free_used"]
     if check["tier"] == "free":
