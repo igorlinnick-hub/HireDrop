@@ -3855,6 +3855,69 @@
     }
   }
 
+  // Indeed resume-selection: once a parsed upload has been refused on this browser
+  // (indeedSdrRefusedAt, kept 14 days), use the Indeed Resume card instead of uploading.
+  // `chosen` = skip the upload; `changed` = this round moved the selection. Only `changed`
+  // is progress: counting an already-checked card every round kept the stall guard from
+  // ever firing, so a refused step spun 20 rounds instead of handing back.
+  const INDEED_SDR_TTL_MS = 14 * 24 * 3600 * 1000;
+  async function preferIndeedResume(filled) {
+    const none = { chosen: false, changed: false };
+    if (detectPlatform() !== "indeed" || !/resume-selection/.test(location.pathname)) return none;
+    const card = document.querySelector('[data-testid="resume-selection-structured-resume-radio-card-input"]');
+    if (!card) return none;
+    const { indeedSdrRefusedAt } = await storageGet("indeedSdrRefusedAt");
+    if (!indeedSdrRefusedAt || Date.now() - indeedSdrRefusedAt > INDEED_SDR_TTL_MS) return none;
+    if (card.checked) {
+      // Indeed pre-checked it: no click, no progress, but the kind is still "indeed".
+      await storageSet({ indeedLastResumeKind: "indeed" });
+      return { chosen: true, changed: false };
+    }
+    await humanClick(document.querySelector('[data-testid="resume-selection-structured-resume-radio-card-label"]') || card);
+    await sleep(humanDelay(600, 1200));
+    // React may revert the click or re-mount the input: re-read the LIVE node, and upload
+    // as before if it isn't checked.
+    const live = document.querySelector('[data-testid="resume-selection-structured-resume-radio-card-input"]');
+    if (!live || !live.checked) return none;
+    filled.push("indeed-resume");
+    await storageSet({ indeedLastResumeKind: "indeed" });
+    return { chosen: true, changed: true };
+  }
+
+
+  // Indeed's "Review your resume details" refuses Continue with no alert, no aria-invalid and
+  // no empty required input (#305 read all three as empty, 3/3 on 10-02). What it renders is
+  // the parsed resume as cards, so what we keep is the page's STRUCTURE: the data-testids
+  // present, the labels of its buttons/links, and short texts of anything badge-like
+  // (missing / required / incomplete / error). Never card bodies: they are the person's
+  // resume. Emails and phone-like numbers masked as in formBlockers.
+  function structuredReviewSnapshot() {
+    try {
+      const vis = (e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+      const flat = (t) => String(t || "").replace(/\s+/g, " ").trim();
+      const root = document.querySelector("main, [role='main']") || document.body;
+      // A badge is a LEAF whose own short text opens with the keyword ("Missing info",
+      // "Add dates", "Needs attention") — never a container, whose text is the card.
+      const BADGE = /^(missing|required|incomplete|add|needs?|error|invalid|fix|update|confirm)\b/i;
+      const badges = [...new Set([...root.querySelectorAll("*")].filter((e) =>
+        e.children.length === 0 && vis(e) && flat(e.textContent).length <= 30 && BADGE.test(flat(e.textContent)))
+        .map((e) => `${e.getAttribute("data-testid") || e.tagName.toLowerCase()}:${flat(e.textContent)}`))].slice(0, 15);
+      // Actions by their first two words: "Edit Senior Software Engineer at Kaiser" → "Edit Senior".
+      const acts = [...root.querySelectorAll("button, a, [role='button'], [role='link']")].filter(vis)
+        .map((e) => flat(e.getAttribute("aria-label") || e.textContent).split(" ").slice(0, 2).join(" ") +
+          (e.disabled || e.getAttribute("aria-disabled") === "true" ? "(off)" : ""))
+        .filter(Boolean).slice(0, 25);
+      let ids = JSON.stringify([...new Set([...root.querySelectorAll("[data-testid]")].filter(vis)
+        .map((e) => e.getAttribute("data-testid")))].slice(0, 60));
+      if (ids.length > 900) ids = ids.slice(0, 900) + "…";
+      // Badges and actions first: they are the diagnosis, ids are context the slice may cut.
+      return `badges=${JSON.stringify(badges)} acts=${JSON.stringify(acts)} ids=${ids}`;
+    } catch (e) {
+      return `sdr=? (${String((e && e.message) || e).slice(0, 80)})`;
+    }
+  }
+
+
   function formBlockersLine(fb) {
     if (!fb || fb.error) return `blockers=? (${fb ? fb.error : "none"})`;
     const list = (a) => JSON.stringify(a);
@@ -4263,13 +4326,23 @@
         }
       }
 
+      // Indeed: a freshly uploaded PDF makes Indeed parse it and insert "Review your resume
+      // details" (structured-data-review), which refused Continue with no visible error on
+      // every upload of the 10-02 run (3/3; 14 of 17 blind hand-backs before it). Once that
+      // has happened on this browser, prefer the Indeed Resume the user already has there —
+      // no parse, no review step. The upload path stays for users without one.
+      const indeedResume = await preferIndeedResume(filled);
+      if (indeedResume.changed) filledAny = true;
+      const indeedResumeChosen = indeedResume.chosen;
+
       // Resume upload
-      const resumeInput = findResumeInput();
+      const resumeInput = indeedResumeChosen ? null : findResumeInput();
       if (resumeInput && !resumeInput.files?.length) {
         try {
           await uploadResume(resumeInput);
           await sleep(humanDelay(1200, 2200));
           filledAny = true; filled.push("resume");
+          if (detectPlatform() === "indeed") await storageSet({ indeedLastResumeKind: "file" });
         } catch (e) {
           log("Resume upload failed: " + e.message, "err");
         }
@@ -4327,6 +4400,14 @@
         if (stallRounds >= 2) {
           // Whole line capped: POST /activity drops a message over 2000 chars (422).
           logBackend(Array.from(`🖐 ${dialogSnapshot()} ${formBlockersLine(formBlockers())}`).slice(0, 1950).join(""), "warn");
+          if (/structured-data-review/.test(location.pathname)) {
+            const { indeedLastResumeKind } = await storageGet("indeedLastResumeKind");
+            logBackend(Array.from(`🧾 sdr resume=${indeedLastResumeKind || "?"} ${structuredReviewSnapshot()}`).slice(0, 1950).join(""), "warn");
+            // Stamped only by a refusal of an UPLOADED file: if the Indeed Resume is refused
+            // too, re-stamping would keep the tailored PDF off Indeed forever for nothing,
+            // and the 14 days must be allowed to run out.
+            if (indeedLastResumeKind !== "indeed") await storageSet({ indeedSdrRefusedAt: Date.now() });
+          }
           // The invariant: submitted-complete-and-honest OR handed back with a reason.
           // handBackJob is the right channel (records the reason + unfilled labels and
           // advances the walk) — NOT DETECTION_TRIPPED, which means "a human check is

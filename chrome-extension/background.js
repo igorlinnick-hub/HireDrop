@@ -52,6 +52,8 @@ const USER_SCOPED_KEYS = [
   "appliedUrls", "appliedJobKeys", "todayCount", "platformCounts",
   "campaignFilters", "campaignStartedAt", "currentJob",
   "platformConnections", "captchaWaiting", "reviewMode",
+  // Indeed resume choice (content.js preferIndeedResume): learned on this user's runs.
+  "indeedSdrRefusedAt", "indeedLastResumeKind",
 ];
 
 // Self-bootstrap the durable key: any connected user has a (dashboard-pushed) Supabase
@@ -1049,6 +1051,37 @@ function pickNextStage(tried, selected, conns) {
 const SWEEP_WAIT_MS = 45_000;
 const SWEEP_POLL_MS = 5_000;
 
+// The person's answer releases the local "applied" marks (10-02). content.js marks a job
+// applied BEFORE the Submit click, so a hand-back after the click left it marked, and this
+// queue dropped it even after the person answered its questions — 7 of 9 GH hand-backs
+// never came back. Only ANSWERED hand-backs (requeued_at) are released: an unanswered one
+// may have been finished by hand on the employer's site ("enter the code and submit"), and
+// releasing it would apply twice — the marks are the only guard there (skeptic, #320).
+// URLs compare without the query only on ATS hosts: every ZipRecruiter posting shares the
+// jobs-search path and differs only in its query. A failed read changes nothing.
+async function forgetHandedBackFromApplied() {
+  const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
+  const ATS_HOST = /(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com)$/i;
+  const keyOf = (u) => {
+    try {
+      const x = new URL(String(u || ""));
+      return ATS_HOST.test(x.hostname) ? x.origin + x.pathname : x.href;
+    } catch { return String(u || ""); }
+  };
+  try {
+    const open = (((await apiGet("/handbacks?limit=100")) || {}).handbacks || []).filter((h) => h.requeued_at);
+    if (!open.length) return;
+    const s0 = await chrome.storage.local.get(["appliedUrls", "appliedJobKeys"]);
+    const urls = new Set(open.map((h) => keyOf(h.url)).filter(Boolean));
+    const keys = new Set(open.map((h) => `${norm(h.job_title)}|${norm(h.company)}`).filter((k) => k !== "|"));
+    const keptUrls = (s0.appliedUrls || []).filter((u) => !urls.has(keyOf(u)));
+    const keptKeys = (s0.appliedJobKeys || []).filter((k) => !keys.has(k));
+    if (keptUrls.length !== (s0.appliedUrls || []).length || keptKeys.length !== (s0.appliedJobKeys || []).length) {
+      await chrome.storage.local.set({ appliedUrls: keptUrls, appliedJobKeys: keptKeys });
+    }
+  } catch (e) { /* hand-backs unreadable — filter as before */ }
+}
+
 async function buildAtsQueue(platform, perPlatformCap) {
   let sweep = null;
   try { sweep = await apiPost("/jobs/find-ats", {}); } catch (e) { /* discovery best-effort */ }
@@ -1081,10 +1114,12 @@ async function buildAtsQueue(platform, perPlatformCap) {
   // at the queue head used to dead-stop the walk: phase_ats skips it silently and only a
   // real submit advances the queue. Mirrors content.js's dedup (jobDedupKey format).
   // Stays client-side: the extension holds the authoritative applied sets.
+  const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
+  // typeof guard: tests run buildAtsQueue alone in a vm sandbox.
+  if (typeof forgetHandedBackFromApplied === "function") await forgetHandedBackFromApplied();
   const dd = await chrome.storage.local.get(["appliedUrls", "appliedJobKeys"]);
   const appliedUrls = new Set(dd.appliedUrls || []);
   const appliedKeys = new Set(dd.appliedJobKeys || []);
-  const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
   const queue = (res.jobs || [])
     .filter((j) => j.link || j.apply_url)
     .filter((j) => {
