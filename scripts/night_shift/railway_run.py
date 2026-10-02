@@ -69,7 +69,7 @@ def main() -> int:
     if live:
         cmd.append("--live")
     print(f"[night-shift] start: platform={platform} max={max_n} live={live}", flush=True)
-    code = subprocess.call(cmd)
+    code = subprocess.call(cmd)  # noqa: S603 — argv list, no shell; our own executor.py
     # Exit 0 whatever happened: Railway restarts a failed container, and a restart here
     # would be a second walk the user never asked for.
     print(f"[night-shift] walk finished, executor exit={code}", flush=True)
