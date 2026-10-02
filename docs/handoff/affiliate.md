@@ -1,6 +1,6 @@
 # Affiliate (аффилиатка)
 
-Обновлено: 2026-09-28 · ветка: main (несколько мелких PR за заход, все смержены)
+Обновлено: 2026-10-01 · ветка: main (несколько мелких PR за заход, все смержены)
 
 ## Состояние
 
@@ -51,25 +51,21 @@ details». Без них `stripe.Account.create(type=express, ...)` на жив�
 
 ## Сломано / не доделано
 
-- **Stripe Connect не активен** — ждёт: (1) Игорь загружает права в Stripe UI,
-  (2) Confirm final details, (3) Stripe review (может занять время, не мгновенно).
-  До этого `stripe.Account.create` на живом ключе падает — код автовыплат писать можно,
-  тестировать в проде нельзя (в test-mode Stripe Connect работает без верификации —
-  можно строить и проверять уже сейчас).
-- **PayPal-поля у партнёра в UI нет.** `paypal_email` пишется только руками через
-  `affiliate_admin.py issue --paypal` или из заявки при одобрении. Отпадёт с Connect
-  (Stripe сам собирает реквизиты), но пока актуально.
-- Тестовый партнёр занял код `igor` — если Игорь захочет забрать это имя себе,
-  `affiliate_admin.py` или прямой SQL на `affiliates.code`.
+- **Stripe Connect ВКЛЮЧЁН 10-01** (identity verified + Confirm final details пройдены Игорем).
+  Проверено: `stripe.Account.create(type="express", country="US", capabilities={"transfers":
+  {"requested": True}})` на живом ключе создаёт аккаунт (создан и удалён `acct_1ULuLJ…`).
+  Конфигурация платформы зафиксирована Stripe и НЕ меняется: buyers purchase from platform,
+  separate charges & transfers, Stripe-hosted onboarding, Express Dashboard.
+- **Автовыплат ещё нет** — кода нет, только ручной `affiliate_admin.py payout`.
+- **PayPal-поля у партнёра в UI нет** — отпадёт с Connect (Stripe сам собирает реквизиты).
+- Тестовый партнёр занял код `igor` (аккаунт `hacker987602+aff1`).
 
 ## Следующий шаг
 
-Дождаться, когда Игорь пройдёт identity verification + Confirm final details в Stripe UI
-(проверка: `stripe.Account.create(type="express", country="US", capabilities={"transfers":
-{"requested": True}})` на живом ключе больше не кидает InvalidRequestError — сразу удалить
-созданный тестовый аккаунт), и начать строить автовыплаты: кнопка «Подключить выплаты»
-в кабинете партнёра → Stripe Connect Express onboarding → ежедневная задача, которая находит
-`commissions` со статусом `accrued` старше 30 дней и суммой ≥$25 на партнёра, создаёт
-`stripe.Transfer` и помечает `paid_out` — тот же порог, что уже кодирует `affiliate_admin.py
-payout`, просто без ручного шага. Можно и нужно строить и тестировать в Stripe test-mode
-прямо сейчас, не дожидаясь верификации.
+Строить автовыплаты на Connect (модель: Opus). Миграция: `affiliates.stripe_account_id`,
+`payouts.stripe_transfer_id`. Бэкенд: `POST /affiliate/payouts/connect` → Account(express) +
+AccountLink → вебхук `account.updated` (payouts_enabled); ежедневная задача — `accrued`
+старше 30 дней, ≥$25 на партнёра → `stripe.Transfer(source_transaction=<charge>)` → `paid_out`;
+на `charge.refunded` по уже выплаченной — `Transfer.create_reversal`. Сайт: кнопка
+«Подключить выплаты» + история выплат в `/dashboard/affiliate`. Сначала гонять в test-mode
+(нужны тестовые ключи Stripe — взять у Игоря), потом первая живая выплата.
