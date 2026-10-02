@@ -107,3 +107,23 @@ def test_ats_walk_vocabulary_is_counted():
     out = _report({"opened": 13, "applied_unconfirmed": 1, "skipped_fit": 12}, minutes=8)
     assert out["applied"] == 1
     assert out["applied_unconfirmed"] == 1
+
+
+def test_hand_backs_are_a_loss_and_named_when_they_outweigh_sends():
+    # 10-02 GH run, ~17 of 25 minutes on five forms handed back; the report said "Healthy".
+    out = _report(
+        {"opened": 11, "applied_unconfirmed": 2, "skipped_fit": 3, "handback": 5}, minutes=25
+    )
+    assert out["losses"]["handed back to you"] == 5
+    assert "handed back" in out["verdict"]
+
+
+def test_the_handback_line_is_categorized_and_a_captcha_handback_stays_a_captcha():
+    line = "✋ Needs your hands: Partner Marketing Manager @ Twilio — submit blocked — 9 required fields still empty. Finish it yourself: https://x"
+    assert activity_db._categorize(line) == "handback"
+    assert (
+        activity_db._categorize(
+            "✋ Needs your hands: X @ Y — captcha on submit. Finish it yourself: https://x"
+        )
+        == "captcha"
+    )

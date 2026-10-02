@@ -73,15 +73,23 @@ def main() -> None:
     ap.add_argument("--days", type=int, default=14)
     ap.add_argument("--gap-min", type=int, default=20)
     ap.add_argument("--min-opened", type=int, default=1)
+    # One exact window instead of gap-cut runs. Gaps glue a measured run to every start
+    # and probe around it: 10-02 a 25-min GH run read as 82 min / 41 min per application
+    # because seven aborted starts since 00:10 rode along with it.
+    ap.add_argument("--since", help="UTC ISO start of ONE run to report (with --until)")
+    ap.add_argument("--until", help="UTC ISO end of that run")
     a = ap.parse_args()
+    if bool(a.since) != bool(a.until):
+        ap.error("--since and --until go together")
 
     uid = a.user or user_id_for(a.email)
     print(
         f"{'start (UTC)':16}  {'min':>4} {'opened':>6} {'applied':>7} {'min/app':>7} {'app/h':>5}  top losses"
     )
-    for start, end in runs(uid, a.days, a.gap_min):
+    windows = [(a.since, a.until)] if a.since else runs(uid, a.days, a.gap_min)
+    for start, end in windows:
         r = run_report(uid, since=start, until=end)
-        if r["opened"] < a.min_opened and r["applied"] == 0:
+        if not a.since and r["opened"] < a.min_opened and r["applied"] == 0:
             continue
         losses = ", ".join(
             f"{k} {v}" for k, v in sorted(r["losses"].items(), key=lambda kv: -kv[1])[:2]

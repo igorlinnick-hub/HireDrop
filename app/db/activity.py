@@ -83,6 +83,12 @@ def _categorize(msg: str) -> str | None:
         return "captcha"
     if "not signed into" in m or "login required" in m:
         return "login_required"
+    # A form filled to the end and handed to the person (background.js ATS_JOB_FAILED; the
+    # same line measure_handback_share.py reads). After the captcha check on purpose: a
+    # captcha hand-back stays a captcha. 10-02 a GH run spent ~17 of its 25 minutes on five
+    # of these and the report said "Healthy: 2 applications", naming no loss at all.
+    if "needs your hands" in m:
+        return "handback"
     # Outcomes below are what run_report() needs to compute YIELD. The categories above
     # answer "is something wrong"; these answer "where did the time go".
     # Three vocabularies for the same funnel step: the native walk says "Opening job:",
@@ -206,6 +212,7 @@ def run_report(
         "captcha": by_type.get("captcha", 0),
         "no résumé attached": by_type.get("skipped_no_resume", 0),
         "login needed": by_type.get("login_required", 0),
+        "handed back to you": by_type.get("handback", 0),
     }
     top_loss, top_n = max(losses.items(), key=lambda kv: kv[1], default=("", 0))
 
@@ -274,6 +281,14 @@ def _verdict(
         # The exact shape of the 09-08 run: busy, alive, produced nothing.
         reason = f" — every one lost to {top_loss}" if top_n else ""
         return f"Opened {opened} postings in {minutes} min and applied to NONE{reason}."
+    # Forms filled to the end and handed back cost the most minutes and send nothing; the
+    # "aimed wrong" sentence below would blame the search for a filler problem.
+    handed = counts["by_type"].get("handback", 0)
+    if applied and handed >= applied:
+        return (
+            f"Applying, but {handed} forms were handed back to you for {applied} sent — "
+            "the filler stops before submit."
+        )
     if applied and top_n > applied * 3:
         return f"Applying, but {top_n} postings were lost to {top_loss} for every {applied} sent — the search is aimed wrong."
     # Under 3/hour after half an hour. A live application takes ~30-160s end to end
