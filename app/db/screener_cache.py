@@ -70,6 +70,20 @@ def build_key(question: str, options: list[str] | None, profile: dict) -> str | 
     if education.strip("|"):
         fingerprint += f"|{education}"
 
+    # work_authorized_us / needs_sponsorship are read by _status_from_profile BEFORE
+    # the model runs (ai_question_answer.py) — a Yes/No answer it gives is cached same
+    # as any other, so a later change to either flag (a visa status update, say) must
+    # retire it too, or the stale answer becomes a false legal statement to the next
+    # employer. Omitted while both are unset: _status_from_profile then refuses ("")
+    # and nothing reaches the cache to retire.
+    status_flags = "|".join(
+        f"{k}={profile.get(k)}"
+        for k in ("work_authorized_us", "needs_sponsorship")
+        if profile.get(k) is not None
+    )
+    if status_flags:
+        fingerprint += f"|{status_flags}"
+
     digest = hashlib.sha256(
         f"{question_norm}\x1e{options_norm}\x1e{fingerprint}".encode()
     ).hexdigest()

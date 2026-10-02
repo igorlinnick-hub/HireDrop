@@ -93,6 +93,34 @@ def test_education_answers_retire_the_answer_but_their_absence_changes_nothing()
     assert len({base, with_degree, none}) == 3
 
 
+def test_work_status_flags_retire_the_answer_but_their_absence_changes_nothing():
+    """work_authorized_us / needs_sponsorship are answered deterministically before the
+    model runs (_status_from_profile) and that answer is cached like any other — a later
+    change to either flag (visa status, say) must not keep serving the old Yes/No."""
+    base = screener_cache.build_key("Are you authorized to work in the US?", ["Yes", "No"], PROFILE)
+    assert base == screener_cache.build_key(
+        "Are you authorized to work in the US?",
+        ["Yes", "No"],
+        {**PROFILE, "work_authorized_us": None, "needs_sponsorship": None},
+    )
+    authorized = screener_cache.build_key(
+        "Are you authorized to work in the US?",
+        ["Yes", "No"],
+        {**PROFILE, "work_authorized_us": True},
+    )
+    not_authorized = screener_cache.build_key(
+        "Are you authorized to work in the US?",
+        ["Yes", "No"],
+        {**PROFILE, "work_authorized_us": False},
+    )
+    needs_sponsor = screener_cache.build_key(
+        "Are you authorized to work in the US?",
+        ["Yes", "No"],
+        {**PROFILE, "needs_sponsorship": True},
+    )
+    assert len({base, authorized, not_authorized, needs_sponsor}) == 4
+
+
 # ------------------------------------------------------------------- endpoint
 
 
