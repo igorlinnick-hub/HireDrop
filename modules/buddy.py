@@ -120,9 +120,9 @@ TOOLS = [
     },
     {
         "name": "get_employer_questions",
-        "description": "Applications handed back to the user because the form asked "
-        "something HireDrop can't answer truthfully — with the questions. "
-        "They're answered in History.",
+        "description": "Applications handed back to the user — each with the reason "
+        "(a question with no answer on file, an emailed verification code, a form it "
+        "couldn't finish) and the open questions. They're handled in History.",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -182,15 +182,22 @@ def _recent_applications(user, limit=None) -> list[dict]:
 
 def _employer_questions(user) -> list[dict]:
     rows = handbacks_db.list_open(user.id, limit=20)
+
+    def label(q) -> str:
+        if isinstance(q, dict):
+            return q.get("label") or q.get("question") or ""
+        return str(q or "")
+
+    # `reason` is the most useful field: it says WHY the job came back (a question with no
+    # answer on file, an emailed verification code, …) — exactly what the user asks about.
     return [
         {
             "company": r.get("company"),
-            "title": r.get("title"),
+            "title": r.get("job_title"),
             "platform": r.get("platform"),
-            "status": r.get("status"),
-            "questions": [
-                q.get("question") for q in (r.get("questions") or []) if isinstance(q, dict)
-            ],
+            "since": (r.get("created_at") or "")[:10],
+            "reason": (r.get("reason") or "")[:300],
+            "questions": [x for x in map(label, r.get("questions") or []) if x],
         }
         for r in rows
     ]
