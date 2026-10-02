@@ -47,6 +47,10 @@ def list_recent(user_id: str, limit: int = 100) -> list[dict]:
         .table("activity_log")
         .select("id, timestamp, level, phase, message, metadata_json, trace_id")
         .eq("user_id", user_id)
+        # Support-chat lines (phase "buddy") are a record of questions asked, not campaign
+        # activity — they'd clutter the user's feed. `phase.neq` alone would also drop the
+        # NULL-phase lines the extension writes, hence the explicit OR.
+        .or_("phase.is.null,phase.neq.buddy")
         .order("timestamp", desc=True)
         .limit(limit)
         .execute()
@@ -335,6 +339,21 @@ def handback_stats(window_hours: int = 168, cap: int = 5000) -> dict:
         "by_user": dict(sorted(by_user.items(), key=lambda kv: kv[1], reverse=True)[:50]),
         "top_fields": [{"label": k, "count": v} for k, v in top],
     }
+
+
+def count_since(user_id: str, phase: str, since_iso: str) -> int:
+    """How many lines with this phase since `since_iso` — e.g. support questions today."""
+    res = (
+        get_supabase()
+        .table("activity_log")
+        .select("id", count="exact")
+        .eq("user_id", user_id)
+        .eq("phase", phase)
+        .gte("timestamp", since_iso)
+        .limit(1)
+        .execute()
+    )
+    return res.count or 0
 
 
 def has_since(user_id: str, phase: str, since_iso: str) -> bool:
