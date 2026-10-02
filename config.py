@@ -147,6 +147,9 @@ SENTRY_DSN = os.getenv("SENTRY_DSN", "")
 # the billing router returns 503 until STRIPE_SECRET_KEY is set.
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "")
+# Events from CONNECTED accounts (affiliate `account.updated`) only reach a separate
+# `connect=true` endpoint, which Stripe signs with its own secret.
+STRIPE_CONNECT_WEBHOOK_SECRET = os.getenv("STRIPE_CONNECT_WEBHOOK_SECRET", "")
 # One paid product (everything, 30/day), billed weekly OR monthly. No free tier,
 # no trial, no annual. Create two recurring Prices in Stripe and put the IDs here.
 STRIPE_PRICE_WEEKLY = os.getenv("STRIPE_PRICE_WEEKLY", "")

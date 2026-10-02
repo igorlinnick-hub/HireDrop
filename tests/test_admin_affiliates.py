@@ -54,3 +54,53 @@ def test_the_link_is_built_from_the_site_url_not_guessed():
     hiredrop.io itself would hand out dead links from any other environment."""
     row = _partners(_section())["rows"][0]
     assert row["link"].startswith(FRONTEND_URL)
+
+
+def test_payable_excludes_a_commission_already_claimed_by_an_in_flight_connect_payout():
+    """scripts/run_affiliate_payouts.py sets commissions.payout_id the moment it
+    bundles a commission into a Stripe transfer — BEFORE Stripe confirms, so the
+    row is still 'accrued'. If the board still called that money "payable" it
+    would invite sending it a second time by hand (blast-radius review,
+    2026-10-01). "owed" is a lifetime liability and should still count it;
+    "payable" must not."""
+    rows = {
+        "affiliates": [
+            {
+                "id": "aff_1",
+                "code": "igor",
+                "status": "active",
+                "commission_pct": 30,
+                "paypal_email": None,
+            }
+        ],
+        "referrals": [],
+        "commissions": [
+            {
+                "affiliate_id": "aff_1",
+                "amount_cents": 1000,
+                "status": "accrued",
+                "created_at": "2026-01-01T00:00:00Z",
+                "payout_id": None,  # genuinely unclaimed
+            },
+            {
+                "affiliate_id": "aff_1",
+                "amount_cents": 2000,
+                "status": "accrued",
+                "created_at": "2026-01-01T00:00:00Z",
+                "payout_id": "payout_pending_1",  # claimed by an in-flight Connect payout
+            },
+        ],
+        "payouts": [],
+        "affiliate_applications": [],
+    }
+    sb = MagicMock()
+    sb.rpc.return_value.execute.return_value.data = []
+    with (
+        patch("app.routers.admin._rows", side_effect=lambda table, *a, **k: rows[table]),
+        patch("app.routers.admin.get_supabase", return_value=sb),
+    ):
+        section = admin._section_affiliates("2026-01-01T00:00:00Z", "2026-12-31T00:00:00Z")
+
+    row = _partners(section)["rows"][0]
+    assert row["owed"] == 30.0  # both commissions are a real liability ($10 + $20)
+    assert row["payable"] == 10.0  # only the unclaimed one is safe to send by hand

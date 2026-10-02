@@ -27,9 +27,15 @@ from app.db import billing as billing_db
 from app.deps import get_current_user
 from config import (
     FRONTEND_URL,
+    STRIPE_CONNECT_WEBHOOK_SECRET,
     STRIPE_SECRET_KEY,
     STRIPE_WEBHOOK_SECRET,
 )
+
+# The only events the connect=true endpoint is subscribed to. A payload signed with
+# the Connect secret is accepted for these alone — that endpoint has no business
+# delivering payments.
+CONNECT_EVENTS = frozenset({"account.updated"})
 
 router = APIRouter(tags=["billing"])
 
@@ -346,6 +352,15 @@ def _dispatch_event(stripe, etype: str, obj: dict) -> None:
     elif etype == "customer.subscription.deleted":
         billing_db.downgrade(_user_for_customer(etype, obj.get("customer")))
 
+    elif etype == "account.updated":
+        # An affiliate's Connect onboarding state changed. The account id is
+        # the EVENT's own claim about itself, never one a client could send —
+        # so this can only ever flip payouts_enabled for the account Stripe is
+        # actually describing, not one an affiliate names.
+        account_id = obj.get("id")
+        if account_id:
+            affiliates_db.set_payouts_enabled(account_id, bool(obj.get("payouts_enabled")))
+
 
 @router.post("/billing/webhook")
 async def stripe_webhook(request: Request, stripe_signature: str = Header(None)):
@@ -355,11 +370,22 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
         return JSONResponse(status_code=503, content={"error": "Billing not configured"})
 
     payload = await request.body()
-    try:
-        event = stripe.Webhook.construct_event(payload, stripe_signature, STRIPE_WEBHOOK_SECRET)
-    except Exception as e:
+    event, via_connect, error = None, False, None
+    for secret, is_connect in (
+        (STRIPE_WEBHOOK_SECRET, False),
+        (STRIPE_CONNECT_WEBHOOK_SECRET, True),
+    ):
+        if not secret:
+            continue
+        try:
+            event = stripe.Webhook.construct_event(payload, stripe_signature, secret)
+            via_connect = is_connect
+            break
+        except Exception as e:
+            error = e
+    if event is None:
         # Bad signature / malformed — reject without leaking detail.
-        print(f"[billing] webhook signature verify failed: {e}", file=sys.stderr)
+        print(f"[billing] webhook signature verify failed: {error}", file=sys.stderr)
         return JSONResponse(status_code=400, content={"error": "Invalid signature"})
     # stripe-python v15 StripeObject is NOT a dict — .get() raises (live 500 on the very
     # first real payment, 2026-09-06). Flatten once; everything below is plain dicts.
@@ -368,6 +394,9 @@ async def stripe_webhook(request: Request, stripe_signature: str = Header(None))
 
     etype = event["type"]
     obj = event["data"]["object"]
+    if via_connect and etype not in CONNECT_EVENTS:
+        print(f"[billing] connect endpoint delivered {etype} — ignored", file=sys.stderr)
+        return {"received": True, "ignored": True}
 
     # Idempotency — Stripe delivers at-least-once, so we CLAIM the event id before doing
     # any work and a re-delivery finds it taken. The claim is released if the handler

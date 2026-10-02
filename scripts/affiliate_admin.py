@@ -195,6 +195,12 @@ def cmd_payout(args) -> None:
         .eq("affiliate_id", aff["id"])
         .eq("status", "accrued")
         .lt("created_at", cutoff)
+        # Still 'accrued' is not the same as "unclaimed": scripts/run_affiliate_payouts.py
+        # sets payout_id the moment it bundles a commission into a Connect transfer,
+        # BEFORE Stripe confirms — status only flips to paid_out after. Without this
+        # filter a manual payout here would pay the same money a second time while the
+        # automatic one is still in flight (blast-radius review, 2026-10-01).
+        .is_("payout_id", "null")
         .execute()
         .data
         or []
@@ -227,6 +233,11 @@ def cmd_payout(args) -> None:
                 "method": args.method,
                 "external_ref": args.ref,
                 "note": args.note,
+                # Explicit, not the column default: this row is only ever written
+                # AFTER the money already left (the --yes gate above), so "now" is
+                # true. paid_at has no default any more — run_affiliate_payouts.py
+                # needs it to stay NULL while a Connect transfer is still pending.
+                "paid_at": datetime.now(UTC).isoformat(),
             }
         )
         .execute()
