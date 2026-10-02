@@ -44,7 +44,20 @@ def _row(job_id, score=None, version=V, age=1, company=None):
 
 def test_one_employer_across_boards_is_one_key():
     assert company_key("DoorDash, Inc.") == company_key("DoorDash") == company_key("doordash LLC")
-    assert company_key("The Coca-Cola Company") == "the coca cola"
+    assert company_key("The Coca-Cola Company") == "thecocacola"
+
+
+def test_a_greenhouse_board_token_is_the_same_employer():
+    # Greenhouse rows carry the board token as company; Indeed carries the name.
+    assert company_key("doordashusa") == company_key("DoorDash, Inc.")
+    assert company_key("Muckrack") == company_key("Muck Rack")
+    assert company_key("grafanalabs") == company_key("Grafana Labs")
+    assert company_key("stripecareers") == company_key("Stripe")
+
+
+def test_a_short_name_keeps_its_tail():
+    assert company_key("Medusa") == "medusa"
+    assert company_key("Jobs") == "jobs"
 
 
 def test_a_suffix_alone_is_still_a_name():
