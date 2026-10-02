@@ -1,6 +1,6 @@
 # night-shift — серверный исполнитель ATS-подач (пока юзер спит)
 
-Обновлено: 2026-10-01 (вечер) · ветка: main (HireDrop #292; профильные поля — #293, см. `answers-at-signup.md`)
+Обновлено: 2026-10-02 · ветка: main (HireDrop #292; профильные поля — #293, см. `answers-at-signup.md`)
 
 ## Состояние
 
@@ -68,10 +68,10 @@
 
 ## Следующий шаг
 
-Игорь из `jobflow/` после `git pull`: `set -a && source <(grep -E '^[A-Z_]+=' .env) && set +a &&
-.venv/bin/python scripts/night_shift/executor.py --user a0775013-fdb1-4b1f-a7cd-06c01e78f6b3
---platform greenhouse --live --max 5` — ждём до 4 `outcome=sent` (или `captcha_code` = первая
-точка метрики 428). Следующую сессию начинать моделью **Opus**.
+Живой подачи нет (решение 10-02 выше): `--live` и `NS_LIVE=1` не запускать. Лейн стоит до
+решения Игоря по границе уведомлений/аттестаций и по чекбокс-группам Greenhouse; разведка —
+dry-run `executor.py --user <id> --platform greenhouse --max N` (без `--live`). Следующую сессию
+начинать моделью **Opus**.
 
 Файлы лейна: `scripts/night_shift/{executor,common,ashby}.py`, `modules/ai_question_answer.py`
 (отказы + `unattended`), `modules/job_location.py` (регионы), `app/db/{applications,handbacks}.py`,
