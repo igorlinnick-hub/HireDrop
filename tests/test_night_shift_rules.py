@@ -125,6 +125,18 @@ def test_school_pick_is_exact_or_unambiguous():
 @pytest.mark.parametrize(
     ("query", "options"),
     [
+        ("Columbia College Chicago", ["Columbia College", "Columbia College Hollywood", "Other"]),
+        ("Columbia College", ["Columbia College Chicago", "Other"]),
+        ("Texas A&M University Corpus Christi", ["Texas A&M University", "Other"]),
+    ],
+)
+def test_a_longer_or_shorter_name_is_another_school(query, options):
+    assert pick_typeahead("school", query, options, {}) is None
+
+
+@pytest.mark.parametrize(
+    ("query", "options"),
+    [
         ("MIT", ["Massachusetts Institute of Technology", "Smith College"]),
         ("USC", ["Tusculum University"]),
         ("Rice", ["Price College"]),

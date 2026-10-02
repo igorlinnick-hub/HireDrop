@@ -974,6 +974,39 @@
     return true;
   }
 
+  // A school typeahead takes only the option that IS the school, then Greenhouse's own
+  // "Other" row — never fillReactSelect's first-row fallback, which is how a wrong
+  // university reaches an employer. Nothing fits → the box is cleared and we report false.
+  async function fillSchoolTypeahead(el, school) {
+    for (const query of [school, "Other"]) {
+      el.focus();
+      setNativeValue(el, "");
+      for (let i = 0; i < query.length; i++) {
+        setNativeValue(el, query.slice(0, i + 1));
+        await sleep(humanDelay(60, 140));
+      }
+      let opts = [];
+      const start = Date.now();
+      while (Date.now() - start < 3500) {
+        opts = Array.from(document.querySelectorAll(
+          '[class*="select__option"], [id*="react-select"][id*="option"], [role="option"]'
+        )).filter((o) => o.offsetParent !== null && (o.textContent || "").trim());
+        if (opts.length) break;
+        await sleep(200);
+      }
+      const texts = opts.map((o) => (o.textContent || "").trim());
+      const want = query === "Other" ? texts.find((t) => /^other$/i.test(t)) : pickSchoolOption(query, texts);
+      if (want) {
+        opts[texts.indexOf(want)].click();
+        await sleep(humanDelay(300, 700));
+        return true;
+      }
+    }
+    setNativeValue(el, "");
+    el.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    return false;
+  }
+
   // Is this field a react-select typeahead (needs option-selection, not a plain value set)?
   function isReactSelectField(el) {
     if (!el) return false;
@@ -2798,7 +2831,37 @@
     const boxes = Array.from(formScope().querySelectorAll('input[type="checkbox"]'))
       .filter((c) => c.offsetParent && !c.checked);
     let filled = 0;
+    // The box's OWN label first: inside a fieldset getFieldLabel returns the legend (the
+    // question), which would make every option read "Race / Ethnicity".
+    const boxText = (c) => (c.id && document.querySelector(`label[for="${CSS.escape(c.id)}"]`)?.textContent) ||
+      c.closest("label")?.textContent || getFieldLabel(c);
+    // A demographic "select all that apply" group (race / ethnicity) gets its decline box,
+    // the answer the radio and dropdown fillers already give. The generic loop below
+    // refuses any label with "decline"/"don't" and skips unrequired members, so a required
+    // race group was never answered and "Continue" was refused into a blind hand-back.
+    // No decline option → left alone: never an identity value of ours.
+    // A group is its OWN boxes and its OWN legend: an outer fieldset that wraps a nested
+    // Race group plus an "I certify…" box must not inherit "Race" and swallow the attestation.
+    const groupOf = (c) => c.closest("fieldset, [role='group']");
+    const demoGroups = new Set();
+    for (const g of new Set(boxes.map(groupOf).filter(Boolean))) {
+      const all = Array.from(g.querySelectorAll('input[type="checkbox"]'))
+        .filter((c) => c.offsetParent && groupOf(c) === g);
+      const texts = all.map(boxText);
+      const question = g.querySelector(":scope > legend")?.textContent || g.getAttribute("aria-label") || "";
+      if (!isDemographicQuestion(question, texts)) continue;
+      demoGroups.add(g);
+      if (all.some((c) => c.checked)) continue;
+      const i = texts.findIndex((t) => /(decline|prefer not|don'?t wish|do not wish|not to (answer|say|disclose|identify)|rather not)/i.test(t));
+      if (i < 0) continue;
+      const box = all[i];
+      const labelEl = box.id ? document.querySelector(`label[for="${CSS.escape(box.id)}"]`) : null;
+      await humanClick(labelEl || box);
+      filled++;
+      await sleep(humanDelay(200, 500));
+    }
     for (const c of boxes) {
+      if (demoGroups.has(groupOf(c))) continue;
       const label = getFieldLabel(c) ||
         (c.closest("label, [class*='question' i], fieldset")?.textContent || "");
       const required = c.required || c.getAttribute("aria-required") === "true" ||
@@ -2985,6 +3048,8 @@
         if (el.type === "hidden" || el.readOnly || el.disabled) return false;
         // Never touch a site-search box that happens to live inside the scope.
         if (el.closest('form[role="search"]') || /search/i.test(el.name || "")) return false;
+        // A react-select's search <input> stays "" after a choice; the answer is drawn next to it.
+        if (reactSelectShownValue(el)) return false;
         return true;
       });
 
@@ -2993,8 +3058,15 @@
       const rawLabel = getFieldLabel(el);
       const label = rawLabel.toLowerCase();
       const isTextarea = el.tagName === "TEXTAREA";
+      // A dropdown's search box is not a text question. fillComboboxes owns it; here only
+      // the typeaheads whose answer is a profile FACT we type (school, city/location).
+      // Without this, a react-select yes/no burned an AI answer and got prose typed into it
+      // (DoorDash ×2 hit the 15-answer budget on these alone, #304).
+      const isCombo = isReactSelectField(el) || el.getAttribute("role") === "combobox";
+      if (isCombo && !SCHOOL_FIELD_RE.test(rawLabel) && !/\bcity\b|\blocations?\b/.test(label)) continue;
 
       let value;
+      let typeahead = "";
       // Only the applicant's OWN name — not "reference name", "company name",
       // "supervisor/manager/contact name" (those must go to the AI branch).
       if ((/\b(first|last|full|your|legal|preferred)\s+name\b|^name$/i.test(label) || NAME_I18N_RE.test(rawLabel)) &&
@@ -3010,18 +3082,27 @@
         value = profile.email || "";
       } else if (label.includes("phone") || PHONE_I18N_RE.test(rawLabel)) {
         value = profile.phone || "";
-      } else if (label.includes("salary") || label.includes("compensation") || label.includes("pay") || label.includes("wage")) {
+      } else if (SCHOOL_FIELD_RE.test(rawLabel)) {
+        // profile.school (asked at signup). "I don't have a college degree" is an answer
+        // too: then a required school field hands back — never a university of ours.
+        value = profile.no_degree ? "" : String(profile.school || "").trim();
+        if (!value) continue;
+        typeahead = "school";
+      } else if (!isCombo && /^\W*(?:highest\s+)?degree(?:\s+(?:type|level|earned|obtained))?\W*$/i.test(rawLabel)) {
+        value = profile.no_degree ? "" : String(profile.degree || "").trim();
+        if (!value) continue;
+      } else if (payQuestion(rawLabel) || label.includes("salary") || label.includes("compensation") || label.includes("pay") || label.includes("wage")) {
         // NEVER invent a number here. This used to read `profile.desired_salary || "65000"`,
-        // and `desired_salary` exists nowhere — not in the profiles table (only salary_min /
-        // salary_max / salary_listed_only, which belong to the job FILTER and are not even
-        // returned by get_profile), not in the schema, not in any UI. So every user, at every
-        // level, told employers they expect 65000 — a figure with no source, shown back to
-        // them nowhere. salary_min is not a substitute: the user set it to filter which jobs
-        // to see, not to state an expectation, and reusing it would make the filter a second
-        // authority over something it never claimed to answer.
-        // No source => leave it blank: validation blocks the step and the question goes back
-        // to the human through the hand-back loop, which is the designed answer to "unknown".
-        continue;
+        // a field that exists nowhere, so every user told employers 65000. salary_min is not
+        // a substitute either: it filters which jobs to see, it states no expectation.
+        // The answer is the user's own stated expectation (asked at signup,
+        // profile.salary_expectation), shaped for the box: a bare number only where the
+        // field's unit is the user's. Their CURRENT pay is another fact nobody told us.
+        // No source => blank: validation blocks the step and the question goes back to the
+        // human through the hand-back loop, the designed answer to "unknown".
+        value = payQuestion(rawLabel) === "expectation"
+          ? salaryAnswer(profile, null, el.type === "number", rawLabel) : "";
+        if (!value) continue;
       } else if (label.includes("year") || label.includes("experience") || label.includes("how many") || label.includes("how long")) {
         // Only treat as a numeric "years" field for short inputs — an open textarea
         // asking about experience wants prose, which the AI branch handles below.
@@ -3141,13 +3222,150 @@
       }
 
       if (!value) continue;
-      if (isReactSelectField(el)) await fillReactSelect(el, value);   // P1c: GH/Lever location typeahead
+      if (isReactSelectField(el) && typeahead === "school") {
+        if (!(await fillSchoolTypeahead(el, value))) continue; // not offered → hand back
+      } else if (isReactSelectField(el)) await fillReactSelect(el, value);   // P1c: GH/Lever location typeahead
       else if (isTextarea) quickSet(el, value);
       else setNativeValue(el, value);
       await sleep(humanDelay(150, 400));
       filled++;
     }
     return filled;
+  }
+
+  // ── Pay: only what the user told us to say (profile.salary_expectation) ──────────────
+  // Ported from scripts/night_shift/common.py (pay_question / amounts / pay_unit /
+  // salary_answer; cases in tests/test_night_shift_rules.py) so the browser and the server
+  // answer pay the same way. The model once told employers $55k–$85k for a user whose own
+  // floor was $100k; a figure of ours, or the NEAREST bracket, is that same lie.
+  const PAY_SRC = String.raw`(?:salary|salaries|compensation|\bwages?\b|\bpay\b|\bpaid\b|\bOTE\b|\bincome\b|\bearnings\b|\bremuneration\b|(?:hourly|pay|day) rate|rate of pay)`;
+  const PAY_WORD_RE = new RegExp(PAY_SRC, "i");
+  const PAY_ASK_RE = new RegExp(
+    String.raw`(?:expect\w*|desir\w*|requir\w*|target\w*|preferred|minimum|looking for|seeking)\b.{0,40}` + PAY_SRC +
+    "|" + PAY_SRC + String.raw`.{0,40}\b(?:expect\w*|requir\w*|desir\w*|range|target\w*)` +
+    String.raw`|how much (?:do|would|are) you (?:expect|want|like|need|looking)` +
+    String.raw`|what (?:is|are) your (?:\w+ ){0,2}` + PAY_SRC, "i");
+  const PAY_CURRENT_RE = new RegExp(String.raw`\b(?:current|present|most recent|last|previous)\b.{0,30}` + PAY_SRC, "i");
+  const NOT_ABOUT_MY_PAY_RE = /\bexperience\b|\byears?\b|\bdescribe\b|\bhow many\b|\badministration\b|\bdesign\w*\b/i;
+  const OPEN_ABOVE_RE = /\+|or more|and (?:up|above)|\babove\b|\bover\b|more than|at least/i;
+  const OPEN_BELOW_RE = /\bunder\b|\bbelow\b|less than|up to/i;
+  const PAY_UNITS = [
+    ["hour", /\/\s*h(?:ou)?r\b|\bper hour\b|\bhourly\b|\ban hour\b|\bhrs?\b/i],
+    ["month", /\/\s*mo(?:nth)?\b|\bper month\b|\bmonthly\b|\ba month\b/i],
+    ["year", /\/\s*y(?:ea)?r\b|\bper year\b|\bper annum\b|\bannual\w*\b|\byearly\b|\ba year\b/i],
+  ];
+
+  // "expectation" | "current" | null (not about the candidate's pay at all).
+  function payQuestion(label) {
+    label = label || "";
+    if (!PAY_WORD_RE.test(label) || NOT_ABOUT_MY_PAY_RE.test(label)) return null;
+    if (PAY_CURRENT_RE.test(label)) return "current";
+    return PAY_ASK_RE.test(label) || label.split(/\s+/).filter(Boolean).length <= 3 ? "expectation" : null;
+  }
+
+  // Every money figure in a phrase; a trailing k/m carries back over a range ("85-95k").
+  function payAmounts(text) {
+    const found = [];
+    const re = /(\d[\d,]*(?:\.\d+)?)\s*([km])?\b/gi;
+    let m;
+    while ((m = re.exec(text || ""))) found.push([parseFloat(m[1].replace(/,/g, "")), (m[2] || "").toLowerCase()]);
+    const scale = { k: 1000, m: 1000000, "": 1 };
+    const out = [];
+    found.forEach(([value, unit], i) => {
+      if (!unit && value < 1000) unit = (found.slice(i + 1).find(([, u]) => u) || [0, ""])[1];
+      if (value) out.push(Math.trunc(value * scale[unit]));
+    });
+    return out;
+  }
+
+  function payUnit(text, figures) {
+    for (const [unit, re] of PAY_UNITS) if (re.test(text || "")) return unit;
+    const f = figures == null ? payAmounts(text) : figures;
+    if (f.length && Math.min(...f) >= 10000) return "year";
+    if (f.length && Math.max(...f) <= 500) return "hour";
+    return null;
+  }
+
+  // The user's stated expectation shaped for the control, or "" (nothing on file, chose
+  // not to name one, or no bracket/unit that holds it — then a required field hands back).
+  function salaryAnswer(profile, options, numeric, label) {
+    const stated = String((profile && profile.salary_expectation) || "").trim();
+    if (!stated || (profile && profile.no_salary_expectation)) return "";
+    const figures = payAmounts(stated);
+    const amount = figures.length ? figures[0] : null;
+    const unit = payUnit(stated, figures);
+    if (numeric) {
+      const wanted = payUnit(label || "", []) || "year";
+      return amount && unit === wanted ? String(amount) : "";
+    }
+    if (!options || !options.length) return stated;
+    if (!amount || !unit) return "";
+    // Half-open brackets ($75k–$100k then $100k–$125k puts $100k in the second), with one
+    // inclusive pass for the top of the last one.
+    for (const inclusive of [false, true]) {
+      for (const option of options) {
+        const bounds = payAmounts(option);
+        if (!bounds.length || payUnit(option, bounds) !== unit) continue;
+        const low = Math.min(...bounds), high = Math.max(...bounds);
+        if (bounds.length >= 2 && low <= amount && (amount < high || (inclusive && amount === high))) return option;
+        if (bounds.length === 1 && ((OPEN_ABOVE_RE.test(option) && amount >= low) ||
+            (OPEN_BELOW_RE.test(option) && amount < low))) return option;
+      }
+    }
+    return "";
+  }
+
+  // The school FIELD — its whole label. "Highest level of school completed" is a fixed list
+  // and "Did you graduate from college?" a yes/no (same rule as night_shift _SCHOOL_FIELD).
+  const SCHOOL_FIELD_RE = /^\W*(?:name of (?:your )?)?(?:school|university|college|institution)(?:\s*(?:\/|or|and)\s*(?:school|university|college|institution))?(?:\s+name)?\W*$/i;
+
+  // The one option that IS the school, or null — never the nearest-looking one: the letters
+  // of "MIT" are inside "Smith", and "University of Hawaii" matches every campus.
+  function pickSchoolOption(query, optionTexts) {
+    const squash = (t) => (t || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    const want = squash(query);
+    if (!want || !optionTexts.length) return null;
+    const exact = optionTexts.find((o) => squash(o) === want);
+    if (exact) return exact;
+    // Beyond exact, only the same NAME with a note in brackets: "University of Hawaii at
+    // Manoa (Honolulu)". Never a word-subset either way — "Columbia College" (Missouri) is
+    // not "Columbia College Chicago" (same rule as night_shift pick_typeahead).
+    const unbracket = (t) => squash((t || "").replace(/\([^)]*\)|\[[^\]]*\]/g, " "));
+    const base = unbracket(query);
+    const near = base ? optionTexts.filter((o) => unbracket(o) === base) : [];
+    return near.length === 1 ? near[0] : null;
+  }
+
+  // US states as a form lists them: by name ("Alabama", "(US) Alabama") or USPS code ("AL").
+  // The profile holds either — the address seed copies the resume's "City, ST ZIP" line.
+  const US_STATES = {
+    AL: "Alabama", AK: "Alaska", AZ: "Arizona", AR: "Arkansas", CA: "California", CO: "Colorado",
+    CT: "Connecticut", DE: "Delaware", DC: "District of Columbia", FL: "Florida", GA: "Georgia",
+    HI: "Hawaii", ID: "Idaho", IL: "Illinois", IN: "Indiana", IA: "Iowa", KS: "Kansas",
+    KY: "Kentucky", LA: "Louisiana", ME: "Maine", MD: "Maryland", MA: "Massachusetts",
+    MI: "Michigan", MN: "Minnesota", MS: "Mississippi", MO: "Missouri", MT: "Montana",
+    NE: "Nebraska", NV: "Nevada", NH: "New Hampshire", NJ: "New Jersey", NM: "New Mexico",
+    NY: "New York", NC: "North Carolina", ND: "North Dakota", OH: "Ohio", OK: "Oklahoma",
+    OR: "Oregon", PA: "Pennsylvania", RI: "Rhode Island", SC: "South Carolina", SD: "South Dakota",
+    TN: "Tennessee", TX: "Texas", UT: "Utah", VT: "Vermont", VA: "Virginia", WA: "Washington",
+    WV: "West Virginia", WI: "Wisconsin", WY: "Wyoming",
+  };
+  const stateKey = (t) => {
+    const s = String(t || "").replace(/^\s*\(\s*(?:us|usa)\s*\)\s*/i, "").replace(/[^a-z ]+/gi, " ")
+      .replace(/\s+/g, " ").trim().toLowerCase();
+    if (US_STATES[s.toUpperCase()]) return s.toUpperCase();
+    const code = Object.keys(US_STATES).find((c) => US_STATES[c].toLowerCase() === s);
+    return code || "";
+  };
+  // A state-of-residence list (Greenhouse: 46–61 rows) → the profile's state, matched as a
+  // whole name or code, or null. A substring put "HI" on Michigan; the first row put
+  // Alabama on a Californian. `isList` tells chooseOption no model and no fallback either.
+  function stateListPick(options, profile) {
+    const keys = options.map((o) => stateKey(o.text));
+    if (keys.filter(Boolean).length < 10) return { isList: false, option: null };
+    const want = stateKey(profile.state);
+    const hits = want ? options.filter((_, i) => keys[i] === want) : [];
+    return { isList: true, option: hits.length === 1 ? hits[0] : null };
   }
 
   // Demographic / EEO self-identification — we auto-decline (most privacy-preserving,
@@ -3214,18 +3432,12 @@
       if (/(authoriz|legally|eligible)/i.test(label) && profile.work_authorized_us === false && no) return no;
       return yes;
     }
-    // Salary range → option closest to desired salary, else the first real option.
-    if (/(salary|compensation|pay range|wage|target)/i.test(label)) {
-      const want = parseInt(String(profile.desired_salary || "").replace(/\D/g, ""), 10);
-      if (want) {
-        const withNums = options
-          .map(o => ({ o, n: parseInt(o.text.replace(/[^\d]/g, ""), 10) }))
-          .filter(x => x.n);
-        if (withNums.length) {
-          withNums.sort((a, b) => Math.abs(a.n - want) - Math.abs(b.n - want));
-          return withNums[0].o;
-        }
-      }
+    // Salary bracket → the one that HOLDS the user's stated figure (salaryAnswer), never the
+    // nearest. This read `profile.desired_salary`, a field that exists nowhere, so it never
+    // fired. No bracket holds it → chooseOption leaves the field blank (see there).
+    if (payQuestion(label) === "expectation") {
+      const pick = salaryAnswer(profile, texts, false, label);
+      if (pick) return options.find(o => o.text === pick) || null;
     }
     return null;
   }
@@ -3269,6 +3481,12 @@
   // for eligibility, and only falls to the first option for clearly-benign dropdowns.
   async function chooseOption(label, options, profile, jobInfo) {
     let chosen = pickOptionDeterministic(label, options, profile);
+    // Pay is the user's figure or nothing: no model, and none of the fallbacks below (the
+    // "first real option" one would put a bracket of ours on the application).
+    if (payQuestion(label)) return chosen || null;
+    // Where the user lives is the profile's state or nothing — same reasoning.
+    const stateList = stateListPick(options, profile);
+    if (stateList.isList) return stateList.option;
     if (!chosen && _aiAnswersUsed >= MAX_AI_ANSWERS_PER_FORM) {
       if (!_aiBudgetNotified) { logBackend(`Too many custom questions (>${MAX_AI_ANSWERS_PER_FORM}) — leaving the rest for you (faster than auto-answering all)`, "warn"); _aiBudgetNotified = true; }
       // fall through to the SAFE no-AI fallbacks below (neutral/eligibility/blank)
@@ -3326,6 +3544,10 @@
     // "drug screen", "background check"), and "Continue" refused until we handed the job
     // back. Ask the widget for its VALUE instead, and only fall back to text.
     const comboValue = (c) => {
+      // Greenhouse react-select: the search <input> stays "" and the answer is drawn in a
+      // sibling .select__single-value (live twilio/8170555, #307).
+      const rs = reactSelectShownValue(c);
+      if (rs) return rs;
       const active = c.getAttribute("aria-activedescendant");
       if (active) {
         const el = document.getElementById(active);
@@ -3380,12 +3602,15 @@
       // Read options from THIS combobox's OWN menu — a global [role=option] query
       // could grab a different question's still-open menu and apply its answer here.
       const menu = findComboMenu(combo);
-      const optEls = menu
-        ? Array.from(menu.querySelectorAll('[role="option"], li, [class*="select__option"]'))
-            // Same reason as findComboMenu: a real option can report offsetParent null.
-            // Require only that it is not display:none.
-            .filter(o => o.getClientRects().length > 0 || (o.textContent || "").trim())
-        : [];
+      const rawOpts = menu ? Array.from(menu.querySelectorAll('[role="option"], li, [class*="select__option"]')) : [];
+      const txt = (o) => (o.textContent || "").trim();
+      const optEls = rawOpts
+        // Innermost only: `li > [role=option]` returns both with the same text, parent first,
+        // and a click on the outer one never reaches a handler bound on the inner.
+        .filter(o => !rawOpts.some(p => p !== o && o.contains(p) && txt(p) === txt(o)))
+        // Same reason as findComboMenu: a real option can report offsetParent null.
+        // Require only that it is not display:none.
+        .filter(o => o.getClientRects().length > 0 || txt(o));
       const options = optEls
         .map(o => ({ el: o, text: (o.textContent || "").trim(), val: (o.textContent || "").trim() }))
         .filter(o => o.text && !/^(select|choose|please|--)/i.test(o.text));
@@ -3404,16 +3629,29 @@
         continue;
       }
 
+      const before = (combo.textContent || "").trim();
       await humanClick(chosen.el);
-      // Mark it answered ourselves. Whether the widget then SHOWS its answer in a way we
-      // can read back varies per platform, and the loop must be monotonic either way —
-      // without this, a widget that renders its answer as plain short text ("Yes") would
-      // look unanswered on the next pass and get re-opened until the pass budget ran out.
-      combo.dataset.hdDone = "1";
-      filled++;
       await sleep(humanDelay(400, 800));
-      // If it didn't register as filled (still a placeholder), mark skip to avoid a loop.
-      if (isUnfilled(combo)) combo.dataset.hdSkip = "1";
+      // Did the widget TAKE it? A readable value, a visible change off the placeholder, or a
+      // re-render that replaced the node (the next pass re-reads the new one). Counting the
+      // click alone made a choice that never committed report combo×1, then vanish from
+      // every later pass: filled=[] → hand-back with nothing named (Indeed demographic ×3).
+      const after = (combo.textContent || "").trim();
+      const took = !combo.isConnected || !!comboValue(combo) ||
+        (after !== before && !PLACEHOLDER_RE.test(after));
+      const tries = Number(combo.dataset.hdTries || 0) + 1;
+      combo.dataset.hdTries = String(tries);
+      if (took) {
+        // Monotonic: a widget that shows its answer as plain short text ("Yes") would
+        // otherwise look unanswered on the next pass and be re-opened forever.
+        combo.dataset.hdDone = "1";
+        filled++;
+      } else if (tries >= 2) {
+        combo.dataset.hdSkip = "1";
+        combo.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+        logBackend(`Dropdown didn't take our choice: "${label.slice(0, 60)}" → "${chosen.text.slice(0, 40)}"`, "warn");
+      }
+      // else: still unfilled → the next pass re-finds it and tries once more.
     }
     return filled;
   }
