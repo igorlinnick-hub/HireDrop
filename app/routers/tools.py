@@ -96,6 +96,9 @@ def stats(user=Depends(get_current_user)):
         "total_jobs": jobs_db.count_jobs(user.id),
         "total_applications": apps_db.count_applications(user.id),
         "applications_today": usage["used_today"],
+        # Rolling 24h, for the dashboard tile; applications_today stays the cap's
+        # local-day count (the History "Today" card and the meter read that one).
+        "applications_last_24h": apps_db.count_last_hours(user.id, 24),
         "new_today": jobs_db.count_jobs_found_today(user.id),
         "tier": usage["tier"],
         "daily_limit": usage["daily_limit"],

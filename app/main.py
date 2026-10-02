@@ -35,6 +35,7 @@ from app.routers import (
     applications,
     auth,
     billing,
+    buddy,
     campaign,
     extension,
     jobs,
@@ -165,6 +166,7 @@ app.include_router(admin.router, prefix="/api/v1")
 app.include_router(affiliate.router, prefix="/api/v1")
 # Ad-spend ingest from the Google Ads Script — its own token (ADS_INGEST_TOKEN).
 app.include_router(ads.router, prefix="/api/v1")
+app.include_router(buddy.router, prefix="/api/v1")
 
 
 @app.get("/health")
