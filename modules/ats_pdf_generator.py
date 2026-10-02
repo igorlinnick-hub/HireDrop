@@ -168,7 +168,9 @@ Return ONLY a JSON array of question strings, no explanation:
         return []
 
 
-def _structure_resume(resume_text: str, answers: list[dict] | None = None) -> dict:
+def _structure_resume(
+    resume_text: str, answers: list[dict] | None = None, model: str | None = None
+) -> dict:
     """Ask Claude to parse resume text into a structured JSON object."""
     if not ANTHROPIC_API_KEY:
         return {}
@@ -230,14 +232,18 @@ Incorporate any additional candidate answers into the appropriate fields (add me
 }}
 
 RESUME TEXT:
-{resume_text[:4000]}{answers_block}"""
+{resume_text[:8000]}{answers_block}"""
 
+        from modules.ai_resume_tailor import NO_THINKING, reply_text
+
+        kwargs = {"thinking": NO_THINKING} if model and model.startswith("claude-sonnet-5") else {}
         message = client.messages.create(
-            model=SONNET_MODEL,
-            max_tokens=2000,
+            model=model or SONNET_MODEL,
+            max_tokens=3000,
             messages=[{"role": "user", "content": prompt}],
+            **kwargs,
         )
-        raw = message.content[0].text.strip()
+        raw = reply_text(message)
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -254,14 +260,16 @@ RESUME TEXT:
         return {}
 
 
-def structure_resume_data(resume_text: str, answers: list[dict] | None = None) -> dict:
+def structure_resume_data(
+    resume_text: str, answers: list[dict] | None = None, model: str | None = None
+) -> dict:
     """Public wrapper: structure resume text into the ATS JSON, once.
 
     Both the PDF and DOCX renderers consume this so we make a single Claude call
     when generating both formats. Falls back to a first-line name if extraction
     returns nothing usable.
     """
-    data = _structure_resume(resume_text, answers=answers or [])
+    data = _structure_resume(resume_text, answers=answers or [], model=model)
     if not data.get("name"):
         lines = [ln.strip() for ln in (resume_text or "").split("\n") if ln.strip()]
         data["name"] = lines[0] if lines else "CANDIDATE"

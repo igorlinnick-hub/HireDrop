@@ -815,9 +815,12 @@ def _store_tailored_pdf(user_id: str, job_id: str, tailored_text: str) -> None:
     prior generation failed (so we never re-pay the Sonnet tailor for a PDF-only error).
     """
     from app.db import jobs as jobs_db
-    from modules.ats_pdf_generator import generate_ats_pdf
+    from modules.ai_resume_tailor import SONNET_MODEL as TAILOR_MODEL
+    from modules.ats_pdf_generator import generate_ats_pdf, structure_resume_data
 
-    pdf_bytes = generate_ats_pdf(resume_text=tailored_text)
+    # Structured on the tailor's model: this runs inside the apply-time GET too.
+    data = structure_resume_data(tailored_text, model=TAILOR_MODEL)
+    pdf_bytes = generate_ats_pdf(data=data)
     pdf_path = resume_storage.upload_job_tailored(user_id, job_id, pdf_bytes)
     jobs_db.update_tailored_resume_pdf(job_id, pdf_path, user_id)
 
@@ -904,10 +907,11 @@ def _lazy_tailor_for_job(user, job) -> None:
 
         # The resume the user stands behind — a correction made in the editor has to
         # reach the employer, not stop at the preview.
-        resume_text = resume_text_for(prof)
+        from modules.ai_resume_tailor import TAILOR_RESUME_CHARS, tailor_resume
+
+        resume_text = resume_text_for(prof, max_chars=TAILOR_RESUME_CHARS)
         if not resume_text:
             return
-        from modules.ai_resume_tailor import tailor_resume
 
         tailored = tailor_resume(fresh, prof, resume_text)
         if not tailored:
