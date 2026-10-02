@@ -88,6 +88,9 @@ def add(user_id: str, job: dict) -> dict | None:
         # build back to 1.8.3 already reports its version on ping, so this needs no
         # extension release. Re-stamped on every repeat hand-back (see open_urls).
         "ext_version": _current_build(user_id)[0],
+        # A hand-back of a re-queued job means the retry hit a wall again: it waits on
+        # the person again. Left set, the queue would serve the same wall every run.
+        "requeued_at": None,
     }
     try:
         return _add_row(user_id, row)
@@ -134,7 +137,7 @@ def list_open(user_id: str, limit: int = 20) -> list[dict]:
         get_supabase()
         .table("handbacks")
         .select(
-            "id, job_title, company, url, platform, reason, steps_done, created_at, questions, answers, job_id, requeued_at"
+            "id, job_title, company, url, platform, reason, steps_done, created_at, questions, answers, job_id, requeued_at, ext_version"
         )
         .eq("user_id", user_id)
         .is_("resolved_at", "null")
@@ -142,7 +145,44 @@ def list_open(user_id: str, limit: int = 20) -> list[dict]:
         .limit(min(max(limit, 1), 100))
         .execute()
     )
-    return res.data or []
+    rows = res.data or []
+    # `newer_build`: the extension has updated since this form was handed back, so the
+    # filler may now finish it. The dashboard offers "try again" on exactly these rows.
+    version, seen_at = _current_build(user_id) if rows else (None, None)
+    for r in rows:
+        r["newer_build"] = (
+            not r.get("requeued_at")
+            and requeueable(r)
+            and _left_by_older_build(r, version, seen_at)
+        )
+    return rows
+
+
+# The ATS walk is a server queue: a re-queued hand-back there is picked up by the next run.
+# A native Indeed/ZR hand-back has no queue row to return to (the walk is a live search),
+# so offering "try again" on it would promise something nothing does.
+_QUEUE_PLATFORMS = ("greenhouse", "lever", "ashby")
+
+
+def requeueable(row: dict) -> bool:
+    return bool(row.get("job_id")) or row.get("platform") in _QUEUE_PLATFORMS
+
+
+def retry(user_id: str, handback_id: str) -> dict | None:
+    """The person sends a hand-back back to the queue without answering anything —
+    "the extension updated, let it try again". Same stamp the answers path sets, so the
+    queue and the extension's local dedup treat both the same way. None when the row is
+    not this user's or is already closed."""
+    res = (
+        get_supabase()
+        .table("handbacks")
+        .update({"requeued_at": datetime.now(UTC).isoformat()})
+        .eq("user_id", user_id)
+        .eq("id", handback_id)
+        .is_("resolved_at", "null")
+        .execute()
+    )
+    return (res.data or [None])[0]
 
 
 def open_urls(user_id: str, cap: int = 5000, waiting_only: bool = False) -> list[str]:
@@ -151,21 +191,21 @@ def open_urls(user_id: str, cap: int = 5000, waiting_only: bool = False) -> list
     list_open() is the dashboard's read and stops at 100 rows; past that the oldest
     hand-backs fell out of the exclusion and were re-opened every night.
 
-    `waiting_only` leaves out rows the person already answered (`requeued_at` set): those
-    are meant to run again, with the answers — and rows an OLDER extension build left
-    behind. A hand-back says "this build cannot finish the form"; once the user runs a
-    newer build that sentence is unproven. 10-02: 1.8.30 taught the Greenhouse filler
-    pay/school/state, and 8 of Igor's GH hand-backs would have waited on him forever
-    for questions the extension can now answer. The newer build gets one try: if it
-    hands the job back again, add() re-stamps the row and it waits again — no loop.
+    `waiting_only` leaves out rows the person sent back to the queue (`requeued_at` set:
+    they answered its questions, or pressed "try again" after an extension update) —
+    those are meant to run again.
+
+    A newer build never re-opens a hand-back by itself (Igor, 10-02): the person may have
+    finished it by hand without pressing "done", and a second submit to the same posting
+    is worse than a form left waiting. The update offers the retry (`newer_build` in
+    list_open); the person decides.
     """
-    version, seen_at = _current_build(user_id) if waiting_only else (None, None)
 
     def build(start: int, end: int):
         q = (
             get_supabase()
             .table("handbacks")
-            .select("url, ext_version, created_at" if waiting_only else "url")
+            .select("url")
             .eq("user_id", user_id)
             .is_("resolved_at", "null")
         )
@@ -173,10 +213,7 @@ def open_urls(user_id: str, cap: int = 5000, waiting_only: bool = False) -> list
             q = q.is_("requeued_at", "null")
         return q.order("created_at", desc=True).order("id").range(start, end)
 
-    rows = fetch_paged(build, cap)
-    if waiting_only:
-        rows = [r for r in rows if not _left_by_older_build(r, version, seen_at)]
-    return [r["url"] for r in rows if r.get("url")]
+    return [r["url"] for r in fetch_paged(build, cap) if r.get("url")]
 
 
 def _current_build(user_id: str) -> tuple[str | None, str | None]:
@@ -208,6 +245,7 @@ def _when(ts: str | None) -> datetime | None:
 
 
 def _left_by_older_build(row: dict, version: str | None, seen_at: str | None) -> bool:
+    """Was this hand-back written by a build other than the one running now?"""
     if not version:
         return False
     if row.get("ext_version"):
