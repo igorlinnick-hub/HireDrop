@@ -55,15 +55,6 @@ def get_job_by_id(user_id: str, job_id: str) -> dict | None:
     return res.data[0] if res.data else None
 
 
-def job_exists(user_id: str, link: str) -> bool:
-    if not link:
-        return False
-    res = (
-        get_supabase().table("jobs").select("id").eq("user_id", user_id).eq("link", link).execute()
-    )
-    return len(res.data) > 0
-
-
 def save_job(
     user_id: str,
     title: str,
@@ -214,7 +205,7 @@ def all_links(user_id: str, limit: int = 20000) -> set:
 
 def existing_links(user_id: str, links: list) -> set:
     """Which of these links are already saved — chunked IN-queries (40 links each)
-    instead of one job_exists round-trip per link. Chunked because PostgREST puts
+    instead of one round-trip per link. Chunked because PostgREST puts
     the IN-list into the URL and job links run long."""
     links = [link for link in links if link]
     out: set = set()
