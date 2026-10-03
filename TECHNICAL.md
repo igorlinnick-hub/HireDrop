@@ -475,26 +475,15 @@ PLATFORMS["newplatform"] = NewPlatform
 
 ## Job Filtering
 
-**Module:** `modules/filters.py`
+There is no single filter module (the old `modules/filters.py` was dead code and is gone).
+Filtering happens in three places:
 
-**Input:** Raw list of job dicts from scrapers
-**Output:** Filtered list (no duplicates, matching keywords)
-
-### Filter chain:
-
-1. **Deduplication** — `job_exists(link)` checks if URL already in DB
-2. **Keyword match** — At least one keyword must appear in: `title` + `tags` + `description` (case-insensitive)
-3. **Location filter** — If user wants "remote", skip jobs with explicit non-remote locations
-4. **Job type filter** — If user set a preference, skip non-matching types
-
-```python
-def filter_jobs(jobs):
-    profile = load_profile()
-    keywords = [k.lower() for k in profile.get("keywords", [])]
-    # ... filters applied sequentially
-```
-
-**Important:** Keywords use `any()` match (OR logic) — a job matches if it contains ANY of the keywords.
+- **Dedup** — `app.db.jobs.existing_links()`: one IN-query per 40 links (`app/routers/jobs.py`).
+- **At harvest** — `modules/platforms/ats_boards.py` applies `modules/job_location.location_verdict`
+  (country gate: "remote" is not a country) and `modules/job_type.detect_job_type`.
+- **At show** — the pool is an archive, so `app/routers/jobs.py` filters again on every read:
+  `location_verdict`, `modules/salary_filter.py` (`passes_salary` / `filter_by_salary`), and the
+  fit score against `ai_fit_judge.mode_threshold` in `fit_queue.build_queue`.
 
 ---
 

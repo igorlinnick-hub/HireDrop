@@ -47,7 +47,7 @@ def get_profile(user=Depends(get_current_user)):
     return profile_db.get_profile(user.id)
 
 
-# Fields the DB layer writes only when the caller supplies them. `profile.dict()` fills
+# Fields the DB layer writes only when the caller supplies them. `profile.model_dump()` fills
 # every unset field with its default (""), which would let a partial save — the search
 # preferences card, say — silently blank the address or the LinkedIn URL the user entered
 # on another card. Drop the ones the client never sent.
@@ -71,7 +71,7 @@ _OPTIONAL_PROFILE_FIELDS = (
 
 @router.post("/profile")
 def update_profile(profile: ProfileUpdate, user=Depends(get_current_user)):
-    payload = profile.dict()
+    payload = profile.model_dump()
     sent = profile.model_dump(exclude_unset=True)
     for key in _OPTIONAL_PROFILE_FIELDS:
         if key not in sent:
