@@ -67,7 +67,7 @@
 
 ## Следующий шаг
 
-Модель: **Opus**. 1) 1.8.31 живая. 2) Прогон Indeed (объявить jobflow-2f, «давай» Игоря уже было) → строки `🧾 sdr` и доля подач.
+Модель: **Opus**. 1) 1.8.31 живая. 2) Прогон Indeed на 1.8.31 — после окна GH-замера jobflow-48 (до ~23:15Z 10-03); объявить соседям, «давай» Игоря уже было) → строки `🧾 sdr` и доля подач.
 3) Вопрос Игорю про неотвеченные хендбэки (выше). 4) Починить `drive.py` для `/dashboard/campaign`.
 
 Файлы лейна: `chrome-extension/content.js` (preferIndeedResume/structuredReviewSnapshot ~L3860, step loop ~L4325), `background.js` forgetHandedBackFromApplied ~L1059, `tests/indeed-resume-choice.test.js`, `tests/applied-rollback.test.js`, `chrome-extension/content.js` (formBlockers ~L3500, fillTextQuestions ~L2990,
