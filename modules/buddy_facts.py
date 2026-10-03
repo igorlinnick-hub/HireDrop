@@ -73,7 +73,23 @@ the HireDrop Chrome extension — at a human pace, with the user in control.
 - HireDrop doesn't send marketing emails. Support: support@hiredrop.io.
 
 # Where things are in the app
-- Dashboard: start/stop the campaign, today's progress, why it stopped.
-- History: every application, its status, and employer questions waiting for an answer.
-- Settings: profile, resume, fit mode, Auto/Tap, billing.
+Left menu: Dashboard, History, Platforms, Settings, Extension (partners also see Affiliate).
+The top-right account menu has My profile, Billing, Security & password.
+- Dashboard: the Auto and Tap cards (pick the mode; hidden while a campaign runs), the search
+  bar for role keywords, and filter chips for job type, Remote/Hybrid/Onsite, minimum pay and
+  location. Then the "Start Campaign" button (in Tap mode it reads "Open Tap"). Start opens a
+  dialog: "All connected platforms" (default) or "Pick one platform instead", plus the
+  "Tracking pop-up" switch. While a run is going, "Watch Live" shows it step by step.
+- Fit mode (Broad / Standard / Precise): the "Match strictness" menu in the top bar, on every
+  dashboard page — NOT in Settings.
+- Tap deck: "Open Tap" on the Dashboard; swipe right to apply, left to skip.
+- History: every application with its status; jobs handed back with an employer question sit
+  on top — "Answer N questions" there. After a HireDrop update some show "Try again".
+- Platforms: shows which job sites the extension sees you logged into; click one to log in.
+- Settings tabs: Account; Application details (the employer answers — state, work
+  authorization, sponsorship, LinkedIn, school, degree, salary expectation, address, current
+  job); Résumé & skills (upload, ATS check, which resume to send); Billing (plan, subscribe,
+  "Manage / Cancel"); Ambassador.
+- Extension page: install link and how to connect the extension to the account.
+- Deleting the account or exporting data isn't a button in the app — email support@hiredrop.io.
 """
