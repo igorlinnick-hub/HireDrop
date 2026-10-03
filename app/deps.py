@@ -8,8 +8,15 @@ from app.db import extension_keys as ext_keys_db
 from app.db.client import get_supabase
 
 
-async def get_current_user(authorization: str = Header(...)):
+def get_current_user(authorization: str = Header(...)):
     """Resolve the caller from a Bearer credential.
+
+    Plain `def`, not `async def`, on purpose: both paths below are BLOCKING network
+    calls (supabase-py is sync). FastAPI runs an async dependency on the event loop,
+    so every request's token check froze its whole worker for one Supabase round-trip
+    — with 2 uvicorn workers, auth was serialised across all traffic (8 concurrent
+    requests with a 0.3 s check: 2.45 s async vs 0.31 s def). A sync dependency runs
+    in the threadpool. tests/test_deps_threadpool.py keeps it that way.
 
     Two accepted credentials, both returning the same user shape (`.id`, `.email`):
     - Durable extension API key ("hd_…", Approach A) — the extension's non-rotating
