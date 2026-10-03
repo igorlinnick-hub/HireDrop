@@ -1,6 +1,6 @@
 # daily-30 — живой список заранее оценённых вакансий
 
-Обновлено: 2026-10-02 · ветка: main (повторный замер GH на 1.8.30 — jobflow-2f)
+Обновлено: 2026-10-03 · ветка: main (GH-прогон 10-03 не стартовал — jobflow-48)
 
 ## Состояние
 - **Шаг 1 в проде (#286):** `modules/fit_queue.py` судит ATS-строки пула ЗАРАНЕЕ, вердикт в
@@ -20,6 +20,15 @@
   → «Fit you today»; Tap больше не мешает платформы и не пересортирует — порядок сервера.
 - Решения Игоря — память `project_daily_30_shortlist` (подпись «N fit you today» без «из 30»,
   порядок = свежесть, Indeed в том же списке без счёта).
+
+## Попытка 10-03 (jobflow-48) — прогон НЕ стартовал
+- 22:42Z `drive.py run auto --platform greenhouse`: в Chrome не было окна hiredrop.io в профиле
+  Игоря (Profile 3) → драйвер открыл новое окно в дефолтном профиле → `/onboarding`, без
+  `data-testid` → ERROR. Окно закрыто, соседям сказано «Chrome свободен». Ничего не подано.
+- Пинг расширения молчал с 2026-10-02 21:48Z (>24 ч) — профиль Игоря, видимо, закрыт.
+- `~/Desktop/HireDrop-Ext/content.js` снова был `dataless` (iCloud); `sync-ext.sh` догидрировал,
+  0 dataless-файлов после. Перед следующим прогоном снова `find ~/Desktop/HireDrop-Ext -flags dataless`.
+- «Try again» Игорь не нажимал: requeued-хендбэков 0, ждут 11.
 
 ## Последний заход (10-02 вечер, jobflow-2f)
 - **Повторный GH-замер на 1.8.30 (#318):** 09:33–09:38Z, `run_history.py --since/--until`:
@@ -99,9 +108,9 @@
   перепоставить в очередь — им сказано.
 
 ## Следующий шаг
-Ext 1.8.31 (#320) живой у Игоря (10-02). Повторить
-`drive.py run auto --minutes 25 --platform greenhouse` (с «давай» Игоря, объявить соседям), снять
-`run_history.py --email igor.linnick@gmail.com --since <start> --until <end>` и сравнить с
-GH-базой 21.0 мин/попытку. Бывшие хендбэки вернутся в очередь, только если Игорь нажмёт
-«Try again» в History (ext 1.8.31 = #320 тогда снимет их локальную отметку «подано»); без этого
-очередь GH ≈ 4 свежих строки. Модель — `opus`.
+Ждём Игоря: (1) открыть hiredrop.io/dashboard в своём профиле Chrome (Profile 3, где расширение);
+(2) по желанию — «Try again» в History на GH-хендбэках, которые он не отправлял сам; (3) «давай».
+Затем: проверить пинг 1.8.31 свежий и `find ~/Desktop/HireDrop-Ext -flags dataless` = 0, объявить
+соседним jobflow-сессиям, `drive.py run auto --minutes 25 --platform greenhouse`, снять
+`run_history.py --email igor.linnick@gmail.com --since <start> --until <end>`, сравнить с GH-базой
+21.0 мин/попытку. Без «Try again» очередь GH ≈ 4 свежих строки. Модель — `opus`.
