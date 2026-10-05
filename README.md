@@ -56,12 +56,11 @@ chrome-extension/          Manifest V3 extension that drives Indeed
 ├── manifest.json
 ├── background.js          Service worker, API gateway for content.js
 ├── content.js             Three-phase auto-apply state machine + anti-detect
-├── anti_detect/           UA pool + fingerprint helpers (Phase 5)
 └── popup.{html,js}        Status UI
 
 tests/                     pytest smoke + unit tests
-supabase-schema-v3.sql     DB migrations (idempotent, applied via Management API)
-SUPABASE_MIGRATION_v3.md   Runbook for the schema-v3 migration
+supabase-schema-v3.sql     May 2026 schema SNAPSHOT — history, not the current schema
+migrations/                The schema as it is: SQL applied in order (see CLAUDE.md)
 pyproject.toml             ruff + pyright + pytest config
 ```
 
@@ -125,7 +124,7 @@ pyright app modules  # type check (informational)
 - **Backend**: Railway auto-deploys on every push to `main`. `Procfile` runs `uvicorn app.main:app`. Env vars in Railway dashboard.
 - **Frontend**: Vercel auto-deploys `igorlinnick-hub/hiredrop-website` (separate repo).
 - **Extension**: load unpacked from `chrome-extension/` for development. Distribution via Chrome Web Store on release.
-- **Schema migrations**: SQL in `supabase-schema-vN.sql`. Apply via Management API (PAT in `.env` as `SUPABASE_PAT`) — see `SUPABASE_MIGRATION_v3.md`.
+- **Schema migrations**: one SQL file per change in `migrations/`, applied with `supabase db query --linked -f` (see CLAUDE.md «Стиль»). `supabase-schema-v3.sql` is a May snapshot; its runbook is `docs/archive/SUPABASE_MIGRATION_v3.md`.
 
 ## Anti-detect (Phase 5)
 

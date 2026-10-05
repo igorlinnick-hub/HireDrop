@@ -1,3 +1,8 @@
+-- ⚠️ SNAPSHOT, May 2026 — NOT the current schema. 48+ files in migrations/ have been
+-- applied on top since; the live schema is this file + migrations/ in order (or ask the
+-- database). Kept because code comments point at its blocks (e.g. PR 3.5 in app/db/resume.py).
+-- Do not re-run it to "fix" a table.
+--
 -- HireDrop Phase 3+4 — Supabase schema v3
 -- Run this in: Supabase Dashboard → SQL Editor → New query → paste → Run.
 -- Idempotent: safe to re-run, all CREATEs use IF NOT EXISTS.
