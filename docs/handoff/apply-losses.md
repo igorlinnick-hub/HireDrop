@@ -1,6 +1,6 @@
 # apply-losses — где теряются подачи: хендбэки, потерянные записи, вход в Indeed
 
-Обновлено: 2026-10-05 · ветка: main (#333 1.8.32 84ae853 смержен, синкнут на Рабочий стол; в Chrome подхватится релоадом драйвера перед прогоном)
+Обновлено: 2026-10-05 23:45Z · ветка: main (#335 1.8.33 1e28be9 смержен и синкнут; в Chrome — релоадом драйвера)
 
 ## Состояние
 
@@ -29,6 +29,25 @@
 - Раздел content.js с jobflow-9f: его #307 (смержен, 7e69156) — `collectUnfilledRequired` +
   гейт email-кода GH. Остальной заполнитель — этот лейн. jobflow-8f — сервер/очередь (#306:
   очередь пропускает открытые хендбэки).
+
+## Заход 10-05 (поздний): причина review-module найдена
+
+- **Прогон Indeed на 1.8.32** (22:59–23:35Z): открыто 12, подано 8, **4.5 мин/заявку, 13.3/ч**.
+  review-module: 8 SUBMIT, **9 no-button**.
+- **Гипотеза #333 (fixed-кнопка) НЕ подтвердилась**: `🔘` на отказах — Submit в DOM нет вовсе
+  (только навигация, «Save and close», «Report an issue», фиксированное мобильное меню).
+  Правка #333 безвредна и остаётся.
+- **Настоящая причина — ожидание**: ветка no-button ждала `waitForFormReady(12000)`, а та отвечает
+  «готово» на ЛЮБОЙ input в каркасе страницы → ожидание длилось ~1 с (FORM DIAG → abandoned в ту же
+  секунду). В успешных визитах Submit появлялся на 2–8-й секунде; черновик A&J Chiropractic брошен
+  в 21:37 и подан в 22:59.
+- **#335 (смержен, 1e28be9) ext 1.8.33**: `waitForFormButton(15000)` — ждём саму кнопку; строка
+  `⏳ button appeared after Ns` при спасении шага; в `🔘` добавлены `heads=[…]` (h1/h2/alert).
+  Тест `tests/review-wait-button.test.js` (каркас с input, Submit через 1.5 с), сьюта 32/32.
+- Новое: 2 no-button на `contact-info-module` (LeafHome, Church Without Walls) — смотреть после 1.8.33.
+- `drive.py` (bc50b54): исход прошлой кампании (`outcome=stopped_by_user`, пустой run-started) драйвер
+  принял за конец новой на 1-й секунде и не нажал Stop. Теперь исход засчитывается только со
+  штампом старта. Корень на сайте: `CampaignView.tsx:457` (`!runStartedTs ||`) — владелец лейна сайта.
 
 ## Последний заход (10-05)
 
@@ -90,13 +109,11 @@
 
 ## Следующий шаг
 
-Модель: **Opus**. 1) По «давай» Игоря: прогон Indeed на 1.8.32 (`drive.py run auto --minutes 25`)
-→ доля review-module SUBMIT vs no button; на каждый no-button читать строку `🔘` — если там
-`fx:fixed` без `op`-проблем, гипотеза не та; если `iframes>0`/`shadows>0` — Submit вне досягаемости
-querySelectorAll. 2) Следом GH-замер (передан от jobflow-12/daily-30): `drive.py run auto --minutes 25
---platform greenhouse`, мерить строго окном прогона; база GH 21.0 мин/попытку (n=7).
-3) Вернуть tailored PDF на Indeed — когда `🧾 sdr` покажет, чего ждёт шаг.
+Модель: **Opus**. 1) GH-замер на 1.8.33 запущен 23:4xZ (итог — в ответе сессии/следующем заходе).
+2) По «давай» Игоря: Indeed на 1.8.33 — доля review-module SUBMIT/no-button; строки `⏳` = спасённые
+шаги, оставшиеся `🔘 heads=` скажут, что это за страницы. 3) contact-info-module no-button.
+4) Вернуть tailored PDF на Indeed — когда `🧾 sdr` покажет, чего ждёт шаг.
 
-Файлы лейна: `chrome-extension/content.js` (isShownControl/buttonCensus после findFormButtonIn ~L3970, preferIndeedResume/structuredReviewSnapshot ~L3860, step loop ~L4325), `background.js` forgetHandedBackFromApplied ~L1059, `tests/indeed-resume-choice.test.js`, `tests/applied-rollback.test.js`, `chrome-extension/content.js` (formBlockers ~L3500, fillTextQuestions ~L2990,
+Файлы лейна: `chrome-extension/content.js` (waitForFormButton перед waitForFormReady; isShownControl/buttonCensus после findFormButtonIn ~L3970; no-button ветка ~L4690, preferIndeedResume/structuredReviewSnapshot ~L3860, step loop ~L4325), `background.js` forgetHandedBackFromApplied ~L1059, `tests/indeed-resume-choice.test.js`, `tests/applied-rollback.test.js`, `chrome-extension/content.js` (formBlockers ~L3500, fillTextQuestions ~L2990,
 pay/school helpers перед isDemographicQuestion, fillComboboxes, fillCheckboxes),
 `background.js` ATS_JOB_FAILED, `tests/form-blockers.test.js`, `tests/filler-honest.test.js`.
