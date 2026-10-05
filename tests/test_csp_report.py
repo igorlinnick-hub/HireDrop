@@ -35,6 +35,38 @@ def _post(client, body, ctype="application/csp-report"):
     return client.post(URL, content=body, headers={"content-type": ctype})
 
 
+def test_source_file_is_logged_as_origin(client, capsys):
+    body = json.dumps(
+        {
+            "csp-report": {
+                "document-uri": "https://hiredrop.io/dashboard/settings",
+                "blocked-uri": "data",
+                "effective-directive": "connect-src",
+                "source-file": "https://hiredrop.io/_next/static/chunks/abc.js?v=1",
+            }
+        }
+    )
+    _post(client, body)
+    err = capsys.readouterr().err
+    assert "blocked=data doc=/dashboard/settings src=https://hiredrop.io" in err
+
+
+def test_extension_script_on_our_page_is_dropped(client, capsys):
+    body = [
+        {
+            "type": "csp-violation",
+            "body": {
+                "documentURL": "https://hiredrop.io/dashboard/settings",
+                "blockedURL": "data",
+                "effectiveDirective": "connect-src",
+                "sourceFile": "chrome-extension://kbfnbcaeplbcioakkpcpgfkobkghlhen/inject.js",
+            },
+        }
+    ]
+    _post(client, json.dumps(body), "application/reports+json")
+    assert "[csp]" not in capsys.readouterr().err
+
+
 def test_legacy_report_logs_origin_and_path_only(client, capsys):
     r = _post(client, _legacy("https://evil.example/x.js?token=abc"))
     assert r.status_code == 204
@@ -67,10 +99,10 @@ def test_same_violation_logged_once_then_counted(client, capsys):
     for _ in range(5):
         _post(client, _legacy("https://x.example/a.js"))
     assert capsys.readouterr().err.count("[csp]") == 1
-    first, swallowed = csp._seen["script-src-elem https://x.example /dashboard"]
+    first, swallowed = csp._seen["script-src-elem https://x.example /dashboard "]
     assert swallowed == 4
     # An hour later the next report logs again, carrying the count.
-    csp._seen["script-src-elem https://x.example /dashboard"] = (first - 3601, swallowed)
+    csp._seen["script-src-elem https://x.example /dashboard "] = (first - 3601, swallowed)
     _post(client, _legacy("https://x.example/a.js"))
     assert "(+4 in the last hour)" in capsys.readouterr().err
 
