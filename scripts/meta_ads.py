@@ -251,7 +251,9 @@ class Graph:
         if r.status_code >= 400 or "error" in body:
             err = body.get("error", {})
             detail = err.get("error_user_msg") or err.get("message") or str(body)[:300]
-            raise MetaError(f"{err.get('type', 'Error')} {err.get('code', r.status_code)}: {detail}")
+            raise MetaError(
+                f"{err.get('type', 'Error')} {err.get('code', r.status_code)}: {detail}"
+            )
         return body
 
     def get(self, path: str, **params) -> dict:
@@ -260,12 +262,16 @@ class Graph:
 
     def post(self, path: str, payload: dict, files: dict | None = None) -> dict:
         # Graph takes nested objects as JSON strings in form fields.
-        data = {k: json.dumps(v) if isinstance(v, (dict, list)) else str(v) for k, v in payload.items()}
+        data = {
+            k: json.dumps(v) if isinstance(v, (dict, list)) else str(v) for k, v in payload.items()
+        }
         data["access_token"] = self.token
         return self._check(self.http.post(f"{self.base}/{path}", data=data, files=files))
 
     def delete(self, object_id: str) -> dict:
-        return self._check(self.http.delete(f"{self.base}/{object_id}", params={"access_token": self.token}))
+        return self._check(
+            self.http.delete(f"{self.base}/{object_id}", params={"access_token": self.token})
+        )
 
 
 def graph() -> Graph:
@@ -277,7 +283,9 @@ def graph() -> Graph:
 
 def upload_image(g: Graph, account: str, path: Path) -> str:
     with path.open("rb") as fh:
-        body = g.post(f"act_{account}/adimages", {}, files={"filename": (path.name, fh, "image/png")})
+        body = g.post(
+            f"act_{account}/adimages", {}, files={"filename": (path.name, fh, "image/png")}
+        )
     images = body.get("images") or {}
     if not images:
         raise MetaError(f"adimages: no hash for {path.name}: {body}")
@@ -299,7 +307,9 @@ def upload_video(g: Graph, account: str, path: Path) -> str:
         if status == "error":
             raise MetaError(f"video {path.name} ({video_id}) failed processing")
         if time.monotonic() > deadline:
-            raise MetaError(f"video {path.name} ({video_id}) not ready after {VIDEO_READY_TIMEOUT_SECONDS}s")
+            raise MetaError(
+                f"video {path.name} ({video_id}) not ready after {VIDEO_READY_TIMEOUT_SECONDS}s"
+            )
         time.sleep(5)
 
 
@@ -321,7 +331,13 @@ def cmd_whoami(args) -> int:
         f"act_{spec['account_id']}",
         fields="name,account_status,currency,timezone_name,disable_reason,funding_source_details",
     )
-    status = {1: "ACTIVE", 2: "DISABLED", 3: "UNSETTLED", 7: "PENDING_RISK_REVIEW", 9: "IN_GRACE_PERIOD"}
+    status = {
+        1: "ACTIVE",
+        2: "DISABLED",
+        3: "UNSETTLED",
+        7: "PENDING_RISK_REVIEW",
+        9: "IN_GRACE_PERIOD",
+    }
     print(
         f"ad account : {acct.get('name')} act_{spec['account_id']} "
         f"{status.get(acct.get('account_status'), acct.get('account_status'))} "
@@ -329,15 +345,22 @@ def cmd_whoami(args) -> int:
         f"funding={'yes' if acct.get('funding_source_details') else 'NO'}"
     )
     pixel = g.get(str(spec["pixel_id"]), fields="name,last_fired_time")
-    print(f"pixel      : {pixel.get('name')} {spec['pixel_id']} last fired {pixel.get('last_fired_time')}")
-    pages = g.get("me/accounts", fields="id,name,instagram_business_account{id,username}").get("data") or []
+    print(
+        f"pixel      : {pixel.get('name')} {spec['pixel_id']} last fired {pixel.get('last_fired_time')}"
+    )
+    pages = (
+        g.get("me/accounts", fields="id,name,instagram_business_account{id,username}").get("data")
+        or []
+    )
     if spec.get("business_id"):
         owned = g.get(f"{spec['business_id']}/owned_pages", fields="id,name").get("data") or []
         known = {p["id"] for p in pages}
         pages += [p for p in owned if p["id"] not in known]
     for p in pages:
         ig = p.get("instagram_business_account") or {}
-        print(f"page       : {p['name']} id={p['id']} instagram={ig.get('username')} ig_id={ig.get('id')}")
+        print(
+            f"page       : {p['name']} id={p['id']} instagram={ig.get('username')} ig_id={ig.get('id')}"
+        )
     if not pages:
         print("page       : NONE visible to this token — give the system user the HireDrop page")
     print(f"spec page_id={spec.get('page_id')} instagram_user_id={spec.get('instagram_user_id')}")
@@ -350,7 +373,11 @@ def cmd_plan(args) -> int:
     print("adset   :", json.dumps(adset_payload(spec, "<campaign_id>"), indent=2))
     for ad in spec["ads"]:
         on = ad.get("enabled", True)
-        files = {k: ad[k] for k in ("feed_image", "story_image", "feed_video", "story_video") if ad.get(k)}
+        files = {
+            k: ad[k]
+            for k in ("feed_image", "story_image", "feed_video", "story_video")
+            if ad.get(k)
+        }
         missing = [v for v in files.values() if not (Path(spec["_dir"]) / v).is_file()]
         print(f"\nad {ad['name']} — {'ENABLED' if on else 'disabled (skipped by build)'}")
         print(f"  files   : {files}{'  MISSING: ' + ', '.join(missing) if missing else ''}")
@@ -366,7 +393,9 @@ def cmd_build(args) -> int:
     spec_path = Path(args.spec)
     spec = load_spec(spec_path)
     if not spec.get("page_id"):
-        raise SystemExit("spec has no page_id — run `whoami` and put the HireDrop page id into the spec")
+        raise SystemExit(
+            "spec has no page_id — run `whoami` and put the HireDrop page id into the spec"
+        )
     g = graph()
     acct = spec["account_id"]
     state = load_state(spec_path)
@@ -379,7 +408,9 @@ def cmd_build(args) -> int:
         remember()
         print(f"campaign created  {state['campaign_id']}")
     if not state.get("adset_id"):
-        state["adset_id"] = g.post(f"act_{acct}/adsets", adset_payload(spec, state["campaign_id"]))["id"]
+        state["adset_id"] = g.post(f"act_{acct}/adsets", adset_payload(spec, state["campaign_id"]))[
+            "id"
+        ]
         remember()
         print(f"ad set created    {state['adset_id']}")
 
@@ -454,7 +485,9 @@ def cmd_teardown(args) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
     for name in ("whoami", "plan", "build", "status", "teardown"):
         p = sub.add_parser(name)

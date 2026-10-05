@@ -43,11 +43,16 @@ def test_adset_optimises_for_registration_with_advantage_placements():
     p = m.adset_payload(SPEC, "c1")
     assert p["status"] == "PAUSED"
     assert p["campaign_id"] == "c1"
-    assert p["promoted_object"] == {"pixel_id": "1113284891046203", "custom_event_type": "COMPLETE_REGISTRATION"}
+    assert p["promoted_object"] == {
+        "pixel_id": "1113284891046203",
+        "custom_event_type": "COMPLETE_REGISTRATION",
+    }
     assert p["optimization_goal"] == "OFFSITE_CONVERSIONS"
     assert p["targeting"]["geo_locations"] == {"countries": ["US"]}
     # Employment category: no age/gender/ZIP narrowing, and no hand-picked placements.
-    assert not {"age_min", "age_max", "genders", "zips", "publisher_platforms"} & set(p["targeting"])
+    assert not {"age_min", "age_max", "genders", "zips", "publisher_platforms"} & set(
+        p["targeting"]
+    )
 
 
 def test_image_pair_becomes_one_ad_with_vertical_rule_first():
