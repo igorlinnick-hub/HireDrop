@@ -1,6 +1,6 @@
 # apply-losses — где теряются подачи: хендбэки, потерянные записи, вход в Indeed
 
-Обновлено: 2026-10-02 · ветка: main (#318 1.8.30 живая; #320 1.8.31 f7aadf3 живая в Chrome, пинг 1.8.31)
+Обновлено: 2026-10-05 · ветка: main (#333 1.8.32 84ae853 смержен, синкнут на Рабочий стол; в Chrome подхватится релоадом драйвера перед прогоном)
 
 ## Состояние
 
@@ -30,7 +30,30 @@
   гейт email-кода GH. Остальной заполнитель — этот лейн. jobflow-8f — сервер/очередь (#306:
   очередь пропускает открытые хендбэки).
 
-## Последний заход (10-02)
+## Последний заход (10-05)
+
+- **Прогон Indeed на 1.8.31** (21:37–22:03Z, `run_history.py --since/--until`): открыто 7, подано 2,
+  **12.5 мин/заявку, 4.8/ч** (база 18.9). Потери до формы: fit gate 19, title mismatch 9.
+- **#320 работает**: 1 отказ structured-data-review на загруженном PDF (21:44, Bowtech) → дальше
+  везде `filled=[indeed-resume]`, SDR больше не встретился. Строка `🧾 sdr resume=file badges=[]`
+  — бейджей нет, действия только Add/Edit/Remove: чего ждёт шаг, всё ещё не видно.
+- **Главная потеря Indeed теперь — последняя страница**: `review-module` → `btn="-" (none)` →
+  «Form abandoned without submit». 10-05: 10 из 12 дошедших до review; с 10-02 — 15 из 18
+  (подсчёт по STEP-строкам с `@…review-module`). Все шаги до неё заполнены.
+- **#333 (смержен, 84ae853) ext 1.8.32**: `isShownControl()` вместо `offsetParent !== null` в
+  `findFormButtonIn`/`isSubmitStep` — fixed-кнопка с меткой submit/continue/review/next и
+  реальной рамкой засчитывается (offsetParent = null у самого fixed-элемента). Закреплённый
+  «Apply for this job» по-прежнему не берётся. **Это гипотеза** — живую страницу снять не дали
+  (клик Apply на аккаунте Игоря заблокирован классификатором). Поэтому же на выходе no-button
+  пишется `🔘 @path iframes=N shadows=N btns=[testid:label[op,fx:fixed,box,off]…]` — следующий
+  прогон скажет, fixed это, iframe, shadow DOM или кнопки нет вовсе.
+  Тест `tests/review-submit-visible.test.js` (7 проверок падают на старом коде), сьюта 31/31.
+- `drive.py` (корень, a28021a): Playwright-Chrome соседа (`channel="chrome"`) перехватывает
+  AppleScript-цель «Google Chrome» → драйвер падал на 89-й секунде без Stop. Теперь ждёт окно 120 с
+  и отказывается стартовать, пока такой Chrome запущен.
+- В окне 639094017 осталась вкладка viewjob jk=55486472022d511e (закрыть не дал классификатор).
+
+## Заход 10-02
 
 - **Прогон Indeed на 1.8.30** (21:21–21:46Z, `/tools/run-report`): открыто 4, подано 1, хендбэк 3.
   **Все 3 = загружен PDF (`filled=[resume]`) → structured-data-intro → structured-data-review →
@@ -67,9 +90,13 @@
 
 ## Следующий шаг
 
-Модель: **Opus**. 1) 1.8.31 живая. 2) Прогон Indeed на 1.8.31 — после окна GH-замера jobflow-48 (до ~23:15Z 10-03); объявить соседям, «давай» Игоря уже было) → строки `🧾 sdr` и доля подач.
-3) Вопрос Игорю про неотвеченные хендбэки (выше). 4) Починить `drive.py` для `/dashboard/campaign`.
+Модель: **Opus**. 1) По «давай» Игоря: прогон Indeed на 1.8.32 (`drive.py run auto --minutes 25`)
+→ доля review-module SUBMIT vs no button; на каждый no-button читать строку `🔘` — если там
+`fx:fixed` без `op`-проблем, гипотеза не та; если `iframes>0`/`shadows>0` — Submit вне досягаемости
+querySelectorAll. 2) Следом GH-замер (передан от jobflow-12/daily-30): `drive.py run auto --minutes 25
+--platform greenhouse`, мерить строго окном прогона; база GH 21.0 мин/попытку (n=7).
+3) Вернуть tailored PDF на Indeed — когда `🧾 sdr` покажет, чего ждёт шаг.
 
-Файлы лейна: `chrome-extension/content.js` (preferIndeedResume/structuredReviewSnapshot ~L3860, step loop ~L4325), `background.js` forgetHandedBackFromApplied ~L1059, `tests/indeed-resume-choice.test.js`, `tests/applied-rollback.test.js`, `chrome-extension/content.js` (formBlockers ~L3500, fillTextQuestions ~L2990,
+Файлы лейна: `chrome-extension/content.js` (isShownControl/buttonCensus после findFormButtonIn ~L3970, preferIndeedResume/structuredReviewSnapshot ~L3860, step loop ~L4325), `background.js` forgetHandedBackFromApplied ~L1059, `tests/indeed-resume-choice.test.js`, `tests/applied-rollback.test.js`, `chrome-extension/content.js` (formBlockers ~L3500, fillTextQuestions ~L2990,
 pay/school helpers перед isDemographicQuestion, fillComboboxes, fillCheckboxes),
 `background.js` ATS_JOB_FAILED, `tests/form-blockers.test.js`, `tests/filler-honest.test.js`.
