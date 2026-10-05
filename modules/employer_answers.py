@@ -16,8 +16,8 @@ signed up before a question existed.
 School, degree and salary expectation joined on 2026-09-30, and not from the hand-back
 measurement: the first server-side walk stopped on "School" and met "What are your salary
 expectations?" on 4 of 8 forms. The night shift did not record its stops as hand-backs,
-so neither could have shown up in the numbers above. It records them now
-(scripts/night_shift/executor.py). The salary answer is the user's own words; the
+so neither could have shown up in the numbers above (the night shift is closed and its
+code removed since 2026-10-05). The salary answer is the user's own words; the
 `salary_min` search filter is only OFFERED as a starting point, never reused silently.
 
 Nothing here is guessed. Where the user's own resume already names the answer (latest

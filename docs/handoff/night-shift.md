@@ -50,6 +50,11 @@
 
 ## ⛔ ЛЕЙН ЗАКРЫТ 10-02 (Игорь): сервер ночью не заполняет формы вообще
 
+**10-05: код удалён** (решение Игоря): `scripts/night_shift/` + `tests/test_night_shift_{rules,walk}.py`.
+Восстановить: `git checkout 012fad5 -- scripts/night_shift tests/test_night_shift_rules.py tests/test_night_shift_walk.py`.
+Railway-сервис `night-shift` ещё в проекте (спит, `NS_LIVE=0`); его Dockerfile удалён — редеплой просто не соберётся.
+Удалить сервис — Игорь в консоли Railway.
+
 Ни живой подачи, ни разведки (dry-run заполнения). Формы заполняет и подаёт только расширение на
 машине юзера. `executor.py` и сервис `night-shift` на Railway (`NS_LIVE=0`) не запускать; код
 лежит как история. Ночной СБОР вакансий в пул (`sweep_loop`, `POOL_SWEEP_ENABLED`) — другое,
@@ -78,8 +83,8 @@
 
 Нет — лейн закрыт (см. ⛔ выше). Из «Сломано» живо только то, что касается расширения
 (Yes на «authorized to work in <любая страна>», No на «managed SMS programs») — это ext-лейну.
-Railway-сервис `night-shift` оставлен спящим (`NS_LIVE=0`, решение Игоря 10-02) — не удалять, не будить.
+Railway-сервис `night-shift` спит (`NS_LIVE=0`); код удалён 10-05 — сервис может удалить Игорь.
 
-Файлы лейна: `scripts/night_shift/{executor,common,ashby}.py`, `modules/ai_question_answer.py`
+Файлы лейна (код ночной смены удалён 10-05, остались общие): `modules/ai_question_answer.py`
 (отказы + `unattended`), `modules/job_location.py` (регионы), `app/db/{applications,handbacks}.py`,
-тесты `tests/test_night_shift_{rules,walk}.py`, `tests/test_screener_policy.py`.
+тест `tests/test_screener_policy.py`.
