@@ -1,80 +1,46 @@
-# Ads board (платная реклама: CAPI, траты, вкладка Ads)
+# Ads board (платная реклама: пиксель, CAPI, траты, сборка кампании)
 
-Обновлено: 2026-09-28 · ветка `feat/ads-board` (бэкенд). Параллельно: website-PR с пикселем и
-новыми ключами `profiles.attribution`.
+Обновлено: 2026-10-05 · ветка: main
 
 ## Состояние
 
-Тест Meta (FB+IG) + Google Search, $300–500/мес. Построено и покрыто тестами, **в проде ещё
-не включено**: миграция `ad_spend` не применена, env на Railway не заданы. До этого момента
-вкладка Ads показывает «—» с причиной вместо трат, а CAPI — полный no-op.
+- **Meta готова к запуску, кроме токена и видео.** Портфель Hiredrop 2022625988457757, аккаунт
+  HireDrop Ads 1672047784439131 (USD, Pacific/Honolulu, **оплата Visa подключена 10-04**), страница
+  HireDrop 1430549256789872, пиксель 1113284891046203, домен Verified, CAPI живой (Railway
+  `META_PIXEL_ID`/`META_CAPI_TOKEN`/`META_AD_ACCOUNT_ID`; `META_TEST_EVENT_CODE` убран).
+- **Датасет (10-04):** ИИ-сбор деталей страниц Off, allow list = `hiredrop.io`, авто-advanced
+  matching и автособытия Off. Пиксель живьём: `PageView` только на публичных страницах, на
+  /dashboard и /onboarding нет (SPA-утечку закрывает `disablePushState`). `CompleteRegistration` ещё
+  ни разу не приходил — новых регистраций с сайта не было.
+- **Кампания = спека** `../content-lab/ads/campaigns/meta-r1.json` (Leads → CompleteRegistration,
+  EMPLOYMENT, $8/день, US Advantage+, M1–M3 статика 4:5+9:16 включены, V1/V2 видео-слоты выключены).
+  Сборщик `scripts/meta_ads.py` (#328 в main): `whoami/plan/build/status/teardown`, всё PAUSED,
+  id созданного → `meta-r1.state.json` рядом со спекой. Включение — только Игорь в Ads Manager.
+  Ранбук (видео-требования, токен, день запуска): `../content-lab/ads/campaigns/README.md`.
+- Решения по вкладке Ads/вердиктам/каналам — без изменений, см. `app/ads/*`, ADS_PLAN §3–6.
 
-- **Meta CAPI** (`app/ads/meta_capi.py`): `StartTrial` `act_<user_id>` на ПЕРВУЮ заявку
-  (`/applications/save`), `Purchase` `pay_<invoice_id>` на каждый `invoice.paid` с деньгами
-  (после начисления аффилиатке). Пиксель сайта шлёт `CompleteRegistration` `reg_<user_id>`.
-  Только Meta-атрибутированные и без `ads_optout`; без `ua` не шлём (Meta требует
-  `client_user_agent` для website-событий). Поток-демон, 5с таймаут, никогда не бросает.
-- **Траты** → таблица `ad_spend` (platform, date, ad_id). Meta тянет сама вкладка (раз в час,
-  7 дней) или CLI; Google присылает Ads Script; остальное — `ads_spend.py add`.
-- **Вкладка Ads** (`_section_ads` в `app/routers/admin.py`, после Funnel): Spend, Budget used,
-  Paid-ad signups, Cost/signup, Activated, Cost/activation, Paying, CAC, ROAS; таблицы By channel
-  (с органикой), By ad (с вердиктом), Unmatched, Spend sources.
-- **Funnel починен**: «Connected extension» считает ЛЮДЕЙ (было 15/17 = 88% по строкам ключей,
-  стало 2/17 = 11.8%), «Started a campaign» (всегда 0 — `started_at` чистится на Stop) заменён на
-  «Sent first application» (2/17). Метрика `campaigns_started` → `first_application`;
-  `activation_rate` теперь = signup → первая заявка.
+## Последний заход
 
-## Решения
+- 10-04/05: проверил пиксель живьём (Safari, своё окно) и Events Manager; написал спеку + сборщик +
+  9 тестов (payload'ы: PAUSED, EMPLOYMENT, центы, событие пикселя, без age/gender/ZIP, правила
+  плейсментов, UTM). `plan` проверен офлайн; против живого API НЕ гонялся — нет токена.
+- Грабли: клики в настройках Meta через osascript режет auto-mode классификатор (читать можно) —
+  кликает Игорь. Events Manager в Safari грузится ~40 с, 01.10 не грузился вовсе. Окна Safari
+  создавать `make new document` → `set URL of current tab of window id N`.
 
-- **«Платил»** = succeeded Stripe charge за вычетом возвратов на customer, привязанном к юзеру
-  (`profiles.stripe_customer_id`, пишется на `checkout.session.completed`). НЕ
-  `subscription_tier` (промо пишет туда же, истёкшая подписка = free). Выручка на юзера — из того
-  же чтения Stripe (общий `_paid_charges` с секцией Revenue). Если Stripe не читается —
-  fallback: привязанный customer = платил, выручка `None`.
-- **Каналы**: `meta_paid` = source ∈ {facebook, fb, instagram, ig, meta} И paid-medium;
-  `google_paid` = gclid/gbraid/wbraid ИЛИ google + paid-medium; иначе `_source_of`. fbclid сам по
-  себе НЕ платный. Код — `app/ads/attribution.py`.
-- **Manual-траты** матчатся на сигнапы по `account_id` = utm_source (`--channel reddit`).
-- **Нет источника = `None` с причиной**, не 0. Meta настроена, но синк падает и строк нет —
-  тоже `None`. Google «подключён», когда скрипт хоть раз прислал строки.
-- **Вердикт** (`app/ads/verdict.py`, порядок важен): `wait` (spend < $20 и impr < 2000) →
-  `scale` (≥1 платящий с CAC ≤ потолка, или ≥2 активированных с cost/activation ≤ потолок/2) →
-  `kill` ($30+ без сигнапов; ≥2000 impr с CTR < 0.7%; $60+ с сигнапами, но 0 активаций) →
-  `keep`. Scale раньше kill осознанно: деньги важнее прокси (CTR). Потолок
-  `ADS_CAC_CEILING_USD` = 39 (месяц подписки).
+## Сломано / не доделано
 
-## Env на Railway
+- Нет `META_ADS_TOKEN` (Meta-приложение → system user → токен с `ads_management`+`ads_read`+
+  `pages_*`) — без него ни сборки кампании, ни трат на доске.
+- Instagram `@hiredrop.io` не привязан к портфелю — IG-показы пойдут от имени страницы.
+- Первый `build` может упереться в детали API (Advantage+ audience при EMPLOYMENT, формат
+  `asset_customization_rules`) — чинить по ответу Meta, спека/сборщик рассчитаны на перезапуск.
+- Night-shift закрыт 10-02 — дыра «StartTrial мимо /applications/save» больше не актуальна.
+- Google Ads не начат (ADS_PLAN §2 Google).
 
-| Переменная | Зачем |
-|---|---|
-| `META_PIXEL_ID`, `META_CAPI_TOKEN` | CAPI (токен из Events Manager → Settings → Conversions API) |
-| `META_TEST_EVENT_CODE` | опционально: события в Test Events, убрать после проверки |
-| `META_ADS_TOKEN`, `META_AD_ACCOUNT_ID` | Insights (system-user токен с `ads_read`; id с `act_` или без) |
-| `META_GRAPH_VERSION` | опционально, по умолчанию `v24.0` |
-| `ADS_INGEST_TOKEN` | секрет для Google Ads Script (`openssl rand -hex 24`) |
-| `ADS_MONTHLY_BUDGET_USD` | по умолчанию 500 |
-| `ADS_CAC_CEILING_USD` | по умолчанию 39 |
+## Следующий шаг
 
-## UTM-конвенция (ключ связи трат и сигнапов = utm_content = id объявления)
-
-- Meta, URL parameters: `utm_source=facebook&utm_medium=paid_social&utm_campaign={{campaign.id}}&utm_content={{ad.id}}&utm_term={{adset.id}}`
-- Google, tracking template: `{lpurl}?utm_source=google&utm_medium=cpc&utm_campaign={campaignid}&utm_content={creative}&utm_term={keyword}` + auto-tagging (gclid)
-
-## Как подключить
-
-1. Миграция: `migrations/2026-09-28_ad_spend.sql` (оркестратор) → `notify pgrst, 'reload schema'`.
-2. Meta: env выше → открыть борд (синк сам) или `scripts/ads_spend.py sync-meta --days 7`;
-   CAPI проверить через `META_TEST_EVENT_CODE` в Events Manager → Test Events.
-3. Google: `ADS_INGEST_TOKEN` на Railway → вставить `scripts/google_ads_spend.js` в Google Ads →
-   Tools → Scripts, вписать токен, Preview (лог «HTTP 200»), расписание Daily.
-4. `scripts/ads_spend.py status` — что подключено и когда синкалось.
-
-## Открытые вопросы
-
-- Night-shift (`scripts/night_shift/executor.py`) пишет заявки мимо `/applications/save` —
-  первая заявка через него `StartTrial` не шлёт.
-- Meta `clicks` = все клики (не link clicks) — CTR-порог 0.7% считается по ним; при желании
-  перейти на `inline_link_clicks`.
-- Hellometrix-карточка метрики до мержа его ветки `a9914b8` («missing number renders as a dash»)
-  рисует `None` как 0; в таблицах `None` уже «—».
-- Когорта: траты периода делятся на сигнапы периода; платящие/активация — «к сегодняшнему дню».
+Модель: **Opus**. 1) Игорь кладёт токен в буфер → `pbpaste` в `.env` + Railway `META_ADS_TOKEN`
+→ `git -C jobflow pull` (сборщик в main) → `meta_ads.py whoami` → `build` → `status`.
+2) Видео Игоря → `../content-lab/ads/creatives/R2-video/V<n>_1080x1920.mp4`, копирайт под угол,
+`enabled: true`, `build`. 3) Тестовая регистрация с Meta-UTM (ADS_PLAN §7) → Игорь включает кампанию.
