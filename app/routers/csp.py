@@ -83,6 +83,7 @@ def _violations(payload) -> list[dict]:
                 "effectiveDirective": r.get("effective-directive") or r.get("violated-directive"),
                 "blockedURL": r.get("blocked-uri"),
                 "documentURL": r.get("document-uri"),
+                "sourceFile": r.get("source-file"),
                 "disposition": r.get("disposition"),
             }
         ]
@@ -97,8 +98,8 @@ def _violations(payload) -> list[dict]:
     return []
 
 
-def _log_once(directive: str, blocked: str, path: str) -> None:
-    key = f"{directive} {blocked} {path}"
+def _log_once(directive: str, blocked: str, path: str, source: str) -> None:
+    key = f"{directive} {blocked} {path} {source}"
     now = time.time()
     first, swallowed = _seen.get(key, (0.0, 0))
     if now - first < _WINDOW_SEC:
@@ -108,7 +109,8 @@ def _log_once(directive: str, blocked: str, path: str) -> None:
         _seen.clear()
     _seen[key] = (now, 0)
     more = f" (+{swallowed} in the last hour)" if swallowed else ""
-    print(f"[csp] directive={directive} blocked={blocked} doc={path}{more}", file=sys.stderr)
+    src = f" src={source}" if source else ""
+    print(f"[csp] directive={directive} blocked={blocked} doc={path}{src}{more}", file=sys.stderr)
 
 
 @router.post("/csp-report", status_code=204)
@@ -130,8 +132,11 @@ async def csp_report(request: Request) -> Response:
         if not _our_host(doc.hostname or ""):
             continue
         blocked = _origin(str(v.get("blockedURL") or "inline"))
-        if blocked in _IGNORED_SCHEMES:
+        # The script that made the request: an extension injecting into our page
+        # reports as our page, and only its source file gives it away.
+        source = _origin(str(v.get("sourceFile") or "")) if v.get("sourceFile") else ""
+        if blocked in _IGNORED_SCHEMES or source in _IGNORED_SCHEMES:
             continue
         directive = str(v.get("effectiveDirective") or "?")[:40]
-        _log_once(directive, blocked, (doc.path or "/")[:120])
+        _log_once(directive, blocked, (doc.path or "/")[:120], source)
     return Response(status_code=204)
