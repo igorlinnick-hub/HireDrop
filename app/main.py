@@ -37,6 +37,7 @@ from app.routers import (
     billing,
     buddy,
     campaign,
+    csp,
     extension,
     jobs,
     profile,
@@ -167,6 +168,8 @@ app.include_router(affiliate.router, prefix="/api/v1")
 # Ad-spend ingest from the Google Ads Script — its own token (ADS_INGEST_TOKEN).
 app.include_router(ads.router, prefix="/api/v1")
 app.include_router(buddy.router, prefix="/api/v1")
+# CSP Report-Only violations from the site — public, logs `[csp]` lines.
+app.include_router(csp.router, prefix="/api/v1")
 
 
 @app.get("/health")
