@@ -4012,7 +4012,11 @@
         .filter((s) => !/^a:(skip to|\d+ new|report an)/i.test(s))
         .slice(0, 30);
       const shadows = [...document.querySelectorAll("*")].filter((e) => e.shadowRoot).length;
-      return `iframes=${document.querySelectorAll("iframe").length} shadows=${shadows} btns=${JSON.stringify(rows)}`;
+      // Headings say WHICH page this is when no button shows (an error / "already applied"
+      // / still-loading shell) — page chrome only, never form values.
+      const heads = [...document.querySelectorAll("h1, h2, [role='alert'], [role='status']")]
+        .map((e) => flat(e.textContent).slice(0, 60)).filter(Boolean).slice(0, 5);
+      return `iframes=${document.querySelectorAll("iframe").length} shadows=${shadows} heads=${JSON.stringify(heads)} btns=${JSON.stringify(rows)}`;
     } catch (e) {
       return `census=? (${String((e && e.message) || e).slice(0, 80)})`;
     }
@@ -4162,6 +4166,18 @@
   // button), fills nothing, finds no button, and bails to the next job — silently dropping
   // an applyable posting (live 2026-07-28: Indeed pool jobs completed only when the form
   // happened to render fast enough). Wait for the step to actually have something to do.
+  // Poll for an actionable form button (not just "the page has fields"). False when the
+  // campaign stops or the time runs out.
+  async function waitForFormButton(timeoutMs) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (!(await isCampaignRunning())) return false;
+      if (findFormButton()) return true;
+      await sleep(500);
+    }
+    return false;
+  }
+
   async function waitForFormReady(timeoutMs = 10000) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
@@ -4670,9 +4686,15 @@
         }
       } else {
         // No button yet — the step may still be rendering (Smart-Apply renders async, and
-        // late steps race the same way the first one does). Wait once; only bail if nothing
-        // actionable appears, so we don't drop a job on a mid-fill hiccup.
-        if ((await waitForFormReady(12000)) && findFormButton()) {
+        // late steps race the same way the first one does). Wait for the BUTTON itself:
+        // waitForFormReady() answers "ready" on any input in the shell, so on Indeed's
+        // review-module it returned in ~1 s and 9 of 17 visits were abandoned (10-05,
+        // FORM DIAG → "abandoned" one second apart) while Submit rendered 2–8 s in on the
+        // visits that went through — the same saved draft was dropped in one run and
+        // submitted in the next.
+        const waitedAt = Date.now();
+        if (await waitForFormButton(15000)) {
+          logBackend(`⏳ button appeared after ${((Date.now() - waitedAt) / 1000).toFixed(1)}s @${location.pathname.slice(-70)}`, "info");
           continue;
         }
         logBackend(`⚠️ Form step had no Continue/Submit button (${location.hostname}) — giving up on this job — ${dialogSnapshot()}`, "warn");
