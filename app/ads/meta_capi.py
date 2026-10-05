@@ -175,8 +175,7 @@ def _attribution(user_id: str) -> dict | None:
 
 
 def _email_for(user_id: str) -> str | None:
-    """Email lives in Supabase auth, not profiles — same lookup the night-shift
-    executor uses (scripts/night_shift/executor.py)."""
+    """Email lives in Supabase auth, not profiles."""
     from app.db.client import get_supabase
 
     try:
