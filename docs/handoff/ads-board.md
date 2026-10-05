@@ -1,6 +1,6 @@
 # Ads board (платная реклама: пиксель, CAPI, траты, сборка кампании)
 
-Обновлено: 2026-10-05 · ветка: main
+Обновлено: 2026-10-05 (вечер) · ветка: main
 
 ## Состояние
 
@@ -28,10 +28,19 @@
   кликает Игорь. Events Manager в Safari грузится ~40 с, 01.10 не грузился вовсе. Окна Safari
   создавать `make new document` → `set URL of current tab of window id N`.
 
+- **10-05 сделано через Safari-JS:** system user **HireDrop Campaign Builder** (61594838443611,
+  Admin; имя «HireDrop Ads» Meta отвергла как invalid); ему назначены страница HireDrop (Ads,
+  Insights) и аккаунт HireDrop Ads (Manage campaigns + View performance, БЕЗ финансов).
+  **Account spending limit = $30, сброс «Manually»** — жёсткий потолок на весь тест (решение
+  Игоря «чтоб не слилось много»); бюджет кампании в спеке остаётся $8/день.
+
 ## Сломано / не доделано
 
-- Нет `META_ADS_TOKEN` (Meta-приложение → system user → токен с `ads_management`+`ads_read`+
-  `pages_*`) — без него ни сборки кампании, ни трат на доске.
+- Нет `META_ADS_TOKEN`. System user и доступы готовы — осталось Игорю нажать **Generate token**
+  (Business Settings → System users → HireDrop Campaign Builder; права `ads_management`,
+  `ads_read`, `pages_show_list`, `pages_read_engagement`, `pages_manage_ads`; Never → Copy).
+  Клик Generate token из osascript режет классификатор (Credential Materialization) — только Игорь.
+  Если приложение «Conversions API Application» не даёт `ads_management` — новое Business-приложение.
 - Instagram `@hiredrop.io` не привязан к портфелю — IG-показы пойдут от имени страницы.
 - Первый `build` может упереться в детали API (Advantage+ audience при EMPLOYMENT, формат
   `asset_customization_rules`) — чинить по ответу Meta, спека/сборщик рассчитаны на перезапуск.
@@ -40,7 +49,7 @@
 
 ## Следующий шаг
 
-Модель: **Opus**. 1) Игорь кладёт токен в буфер → `pbpaste` в `.env` + Railway `META_ADS_TOKEN`
-→ `git -C jobflow pull` (сборщик в main) → `meta_ads.py whoami` → `build` → `status`.
+Модель: **Opus**. 1) Игорь жмёт Generate token → токен в буфер → `pbpaste` в `.env` + Railway
+`META_ADS_TOKEN` → `meta_ads.py whoami` → `build` → `status` (сборщик уже в локальном main).
 2) Видео Игоря → `../content-lab/ads/creatives/R2-video/V<n>_1080x1920.mp4`, копирайт под угол,
 `enabled: true`, `build`. 3) Тестовая регистрация с Meta-UTM (ADS_PLAN §7) → Игорь включает кампанию.
