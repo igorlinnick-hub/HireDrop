@@ -49,7 +49,15 @@
 
 ## Следующий шаг
 
-Модель: **Opus**. 1) Игорь жмёт Generate token → токен в буфер → `pbpaste` в `.env` + Railway
-`META_ADS_TOKEN` → `meta_ads.py whoami` → `build` → `status` (сборщик уже в локальном main).
-2) Видео Игоря → `../content-lab/ads/creatives/R2-video/V<n>_1080x1920.mp4`, копирайт под угол,
-`enabled: true`, `build`. 3) Тестовая регистрация с Meta-UTM (ADS_PLAN §7) → Игорь включает кампанию.
+Модель: **Opus**. **10-05 вечер — маршрут сменён на официальный Meta Ads MCP** (память
+`project_meta_ads_mcp_route`). Что есть: `META_ADS_TOKEN` в `.env` + Railway (system user HireDrop
+Campaign Builder, но приложение токена = HelloMetrics в dev-mode) → `whoami` ок, `build` создал
+кампанию 120254913703970368 + ad set 120254913704300368 (PAUSED) + залил 2 картинки M1, на креативах
+упал: «Ads creative post was created by an app that is in development mode». HelloMetrics в Live НЕ
+переводить (App Review клиники). developers.facebook.com из osascript не рисуется — новое app через
+UI не создать.
+1) MCP `meta-ads` (`https://mcp.facebook.com/ads`) добавлен в user-конфиг; Игорь в НОВОЙ сессии
+`/mcp` → meta-ads → Authenticate → Разрешить (портфель Hiredrop, аккаунт HireDrop Ads).
+2) Через MCP-инструменты (`ads_create_ad` и т.п.) доделать M1–M3 в существующем ad set по спеке
+`../content-lab/ads/campaigns/meta-r1.json`; креативам нужен публичный URL картинки. Всё PAUSED,
+ids дописать в `meta-r1.state.json`. 3) Включает Игорь. Потолок аккаунта $30 стоит.
