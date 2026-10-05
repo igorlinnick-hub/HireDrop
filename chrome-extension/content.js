@@ -3955,7 +3955,7 @@
 
     for (const sel of selectors) {
       const el = scope.querySelector(sel);
-      if (el && el.offsetParent !== null && !isDeniedFormButton(el)) return el;
+      if (el && isShownControl(el) && !isDeniedFormButton(el)) return el;
     }
 
     // Text-based fallback. <a> included: the 2026-09 rebuild renders actionable
@@ -3963,10 +3963,59 @@
     // button-only sweep goes blind on exactly the layouts that need the fallback.
     const buttons = scope.querySelectorAll('button, a[href], [role="button"]');
     for (const btn of buttons) {
-      if (btn.offsetParent === null || isDeniedFormButton(btn)) continue;
+      if (!isShownControl(btn) || isDeniedFormButton(btn)) continue;
       if (FORM_ADVANCE_RE.test(btnLabel(btn))) return btn;
     }
     return null;
+  }
+
+  // offsetParent is null for an element that is ITSELF position:fixed — a pinned Submit at
+  // the bottom of the screen is exactly that, and the old check skipped it as hidden.
+  // Indeed's review-module ended 15 of 18 visits with "no button" (10-02..10-05) after every
+  // field was filled. Same blind spot isVisibleBox() was written for on the captcha side.
+  // A hypothesis until a live page confirms it: buttonCensus() below says which it was.
+  // Only the labels that move a FORM forward get the fixed-element pass: a pinned "Apply for
+  // this job" / "Apply now" header CTA (Lever, GH job pages) would otherwise outrank the real
+  // Submit in the text fallback, which walks the DOM top-down.
+  const FIXED_OK_RE = /^(submit|continue|review|next)\b/;
+  function isShownControl(el) {
+    if (el.offsetParent !== null) return true;
+    return FIXED_OK_RE.test(btnLabel(el)) && isVisibleBox(el, 1, 1);
+  }
+
+  // What the page offered when we found nothing to press: every control, with WHY it was
+  // not taken (op = offsetParent null, fx = itself or an ancestor fixed/sticky, box = has a
+  // layout box, off = disabled). Labels cut to 3 words. Iframes and shadow roots counted: a
+  // Submit inside either is invisible to querySelectorAll from here.
+  function buttonCensus() {
+    try {
+      const flat = (t) => String(t || "").replace(/\s+/g, " ").trim();
+      const fixedUp = (e) => {
+        for (let n = e; n && n !== document.body; n = n.parentElement) {
+          const pos = getComputedStyle(n).position;
+          if (pos === "fixed" || pos === "sticky") return pos;
+        }
+        return "";
+      };
+      const rows = [...document.querySelectorAll('button, a[href], [role="button"], input[type="submit"]')]
+        .map((e) => {
+          const r = e.getBoundingClientRect();
+          const label = flat(e.getAttribute("aria-label") || e.textContent || e.value).split(" ").slice(0, 3).join(" ");
+          const flags = [
+            e.offsetParent === null ? "op" : "",
+            fixedUp(e) ? `fx:${fixedUp(e)}` : "",
+            r.width && r.height ? "box" : "",
+            e.disabled || e.getAttribute("aria-disabled") === "true" ? "off" : "",
+          ].filter(Boolean).join(",");
+          return `${e.getAttribute("data-testid") || e.tagName.toLowerCase()}:${label}[${flags}]`;
+        })
+        .filter((s) => !/^a:(skip to|\d+ new|report an)/i.test(s))
+        .slice(0, 30);
+      const shadows = [...document.querySelectorAll("*")].filter((e) => e.shadowRoot).length;
+      return `iframes=${document.querySelectorAll("iframe").length} shadows=${shadows} btns=${JSON.stringify(rows)}`;
+    } catch (e) {
+      return `census=? (${String((e && e.message) || e).slice(0, 80)})`;
+    }
   }
 
   function btnLabel(b) {
@@ -3998,7 +4047,7 @@
     // reason as findFormButtonIn: the 2026-09 DOM renders controls as anchors.
     const buttons = document.querySelectorAll('button, a[href], [role="button"]');
     for (const btn of buttons) {
-      if (btn.offsetParent === null) continue;
+      if (!isShownControl(btn)) continue;
       const text = btn.textContent?.trim().toLowerCase() || "";
       if (
         text.includes("submit application") ||
@@ -4627,6 +4676,7 @@
           continue;
         }
         logBackend(`⚠️ Form step had no Continue/Submit button (${location.hostname}) — giving up on this job — ${dialogSnapshot()}`, "warn");
+        logBackend(Array.from(`🔘 @${location.pathname.slice(-70)} ${buttonCensus()}`).slice(0, 1950).join(""), "warn");
         break;
       }
     }
