@@ -617,7 +617,7 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
     # first time the extension fetches its resume to apply. So we pay ~$0.028/tailor
     # only for jobs that reach a real submission, not for every score-≥N job discovered
     # (~70% of which were never applied to). Gating (Premium + Apply-Mode threshold)
-    # lives there now. See PLATFORM_AUTOMATION_PLAN.md.
+    # lives there now. See docs/archive/PLATFORM_AUTOMATION_PLAN.md.
 
     saved = jobs_db.save_jobs_bulk(user.id, new_jobs)
 
