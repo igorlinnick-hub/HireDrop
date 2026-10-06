@@ -2,6 +2,7 @@ import contextlib
 import io
 import os
 import re
+import uuid
 
 import anthropic
 
@@ -57,7 +58,16 @@ def load_resume_text(resume_url: str | None = None, max_chars: int = 3000) -> st
 
             from app.db.client import get_supabase
 
-            data = get_supabase().storage.from_("resumes").download(resume_url)
+            # A unique query string so the storage CDN can't answer: every upload
+            # overwrites <user_id>/resume.pdf, and a plain download kept serving the
+            # PREVIOUS file for seconds after a re-upload (measured 10-06, 3 of 3) —
+            # long enough for a screener answer from the old resume to be cached under
+            # the new file's key (app/db/screener_cache.py).
+            data = (
+                get_supabase()
+                .storage.from_("resumes")
+                .download(resume_url, query_params={"v": uuid.uuid4().hex})
+            )
             with pdfplumber.open(io.BytesIO(data)) as pdf:
                 text = "\n".join(page.extract_text() or "" for page in pdf.pages)
                 return text[:max_chars]
