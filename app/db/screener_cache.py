@@ -14,12 +14,15 @@ Open-ended questions ("Why do you want to work here?") are deliberately NOT
 cached: their answer SHOULD differ per job, and serving a stale one would send
 the same paragraph about a different employer.
 
-The key also carries a profile fingerprint, so editing the resume or the profile
-retires every answer derived from the old one instead of silently reusing it.
+The key also carries a fingerprint of what the answer was derived from, so a new
+resume (or new education / work-status answers) retires every answer derived from the
+old one instead of silently reusing it — see _resume_identity.
 """
 
 import contextlib
 import hashlib
+import json
+import posixpath
 import re
 
 from app.db.client import get_supabase
@@ -42,10 +45,51 @@ def _normalise(text: str) -> str:
     return _TRIM.sub("", cleaned).strip().lower()
 
 
+def _resume_identity(profile: dict) -> str | None:
+    """What identifies the resume text the answerer reads (resume_text_for), or None
+    when it can't be told — the question is then answered live and not cached.
+
+    Until 10-06 the key used `resume_url|updated_at`, but get_profile never returns
+    `updated_at` and every upload goes to the same `<user_id>/resume.pdf` — so a new
+    resume, an edit in the ATS editor, or a switch of the default resume all kept the
+    old key, and employers kept getting answers derived from the resume the user had
+    replaced. Profile `updated_at` would over-retire instead (every filter chip change
+    writes the row); these three parts change exactly when the read text can:
+      - which resume is the default (the dial resume_text_for follows);
+      - the ATS structure, hashed — what the ATS resume's text is rendered from;
+      - the uploaded file's eTag (content hash) from storage, one metadata call.
+    """
+    kind = profile.get("default_resume") or ("ats" if profile.get("ats_approved") else "original")
+    parts = [str(kind)]
+    structure = profile.get("ats_structure")
+    if kind == "ats" and structure:
+        blob = json.dumps(structure, sort_keys=True, default=str).encode()
+        parts.append(hashlib.sha256(blob).hexdigest()[:16])
+    path = profile.get("resume_url") or ""
+    if path:
+        try:
+            folder, name = posixpath.split(path)
+            found = (
+                get_supabase().storage.from_("resumes").list(folder, {"search": name, "limit": 10})
+            )
+            meta = next((o for o in found or [] if o.get("name") == name), None)
+            etag = ((meta or {}).get("metadata") or {}).get("eTag") or (meta or {}).get(
+                "updated_at"
+            )
+        except Exception as e:
+            print(f"[screener_cache] resume metadata read failed (not caching): {e}")
+            return None
+        if not etag:
+            return None  # the path names no file we can see — don't key on a guess
+        parts.append(f"{path}@{etag}")
+    return "|".join(parts)
+
+
 def build_key(question: str, options: list[str] | None, profile: dict) -> str | None:
     """Cache key, or None when this question must not be cached.
 
-    Returns None for open-ended questions (no options) — see the module docstring.
+    Returns None for open-ended questions (no options) — see the module docstring —
+    and when the resume behind the answer can't be identified.
     """
     options = [str(o).strip() for o in (options or []) if str(o).strip()]
     if not options:
@@ -57,8 +101,11 @@ def build_key(question: str, options: list[str] | None, profile: dict) -> str | 
 
     # Sorted: the same radio group can render in a different order on two boards.
     options_norm = "\x1f".join(sorted(o.lower() for o in options))
-    # Any profile edit that could change the right answer must retire the row.
-    fingerprint = f"{profile.get('resume_url') or ''}|{profile.get('updated_at') or ''}"
+    # A different resume must retire the row (see _resume_identity).
+    resume = _resume_identity(profile)
+    if resume is None:
+        return None
+    fingerprint = resume
     # The education answers reach the prompt (ai_question_answer._confirmed_facts), so a
     # change to them changes the right answer to "Degree?" — named here field by field
     # rather than trusted to `updated_at`. Appended only when present: a profile without

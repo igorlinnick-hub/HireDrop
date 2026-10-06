@@ -16,10 +16,41 @@ paragraph to a different employer.
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.db import screener_cache
 
-PROFILE = {"name": "X", "resume_url": "r1.pdf", "updated_at": "2026-09-01T00:00:00Z"}
+# The shape get_profile really returns: no `updated_at` (the old fixture had one, so
+# the old key looked fine here and was blind in prod), and every upload at one path.
+PROFILE = {
+    "name": "X",
+    "resume_url": "u1/resume.pdf",
+    "default_resume": None,
+    "ats_approved": False,
+    "ats_structure": None,
+}
 OPTIONS = ["0-1 years", "2-4 years", "5+ years"]
+
+# Storage as the key sees it: path -> eTag of the file there now.
+FILES = {"u1/resume.pdf": '"etag-1"'}
+
+
+def _storage_list(folder, opts):
+    name = opts["search"]
+    path = f"{folder}/{name}"
+    if path not in FILES:
+        return []
+    return [{"name": name, "updated_at": "2026-09-01T00:00:00Z", "metadata": {"eTag": FILES[path]}}]
+
+
+@pytest.fixture(autouse=True)
+def _storage():
+    FILES.clear()
+    FILES["u1/resume.pdf"] = '"etag-1"'
+    sb = MagicMock()
+    sb.storage.from_.return_value.list.side_effect = _storage_list
+    with patch("app.db.screener_cache.get_supabase", return_value=sb):
+        yield sb
 
 
 # --------------------------------------------------------------- key building
@@ -68,17 +99,70 @@ def test_different_subject_is_not_collapsed():
     assert a != b
 
 
-def test_editing_the_profile_retires_the_answer():
-    """A new resume can change the right answer — stale reuse would be worse than a call."""
-    base = screener_cache.build_key("Years of experience?", OPTIONS, PROFILE)
-    newer = screener_cache.build_key(
-        "Years of experience?", OPTIONS, {**PROFILE, "updated_at": "2026-09-20T00:00:00Z"}
+def _key(profile=PROFILE):
+    return screener_cache.build_key("Years of experience?", OPTIONS, profile)
+
+
+def test_a_new_resume_at_the_same_path_retires_the_answer():
+    """Every upload overwrites <user_id>/resume.pdf — the file's content hash is what
+    changes, so it is what the key must carry (the 10-06 bug: it carried neither)."""
+    base = _key()
+    FILES["u1/resume.pdf"] = '"etag-2"'
+    assert _key() != base
+
+
+def test_editing_the_ats_resume_retires_the_answer_only_when_it_is_the_one_read():
+    structure = {"experience": [{"title": "PM", "years": 2}]}
+    edited = {"experience": [{"title": "PM", "years": 6}]}
+    ats = {**PROFILE, "default_resume": "ats", "ats_structure": structure}
+    assert _key(ats) != _key({**ats, "ats_structure": edited})
+    # On the original resume the structure is not read, so editing it changes nothing.
+    original = {**PROFILE, "default_resume": "original", "ats_structure": structure}
+    assert _key(original) == _key({**original, "ats_structure": edited})
+
+
+def test_switching_the_default_resume_retires_the_answer():
+    structure = {"experience": [{"title": "PM"}]}
+    assert _key({**PROFILE, "ats_structure": structure}) != _key(
+        {**PROFILE, "ats_structure": structure, "default_resume": "ats"}
     )
-    reuploaded = screener_cache.build_key(
-        "Years of experience?", OPTIONS, {**PROFILE, "resume_url": "r2.pdf"}
+    # ats_approved without a dial value means the ATS resume (resume_text_for's rule).
+    assert _key({**PROFILE, "ats_structure": structure, "ats_approved": True}) == _key(
+        {**PROFILE, "ats_structure": structure, "default_resume": "ats"}
     )
-    assert base != newer
-    assert base != reuploaded
+
+
+def test_an_unrelated_profile_edit_keeps_the_answer():
+    """Filter chips write the profile row all day; they don't change what the answerer
+    reads, so they must not cost a fresh model call."""
+    assert _key() == _key({**PROFILE, "keywords": ["designer"], "location": "Austin"})
+
+
+def test_unknown_resume_means_answer_live_not_cache(_storage):
+    FILES.clear()
+    assert _key() is None  # the path names no file — don't key on a guess
+    _storage.storage.from_.return_value.list.side_effect = RuntimeError("storage down")
+    assert _key() is None
+
+
+def test_the_key_reads_fields_get_profile_really_returns():
+    """Guard against the fixture drifting from reality again: build the profile the way
+    the endpoint does and check the key still moves with the resume."""
+    from app.db import profile as profile_db
+
+    row = {
+        "user_id": "u1",
+        "resume_url": "u1/resume.pdf",
+        "default_resume": "ats",
+        "ats_structure": {"experience": [{"title": "PM", "years": 2}]},
+    }
+    sb = MagicMock()
+    sb.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [row]
+    with patch("app.db.profile.get_supabase", return_value=sb):
+        before = profile_db.get_profile("u1")
+        row["ats_structure"] = {"experience": [{"title": "PM", "years": 6}]}
+        after = profile_db.get_profile("u1")
+    assert _key(before) != _key(after)
 
 
 def test_education_answers_retire_the_answer_but_their_absence_changes_nothing():
