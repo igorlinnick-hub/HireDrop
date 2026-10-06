@@ -245,6 +245,7 @@ function comboWorld(html, { want } = {}) {
   // ---- 4. A required race group gets its decline box ---------------------------------
   const cbParts = [extract("  function getFieldLabel(el) {"), extract("  function visibleApplyDialogs() {"),
     extract("  function formScope() {"), extract("  function isDemographicQuestion(label, optionTexts) {"),
+    SRC.slice(SRC.indexOf("  // ── Legal work status: ONE reading"), SRC.indexOf("  // Pick a dropdown option deterministically")),
     extract("  async function fillCheckboxes() {")];
   check("checkbox filler + helpers found", cbParts.every(Boolean));
   function cbWorld(html) {
@@ -255,6 +256,11 @@ function comboWorld(html, { want } = {}) {
     w.humanClick = async (el) => { el.click(); };
     w.sleep = async () => {};
     w.humanDelay = () => 0;
+    // Work-status collaborators (not reached by these cases; work-status.test.js drives them).
+    w.storageGet = async () => ({ profile: {} });
+    w.sendMsg = async () => ({ answer: "" });
+    w.logBackend = () => {};
+    w._aiAnswersUsed = 0; w.MAX_AI_ANSWERS_PER_FORM = 15;
     w.eval(`${fieldish[0]}\n${cbParts.join("\n")}\nwindow.__fill = fillCheckboxes;`);
     return w;
   }
@@ -312,7 +318,8 @@ function comboWorld(html, { want } = {}) {
     const ctx = { _aiAnswersUsed: 99, MAX_AI_ANSWERS_PER_FORM: 15, _aiBudgetNotified: true,
       logBackend() {}, chrome: { runtime: { sendMessage() { throw new Error("model reached"); } } } };
     vm.createContext(ctx);
-    vm.runInContext(`${helpers}\n${extract("  function isDemographicQuestion(label, optionTexts) {")}\n` +
+    const wsBlock = SRC.slice(SRC.indexOf("  // ── Legal work status: ONE reading"), SRC.indexOf("  // Pick a dropdown option deterministically"));
+    vm.runInContext(`${helpers}\n${extract("  function isDemographicQuestion(label, optionTexts) {")}\n${wsBlock}\n` +
       `${extract("  function pickOptionDeterministic(label, options, profile) {")}\n${choose}\n` +
       "globalThis.choose = chooseOption;", ctx);
     const opts = ["Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut", "Delaware",

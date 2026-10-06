@@ -56,7 +56,8 @@ vm.runInContext([
   extract("  function explicitLabel(el) {"),
   extract("  function getComboLabel(combo) {"),
   extract("  function isDemographicQuestion(label, optionTexts) {"),
-  extract("  function sponsorshipSaysYes(label, needsSponsorship) {"),
+  // The shared work-status / consent helpers (one block, consts included).
+  SRC.slice(SRC.indexOf("  // ── Legal work status: ONE reading"), SRC.indexOf("  // Pick a dropdown option deterministically")),
   extract("  function pickOptionDeterministic(label, options, profile) {"),
   extract("  async function chooseOption(label, options, profile, jobInfo) {"),
   "globalThis.T = { getComboLabel, chooseOption };",
