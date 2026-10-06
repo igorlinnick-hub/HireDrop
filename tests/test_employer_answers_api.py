@@ -40,21 +40,27 @@ def _fresh_memo():
 NOT_CALLED = object()
 
 
-def _suggest(client, profile, found=NOT_CALLED, resume_text="resume text"):
-    """POST /suggest with the model faked: `found` is what extract_facts answers."""
+def _suggest(client, profile, found=NOT_CALLED, resume_text="resume text", seen=None):
+    """POST /suggest with the model faked: `found` is what extract_facts answers.
+    `seen`, when given, receives the whole body and the save / load mocks."""
     extract = MagicMock(return_value={} if found is NOT_CALLED else found)
     claim = MagicMock(return_value=True)
     release = MagicMock()
+    save = MagicMock(return_value=True)
+    load = MagicMock(return_value=resume_text)
     with (
         patch("app.routers.profile.profile_db.get_profile", return_value=profile),
+        patch("app.routers.profile.profile_db.save_resume_facts", save),
         patch("modules.ai_resume_facts.extract_facts", extract),
-        patch("modules.ai_cover_letter.load_resume_text", return_value=resume_text),
+        patch("modules.ai_cover_letter.load_resume_text", load),
         patch("app.routers.tools.RATE_LIMIT_ENFORCE", True),
         patch("app.routers.tools.usage_db.claim_today", claim),
         patch("app.db.usage.release_today", release),
     ):
         res = client.post("/api/v1/profile/employer-answers/suggest", json={})
     assert res.status_code == 200, res.text
+    if seen is not None:
+        seen.update(body=res.json(), save=save, load=load)
     return res.json()["suggestions"], extract, claim, release
 
 
@@ -69,13 +75,138 @@ def test_signup_gets_every_question_with_what_is_on_file(auth_client):
     assert body["no_salary_expectation"] is False
 
 
-def test_an_ats_resume_answers_for_free(auth_client):
-    """The stored structure already holds the facts — no model, no quota slot."""
+def test_the_generated_ats_resume_is_never_the_source(auth_client):
+    """ats_structure is a model's rewrite, possibly of an earlier upload: its title is
+    not necessarily the one the person held. Only the uploaded PDF is read."""
+    profile = {
+        **ANSWERED,
+        "current_title": "",
+        "school": "",
+        "degree": "",
+        "ats_structure": STRUCTURE,
+        "resume_url": "u/resume-2.pdf",
+    }
+    seen: dict = {}
+    hints, extract, claim, _ = _suggest(
+        auth_client, profile, found={"current_title": "Marketing Coordinator"}, seen=seen
+    )
+    assert hints == {"current_title": "Marketing Coordinator"}
+    assert seen["body"]["from_resume"] == ["current_title"]
+    extract.assert_called_once()
+    claim.assert_called_once()
+
+
+def test_the_question_rows_never_carry_the_ats_rewrite(auth_client):
+    """A row with a suggestion is a box the form never asks /suggest about: the rewrite's
+    title would stay in it and be confirmed as what the resume says."""
+    profile = {**ANSWERED, "current_title": "", "school": "", "ats_structure": STRUCTURE}
+    with patch("app.routers.profile.profile_db.get_profile", return_value=profile):
+        body = auth_client.get("/api/v1/profile/employer-answers").json()
+    for rows in (body["questions"], body["missing"]):
+        by_key = {r["key"]: r for r in rows}
+        assert "suggestion" not in by_key["current_title"]
+        assert "suggestion" not in by_key["school"]
+
+
+def test_an_ats_resume_without_an_upload_suggests_nothing(auth_client):
     profile = {**ANSWERED, "school": "", "degree": "", "ats_structure": STRUCTURE}
     hints, extract, claim, _ = _suggest(auth_client, profile)
-    assert hints == {"school": "Kharkiv National University", "degree": "B.S. in Economics"}
+    assert hints == {}
     extract.assert_not_called()
     claim.assert_not_called()
+
+
+def test_facts_read_from_this_resume_are_reused_for_free(auth_client):
+    """Stored on the profile with the resume they came from: any worker, any deploy."""
+    profile = {
+        **ANSWERED,
+        "school": "",
+        "degree": "",
+        "resume_url": "u/resume-2.pdf",
+        "resume_facts": {
+            "resume_url": "u/resume-2.pdf",
+            "facts": {"school": "Kharkiv National University", "city": "Honolulu"},
+            "extracted_at": "2026-10-06T00:00:00+00:00",
+        },
+    }
+    seen: dict = {}
+    hints, extract, claim, _ = _suggest(auth_client, profile, seen=seen)
+    # Only what is still blank is offered — city is answered and not second-guessed.
+    assert hints == {"school": "Kharkiv National University"}
+    assert seen["body"]["from_resume"] == ["school"]
+    extract.assert_not_called()
+    claim.assert_not_called()
+    seen["save"].assert_not_called()
+    seen["load"].assert_not_called()  # not even the PDF is downloaded
+
+
+def test_facts_from_a_replaced_resume_are_read_again_and_stored(auth_client):
+    profile = {
+        **ANSWERED,
+        "school": "",
+        "resume_url": "u/resume-3.pdf",
+        "resume_facts": {"resume_url": "u/resume-2.pdf", "facts": {"school": "Old University"}},
+    }
+    seen: dict = {}
+    hints, extract, claim, _ = _suggest(
+        auth_client, profile, found={"school": "New University"}, seen=seen
+    )
+    assert hints == {"school": "New University"}
+    extract.assert_called_once()
+    claim.assert_called_once()
+    user_id, saved = seen["save"].call_args[0]
+    assert saved["resume_url"] == "u/resume-3.pdf"
+    assert saved["facts"] == {"school": "New University"}
+    assert saved["extracted_at"]
+
+
+def test_a_read_that_never_answered_is_not_stored(auth_client):
+    profile = {**ANSWERED, "school": "", "resume_url": "u/resume.pdf"}
+    seen: dict = {}
+    _suggest(auth_client, profile, found=None, seen=seen)
+    seen["save"].assert_not_called()
+
+
+def test_from_resume_never_names_the_salary_setting(auth_client):
+    profile = {
+        **ANSWERED,
+        "degree": "",
+        "salary_expectation": "",
+        "salary_min": 100_000,
+        "resume_url": "u/resume.pdf",
+    }
+    seen: dict = {}
+    hints, *_ = _suggest(auth_client, profile, found={"degree": "BA"}, seen=seen)
+    assert hints == {"degree": "BA", "salary_expectation": "$100,000 per year"}
+    assert seen["body"]["from_resume"] == ["degree"]
+
+
+def test_works_before_the_resume_facts_column_exists(auth_client):
+    """Before migrations/add_resume_facts.sql: no key on the profile, and PostgREST
+    refuses the write (PGRST204). The read still happens and is still remembered."""
+    from app.db import profile as profile_db
+
+    profile = {**ANSWERED, "school": "", "resume_url": "u/resume.pdf"}
+    refusing = MagicMock()
+    refusing.table.return_value.update.return_value.eq.return_value.execute.side_effect = Exception(
+        "PGRST204: Could not find the 'resume_facts' column of 'profiles'"
+    )
+    extract = MagicMock(return_value={"school": "UT Austin"})
+    with (
+        patch("app.routers.profile.profile_db.get_profile", return_value=profile),
+        patch.object(profile_db, "get_supabase", return_value=refusing),
+        patch("modules.ai_resume_facts.extract_facts", extract),
+        patch("modules.ai_cover_letter.load_resume_text", return_value="resume text"),
+        patch("app.routers.tools.RATE_LIMIT_ENFORCE", True),
+        patch("app.routers.tools.usage_db.claim_today", MagicMock(return_value=True)),
+        patch("app.db.usage.release_today", MagicMock()),
+    ):
+        first = auth_client.post("/api/v1/profile/employer-answers/suggest", json={})
+        again = auth_client.post("/api/v1/profile/employer-answers/suggest", json={})
+    assert first.status_code == 200 and again.status_code == 200
+    assert first.json() == {"suggestions": {"school": "UT Austin"}, "from_resume": ["school"]}
+    assert again.json() == first.json()
+    extract.assert_called_once()  # the process memo still covers the second ask
 
 
 def test_a_bare_pdf_is_read_once_for_the_questions_it_can_answer(auth_client):

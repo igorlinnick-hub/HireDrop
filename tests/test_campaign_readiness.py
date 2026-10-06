@@ -202,21 +202,21 @@ RESUME = {
 }
 
 
-def test_missing_offers_what_the_resume_already_says():
-    """Offered for the person to confirm — the profile itself stays blank until they do."""
+def test_missing_never_offers_the_generated_ats_resume():
+    """ats_structure is a model's rewrite, possibly of an earlier upload. What the resume
+    says reaches the form only through /suggest, read from the uploaded PDF."""
     from modules.employer_answers import missing
 
     profile = {**ANSWERED, "school": "", "degree": "", "city": "", "ats_structure": RESUME}
     by_key = {m["key"]: m for m in missing(profile)}
-    assert by_key["school"]["suggestion"] == "UT Austin"
-    assert by_key["degree"]["suggestion"] == "BA Communications"
+    assert "suggestion" not in by_key["school"]
+    assert "suggestion" not in by_key["degree"]
     # The "I don't have one" tickbox travels with the question it answers.
     assert by_key["school"]["opt_out"] == {
         "flag": "no_degree",
         "label": "I don't have a college degree",
     }
     assert "opt_out" not in by_key["city"]
-    # The resume has no fact for a city question, so nothing is offered.
     assert "suggestion" not in by_key["city"]
     assert profile["school"] == ""
 
@@ -238,20 +238,19 @@ def test_form_lists_every_question_with_the_answer_on_file():
         "label": "Most recent job title",
         "kind": "text",
         "value": "",
-        "suggestion": "Social Media Manager",
     }
-    # An answer on file is never second-guessed by the resume.
     assert "suggestion" not in by_key["school"]
     assert form({"country": "Outside US"})[0]["value"] is False
     assert form({})[0]["value"] is None
 
 
-def test_suggestions_survive_a_malformed_structure():
+def test_row_suggestions_are_the_settings_only():
     from modules.employer_answers import suggestions
 
-    assert suggestions({"ats_structure": None}) == {}
-    assert suggestions({"ats_structure": {"education": "MIT", "experience": [None]}}) == {}
-    assert suggestions({"ats_structure": {"education": [{"school": "  "}]}}) == {}
+    assert suggestions({"ats_structure": RESUME}) == {}
+    assert suggestions({"ats_structure": RESUME, "salary_min": 90_000}) == {
+        "salary_expectation": "$90,000 per year"
+    }
 
 
 def test_clean_takes_both_opt_outs():

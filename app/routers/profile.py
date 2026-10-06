@@ -99,34 +99,51 @@ def suggest_employer_answers(user=Depends(get_current_user)):
     """What the user's own resume says for the questions still blank — offered in the
     form, never written to the profile from here.
 
-    Free when an ATS resume exists (its stored structure already holds the facts). The
-    ATS step in onboarding is optional, though, so most signups have only a PDF: one
-    Haiku read of it, claimed against the daily AI quota like every other model call —
-    and only when a question the resume could answer is actually still open.
+    Read from the PDF they uploaded, never from the generated ATS resume (see
+    modules/ai_resume_facts.py): one Haiku read per upload, claimed against the daily AI
+    quota like every other model call, and only when a question the resume could answer
+    is actually still open. The result is kept on the profile next to the resume it came
+    from, so reopening the form — on any worker, after any deploy — costs nothing.
+
+    `from_resume` names the suggestions the resume gave; the salary one comes from the
+    user's own search settings and is not among them.
     """
+    from modules import ai_resume_facts
     from modules.ai_cover_letter import load_resume_text
-    from modules.ai_resume_facts import FACT_KEYS, facts_for
-    from modules.employer_answers import missing, suggestions
+    from modules.employer_answers import missing, own_suggestions
 
     profile = profile_db.get_profile(user.id)
     blank = {m["key"] for m in missing(profile)}
-    hints = suggestions(profile)
-    unread = (blank & set(FACT_KEYS)) - set(hints)
-    if unread and not isinstance(profile.get("ats_structure"), dict) and profile.get("resume_url"):
-        from app.db import usage as usage_db
-        from app.routers.tools import _claim_ai_slot
+    hints = own_suggestions(profile)
+    found: dict | None = None
+    resume_url = profile.get("resume_url")
+    if blank & set(ai_resume_facts.FACT_KEYS) and resume_url:
+        found = ai_resume_facts.stored(profile.get("resume_facts"), resume_url)
+        if found is None:
+            from app.db import usage as usage_db
+            from app.routers.tools import _claim_ai_slot
 
-        text = load_resume_text(profile.get("resume_url"), max_chars=6000)
-        # One read per resume: a second tab, a reload, a blank result — none of them buy
-        # another model call for the same text (facts_for remembers by its hash).
-        found, called = facts_for(user.id, text, before_call=lambda: _claim_ai_slot(user))
-        if called and found is None:
-            # The slot was claimed and the model never answered: give it back. An answer
-            # with nothing usable in it is still an answer we paid for — that one stays
-            # spent, or a resume that states none of these facts is an unlimited tap.
-            usage_db.release_today(user.id)
-        hints = {**(found or {}), **hints}
-    return {"suggestions": {k: v for k, v in hints.items() if k in blank}}
+            text = load_resume_text(resume_url, max_chars=6000)
+            # Without the stored copy (first read, or the column not there yet) the
+            # process still remembers by the text's hash: a second tab, a reload, a
+            # blank result — none of them buy another model call for the same text.
+            found, called = ai_resume_facts.facts_for(
+                user.id, text, before_call=lambda: _claim_ai_slot(user)
+            )
+            if called and found is None:
+                # The slot was claimed and the model never answered: give it back. An
+                # answer with nothing usable in it is still an answer we paid for — that
+                # one stays spent, or a resume that states none of these facts is an
+                # unlimited tap.
+                usage_db.release_today(user.id)
+            if found is not None:
+                profile_db.save_resume_facts(user.id, ai_resume_facts.record(resume_url, found))
+    from_resume = [k for k in ai_resume_facts.FACT_KEYS if k in blank and (found or {}).get(k)]
+    hints.update({k: found[k] for k in from_resume})
+    return {
+        "suggestions": {k: v for k, v in hints.items() if k in blank},
+        "from_resume": from_resume,
+    }
 
 
 @router.post("/profile/employer-answers")
@@ -399,7 +416,7 @@ async def ats_generate(body: dict = None, user=Depends(get_current_user)):
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             resume_text = "\n".join(page.extract_text() or "" for page in pdf.pages)
         data = structure_resume_data(resume_text, answers=answers)
-        _seed_employment_from_resume(user.id, data)
+        _seed_postal_from_resume(user.id, data)
         ats_pdf_bytes = generate_ats_pdf(data=data)
         ats_docx_bytes = generate_ats_docx(data=data)
     except Exception as e:
@@ -476,7 +493,7 @@ async def ats_generate_from_text(body: dict, user=Depends(get_current_user)):
 
     try:
         data = structure_resume_data(resume_text)
-        _seed_employment_from_resume(user.id, data)
+        _seed_postal_from_resume(user.id, data)
         ats_pdf_bytes = generate_ats_pdf(data=data)
         ats_docx_bytes = generate_ats_docx(data=data)
     except Exception as e:
@@ -559,7 +576,7 @@ def ats_structure_put(body: dict, user=Depends(get_current_user)):
             "ats_checked_at": None,
         },
     )
-    _seed_employment_from_resume(user.id, structure)
+    _seed_postal_from_resume(user.id, structure)
 
     return {
         "success": True,
@@ -750,40 +767,22 @@ def set_default_resume(body: dict, user=Depends(get_current_user)):
     return {"default_resume": choice}
 
 
-def _seed_employment_from_resume(user_id: str, data: dict) -> None:
-    """Take current employer/title from the structured resume we just paid to parse.
-
-    experience[0] is the most recent job — the same two answers forms ask for as
-    "current company" / "current job title". Free: the Claude call already happened
-    for the ATS resume. Best-effort — a profile write must never fail a resume build.
-    """
+def _seed_postal_from_resume(user_id: str, data: dict) -> None:
+    """Zip only (see profile_db.fill_postal_if_blank). Best-effort — a profile write must
+    never fail a resume build."""
     try:
-        latest = (data.get("experience") or [{}])[0] or {}
-        filled = profile_db.fill_current_employment_if_blank(
-            user_id, str(latest.get("company") or ""), str(latest.get("title") or "")
-        )
-        # Address too (same paid parse): "City, ST 33101"-style contact.location →
-        # city/state/zip. Covers the ZR contact step without the user visiting
-        # Settings — the field nobody fills (1 of 28 in three weeks) now has a source.
-        loc = str((data.get("contact") or {}).get("location") or "")
-        city, state, postal = _split_location(loc)
-        filled.update(profile_db.fill_address_if_blank(user_id, city, state, postal))
-        # School and degree are NOT seeded here. The same education line is OFFERED in
-        # the answers form (employer_answers.suggestions) for the person to confirm: a
-        # résumé's first "education" row is as often a certificate as a degree, and a
-        # value written here would count as answered and never be shown to them.
-        if filled:
-            print(f"[profile] seeded from resume: {sorted(filled)}", file=sys.stderr)
+        city, _state, postal = _split_location(str((data.get("contact") or {}).get("location") or ""))
+        if profile_db.fill_postal_if_blank(user_id, postal, city):
+            print("[profile] seeded postal_code from resume", file=sys.stderr)
     except Exception as e:
-        print(f"[profile] employment seed skipped: {e}", file=sys.stderr)
+        print(f"[profile] postal seed skipped: {e}", file=sys.stderr)
 
 
 def _split_location(loc: str) -> tuple[str, str, str]:
     """'Miami, FL 33101' / 'Miami, Florida, USA' / 'Miami FL' → (city, state, zip).
 
     Deliberately conservative: no guessing beyond comma-splitting and a 5-digit zip.
-    Anything that doesn't look like City[, State][ ZIP] returns empty strings — a
-    wrong seeded address on a real application is worse than an empty field.
+    Anything that doesn't look like City[, State][ ZIP] returns empty strings.
     """
     import re
 

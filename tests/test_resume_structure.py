@@ -180,7 +180,6 @@ class TestStructureEndpoints:
             patch("app.db.resume.upload_ats", return_value="u/ats.pdf"),
             patch("app.db.resume.upload_ats_docx", return_value="u/ats.docx"),
             patch("app.db.resume.signed_download_url_ats", return_value="https://signed"),
-            patch("app.routers.profile._seed_employment_from_resume"),
             patch("app.db.profile.update_ats") as saved,
         ):
             r = auth_client.put(f"{API}/profile/ats/structure", json={"structure": FULL})
@@ -198,7 +197,6 @@ class TestStructureEndpoints:
             patch("app.db.resume.upload_ats", return_value="u/ats.pdf"),
             patch("app.db.resume.upload_ats_docx", return_value="u/ats.docx"),
             patch("app.db.resume.signed_download_url_ats", return_value="https://signed"),
-            patch("app.routers.profile._seed_employment_from_resume"),
             patch("app.db.profile.update_ats") as saved,
         ):
             auth_client.put(f"{API}/profile/ats/structure", json={"structure": FULL})
@@ -226,7 +224,6 @@ class TestStructureEndpoints:
             patch("app.db.resume.upload_ats", return_value="u/ats.pdf"),
             patch("app.db.resume.upload_ats_docx", return_value="u/ats.docx"),
             patch("app.db.resume.signed_download_url_ats", return_value="https://signed"),
-            patch("app.routers.profile._seed_employment_from_resume"),
             patch("app.db.profile.update_ats") as saved,
         ):
             auth_client.put(
