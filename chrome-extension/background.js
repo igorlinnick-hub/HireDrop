@@ -1,7 +1,7 @@
 // HireDrop service worker
 // All API communication, campaign state, and tab management
 
-importScripts("config.js", "pill-everywhere.js", "linkedin-beta.js");
+importScripts("config.js", "pill-everywhere.js", "linkedin-beta.js", "auto-daily.js");
 
 // ---------------------------------------------------------------------------
 // Auth helpers
@@ -56,6 +56,9 @@ const USER_SCOPED_KEYS = [
   "indeedSdrRefusedAt", "indeedLastResumeKind",
   // content.js submit belt: a pending ATS submit must never be recorded on another account.
   "pendingAtsSubmit", "lastRecordedSubmit",
+  // Daily auto-start (auto-daily.js): the opt-in, its day record and the launch it repeats
+  // are one user's consent and one user's search — a new user on this browser starts OFF.
+  "autoDaily", "autoDailyState", "lastLaunch",
 ];
 
 // Self-bootstrap the durable key: any connected user has a (dashboard-pushed) Supabase
@@ -240,6 +243,20 @@ async function noteAuth401() {
   // heartbeat TTL flips the backend flag within ~150s of the pings stopping.
 }
 
+// A non-2xx answer as an Error whose MESSAGE keeps the old "API <status>: <text>" shape
+// (flushOutbox and others match on it), plus `status` and the server's `detail` — a 403 from
+// /campaign/start names WHY it refused ("employer_answers_missing"), and that word is what
+// the user needs to see.
+async function apiError(res) {
+  const err = new Error(`API ${res.status}: ${res.statusText}`);
+  err.status = res.status;
+  try {
+    const body = await res.json();
+    if (body && typeof body.detail === "string") err.detail = body.detail;
+  } catch { /* no JSON body */ }
+  return err;
+}
+
 async function apiGet(path, { retry = true } = {}) {
   const token = await getAuthToken();
   const headers = token ? { Authorization: `Bearer ${token}` } : {};
@@ -254,7 +271,7 @@ async function apiGet(path, { retry = true } = {}) {
     noteAuth401().catch(() => {});
     throw new Error("API 401 (token stale — dashboard will refresh it)");
   }
-  if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+  if (!res.ok) throw await apiError(res);
   _auth401Streak = 0;
   return res.json();
 }
@@ -279,7 +296,7 @@ async function apiPost(path, body, { retry = true } = {}) {
     noteAuth401().catch(() => {});
     throw new Error("API 401 (token stale — dashboard will refresh it)");
   }
-  if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+  if (!res.ok) throw await apiError(res);
   _auth401Streak = 0;
   return res.json();
 }
@@ -471,6 +488,9 @@ chrome.runtime.onStartup.addListener(async () => {
   await fetchAndCacheProfile().catch(() => {});
   ensureExtensionKey().catch(() => {}); // retry durable-key mint on SW wake
   updateBadge();
+  // Chrome opened after the scheduled time (it was closed at 9 AM): catch up now, after the
+  // day counters above are reset — not a minute later on the first alarm.
+  autoDailyTick("startup").catch(() => {});
 });
 
 // ---------------------------------------------------------------------------
@@ -679,6 +699,93 @@ async function sendExtensionPing() {
   } catch {}
 }
 
+// ---------------------------------------------------------------------------
+// Daily auto-start (auto-daily.js holds the rules; this is the wiring)
+// ---------------------------------------------------------------------------
+
+// "Is a campaign running HERE?" — the flag AND its window. The flag alone survives a
+// closed laptop (see sendExtensionPing), and a corpse must not block today's run.
+async function campaignAliveLocally() {
+  const d = await chrome.storage.local.get(["campaignRunning", "campaignWindowId"]);
+  if (!d.campaignRunning || !d.campaignWindowId) return false;
+  try { await chrome.windows.get(d.campaignWindowId); return true; } catch { return false; }
+}
+
+function browserTimeZone() {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch { return ""; }
+}
+
+// One guard per worker: the minute alarm and onStartup can land together, and both would
+// read "not done yet" before either claimed the day.
+let _autoDailyBusy = false;
+async function autoDailyTick(trigger) {
+  if (_autoDailyBusy) return { action: "busy" };
+  _autoDailyBusy = true;
+  try {
+    return await hdAutoDailyTick(trigger, {
+      get: (keys) => chrome.storage.local.get(keys),
+      set: (obj) => chrome.storage.local.set(obj),
+      now: () => new Date(),
+      localDay,
+      rand: Math.random,
+      isRunningLocally: campaignAliveLocally,
+      // "Today" counted from the user's own midnight — the same stored-zone boundary the
+      // cap is enforced on (app/db/user_day.py), not a second day definition.
+      fetchStatus: async () => {
+        const tz = browserTimeZone();
+        try { return await apiGet(`/campaign/status${tz ? `?tz=${encodeURIComponent(tz)}` : ""}`); } catch { return null; }
+      },
+      start: (filters) => startCampaign(filters, { source: "auto" }),
+      log: (text, cls) => addToActivityLog(text, cls),
+      notify: (title, message, path) => notifyOpenHireDrop(title, message, path),
+    });
+  } catch (e) {
+    console.warn("[HireDrop] daily auto-start tick failed:", e && e.message);
+    return { action: "error" };
+  } finally {
+    _autoDailyBusy = false;
+  }
+}
+
+// The dashboard's view of the setting (ping.js HIREDROP_GET/SET_AUTO_DAILY). Plans today's
+// record when the feature is on, so "next run" is an exact time, not a guess.
+async function autoDailyView() {
+  const got = await chrome.storage.local.get([HD_AUTO_DAILY_KEY, HD_AUTO_DAILY_STATE_KEY, HD_LAST_LAUNCH_KEY]);
+  const cfg = hdAutoDailyNormalize(got[HD_AUTO_DAILY_KEY]);
+  let state = got[HD_AUTO_DAILY_STATE_KEY] || null;
+  if (cfg.enabled) {
+    const planned = hdAutoDailyPlan(state, localDay());
+    state = planned.state;
+    if (planned.changed) await chrome.storage.local.set({ [HD_AUTO_DAILY_STATE_KEY]: state });
+  }
+  return { ok: true, ...hdAutoDailyView(cfg, state && state.day === localDay() ? state : null, got[HD_LAST_LAUNCH_KEY], new Date()) };
+}
+
+async function autoDailySet(msg) {
+  const got = await chrome.storage.local.get([HD_AUTO_DAILY_KEY, HD_AUTO_DAILY_STATE_KEY]);
+  const prev = hdAutoDailyNormalize(got[HD_AUTO_DAILY_KEY]);
+  const enabled = msg.enabled === true;
+  const next = hdAutoDailyNormalize({
+    enabled,
+    hour: Number.isInteger(msg.hour) ? msg.hour : prev.hour,
+    enabledAt: enabled ? (prev.enabled && prev.enabledAt ? prev.enabledAt : Date.now()) : null,
+  });
+  await chrome.storage.local.set({ [HD_AUTO_DAILY_KEY]: next });
+  if (next.enabled) {
+    const now = new Date();
+    const { state } = hdAutoDailyPlan(got[HD_AUTO_DAILY_STATE_KEY], localDay());
+    await chrome.storage.local.set({ [HD_AUTO_DAILY_STATE_KEY]: hdAutoDailyAfterSet(next, state, now) });
+  }
+  if (prev.enabled !== next.enabled || (next.enabled && prev.hour !== next.hour)) {
+    await addToActivityLog(
+      next.enabled
+        ? `⏰ Daily auto-start is on — every day around ${hdHourLabel(next.hour)}, while this computer is on and Chrome is open.`
+        : "⏰ Daily auto-start is off.",
+      "info");
+  }
+  return autoDailyView();
+}
+
 // The ext-ping alarm fires every minute — a much bigger gap between ticks means the
 // machine was ASLEEP (alarms don't tick through sleep). On wake: say so, give the
 // watchdogs a fresh window (their staleness clocks kept "aging" through the sleep, so
@@ -718,6 +825,8 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     nativeWalkWatchdog().catch(() => {});
     tapPoolIdleRefill().catch(() => {});
     flushOutbox().catch(() => {});
+    // After the sleep-gap check on purpose: a wake is exactly when a missed 9 AM catches up.
+    autoDailyTick("alarm").catch(() => {});
   }
   // sw-keepalive: no-op — waking the SW is enough
 });
@@ -1733,6 +1842,484 @@ function platformLabel(platform) {
 }
 
 // ---------------------------------------------------------------------------
+// Campaign start — ONE path for every Start
+// ---------------------------------------------------------------------------
+
+// A start the server refused, surfaced. Feed line (local + the backend /activity mirror in
+// addToActivityLog) and a system notification whose click opens the page that fixes it.
+// `notified: true` tells the daily auto-start not to announce the same refusal twice.
+async function refuseStart(reason, source) {
+  const r = hdStartRefusal(reason);
+  await addToActivityLog(
+    `${source === "auto" ? "⏰ Daily auto-start" : "Start"} refused by HireDrop: ${r.text}. Open HireDrop to fix it.`,
+    "warn");
+  notifyOpenHireDrop("HireDrop didn't start", `${r.text} — open HireDrop to fix.`, r.path);
+  return { started: false, error: reason, message: `${r.text} — open HireDrop to fix it.`, notified: true };
+}
+
+// A notification whose click opens hiredrop.io<path>. The path rides in the id, so a click
+// that arrives after the service worker restarted still knows where to go.
+const HD_OPEN_NOTIF_PREFIX = "hd-open|";
+function notifyOpenHireDrop(title, message, path) {
+  try {
+    chrome.notifications.create(`${HD_OPEN_NOTIF_PREFIX}${path || "/dashboard"}|${Date.now()}`, {
+      type: "basic",
+      iconUrl: "icons/icon128.png",
+      title,
+      message,
+      priority: 2,
+    });
+  } catch { /* notifications must never break a start */ }
+}
+
+chrome.notifications.onClicked.addListener((id) => {
+  if (typeof id !== "string" || id.indexOf(HD_OPEN_NOTIF_PREFIX) !== 0) return;
+  const path = id.slice(HD_OPEN_NOTIF_PREFIX.length).split("|")[0] || "/dashboard";
+  const url = `https://hiredrop.io${path.charAt(0) === "/" ? path : "/dashboard"}`;
+  // Chrome may be running with no window at all (that is when the schedule fires) — if
+  // there's no window for a tab to land in, make one.
+  chrome.tabs.create({ url }).catch(() => chrome.windows.create({ url, focused: true }).catch(() => {}));
+  chrome.notifications.clear(id);
+});
+
+// Every start goes through here: the dashboard (ping.js HIREDROP_START_CAMPAIGN), the popup,
+// and the daily auto-start (auto-daily.js). It used to live inline in START_CAMPAIGN; the
+// auto-start needs the exact same pre-flight, gates and window handling, and a second copy
+// would drift from the first the day someone fixes only one of them.
+//
+// `source`: "manual" (a human pressed Start) or "auto" (the daily schedule). The only
+// differences: an auto start never opens a login tab in the user's face (it notifies
+// instead), and it runs the keyword order the server hands back — a manual start already
+// got that order from the dashboard's own /campaign/start call.
+async function startCampaign(rawFilters, { source = "manual" } = {}) {
+  // Self-heal + observability: a fresh Start must not inherit a stale captcha
+  // hand-off OR a phantom "running" flag from a prior stalled run (that phantom
+  // pinned the tap page on "preparing…" forever). Hard-reset the run state, and
+  // log that the SW actually RECEIVED the start — that first log line is how we
+  // tell "message never reached the extension" from "campaign ran but stalled".
+  await chrome.storage.local.set({
+    captchaWaiting: null, campaignRunning: false, currentJob: null,
+    reviewPending: null, reviewDecision: null,
+    poolDoneUrls: [], // per-run walked-pool memory — a fresh run starts clean
+    poolIdleSince: null, // reset the 2h idle-auto-stop timer for the fresh run
+  });
+  await chrome.storage.local.remove(["atsQueue", "atsPlatform", "atsNavAt", "atsNavTries"]);
+  await addToActivityLog("▶ Start received by the extension — preparing your campaign…", "info");
+  const profile = await getCachedProfile();
+  // Fail-closed onboarding gate: the popup can start a campaign without the
+  // user ever seeing the site (the dashboard's /dashboard/* layout gate
+  // can't help here). An un-onboarded profile is empty — the campaign
+  // would fill applications with blanks under the user's identity.
+  if (!profile || profile.onboarding_completed !== true) {
+    await addToActivityLog("Can't start — finish your profile setup first.", "error");
+    return { started: false, error: "onboarding_incomplete" };
+  }
+  // Resume is optional at onboarding — Indeed native applies use the resume
+  // stored on Indeed itself, but external-ATS forms (Greenhouse/Lever)
+  // hard-require one and the P1 guard will skip them. Say so UPFRONT in
+  // the activity feed instead of letting the user wonder why every ATS
+  // job silently lands in "skipped".
+  if (!profile.resume_url) {
+    await addToActivityLog(
+      "Heads-up: no resume in your HireDrop profile — company-site (ATS) applications will be skipped until you upload one in Settings. Indeed applies still work (they use the resume on your Indeed account).",
+      "warn"
+    );
+  }
+  const raw = rawFilters || {};
+  // Always merge with profile so partial/empty filters still work
+  const filters = {
+    keywords: (raw.keywords && raw.keywords.length) ? raw.keywords : (profile.keywords || []),
+    platforms: (raw.platforms && raw.platforms.length) ? raw.platforms : (profile.platforms || ["indeed"]),
+    location: raw.location || profile.location || "",
+    job_type: raw.job_type || profile.job_type || "",
+    // Radius was silently dropped here (present in profile + backend, never merged into
+    // the extension's campaignFilters) → every city search ran radius-less. Merge it so
+    // content.js builders (initial nav + pagination) actually see it. 2026-08-14 fix.
+    search_radius_miles: raw.search_radius_miles ?? profile.search_radius_miles ?? null,
+    // Work setting (remote/hybrid/onsite) — the "Hybrid" filter. Threaded to URL builders.
+    work_setting: raw.work_setting || profile.work_setting || "",
+  };
+
+  // No keywords anywhere (request OR profile) → the campaign has nothing to search
+  // for. Refuse with a clear reason instead of "starting" an empty run (the popup
+  // Start path has no dashboard-side keyword check). Mirrors /campaign/readiness.
+  if (!filters.keywords.length) {
+    return {
+      started: false,
+      error: "no_keywords",
+      message: "Add at least one keyword first — the campaign needs something to search for.",
+    };
+  }
+
+  // Pick the auto-apply platform this campaign targets (first in the filter list)
+  const primaryPlatform = pickPrimaryPlatform(filters.platforms);
+
+  // Status BEFORE target selection: Lever/tap-pool eligibility depends on submit_mode.
+  let preSt = null;
+  try { preSt = await apiGet("/campaign/status"); } catch {}
+  // Auto vs Tap decides whether this run SUBMITS without a human. Reading that off a
+  // request that may never have arrived — the `catch {}` above leaves preSt null, and
+  // null used to read as "auto" — handed Tap users a full auto walk over cards they
+  // never swiped. Third layer of the #98 class: a value that can be produced from
+  // nothing is not evidence. Refuse and say why: a campaign that didn't start is
+  // recoverable in one click, applications nobody approved are not.
+  // (submit_mode_known is the backend's half of the same rule — its profile read has
+  // an unreadable case too, and it no longer hides that behind a default "auto".
+  // Older backends don't send the field; undefined means "no reason to doubt it".)
+  if (!preSt || preSt.submit_mode_known === false) {
+    return {
+      started: false,
+      error: "mode_unknown",
+      message: "Couldn't reach HireDrop to check whether you're on Auto or Tap — starting now could apply to jobs you never approved. Check your connection and press Start again.",
+    };
+  }
+  const tapMode = preSt.submit_mode === "tap";
+
+  // reviewMode is now ALWAYS off (Igor 2026-07-25, instant-tap rebuild). The new
+  // tap flow pre-approves via the swipe deck — the human decision happens on
+  // /dashboard/tap, so approved jobs auto-submit in the background. There is no
+  // in-browser fill-and-stop review anymore (auto mode never had one). This also
+  // permanently kills the "Auto showed the Tap review panel" mismatch.
+  // Caps come from the pre-flight status we already fetched (no redundant second
+  // /campaign/status round-trip); ban-safe 20/50 default when status is unreachable.
+  await chrome.storage.local.set({
+    reviewMode: false,
+    campaignCaps: {
+      perPlatform: (preSt && preSt.limit_per_platform > 0) ? preSt.limit_per_platform : 20,
+      // Platforms under a tighter ban rail than perPlatform (backend MAX_PER_PLATFORM,
+      // LinkedIn 5). Older backends don't send it; content.js platformCap() fails safe.
+      byPlatform: (preSt && preSt.limit_by_platform && typeof preSt.limit_by_platform === "object")
+        ? preSt.limit_by_platform : {},
+      dailyTotal: (preSt && preSt.daily_limit > 0) ? preSt.daily_limit : 50,
+    },
+  });
+
+  // Free taste (FREE_TASTE_PLAN.md): an exhausted free account must not start at all —
+  // the pre-submit caps don't know the lifetime 40-app limit, so a started campaign
+  // would submit applications the backend then refuses to save (they reach the
+  // employer, invisibly). Server unreachable → fail-open, like the caps.
+  if (preSt && preSt.free_limit != null && preSt.free_used >= preSt.free_limit) {
+    return {
+      started: false,
+      error: "free_limit_reached",
+      message: `You've used all ${preSt.free_limit} free applications — subscribe to keep applying.`,
+    };
+  }
+
+  // APPROVED SWIPES LEAD THE RUN — in BOTH modes (Igor 09-19).
+  //
+  // Tap builds its whole queue from them (that IS tap). Auto used to not look at them
+  // at all: `approved` rows are consumed by a tap run and nothing else, so a user who
+  // swiped and then ran Auto left a stack nobody would ever pick up — live 09-11, a
+  // real account had 4 approved since 09-02, never sent. The dashboard dock (website
+  // #169) made that visible and offered a one-click fix, but a surface that reports a
+  // dead end is second best to a run that doesn't create one.
+  //
+  // This does NOT hand Auto more volume: the daily budget is counted from applications
+  // actually sent (server-side, one counter for both modes), so approved cards simply
+  // take the FIRST slots of the same 30. What changes is the order — the jobs a human
+  // picked go before the ones the machine found.
+  //
+  // Consent is intact in both directions: an approved row is a human decision, so
+  // sending it is exactly what was asked; and a run still never touches a card nobody
+  // swiped unless the mode says auto.
+  const approvedCap = (preSt && preSt.limit_per_platform) || 15;
+  let tapPoolQueue = await buildApprovedAtsQueue(
+    approvedCap,
+    // Lever stops at an hCaptcha a human has to clear. In tap the human is at the
+    // wheel, so a Lever card is a legitimate pause; in auto nobody is watching, so it
+    // would just hold the window until the watchdog skips it. Leave those approvals
+    // for a tap run rather than burning a slot on a submit that can't complete.
+    { skipPlatforms: tapMode ? [] : ["lever"] },
+  );
+  if (tapMode && !tapPoolQueue.length) {
+    // Footgun guard (tap only): with nothing approved yet, do NOT fall through to an
+    // auto walk (native Indeed search / GH auto-sweep) — that would apply jobs the
+    // user never swiped. Auto has no such guard to trip: an empty approved list there
+    // just means the run starts the way it always did.
+    return {
+      started: false,
+      error: "no_approved_jobs",
+      // Covers both truths honestly: nothing approved yet, OR everything approved
+      // was already applied/dead (dedup excluded it) — live-test 2026-07-27 found
+      // the old "swipe first" wording gaslighting a user whose swipes WERE consumed.
+      message: "Nothing new to apply — jobs you approved before are already applied or closed. Swipe Approve on new cards, then Start.",
+    };
+  }
+
+  // Pool-driven ATS target (GLOBAL_PLAN P1+P2):
+  // - greenhouse: zero-touch → any mode, full-auto;
+  // - lever: hCaptcha at submit → tap mode only (human approves + clears it);
+  //   in auto mode refuse with a clear message instead of a campaign that can't submit.
+  //
+  // ORDER: see pickAtsOpener — a selected board outranks the pool, and the pool is
+  // reached through PLATFORM_EXHAUSTED once the boards are done.
+  const hasBoard = (filters.platforms || []).some((p) => CAMPAIGN_START_PLATFORMS.includes(p));
+  let atsTarget = pickAtsOpener(filters.platforms);
+  // Lever-only runs: no board, no zero-touch pool, just Lever. `hasBoard` guards it
+  // because atsTarget is now null whenever a board leads the run — without this, any
+  // auto user who merely has Lever ticked alongside Indeed would be refused at Start.
+  if (!tapPoolQueue.length && !atsTarget && !hasBoard && (filters.platforms || []).includes("lever")) {
+    if (tapMode) {
+      atsTarget = "lever";
+    } else {
+      return {
+        started: false,
+        error: "lever_needs_tap",
+        message: "Lever applications need Tap mode (their captcha requires a human). Switch to Tap and start again.",
+      };
+    }
+  }
+
+  // LinkedIn is not a campaign platform yet (linkedin-beta.js). A selection where it is
+  // the only thing to run would otherwise fall through to pickPrimaryPlatform's Indeed
+  // default — applying on a board the user never picked. Say so instead. The beta flag
+  // does not change this: it only lets the capture kit run on a LinkedIn tab.
+  if (!tapPoolQueue.length && !atsTarget && !hasBoard &&
+      hdLinkedInOnlySelection(filters.platforms, CAMPAIGN_START_PLATFORMS, ATS_PLATFORMS)) {
+    return {
+      started: false,
+      error: "linkedin_not_ready",
+      message: "LinkedIn isn't available for campaigns yet. Pick Indeed, ZipRecruiter or a company-site platform and start again.",
+    };
+  }
+
+  // Pre-flight login check applies only to native board platforms (Indeed/ZR). ATS apply
+  // pages are public — no login wall — so skip it in pool-driven mode.
+  if (!atsTarget && !tapPoolQueue.length) {
+    const conns = await getPlatformConnections();
+    if (conns[primaryPlatform]?.status === "logged_out") {
+      // A human who just pressed Start gets the login page. The 9 AM schedule must not
+      // throw a tab in front of whoever is at the computer — it says so instead.
+      if (source === "auto") {
+        return {
+          started: false,
+          error: "not_connected",
+          platform: primaryPlatform,
+          message: `You're signed out of ${platformLabel(primaryPlatform)}`,
+        };
+      }
+      chrome.tabs.create({ url: platformLoginUrl(primaryPlatform) }).catch(() => {});
+      return {
+        started: false,
+        error: "not_connected",
+        platform: primaryPlatform,
+        message: `Sign into ${platformLabel(primaryPlatform)} first — we opened the login page. Create an account or log in, then start the campaign.`,
+      };
+    }
+  }
+
+  // Immediate feedback: from here we're committed to starting, but opening the
+  // window + loading the board + writing the first tailored application takes
+  // ~1-2 min. Without a line NOW the Live Activity reads "Waiting for extension"
+  // and feels frozen (Igor 2026-07-25). Post progress the moment we commit.
+  // (The free-taste gate + preSt fetch already ran earlier — not duplicated here.)
+  await addToActivityLog("Starting your campaign — opening the browser and finding jobs now…", "info");
+
+  try {
+    // Caps + reviewMode were already stamped from the pre-flight status above,
+    // so this is just the start signal — no second /campaign/status round-trip.
+    const started = await apiPost("/campaign/start", filters);
+    // The server decides which role leads the run (round-robin, keyword_rotation). The
+    // dashboard arms a manual start with that order already; an auto start has no dashboard
+    // in front of it, so it takes the order from this answer.
+    const serverKw = started && started.filters && started.filters.keywords;
+    if (source === "auto" && Array.isArray(serverKw) && serverKw.length) filters.keywords = serverKw;
+  } catch (err) {
+    // The server HEARD us and said no (403: onboarding, outside the US, unanswered employer
+    // questions, disposable email; 400: Lever alone in auto). This used to be swallowed by
+    // the same catch as "server down", so a refused campaign ran anyway — applications the
+    // backend had just declared it would not stand behind. A refusal now stops the start
+    // and says why, in the feed and as a notification.
+    if (err && (err.status === 403 || err.status === 400)) {
+      const reason = err.detail || `http_${err.status}`;
+      return await refuseStart(reason, source);
+    }
+    // Network / 5xx: continue as before — content.js falls back to safe defaults (20/50).
+  }
+
+  // ATS pool-driven mode: build the apply queue and target the FIRST job's apply URL
+  // instead of a board search. The automation tab then walks the queue: phase_ats
+  // fills (+submits when zero-touch) → APPLICATION_SAVED / ATS_JOB_DONE → advance.
+  let atsQueue = [];
+  if (tapPoolQueue.length) {
+    // Approved-cards queue (platform-mixed). reviewMode is already set from
+    // submit_mode above; GH items auto-submit, Lever items stop for the human.
+    atsQueue = tapPoolQueue;
+    await chrome.storage.local.set({ atsQueue, atsPlatform: "pool", atsNavAt: Date.now(), atsNavTries: 0 });
+    await addToActivityLog(
+      tapMode
+        ? `Applying to ${atsQueue.length} approved jobs (your swipes) — working through them now.`
+        : `Starting with ${atsQueue.length} job${atsQueue.length > 1 ? "s" : ""} you approved, then searching the boards for more.`,
+      "info");
+  } else if (atsTarget) {
+    const capState = (await chrome.storage.local.get("campaignCaps")).campaignCaps || {};
+    const built = await buildAtsQueue(atsTarget, capState.perPlatform || 20);
+    atsQueue = built.queue;
+    if (!atsQueue.length) {
+      // Name which zero it is. "No jobs yet" and "your pool is full of jobs that no
+      // longer match your search" need different actions from the user, and the old
+      // single message sent everyone to "broaden your keywords" — the wrong advice
+      // for the case where the keywords are right and the pool is stale.
+      return {
+        started: false,
+        error: "no_ats_jobs",
+        message: built.error
+          // Never dress a failed read as "no jobs" — a source that silently
+          // contributes zero is indistinguishable from a broken one (#113).
+          ? `Couldn't load your ${atsTarget} jobs just now (the server didn't answer). Try Start again in a moment.`
+          : built.offSearch > 0
+          ? `None of the ${built.pool} ${atsTarget} jobs in your pool match your current search — ${built.offSearch} are leftovers from earlier keywords. They'll refresh as new jobs are found.`
+          : `No zero-touch ${atsTarget} jobs to apply to yet — try again shortly or broaden your keywords.`,
+      };
+    }
+    await chrome.storage.local.set({ atsQueue, atsPlatform: atsTarget, atsNavAt: Date.now(), atsNavTries: 0 });
+    await addToActivityLog(
+      atsTarget === "lever"
+        ? `Found ${atsQueue.length} Lever jobs — filling each; you approve + clear the captcha.`
+        : `Found ${atsQueue.length} zero-touch ${atsTarget} jobs — starting full-auto apply.`,
+      "info"
+    );
+  } else {
+    await chrome.storage.local.remove(["atsQueue", "atsPlatform", "atsNavAt", "atsNavTries"]);
+  }
+
+  const targetUrl = atsQueue.length ? atsQueue[0].applyUrl
+    // ONE keyword per search (index 0 to start); content.js rotates to the next
+    // keyword as each is exhausted. Cramming all keywords into one query returned junk.
+    : buildPlatformUrl(primaryPlatform, filters.keywords.slice(0, 1), filters.location, filters.job_type, filters.search_radius_miles, filters.work_setting);
+  // Where the automation window first lands. For a pool run whose FIRST job is an
+  // Indeed/ZR native posting we must NOT cold-open its deep /viewjob link — a direct
+  // deep-link nav is a bot jump that Cloudflare answers with "Additional Verification
+  // Required", and the apply never starts. Open the platform HOMEPAGE instead; content.js
+  // sessionWarmup passes CF there (sets cf_clearance), then navigates to targetUrl (the
+  // picked job), which now loads clean. GH/Lever pool jobs have no such CF gate, so open
+  // their apply URL directly. Non-pool (auto) keeps homepage → typed-search as before.
+  // MIXED pool (GH head + Indeed later): the later native deep-link is CF-warmed on the
+  // fly by navigatePoolNext (first hit of each native domain routes via its homepage).
+  // We seed poolWarmedNatives with the head below so a native head isn't re-warmed.
+  const headPlatform = atsQueue.length ? atsQueue[0].platform : null;
+  const homeUrl = !atsQueue.length
+    // LinkedIn has NO Cloudflare gate, so skip the homepage→search hop (built for Indeed's
+    // CF) and open the Easy-Apply search DIRECTLY — the homepage-first warmup was landing
+    // on /feed and not reliably navigating on (live 2026-08-01). Direct nav is proven.
+    ? (primaryPlatform === "linkedin" ? targetUrl : platformEntryUrl(primaryPlatform))
+    : POOL_NATIVE_ALL.includes(headPlatform)
+      ? platformEntryUrl(headPlatform)
+      : atsQueue[0].applyUrl;
+  await addToActivityLog(`Opening the automation window → ${String(homeUrl).slice(0, 70)}`, "info");
+
+  // Automation runs in a dedicated background window — minimized so it doesn't
+  // steal focus from the user's browser. Screenshots are captured via CDP
+  // Automation runs in a dedicated window that opens behind the current one
+  // (focused: false). We keep it visible — captureVisibleTab requires the
+  // window to be in normal state and rendering. Minimizing or moving it
+  // off-screen breaks screenshot capture.
+  let tab;
+  const prevData = await chrome.storage.local.get(["campaignWindowId", "campaignTabId"]);
+  let reusingWindow = false;
+  if (prevData.campaignWindowId) {
+    try {
+      const win = await chrome.windows.get(prevData.campaignWindowId, { populate: true });
+      if (win && win.tabs && win.tabs.length > 0) {
+        tab = win.tabs[0];
+        await chrome.tabs.update(tab.id, { url: homeUrl, active: true });
+        // Restore to normal state in case user minimized it
+        chrome.windows.update(prevData.campaignWindowId, { state: "normal" }).catch(() => {});
+        reusingWindow = true;
+      }
+    } catch {
+      // Window was closed — create a new one below
+    }
+  }
+
+  if (!reusingWindow) {
+    const win = await chrome.windows.create({
+      url: homeUrl,
+      focused: false,
+      width: 1280,
+      height: 900,
+    });
+    tab = win.tabs[0];
+    // Don't minimize — captureVisibleTab only works on visible (normal-state) windows
+  }
+
+  const tabInfo = await chrome.tabs.get(tab.id);
+  // Chrome's Memory Saver discards background tabs it decides are idle — a
+  // discarded automation tab is a zombie: the window is alive (heartbeat happy)
+  // while the walk is gone. Opt this one tab out.
+  chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
+  await addToActivityLog(`Automation window ${reusingWindow ? "reused" : "opened"} (tab ${tab.id}) — loading the page…`, "info");
+
+  await chrome.storage.local.set({
+    campaignRunning: true,
+    campaignFilters: filters,
+    campaignTargetUrl: targetUrl,
+    campaignStartedAt: new Date().toISOString(),
+    campaignTabId: tab.id,
+    campaignWindowId: tabInfo.windowId,
+    currentJob: null,
+    campaignWarmedUp: false,
+    // A native head is CF-warmed by the homepage open above → seed it so the queue walk
+    // doesn't re-warm the same domain. GH/Lever/Ashby heads need no warm, so [] for them.
+    poolWarmedNatives: POOL_NATIVE_ALL.includes(headPlatform) ? [headPlatform] : [],
+    processedJobKeys: [],
+    // Keyword walk state, all per RUN. content.js goes one page per keyword and
+    // rotates through the whole list before deepening (kwLap = which page every
+    // phrase is on; kwDone = phrases that returned nothing this run).
+    // kwIndex starts at 0 on purpose: WHICH phrase leads a run is the server's
+    // decision — /campaign/start round-robins the list (modules/keyword_rotation,
+    // cursor in campaign_states.filters) and the dashboard arms us with that order.
+    // A second cursor kept here would advance independently of the server's and the
+    // two would drift apart.
+    kwIndex: 0,
+    kwLap: 0,
+    kwDone: [],
+    // Platform-failover ledger — PLATFORM_EXHAUSTED never revisits these. Seed it with
+    // the stage this run actually OPENS on: a pool-led run (no board selected) opens on
+    // the ATS target, and seeding "indeed" there would both lie and let the failover
+    // walk back into the pool it just finished. An APPROVED-led run opens on the pool,
+    // so it seeds "pool" — seeding the board here would burn the board before it ran,
+    // which is precisely the 09-13 failure (a run that never touched Indeed) in reverse.
+    triedPlatforms: [tapPoolQueue.length ? "pool" : (atsTarget || primaryPlatform)],
+    // Who leads the pool walk, and therefore what happens when it drains:
+    //   "tap"  → go idle INSIDE the pool and wait for more swipes (that's the tapalka);
+    //   "auto" → hand off to the boards, because the approved cards were only the
+    //            head start and the rest of the run is the ordinary auto sweep.
+    // Without this the auto run would sit idle after the last approved card, looking
+    // exactly like a finished campaign while 26 of its 30 slots went unused.
+    poolLeadMode: tapPoolQueue.length ? (tapMode ? "tap" : "auto") : null,
+    // Consent boundary for that failover (Igor 09-11): the launch modal's default is
+    // "All connected platforms" (platform_mode "all") — switching boards is what the
+    // user asked for. A single pick ("single") means THIS board only: on exhaustion
+    // we stop honestly instead of surprising them on a platform they didn't choose.
+    // Absent field (older dashboard) = the old always-failover behavior.
+    platformFailover: (filters.platform_mode || "all") !== "single",
+    zrNoBtnStreak: 0, // external-apply wall guard counter
+    unreadableStreak: 0, // consecutive unreadable job pages — platform-broken detector
+    // Stale per-job state from the LAST run must not leak into this one: with these
+    // left over, the fresh homepage was treated as an open application form and
+    // phase3 ran against it, logging "form abandoned" for a job we never touched
+    // (live 08-15, after a Chrome restart).
+    currentJobInfo: null,
+    generatedCoverLetter: "",
+    pendingJobs: [],
+    currentJobIndex: 0,
+  });
+
+  // Keep-awake itself is asserted by updateBadge() below — but holding a machine
+  // awake SILENTLY is what malware does, so the start of every run says it once.
+  if (chrome.power) {
+    await addToActivityLog(
+      "🔌 Keeping your computer awake while the campaign runs — the screen may dim, but the machine won't sleep. Closing the laptop lid still puts it to sleep.",
+      "info"
+    );
+  }
+  updateBadge();
+  return { started: true, tabId: tab.id, windowId: tabInfo.windowId };
+}
+
+// ---------------------------------------------------------------------------
 // Message handler
 // ---------------------------------------------------------------------------
 
@@ -1891,407 +2478,15 @@ async function handleMessage(msg, sender) {
 
     // ----- Campaign start -----
     case "START_CAMPAIGN": {
-      // Self-heal + observability: a fresh Start must not inherit a stale captcha
-      // hand-off OR a phantom "running" flag from a prior stalled run (that phantom
-      // pinned the tap page on "preparing…" forever). Hard-reset the run state, and
-      // log that the SW actually RECEIVED the start — that first log line is how we
-      // tell "message never reached the extension" from "campaign ran but stalled".
-      await chrome.storage.local.set({
-        captchaWaiting: null, campaignRunning: false, currentJob: null,
-        reviewPending: null, reviewDecision: null,
-        poolDoneUrls: [], // per-run walked-pool memory — a fresh run starts clean
-        poolIdleSince: null, // reset the 2h idle-auto-stop timer for the fresh run
-      });
-      await chrome.storage.local.remove(["atsQueue", "atsPlatform", "atsNavAt", "atsNavTries"]);
-      await addToActivityLog("▶ Start received by the extension — preparing your campaign…", "info");
-      const profile = await getCachedProfile();
-      // Fail-closed onboarding gate: the popup can start a campaign without the
-      // user ever seeing the site (the dashboard's /dashboard/* layout gate
-      // can't help here). An un-onboarded profile is empty — the campaign
-      // would fill applications with blanks under the user's identity.
-      if (!profile || profile.onboarding_completed !== true) {
-        await addToActivityLog("Can't start — finish your profile setup first.", "error");
-        return { started: false, error: "onboarding_incomplete" };
-      }
-      // Resume is optional at onboarding — Indeed native applies use the resume
-      // stored on Indeed itself, but external-ATS forms (Greenhouse/Lever)
-      // hard-require one and the P1 guard will skip them. Say so UPFRONT in
-      // the activity feed instead of letting the user wonder why every ATS
-      // job silently lands in "skipped".
-      if (!profile.resume_url) {
-        await addToActivityLog(
-          "Heads-up: no resume in your HireDrop profile — company-site (ATS) applications will be skipped until you upload one in Settings. Indeed applies still work (they use the resume on your Indeed account).",
-          "warn"
-        );
-      }
-      const raw = msg.filters || {};
-      // Always merge with profile so partial/empty filters still work
-      const filters = {
-        keywords: (raw.keywords && raw.keywords.length) ? raw.keywords : (profile.keywords || []),
-        platforms: (raw.platforms && raw.platforms.length) ? raw.platforms : (profile.platforms || ["indeed"]),
-        location: raw.location || profile.location || "",
-        job_type: raw.job_type || profile.job_type || "",
-        // Radius was silently dropped here (present in profile + backend, never merged into
-        // the extension's campaignFilters) → every city search ran radius-less. Merge it so
-        // content.js builders (initial nav + pagination) actually see it. 2026-08-14 fix.
-        search_radius_miles: raw.search_radius_miles ?? profile.search_radius_miles ?? null,
-        // Work setting (remote/hybrid/onsite) — the "Hybrid" filter. Threaded to URL builders.
-        work_setting: raw.work_setting || profile.work_setting || "",
-      };
-
-      // No keywords anywhere (request OR profile) → the campaign has nothing to search
-      // for. Refuse with a clear reason instead of "starting" an empty run (the popup
-      // Start path has no dashboard-side keyword check). Mirrors /campaign/readiness.
-      if (!filters.keywords.length) {
-        return {
-          started: false,
-          error: "no_keywords",
-          message: "Add at least one keyword first — the campaign needs something to search for.",
-        };
-      }
-
-      // Pick the auto-apply platform this campaign targets (first in the filter list)
-      const primaryPlatform = pickPrimaryPlatform(filters.platforms);
-
-      // Status BEFORE target selection: Lever/tap-pool eligibility depends on submit_mode.
-      let preSt = null;
-      try { preSt = await apiGet("/campaign/status"); } catch {}
-      // Auto vs Tap decides whether this run SUBMITS without a human. Reading that off a
-      // request that may never have arrived — the `catch {}` above leaves preSt null, and
-      // null used to read as "auto" — handed Tap users a full auto walk over cards they
-      // never swiped. Third layer of the #98 class: a value that can be produced from
-      // nothing is not evidence. Refuse and say why: a campaign that didn't start is
-      // recoverable in one click, applications nobody approved are not.
-      // (submit_mode_known is the backend's half of the same rule — its profile read has
-      // an unreadable case too, and it no longer hides that behind a default "auto".
-      // Older backends don't send the field; undefined means "no reason to doubt it".)
-      if (!preSt || preSt.submit_mode_known === false) {
-        return {
-          started: false,
-          error: "mode_unknown",
-          message: "Couldn't reach HireDrop to check whether you're on Auto or Tap — starting now could apply to jobs you never approved. Check your connection and press Start again.",
-        };
-      }
-      const tapMode = preSt.submit_mode === "tap";
-
-      // reviewMode is now ALWAYS off (Igor 2026-07-25, instant-tap rebuild). The new
-      // tap flow pre-approves via the swipe deck — the human decision happens on
-      // /dashboard/tap, so approved jobs auto-submit in the background. There is no
-      // in-browser fill-and-stop review anymore (auto mode never had one). This also
-      // permanently kills the "Auto showed the Tap review panel" mismatch.
-      // Caps come from the pre-flight status we already fetched (no redundant second
-      // /campaign/status round-trip); ban-safe 20/50 default when status is unreachable.
-      await chrome.storage.local.set({
-        reviewMode: false,
-        campaignCaps: {
-          perPlatform: (preSt && preSt.limit_per_platform > 0) ? preSt.limit_per_platform : 20,
-          // Platforms under a tighter ban rail than perPlatform (backend MAX_PER_PLATFORM,
-          // LinkedIn 5). Older backends don't send it; content.js platformCap() fails safe.
-          byPlatform: (preSt && preSt.limit_by_platform && typeof preSt.limit_by_platform === "object")
-            ? preSt.limit_by_platform : {},
-          dailyTotal: (preSt && preSt.daily_limit > 0) ? preSt.daily_limit : 50,
-        },
-      });
-
-      // Free taste (FREE_TASTE_PLAN.md): an exhausted free account must not start at all —
-      // the pre-submit caps don't know the lifetime 40-app limit, so a started campaign
-      // would submit applications the backend then refuses to save (they reach the
-      // employer, invisibly). Server unreachable → fail-open, like the caps.
-      if (preSt && preSt.free_limit != null && preSt.free_used >= preSt.free_limit) {
-        return {
-          started: false,
-          error: "free_limit_reached",
-          message: `You've used all ${preSt.free_limit} free applications — subscribe to keep applying.`,
-        };
-      }
-
-      // APPROVED SWIPES LEAD THE RUN — in BOTH modes (Igor 09-19).
-      //
-      // Tap builds its whole queue from them (that IS tap). Auto used to not look at them
-      // at all: `approved` rows are consumed by a tap run and nothing else, so a user who
-      // swiped and then ran Auto left a stack nobody would ever pick up — live 09-11, a
-      // real account had 4 approved since 09-02, never sent. The dashboard dock (website
-      // #169) made that visible and offered a one-click fix, but a surface that reports a
-      // dead end is second best to a run that doesn't create one.
-      //
-      // This does NOT hand Auto more volume: the daily budget is counted from applications
-      // actually sent (server-side, one counter for both modes), so approved cards simply
-      // take the FIRST slots of the same 30. What changes is the order — the jobs a human
-      // picked go before the ones the machine found.
-      //
-      // Consent is intact in both directions: an approved row is a human decision, so
-      // sending it is exactly what was asked; and a run still never touches a card nobody
-      // swiped unless the mode says auto.
-      const approvedCap = (preSt && preSt.limit_per_platform) || 15;
-      let tapPoolQueue = await buildApprovedAtsQueue(
-        approvedCap,
-        // Lever stops at an hCaptcha a human has to clear. In tap the human is at the
-        // wheel, so a Lever card is a legitimate pause; in auto nobody is watching, so it
-        // would just hold the window until the watchdog skips it. Leave those approvals
-        // for a tap run rather than burning a slot on a submit that can't complete.
-        { skipPlatforms: tapMode ? [] : ["lever"] },
-      );
-      if (tapMode && !tapPoolQueue.length) {
-        // Footgun guard (tap only): with nothing approved yet, do NOT fall through to an
-        // auto walk (native Indeed search / GH auto-sweep) — that would apply jobs the
-        // user never swiped. Auto has no such guard to trip: an empty approved list there
-        // just means the run starts the way it always did.
-        return {
-          started: false,
-          error: "no_approved_jobs",
-          // Covers both truths honestly: nothing approved yet, OR everything approved
-          // was already applied/dead (dedup excluded it) — live-test 2026-07-27 found
-          // the old "swipe first" wording gaslighting a user whose swipes WERE consumed.
-          message: "Nothing new to apply — jobs you approved before are already applied or closed. Swipe Approve on new cards, then Start.",
-        };
-      }
-
-      // Pool-driven ATS target (GLOBAL_PLAN P1+P2):
-      // - greenhouse: zero-touch → any mode, full-auto;
-      // - lever: hCaptcha at submit → tap mode only (human approves + clears it);
-      //   in auto mode refuse with a clear message instead of a campaign that can't submit.
-      //
-      // ORDER: see pickAtsOpener — a selected board outranks the pool, and the pool is
-      // reached through PLATFORM_EXHAUSTED once the boards are done.
-      const hasBoard = (filters.platforms || []).some((p) => CAMPAIGN_START_PLATFORMS.includes(p));
-      let atsTarget = pickAtsOpener(filters.platforms);
-      // Lever-only runs: no board, no zero-touch pool, just Lever. `hasBoard` guards it
-      // because atsTarget is now null whenever a board leads the run — without this, any
-      // auto user who merely has Lever ticked alongside Indeed would be refused at Start.
-      if (!tapPoolQueue.length && !atsTarget && !hasBoard && (filters.platforms || []).includes("lever")) {
-        if (tapMode) {
-          atsTarget = "lever";
-        } else {
-          return {
-            started: false,
-            error: "lever_needs_tap",
-            message: "Lever applications need Tap mode (their captcha requires a human). Switch to Tap and start again.",
-          };
-        }
-      }
-
-      // LinkedIn is not a campaign platform yet (linkedin-beta.js). A selection where it is
-      // the only thing to run would otherwise fall through to pickPrimaryPlatform's Indeed
-      // default — applying on a board the user never picked. Say so instead. The beta flag
-      // does not change this: it only lets the capture kit run on a LinkedIn tab.
-      if (!tapPoolQueue.length && !atsTarget && !hasBoard &&
-          hdLinkedInOnlySelection(filters.platforms, CAMPAIGN_START_PLATFORMS, ATS_PLATFORMS)) {
-        return {
-          started: false,
-          error: "linkedin_not_ready",
-          message: "LinkedIn isn't available for campaigns yet. Pick Indeed, ZipRecruiter or a company-site platform and start again.",
-        };
-      }
-
-      // Pre-flight login check applies only to native board platforms (Indeed/ZR). ATS apply
-      // pages are public — no login wall — so skip it in pool-driven mode.
-      if (!atsTarget && !tapPoolQueue.length) {
-        const conns = await getPlatformConnections();
-        if (conns[primaryPlatform]?.status === "logged_out") {
-          chrome.tabs.create({ url: platformLoginUrl(primaryPlatform) }).catch(() => {});
-          return {
-            started: false,
-            error: "not_connected",
-            platform: primaryPlatform,
-            message: `Sign into ${platformLabel(primaryPlatform)} first — we opened the login page. Create an account or log in, then start the campaign.`,
-          };
-        }
-      }
-
-      // Immediate feedback: from here we're committed to starting, but opening the
-      // window + loading the board + writing the first tailored application takes
-      // ~1-2 min. Without a line NOW the Live Activity reads "Waiting for extension"
-      // and feels frozen (Igor 2026-07-25). Post progress the moment we commit.
-      // (The free-taste gate + preSt fetch already ran earlier — not duplicated here.)
-      await addToActivityLog("Starting your campaign — opening the browser and finding jobs now…", "info");
-
-      try {
-        // Caps + reviewMode were already stamped from the pre-flight status above,
-        // so this is just the start signal — no second /campaign/status round-trip.
-        await apiPost("/campaign/start", filters);
-      } catch {
-        // Continue even if server is down — content.js falls back to safe defaults (20/50).
-      }
-
-      // ATS pool-driven mode: build the apply queue and target the FIRST job's apply URL
-      // instead of a board search. The automation tab then walks the queue: phase_ats
-      // fills (+submits when zero-touch) → APPLICATION_SAVED / ATS_JOB_DONE → advance.
-      let atsQueue = [];
-      if (tapPoolQueue.length) {
-        // Approved-cards queue (platform-mixed). reviewMode is already set from
-        // submit_mode above; GH items auto-submit, Lever items stop for the human.
-        atsQueue = tapPoolQueue;
-        await chrome.storage.local.set({ atsQueue, atsPlatform: "pool", atsNavAt: Date.now(), atsNavTries: 0 });
-        await addToActivityLog(
-          tapMode
-            ? `Applying to ${atsQueue.length} approved jobs (your swipes) — working through them now.`
-            : `Starting with ${atsQueue.length} job${atsQueue.length > 1 ? "s" : ""} you approved, then searching the boards for more.`,
-          "info");
-      } else if (atsTarget) {
-        const capState = (await chrome.storage.local.get("campaignCaps")).campaignCaps || {};
-        const built = await buildAtsQueue(atsTarget, capState.perPlatform || 20);
-        atsQueue = built.queue;
-        if (!atsQueue.length) {
-          // Name which zero it is. "No jobs yet" and "your pool is full of jobs that no
-          // longer match your search" need different actions from the user, and the old
-          // single message sent everyone to "broaden your keywords" — the wrong advice
-          // for the case where the keywords are right and the pool is stale.
-          return {
-            started: false,
-            error: "no_ats_jobs",
-            message: built.error
-              // Never dress a failed read as "no jobs" — a source that silently
-              // contributes zero is indistinguishable from a broken one (#113).
-              ? `Couldn't load your ${atsTarget} jobs just now (the server didn't answer). Try Start again in a moment.`
-              : built.offSearch > 0
-              ? `None of the ${built.pool} ${atsTarget} jobs in your pool match your current search — ${built.offSearch} are leftovers from earlier keywords. They'll refresh as new jobs are found.`
-              : `No zero-touch ${atsTarget} jobs to apply to yet — try again shortly or broaden your keywords.`,
-          };
-        }
-        await chrome.storage.local.set({ atsQueue, atsPlatform: atsTarget, atsNavAt: Date.now(), atsNavTries: 0 });
-        await addToActivityLog(
-          atsTarget === "lever"
-            ? `Found ${atsQueue.length} Lever jobs — filling each; you approve + clear the captcha.`
-            : `Found ${atsQueue.length} zero-touch ${atsTarget} jobs — starting full-auto apply.`,
-          "info"
-        );
-      } else {
-        await chrome.storage.local.remove(["atsQueue", "atsPlatform", "atsNavAt", "atsNavTries"]);
-      }
-
-      const targetUrl = atsQueue.length ? atsQueue[0].applyUrl
-        // ONE keyword per search (index 0 to start); content.js rotates to the next
-        // keyword as each is exhausted. Cramming all keywords into one query returned junk.
-        : buildPlatformUrl(primaryPlatform, filters.keywords.slice(0, 1), filters.location, filters.job_type, filters.search_radius_miles, filters.work_setting);
-      // Where the automation window first lands. For a pool run whose FIRST job is an
-      // Indeed/ZR native posting we must NOT cold-open its deep /viewjob link — a direct
-      // deep-link nav is a bot jump that Cloudflare answers with "Additional Verification
-      // Required", and the apply never starts. Open the platform HOMEPAGE instead; content.js
-      // sessionWarmup passes CF there (sets cf_clearance), then navigates to targetUrl (the
-      // picked job), which now loads clean. GH/Lever pool jobs have no such CF gate, so open
-      // their apply URL directly. Non-pool (auto) keeps homepage → typed-search as before.
-      // MIXED pool (GH head + Indeed later): the later native deep-link is CF-warmed on the
-      // fly by navigatePoolNext (first hit of each native domain routes via its homepage).
-      // We seed poolWarmedNatives with the head below so a native head isn't re-warmed.
-      const headPlatform = atsQueue.length ? atsQueue[0].platform : null;
-      const homeUrl = !atsQueue.length
-        // LinkedIn has NO Cloudflare gate, so skip the homepage→search hop (built for Indeed's
-        // CF) and open the Easy-Apply search DIRECTLY — the homepage-first warmup was landing
-        // on /feed and not reliably navigating on (live 2026-08-01). Direct nav is proven.
-        ? (primaryPlatform === "linkedin" ? targetUrl : platformEntryUrl(primaryPlatform))
-        : POOL_NATIVE_ALL.includes(headPlatform)
-          ? platformEntryUrl(headPlatform)
-          : atsQueue[0].applyUrl;
-      await addToActivityLog(`Opening the automation window → ${String(homeUrl).slice(0, 70)}`, "info");
-
-      // Automation runs in a dedicated background window — minimized so it doesn't
-      // steal focus from the user's browser. Screenshots are captured via CDP
-      // Automation runs in a dedicated window that opens behind the current one
-      // (focused: false). We keep it visible — captureVisibleTab requires the
-      // window to be in normal state and rendering. Minimizing or moving it
-      // off-screen breaks screenshot capture.
-      let tab;
-      const prevData = await chrome.storage.local.get(["campaignWindowId", "campaignTabId"]);
-      let reusingWindow = false;
-      if (prevData.campaignWindowId) {
-        try {
-          const win = await chrome.windows.get(prevData.campaignWindowId, { populate: true });
-          if (win && win.tabs && win.tabs.length > 0) {
-            tab = win.tabs[0];
-            await chrome.tabs.update(tab.id, { url: homeUrl, active: true });
-            // Restore to normal state in case user minimized it
-            chrome.windows.update(prevData.campaignWindowId, { state: "normal" }).catch(() => {});
-            reusingWindow = true;
-          }
-        } catch {
-          // Window was closed — create a new one below
-        }
-      }
-
-      if (!reusingWindow) {
-        const win = await chrome.windows.create({
-          url: homeUrl,
-          focused: false,
-          width: 1280,
-          height: 900,
+      const res = await startCampaign(msg.filters, { source: "manual" });
+      // The launch the daily auto-start repeats (auto-daily.js). Only a launch that
+      // actually started: replaying one the gates refused would just be refused again.
+      if (res && res.started) {
+        await chrome.storage.local.set({
+          [HD_LAST_LAUNCH_KEY]: { filters: msg.filters || {}, at: new Date().toISOString() },
         });
-        tab = win.tabs[0];
-        // Don't minimize — captureVisibleTab only works on visible (normal-state) windows
       }
-
-      const tabInfo = await chrome.tabs.get(tab.id);
-      // Chrome's Memory Saver discards background tabs it decides are idle — a
-      // discarded automation tab is a zombie: the window is alive (heartbeat happy)
-      // while the walk is gone. Opt this one tab out.
-      chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
-      await addToActivityLog(`Automation window ${reusingWindow ? "reused" : "opened"} (tab ${tab.id}) — loading the page…`, "info");
-
-      await chrome.storage.local.set({
-        campaignRunning: true,
-        campaignFilters: filters,
-        campaignTargetUrl: targetUrl,
-        campaignStartedAt: new Date().toISOString(),
-        campaignTabId: tab.id,
-        campaignWindowId: tabInfo.windowId,
-        currentJob: null,
-        campaignWarmedUp: false,
-        // A native head is CF-warmed by the homepage open above → seed it so the queue walk
-        // doesn't re-warm the same domain. GH/Lever/Ashby heads need no warm, so [] for them.
-        poolWarmedNatives: POOL_NATIVE_ALL.includes(headPlatform) ? [headPlatform] : [],
-        processedJobKeys: [],
-        // Keyword walk state, all per RUN. content.js goes one page per keyword and
-        // rotates through the whole list before deepening (kwLap = which page every
-        // phrase is on; kwDone = phrases that returned nothing this run).
-        // kwIndex starts at 0 on purpose: WHICH phrase leads a run is the server's
-        // decision — /campaign/start round-robins the list (modules/keyword_rotation,
-        // cursor in campaign_states.filters) and the dashboard arms us with that order.
-        // A second cursor kept here would advance independently of the server's and the
-        // two would drift apart.
-        kwIndex: 0,
-        kwLap: 0,
-        kwDone: [],
-        // Platform-failover ledger — PLATFORM_EXHAUSTED never revisits these. Seed it with
-        // the stage this run actually OPENS on: a pool-led run (no board selected) opens on
-        // the ATS target, and seeding "indeed" there would both lie and let the failover
-        // walk back into the pool it just finished. An APPROVED-led run opens on the pool,
-        // so it seeds "pool" — seeding the board here would burn the board before it ran,
-        // which is precisely the 09-13 failure (a run that never touched Indeed) in reverse.
-        triedPlatforms: [tapPoolQueue.length ? "pool" : (atsTarget || primaryPlatform)],
-        // Who leads the pool walk, and therefore what happens when it drains:
-        //   "tap"  → go idle INSIDE the pool and wait for more swipes (that's the tapalka);
-        //   "auto" → hand off to the boards, because the approved cards were only the
-        //            head start and the rest of the run is the ordinary auto sweep.
-        // Without this the auto run would sit idle after the last approved card, looking
-        // exactly like a finished campaign while 26 of its 30 slots went unused.
-        poolLeadMode: tapPoolQueue.length ? (tapMode ? "tap" : "auto") : null,
-        // Consent boundary for that failover (Igor 09-11): the launch modal's default is
-        // "All connected platforms" (platform_mode "all") — switching boards is what the
-        // user asked for. A single pick ("single") means THIS board only: on exhaustion
-        // we stop honestly instead of surprising them on a platform they didn't choose.
-        // Absent field (older dashboard) = the old always-failover behavior.
-        platformFailover: (filters.platform_mode || "all") !== "single",
-        zrNoBtnStreak: 0, // external-apply wall guard counter
-        unreadableStreak: 0, // consecutive unreadable job pages — platform-broken detector
-        // Stale per-job state from the LAST run must not leak into this one: with these
-        // left over, the fresh homepage was treated as an open application form and
-        // phase3 ran against it, logging "form abandoned" for a job we never touched
-        // (live 08-15, after a Chrome restart).
-        currentJobInfo: null,
-        generatedCoverLetter: "",
-        pendingJobs: [],
-        currentJobIndex: 0,
-      });
-
-      // Keep-awake itself is asserted by updateBadge() below — but holding a machine
-      // awake SILENTLY is what malware does, so the start of every run says it once.
-      if (chrome.power) {
-        await addToActivityLog(
-          "🔌 Keeping your computer awake while the campaign runs — the screen may dim, but the machine won't sleep. Closing the laptop lid still puts it to sleep.",
-          "info"
-        );
-      }
-      updateBadge();
-      return { started: true, tabId: tab.id, windowId: tabInfo.windowId };
+      return res;
     }
 
     // ----- Screenshot capture (triggered by content.js) -----
@@ -2506,6 +2701,15 @@ async function handleMessage(msg, sender) {
         await addToActivityLog(
           `⏹ Campaign stopped (${msg.reason || "requested by you"}).`, "info",
           { outcome: msg.outcome || "stopped_by_user" });
+        // A human's Stop (dashboard / popup mark it) is today's answer for the schedule too.
+        if (msg.userStop === true) {
+          const ad = await chrome.storage.local.get([HD_AUTO_DAILY_KEY, HD_AUTO_DAILY_STATE_KEY]);
+          const adCfg = hdAutoDailyNormalize(ad[HD_AUTO_DAILY_KEY]);
+          if (adCfg.enabled) {
+            const { state } = hdAutoDailyPlan(ad[HD_AUTO_DAILY_STATE_KEY], localDay());
+            await chrome.storage.local.set({ [HD_AUTO_DAILY_STATE_KEY]: hdAutoDailyAfterUserStop(adCfg, state, new Date()) });
+          }
+        }
       }
 
       // Clear running state first so the onDetach listener won't auto-reattach.
@@ -3144,6 +3348,14 @@ async function handleMessage(msg, sender) {
     }
 
     // ----- Tracking pop-up switch (dashboard launch dialog, via ping.js) -----
+    // Daily auto-start setting, from the dashboard (ping.js). Validated here: the page can
+    // only switch it on/off and pick an hour, nothing else.
+    case "AUTO_DAILY_GET":
+      return await autoDailyView();
+
+    case "AUTO_DAILY_SET":
+      return await autoDailySet(msg);
+
     case "PILL_EVERYWHERE_STATE":
       return { on: await chrome.permissions.contains({ origins: HD_PILL_EVERYWHERE_ORIGINS }) };
 
