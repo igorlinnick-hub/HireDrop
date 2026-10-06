@@ -1,6 +1,7 @@
 """The `ad_spend` table — one row per (platform, date, ad), service_role only.
 
-Writers: the Meta Insights sync (app/ads/meta_spend.py), the Google Ads Script
+Writers: the Meta Insights sync (app/ads/meta_spend.py), the ads-manager agent's
+Meta MCP readings (scripts/ads_spend.py ingest-mcp), the Google Ads Script
 through POST /admin/ads/spend, and scripts/ads_spend.py for anything bought by
 hand. Reader: the Ads section of the admin board.
 
@@ -73,14 +74,16 @@ def read_all(limit: int = 50000) -> list[dict]:
     return fetch_paged(build, limit)
 
 
-def newest_synced_at(platform: str) -> str | None:
+def newest_sync(platform: str) -> dict | None:
+    """The newest write for a platform: {"synced_at", "source"} or None. The
+    source tells the board which writer is live (Meta: token sync or agent)."""
     res = (
         get_supabase()
         .table("ad_spend")
-        .select("synced_at")
+        .select("synced_at, source")
         .eq("platform", platform)
         .order("synced_at", desc=True)
         .limit(1)
         .execute()
     )
-    return res.data[0]["synced_at"] if res.data else None
+    return res.data[0] if res.data else None
