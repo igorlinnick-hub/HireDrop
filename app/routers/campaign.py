@@ -23,6 +23,7 @@ from app.db.subscriptions import (
     get_tier,
     read_submit_mode,
 )
+from app.db.user_day import day_start, remember_zone, stored_zone
 from app.deps import get_current_user
 from app.disposable_email import is_disposable_email
 from app.schemas import CampaignStartRequest
@@ -73,7 +74,10 @@ def campaign_queue(
     from app.routers.jobs import TAP_APPLY_PLATFORMS
     from modules.job_identity import job_identity
 
-    done_today = apps_db.count_today(user.id, since)
+    # The cap's own boundary when the user's zone is on file; the client's midnight is
+    # only a display fallback for a user whose browser never reported one.
+    zone = stored_zone(user.id)
+    done_today = apps_db.count_today(user.id, day_start(zone) if zone else since)
     tier = get_tier(user.id, getattr(user, "email", None))
     budget = daily_limit(tier, get_submit_mode(user.id))
     budget_left = max(0, budget - done_today) if budget > 0 else 0
@@ -136,9 +140,13 @@ def campaign_queue(
 
 
 @router.get("/campaign/status")
-def campaign_status(since: str | None = None, user=Depends(get_current_user)):
-    # `since` = the client's LOCAL midnight as a UTC ISO instant, so "today" counts
-    # roll over at the USER's midnight, not the server's UTC (2026-08-12 fix).
+def campaign_status(
+    since: str | None = None, tz: str | None = None, user=Depends(get_current_user)
+):
+    # `tz` = the browser's IANA zone. Stored (app/db/user_day.py) so the CAP rolls over at
+    # the user's midnight too, and then "today" here is counted from that same stored
+    # midnight — one boundary for the number shown and the number enforced. `since` (the
+    # client's local midnight) is only the fallback while no zone is on file.
     # Effective state = flag AND fresh extension heartbeat; a zombie (laptop closed,
     # crash, offline — flag stuck true, no pings) self-heals here: reported not-running
     # and the row is lazily flipped. See ZOMBIE_FIX_PLAN.md.
@@ -146,8 +154,10 @@ def campaign_status(since: str | None = None, user=Depends(get_current_user)):
     profile = get_profile(user.id)
     enabled_platforms = profile.get("platforms", [])
 
-    today_count = apps_db.count_today(user.id, since)
-    platform_counts = apps_db.count_today_by_platform(user.id, since)
+    zone = remember_zone(user.id, tz)
+    day = day_start(zone) if zone else since
+    today_count = apps_db.count_today(user.id, day)
+    platform_counts = apps_db.count_today_by_platform(user.id, day)
     jobs_ready = jobs_db.count_new_jobs(user.id, enabled_platforms)
     # Swipes the user approved that are still undone. Reported in EVERY mode on purpose:
     # only a tap run consumes them, so an auto user who swiped (or swiped and then switched

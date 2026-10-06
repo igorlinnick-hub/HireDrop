@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 
 from app.db import applications as apps_db
 from app.db.client import get_supabase
+from app.db.user_day import user_day_start
 from config import ADMIN_EMAILS, FREE_APP_LIMIT
 
 TIER_LIMITS = {
@@ -171,6 +172,8 @@ def daily_limit(tier: str, submit_mode: str = "auto") -> int:
 
 
 def check_can_apply(user_id: str, platform: str, email: str | None = None) -> dict:
+    # The user's own midnight, from the zone on file — never from the request.
+    day = user_day_start(user_id)
     tier = get_tier(user_id, email)
 
     if tier == "admin":
@@ -179,7 +182,7 @@ def check_can_apply(user_id: str, platform: str, email: str | None = None) -> di
             "allowed": True,
             "reason": "",
             "tier": "admin",
-            "used_today": apps_db.count_today(user_id),
+            "used_today": apps_db.count_today(user_id, day),
             "daily_limit": ADMIN_DAILY_LIMIT,
             "platform_used": 0,
             "free_used": None,
@@ -196,7 +199,7 @@ def check_can_apply(user_id: str, platform: str, email: str | None = None) -> di
                 f"You've used all {FREE_APP_LIMIT} free applications — subscribe to keep applying."
             ),
             "tier": "free",
-            "used_today": apps_db.count_today(user_id),
+            "used_today": apps_db.count_today(user_id, day),
             "daily_limit": daily_limit("free"),
             "platform_used": 0,
             "free_used": free_used,
@@ -204,7 +207,7 @@ def check_can_apply(user_id: str, platform: str, email: str | None = None) -> di
         }
 
     limit = daily_limit(tier, get_submit_mode(user_id))
-    used_today = apps_db.count_today(user_id)
+    used_today = apps_db.count_today(user_id, day)
 
     if used_today >= limit:
         return {
@@ -218,7 +221,7 @@ def check_can_apply(user_id: str, platform: str, email: str | None = None) -> di
             "free_limit": FREE_APP_LIMIT if tier == "free" else None,
         }
 
-    platform_counts = apps_db.count_today_by_platform(user_id)
+    platform_counts = apps_db.count_today_by_platform(user_id, day)
     platform_used = platform_counts.get(platform, 0)
 
     if platform_used >= MAX_PER_PLATFORM:
@@ -247,8 +250,9 @@ def check_can_apply(user_id: str, platform: str, email: str | None = None) -> di
 
 def get_usage_summary(user_id: str, email: str | None = None) -> dict:
     tier = get_tier(user_id, email)
-    used_today = apps_db.count_today(user_id)
-    platform_counts = apps_db.count_today_by_platform(user_id)
+    day = user_day_start(user_id)  # same boundary the cap is enforced with
+    used_today = apps_db.count_today(user_id, day)
+    platform_counts = apps_db.count_today_by_platform(user_id, day)
 
     if tier == "admin":
         return {
