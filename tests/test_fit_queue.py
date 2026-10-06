@@ -443,3 +443,46 @@ def test_requeued_urls_reads_only_open_retried_rows(real_requeued_urls):
     q.eq.assert_any_call("user_id", "u1")
     q.is_.assert_any_call("resolved_at", "null")
     q.is_.assert_any_call("requeued_at", "null")  # under not_: requeued rows only
+
+
+# --- the live walks: /tools/assess-fit ---------------------------------------------------
+
+
+def _assess(company, history, handbacks=()):
+    from app.routers import tools
+    from app.schemas import AssessFitRequest
+
+    class _User:
+        id = "u1"
+
+    req = AssessFitRequest(job_title="Marketing Manager", company=company, description="x" * 200)
+    with (
+        patch.object(tools, "_assess_fit_gate", return_value=None),
+        patch.object(tools, "get_profile", return_value={"apply_mode": "standard"}),
+        patch("app.db.applications.companies_applied_since", return_value=list(history)),
+        patch("app.db.handbacks.companies_handed_back_since", return_value=list(handbacks)),
+        patch.object(
+            tools, "assess_fit", return_value={"fit_score": 80, "decision": "apply"}
+        ) as judge,
+    ):
+        return tools.assess_fit_endpoint(req, user=_User()), judge
+
+
+def test_the_indeed_walk_skips_a_company_already_applied_to():
+    # The walks never pass through build_queue: before this, Indeed applied to the same
+    # employer again (prod, 60 days: 5 second postings at one company on Indeed).
+    out, judge = _assess("DoorDash, Inc.", history=["doordashusa"])
+    assert out["decision"] == "skip" and out["company_capped"] is True
+    judge.assert_not_called()  # a capped posting costs no AI call
+
+
+def test_a_hand_back_holds_the_slot_on_the_walk_too():
+    out, judge = _assess("DoorDash", history=[], handbacks=["Doordashusa"])
+    assert out["decision"] == "skip"
+    judge.assert_not_called()
+
+
+def test_a_new_company_goes_to_the_judge():
+    out, judge = _assess("Acme", history=["DoorDash"])
+    assert out == {"fit_score": 80, "decision": "apply"}
+    judge.assert_called_once()

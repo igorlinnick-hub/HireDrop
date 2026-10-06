@@ -269,6 +269,23 @@ def assess_fit_endpoint(req: AssessFitRequest, user=Depends(get_current_user)):
                 "apply_mode": "broad",
             }
 
+    # One application per company per 60 days, on the live walks too (Igor, 10-06). The
+    # Indeed and ZipRecruiter walks never pass through the server queue, so before this they
+    # applied to a company the queue would have capped: 6 second postings at one employer in
+    # 60 days, 5 of them Indeed. Same read as the queue (fit_queue.companies_holding_slots),
+    # and before the judge, so a capped posting costs no AI call.
+    from modules.fit_queue import COMPANY_WINDOW_DAYS, companies_holding_slots, company_slot_taken
+
+    if company_slot_taken(req.company, companies_holding_slots(user.id)):
+        return {
+            "fit_score": 0,
+            "decision": "skip",
+            "reason": f"Already tried {req.company} in the last {COMPANY_WINDOW_DAYS} days — one application per company.",
+            "concerns": ["Company cap — one application per employer per 60 days"],
+            "judged": True,
+            "company_capped": True,
+        }
+
     result = assess_fit(
         job={"title": req.job_title, "company": req.company, "description": req.description},
         profile=profile,

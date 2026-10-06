@@ -81,6 +81,34 @@ def company_key(name: str | None) -> str:
     return key
 
 
+def companies_holding_slots(user_id: str) -> list[str]:
+    """Every company whose slot is taken for the window: one entry per application and per
+    hand-back the person did not send back. The ONE read every apply path counts against —
+    the server queue and deck (build_queue) and the live Indeed/ZipRecruiter walks
+    (/tools/assess-fit). Two lists here would be two authorities that drift apart.
+
+    Best-effort per source: an unreadable history leaves the in-list cap standing and must
+    never stop a run."""
+    from app.db import applications as apps_db
+    from app.db import handbacks as hb_db
+
+    taken: list[str] = []
+    for name, read in (
+        ("application", apps_db.companies_applied_since),
+        ("hand-back", hb_db.companies_handed_back_since),
+    ):
+        try:
+            taken += read(user_id, COMPANY_WINDOW_DAYS)
+        except Exception as e:  # noqa: BLE001
+            print(f"[company-cap] {name} history unreadable: {e}", file=sys.stderr)
+    return taken
+
+
+def company_slot_taken(company: str | None, taken: list[str]) -> bool:
+    key = company_key(company)
+    return bool(key) and sum(1 for c in taken if company_key(c) == key) >= COMPANY_CAP
+
+
 def has_current_verdict(row: dict, version: str) -> bool:
     return row.get("fit_version") == version and row.get("fit_score") is not None
 
