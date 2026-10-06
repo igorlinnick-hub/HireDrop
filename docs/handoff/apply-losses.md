@@ -278,11 +278,14 @@
 
 ## Следующий шаг
 
-Модель: **Opus**. 1) `cws_publish.py status`: 1.8.41 одобрен → `ship ../dist/hiredrop-ext-1.8.42.zip`. Живой ZR-прогон: в activity больше одной ZR-вакансии со страницы. Web #289 (Start ждёт перезагрузку ext, «Checking…») в проде; `drive.py` теперь ждёт модалку до 15 с (d80a549). 2) #365
-живьём не проверен: Indeed сейчас за Cloudflare-стеной — прогон Indeed, когда стена спадёт («🏷️ company from card»).
-3) ZR дедуп по пути URL (находка выше): logBackend на «already processed» → замер → ключ = uuid. 4) LinkedIn —
-аккаунт (linkedin.md). 5) GH первый блок/телефон; #349; `applied_unconfirmed` на черновиках Indeed. Профиль
-платформ после GH-прогона = greenhouse; следующий запуск «All connected» вернёт все.
+Модель: **Opus**. **План 10-06 (замер 14 дн: подано 61 = 4.4/день, 3 юзера; хендбэков 67 = 52%; 6 из 15 дней без
+заявок, до капа не дошёл ни один прогон; ZR 113 стартов → 0).** Сверху вниз, исполнители — агенты, мерж после скептика:
+1) хендбэки: инструмент `scripts/handback_reasons.py` (ветка `tools/handback-reasons`) → фиксы по топ-причинам;
+2) ежедневный автостарт в расширении (ветки `ext-auto-daily` + web `feat/auto-daily-toggle`; решения — память
+`project_auto_daily_start`) + Start перестаёт глотать 403 сервера; 3) второй судья: ATS из очереди берёт серверный
+fit (ветка `fit/reuse-server-verdict`); 4) «authorized in <страна>» → не Yes по умолчанию (ветка `ext-work-auth-country`).
+Волна 2: фильтр по названию на карточках (−26 открытий/прогон), Indeed CF-стена и ZR вживую («давай»), порог fit 35/32 (Игорь).
+Релиз: версию бампать при сборке (агенты не бампают); 1.8.42 ждёт одобрения 1.8.41 в CWS.
 
 Файлы лейна: `chrome-extension/content.js` (waitForFormButton перед waitForFormReady; isShownControl/buttonCensus после findFormButtonIn ~L3970; no-button ветка ~L4690, preferIndeedResume/structuredReviewSnapshot ~L3860, step loop ~L4325), `background.js` forgetHandedBackFromApplied ~L1059, `tests/indeed-resume-choice.test.js`, `tests/applied-rollback.test.js`, `chrome-extension/content.js` (formBlockers ~L3500, fillTextQuestions ~L2990,
 pay/school helpers перед isDemographicQuestion, fillComboboxes, fillCheckboxes),
