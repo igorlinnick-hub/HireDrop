@@ -52,6 +52,15 @@ _AUTHORIZATION_Q = re.compile(
 )
 
 
+# "…without (the need for) (employer) sponsorship": Yes = needs NO sponsorship.
+_SPONSOR_FLIPPED = re.compile(
+    r"without\s+(the\s+need\s+(for|of)\s+|needing\s+|requiring\s+)?(any\s+)?"
+    r"((employer|company|visa|immigration|employment)\s+)*sponsor",
+    re.I,
+)
+_SPONSOR_NEGATED = re.compile(r"\bwithout\b|\b(do not|don'?t|not) (need|require)", re.I)
+
+
 # "…work IN <place>": the place the question is actually about, when it says so.
 _WORK_IN = re.compile(
     r"\b(?:work|working|employment|employed)\b[^.?!]{0,60}?\b(?:in|within)\s+"
@@ -114,6 +123,15 @@ def _status_from_profile(question: str, profile: dict, options: list[str]) -> st
         return ""  # the profile does not know → we do not answer
 
     want_yes = bool(flag)
+    if is_sponsor:
+        # Which way Yes points (mirrors content.js sponsorshipSaysYes). "Are you authorized
+        # to work in the US WITHOUT sponsorship?" — Yes means the person needs none; read
+        # like "will you require sponsorship?" it told employers a US citizen was not
+        # authorized. Any other negation is a guess → refuse.
+        if _SPONSOR_FLIPPED.search(question):
+            want_yes = not want_yes
+        elif _SPONSOR_NEGATED.search(question):
+            return ""
     if not options:
         return "Yes" if want_yes else "No"
     wanted = re.compile(r"^yes\b", re.I) if want_yes else re.compile(r"^no\b", re.I)

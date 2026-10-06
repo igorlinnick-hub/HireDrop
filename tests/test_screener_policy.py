@@ -165,10 +165,12 @@ def test_work_status_somewhere_else_is_refused_not_answered_from_the_us_flag(que
         ("Are you authorized to work in the U.S.?", "Yes"),
         ("Do you have the right to work in the US?", "Yes"),
         ("Will you now or in the future require sponsorship for employment visa status?", "No"),
-        # Other countries named only as visa examples: still a US question.
+        # Other countries named only as visa examples: still a US question. And "without
+        # sponsorship" points Yes the other way: needs none → Yes (it used to say "No",
+        # i.e. "not authorized", to employers about a US citizen).
         (
             "Are you authorized to work in the US without sponsorship (e.g. TN for Canada/Mexico)?",
-            "No",
+            "Yes",
         ),
         # Names nowhere → the job's country, which for this product is the US.
         ("Are you legally authorized to work in the country in which this job is located?", "Yes"),
@@ -314,3 +316,30 @@ def test_unattended_mode_turns_unknown_into_no_answer_and_shows_the_facts():
     # The extension's path is untouched: same rules, same prompt as before.
     out, system, prompt = ask("Yes")
     assert out == "Yes" and "UNATTENDED MODE" not in system and "FACTS ON FILE" not in prompt
+
+
+@pytest.mark.parametrize(
+    ("question", "needs", "answer"),
+    [
+        # Same reading as content.js sponsorshipSaysYes (chrome-extension/tests/gh-combo-labels).
+        (
+            "Are you legally authorized to work in the United States for any employer without"
+            " the need for sponsorship (now or in the future)?",
+            False,
+            "Yes",
+        ),
+        (
+            "Are you legally authorized to work in the United States for any employer without"
+            " the need for sponsorship (now or in the future)?",
+            True,
+            "No",
+        ),
+        ("Will you now or in the future require visa sponsorship?", True, "Yes"),
+        # Other negations: which way Yes points is a guess → refuse, the person answers.
+        ("Are you authorized to work in the US without being sponsored?", False, ""),
+        ("Are you authorized to work in the US and do not require visa sponsorship?", False, ""),
+    ],
+)
+def test_sponsorship_polarity_follows_the_wording(question, needs, answer):
+    profile = {"work_authorized_us": True, "needs_sponsorship": needs}
+    assert _status_from_profile(question, profile, ["Yes", "No"]) == answer
