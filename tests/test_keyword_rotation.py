@@ -19,6 +19,13 @@ from modules.keyword_rotation import clean_keywords, rotate
 from tests.test_campaign_readiness import ANSWERED
 
 ROLES = ["social media manager", "marketing manager", "digital marketing"]
+# A profile the Start gate lets through (a resume is required for every run since 10-06).
+START_PROFILE = {
+    "onboarding_completed": True,
+    "search_radius_miles": None,
+    "resume_url": "u/resume.pdf",
+    **ANSWERED,
+}
 
 
 def test_first_run_keeps_the_users_own_order():
@@ -84,8 +91,9 @@ def test_start_hands_the_dashboard_the_rotated_order(auth_client):
         patch.object(
             campaign_router,
             "get_profile",
-            return_value={"onboarding_completed": True, "search_radius_miles": None, **ANSWERED},
+            return_value=START_PROFILE,
         ),
+        patch.object(campaign_router, "resume_text_for", return_value=""),
     ):
         body = auth_client.post(
             "/api/v1/campaign/start",
@@ -110,8 +118,9 @@ def test_start_survives_a_row_with_no_cursor_yet(auth_client):
         patch.object(
             campaign_router,
             "get_profile",
-            return_value={"onboarding_completed": True, "search_radius_miles": None, **ANSWERED},
+            return_value=START_PROFILE,
         ),
+        patch.object(campaign_router, "resume_text_for", return_value=""),
     ):
         body = auth_client.post(
             "/api/v1/campaign/start",
@@ -136,8 +145,9 @@ def _start(auth_client, platforms, mode="auto"):
         patch.object(
             campaign_router,
             "get_profile",
-            return_value={"onboarding_completed": True, "search_radius_miles": None, **ANSWERED},
+            return_value=START_PROFILE,
         ),
+        patch.object(campaign_router, "resume_text_for", return_value=""),
     ):
         return auth_client.post(
             "/api/v1/campaign/start",

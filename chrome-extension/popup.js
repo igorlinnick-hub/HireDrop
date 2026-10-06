@@ -346,7 +346,7 @@ $("btn-start").addEventListener("click", async () => {
   } else if (res?.error === "onboarding_incomplete") {
     addLog("Finish your profile setup on hiredrop.io first — the quiz collects the data we fill applications with.", "err");
   } else {
-    addLog("Failed to start: " + (res?.error || "unknown"), "err");
+    addLog("Failed to start: " + (res?.message || res?.error || "unknown"), "err");
   }
 
   $("btn-start").textContent = "Start Campaign";
@@ -360,7 +360,7 @@ $("btn-start").addEventListener("click", async () => {
 $("btn-stop").addEventListener("click", async () => {
   $("btn-stop").disabled = true;
   hideCaptchaAlert();
-  const res = await send({ type: "STOP_CAMPAIGN" });
+  const res = await send({ type: "STOP_CAMPAIGN", userStop: true });
   if (res && res.stopped) addLog("Campaign stopped", "");
   $("btn-stop").disabled = false;
   await loadStatus();

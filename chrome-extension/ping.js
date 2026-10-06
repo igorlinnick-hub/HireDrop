@@ -4,6 +4,7 @@
 //   HIREDROP_PING          → respond with HIREDROP_PONG (extension detection)
 //   HIREDROP_STORE_TOKEN   → STORE_TOKEN to background, then HIREDROP_TOKEN_STORED back
 //   HIREDROP_READ_STORAGE  → read chrome.storage.local keys, post HIREDROP_STORAGE_DATA back (debug)
+//   HIREDROP_GET/SET_AUTO_DAILY → daily auto-start setting, answered with HIREDROP_AUTO_DAILY
 //   HIREDROP_TEST_ARM_ATS  → (test-only, review-mode-gated) set campaignRunning so an open
 //                            Greenhouse/Lever tab runs phase_ats without a real campaign
 // Marker read by background.js healPingBridges(): it lives in this extension's ISOLATED
@@ -117,8 +118,32 @@ window.addEventListener("message", function (e) {
   }
 
   if (typeof e.data === "object" && e.data.type === "HIREDROP_STOP_CAMPAIGN") {
-    try { chrome.runtime.sendMessage({ type: "STOP_CAMPAIGN" }, function () { void chrome.runtime.lastError; }); }
+    // userStop: a human pressed Stop — the daily auto-start reads it as today's answer.
+    try { chrome.runtime.sendMessage({ type: "STOP_CAMPAIGN", userStop: true }, function () { void chrome.runtime.lastError; }); }
     catch (ex) { /* stale context — the page reload that fixes Start fixes this too */ }
+  }
+
+  // Daily auto-start setting (auto-daily.js). The schedule lives in the extension — it
+  // belongs to the machine where Chrome runs — so the dashboard reads and writes it here.
+  // GET reads, SET {enabled, hour} writes; both answer HIREDROP_AUTO_DAILY with the state
+  // as the extension now holds it (on/off, hour, next run, today's outcome). An older
+  // extension doesn't know these and stays silent — the dashboard reads silence as "update".
+  if (typeof e.data === "object" && (e.data.type === "HIREDROP_GET_AUTO_DAILY" || e.data.type === "HIREDROP_SET_AUTO_DAILY")) {
+    const req = e.data.type === "HIREDROP_GET_AUTO_DAILY"
+      ? { type: "AUTO_DAILY_GET" }
+      : { type: "AUTO_DAILY_SET", enabled: e.data.enabled === true, hour: Number.isInteger(e.data.hour) ? e.data.hour : undefined };
+    try {
+      chrome.runtime.sendMessage(req, function (resp) {
+        const err = chrome.runtime.lastError ? chrome.runtime.lastError.message : null;
+        if (err || !resp || !resp.ok) {
+          window.postMessage({ type: "HIREDROP_AUTO_DAILY", ok: false, error: err || (resp && resp.error) || "no_response" }, "*");
+          return;
+        }
+        window.postMessage(Object.assign({}, resp, { type: "HIREDROP_AUTO_DAILY", ok: true }), "*");
+      });
+    } catch (ex) {
+      window.postMessage({ type: "HIREDROP_AUTO_DAILY", ok: false, error: "context_invalidated" }, "*");
+    }
   }
 
   // Dev self-reload: reload the unpacked extension without a manual chrome://extensions click,

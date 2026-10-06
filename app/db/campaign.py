@@ -4,6 +4,7 @@ import contextlib
 from datetime import UTC, datetime
 
 from app.db.client import get_supabase
+from modules.employer_answers import ANSWERS_UI
 
 # Heartbeat TTL (ZOMBIE_FIX_PLAN.md): the extension pings /extension/ping every 60s
 # whenever it is loaded, and that ping stamps campaign_states.last_ping_at. A campaign
@@ -67,7 +68,7 @@ def build_readiness(
     submit_mode: str,
     free_used: int | None,
     free_limit: int,
-    answers_ui: int = 1,
+    answers_ui: int = ANSWERS_UI,
 ) -> dict:
     """Single source of truth for "can a campaign start MEANINGFULLY?" (pure — testable).
 
@@ -85,8 +86,6 @@ def build_readiness(
     simply leaves Lever out and says so (see /campaign/start). A precondition belongs
     here only when the campaign as a whole has nothing to do without it.
     """
-    platforms = profile.get("platforms") or []
-    ats_selected = any(p in ("greenhouse", "lever") for p in platforms)
     checks: list[dict] = []
 
     def add(check_id: str, ok, reason: str, fix: str | None) -> None:
@@ -111,10 +110,12 @@ def build_readiness(
         "Add at least one keyword — the campaign needs something to search for",
         "keywords",
     )
+    # Every run, not only Greenhouse/Lever (Igor, 10-06: no Start without a resume). It is
+    # what the answers below are pre-filled from, and /campaign/start refuses without it.
     add(
         "resume",
-        (not ats_selected) or bool(profile.get("resume_url")),
-        "Upload a resume — company-site (Greenhouse/Lever) applications require one",
+        bool(profile.get("resume_url")),
+        "Upload your resume — a campaign can't start without one",
         "settings",
     )
     # The questions employers almost always ask. Unanswered = the filler reaches 99% of
