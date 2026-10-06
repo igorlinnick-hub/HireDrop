@@ -2017,6 +2017,90 @@
     return parts.join(" - ").trim();
   }
 
+  // ── company on the job page ─────────────────────────────────────────────────
+  // Indeed: read ONLY inside the job's own root. Every selector used to have an
+  // unscoped document-wide twin, and on a results page document.querySelector(
+  // '[data-testid="company-name"]') is the FIRST CARD's employer, not the open job's —
+  // the wrong-employer trap #174 warned about. No root, no read: "" is honest, a
+  // neighbour's name is not.
+  //
+  // [data-testid="vj-company-name"]: an employer without an Indeed company page has no
+  // /cmp/ link in the rebuilt header; the name is a bare text node under this testid
+  // (captured 10-05, tests/fixtures/indeed-viewjob-no-cmp.html). Missing it took
+  // empty-company fit lines from 0% to 16% of Indeed walk postings in three weeks.
+  function readIndeedJobCompany(doc) {
+    const root =
+      doc.querySelector('[data-testid="viewjob-main-content"]') ||
+      doc.querySelector('[data-testid="desktop-job-header"]') ||
+      doc.querySelector(".jobsearch-JobComponent");
+    if (!root) return "";
+    const el =
+      root.querySelector('a[href*="/cmp/"]') ||
+      root.querySelector('[data-testid="vj-company-name"]') ||
+      root.querySelector('[data-testid="inlineHeader-companyName"]') ||
+      root.querySelector('[data-testid="company-name"]') ||
+      root.querySelector(".jobsearch-InlineCompanyRating-companyHeader") ||
+      root.querySelector(".companyName");
+    return (el?.textContent || "").replace(/\s+/g, " ").trim();
+  }
+
+  // The posting's identity in a URL: Indeed jk/vjk, ZipRecruiter lk (the card uuid).
+  function jobIdFromUrl(url) {
+    try {
+      const u = new URL(url, "https://www.indeed.com");
+      return u.searchParams.get("jk") || u.searchParams.get("vjk") || u.searchParams.get("lk") || "";
+    } catch {
+      return "";
+    }
+  }
+
+  // The employer the search CARD showed for this exact posting — matched by id, never by
+  // position (currentJobIndex drifts on redirects/skips; a positional match would file the
+  // application under the neighbour's name). Search walk → pendingJobs[].jk; pool run →
+  // the server's queue row whose applyUrl carries the same id. Returns {company, source}.
+  function cardCompanyFor(jobId, pendingJobs, atsPlatform, atsQueue) {
+    const none = { company: "", source: "" };
+    if (!jobId) return none;
+    const card = (pendingJobs || []).find((j) => j && j.jk === jobId && (j.company || "").trim());
+    if (card) return { company: card.company.trim(), source: "card" };
+    if (atsPlatform === "pool") {
+      const row = (atsQueue || []).find((q) => q && jobIdFromUrl(q.applyUrl || "") === jobId && (q.company || "").trim());
+      if (row) return { company: row.company.trim(), source: "pool row" };
+    }
+    return none;
+  }
+
+  // ZipRecruiter right pane. Its only a[href*="/co/"] reads "Learn more about <name>"
+  // plus an <svg><title>external</title> icon, so textContent produced "Learn more about
+  // XPOexternal" in prod. The card's [data-testid="job-card-company"] is clean: prefer it
+  // (stored card, then the card in the DOM, then the pool row — all matched by uuid), and
+  // only then the link's OWN text nodes with the "Learn more about" prefix taken off.
+  function readZipRecruiterCompany(doc, uuid, pendingJobs, atsPlatform, atsQueue) {
+    const stored = cardCompanyFor(uuid, pendingJobs, null, null).company;
+    if (stored) return stored;
+    const cardEl = uuid ? doc.getElementById(`job-card-${uuid}`) : null;
+    const onCard = (cardEl?.querySelector('[data-testid="job-card-company"]')?.textContent || "")
+      .replace(/\s+/g, " ").trim();
+    if (onCard) return onCard;
+    const pool = cardCompanyFor(uuid, null, atsPlatform, atsQueue).company;
+    if (pool) return pool;
+    const a = doc.querySelector('[data-testid="right-pane"]')?.querySelector('a[href*="/co/"]');
+    if (!a) return "";
+    // aria-label carries the full name even if ZR wraps it in a <span>; the own text
+    // nodes are the fallback (an <svg><title> icon is an element, so it never joins in).
+    const own = Array.from(a.childNodes)
+      .filter((n) => n.nodeType === 3)
+      .map((n) => n.textContent)
+      .join(" ");
+    for (const raw of [a.getAttribute("aria-label") || "", own]) {
+      // A bare "Learn more about" must give "", or company_key collapses every ZR
+      // employer into one key and the company cap blocks them all after one apply.
+      const name = raw.replace(/\s+/g, " ").trim().replace(/^learn more about\b\s*/i, "").trim();
+      if (name) return name;
+    }
+    return "";
+  }
+
   async function phase2_jobDetail() {
     const platform = detectPlatform();
     if (await bailIfDeadPosting()) return;
@@ -2067,19 +2151,7 @@
       document.querySelector('[data-testid="jobsearch-JobInfoHeader-title"]') ||
       document.querySelector("h2.jobTitle") ||
       (onDetailPage ? document.querySelector("h1") : null);
-    // Company lives in the header's /cmp/ link now. SCOPED to the job container: an
-    // unscoped a[href*="/cmp/"] on the results page matches the first result CARD, which
-    // is a different job than the one open in the right pane — a silent mismatch that
-    // would file the application under the wrong employer.
-    const jobRoot =
-      document.querySelector('[data-testid="viewjob-main-content"]') ||
-      document.querySelector('[data-testid="desktop-job-header"]');
-    const companyEl =
-      jobRoot?.querySelector('a[href*="/cmp/"]') ||
-      document.querySelector('[data-testid="inlineHeader-companyName"]') ||
-      document.querySelector('[data-testid="company-name"]') ||
-      document.querySelector(".jobsearch-InlineCompanyRating-companyHeader") ||
-      document.querySelector(".companyName");
+    // Company: scoped to the job root, never document-wide (readIndeedJobCompany).
     const descEl =
       document.querySelector("#jobDescriptionText") ||
       document.querySelector(".simple-job-description-html") ||
@@ -2091,7 +2163,7 @@
     // react-native-web one. The next redesign should cost us a slightly worse title, not
     // the walk — 84 postings were skipped on "no job title" before this line existed.
     const jobTitle = titleEl?.textContent?.trim() || titleFromDocumentTitle();
-    const jobCompany = companyEl?.textContent?.trim() || "";
+    let jobCompany = readIndeedJobCompany(document);
     // 3000, matching the ATS path. 1000 was set when this text only fed a prompt the
     // server clipped anyway; it is now STORED (POST /jobs/describe) and read by three
     // consumers that clip at their own limits — fit judge 2500, resume tailor 1500,
@@ -2130,6 +2202,18 @@
     // A readable page breaks the streak: scattered bad postings must never add up to
     // a false "platform broken" verdict over a long healthy run.
     await storageSet({ unreadableStreak: 0 });
+
+    // The page had no employer we could read — but the card we opened it from did
+    // ("Opening job: X @ Y" then "Good fit: X @ " in prod). Take it back ONLY for the
+    // same jk; the line lets prod count how often the page alone falls short.
+    if (!jobCompany) {
+      const st = await storageGet(["pendingJobs", "atsPlatform", "atsQueue"]);
+      const fb = cardCompanyFor(jobIdFromUrl(jobUrl), st.pendingJobs, st.atsPlatform, st.atsQueue);
+      if (fb.company) {
+        jobCompany = fb.company;
+        logBackend(`🏷️ company from ${fb.source}: ${fb.company}`, "info");
+      }
+    }
 
     // Deduplicate by job key (jk= / vjk= in URL).
     // Indeed jk values are alphanumeric, NOT just hex — the original [a-f0-9]+
@@ -2483,11 +2567,13 @@
 
     const panel = document.querySelector('[data-testid="right-pane"]');
     const titleEl = panel?.querySelector("h2");
-    const companyEl = panel?.querySelector('a[href*="/co/"]');
     const descEl = document.querySelector('[data-testid="job-details-scroll-container"]');
 
     const jobTitle = titleEl?.textContent?.trim() || "";
-    const jobCompany = companyEl?.textContent?.trim() || "";
+    const _zrSt = await storageGet(["pendingJobs", "atsPlatform", "atsQueue"]);
+    const jobCompany = readZipRecruiterCompany(
+      document, jobIdFromUrl(window.location.href), _zrSt.pendingJobs, _zrSt.atsPlatform, _zrSt.atsQueue
+    );
     const jobDesc = descEl?.textContent?.trim().slice(0, 3000) || "";  // see the note on the /viewjob path
     const jobUrl = window.location.href;
 

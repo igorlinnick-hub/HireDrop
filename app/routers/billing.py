@@ -270,6 +270,24 @@ def _resolve_subscription(stripe, invoice_obj: dict, customer_id: str):
         return None
 
 
+def _invoice_for_payment_intent(stripe, payment_intent_id: str | None) -> str | None:
+    """The invoice a payment intent paid, for a dispute. Webhook payloads arrive on the
+    account's old API version, but the SDK calls a version where Charge has no
+    `invoice` field — InvoicePayment is the link that survives. A lookup failure
+    raises, so the caller answers 5xx and Stripe re-delivers.
+    """
+    if not payment_intent_id:
+        return None
+    res = stripe.InvoicePayment.list(
+        payment={"type": "payment_intent", "payment_intent": payment_intent_id}, limit=1
+    )
+    data = res.data if hasattr(res, "data") else (res.get("data") or [])
+    if not data:
+        return None
+    first = data[0]
+    return first.get("invoice") if isinstance(first, dict) else first.invoice
+
+
 # A customer we cannot map to a user is usually an ORDERING problem, not a stranger:
 # `invoice.paid` can arrive before `checkout.session.completed` has written
 # stripe_customer_id (migrations/2026-07-stripe-events.sql warns about exactly this).
@@ -348,6 +366,14 @@ def _dispatch_event(stripe, etype: str, obj: dict) -> None:
         # Clawback: the commission for that invoice is voided. Resolving the
         # user isn't needed — the invoice id alone identifies the commission.
         affiliates_db.reverse_for_invoice(obj.get("invoice"))
+
+    elif etype == "charge.dispute.created":
+        # Subscriptions aren't refunded (Terms §4), so a bank chargeback is how money
+        # comes back. Void the commission as soon as the dispute opens — a dispute we
+        # later win leaves it reversed, which costs a partner $3.60, not us.
+        affiliates_db.reverse_for_invoice(
+            _invoice_for_payment_intent(stripe, obj.get("payment_intent"))
+        )
 
     elif etype == "customer.subscription.deleted":
         billing_db.downgrade(_user_for_customer(etype, obj.get("customer")))
