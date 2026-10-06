@@ -1,6 +1,6 @@
 # apply-losses — где теряются подачи: хендбэки, потерянные записи, вход в Indeed
 
-Обновлено: 2026-10-06 · ветка: main (1.8.36 #351 78a811b синкнута; в CWS на ревью 1.8.35; в Chrome Игоря 1.8.34 до релоада)
+Обновлено: 2026-10-06 · ветка: main (ext 1.8.36 #351 синкнута; CWS на ревью 1.8.35; в Chrome Игоря 1.8.34 до релоада) · **открыто: #353, ветка `queue/company-cap-walks`, #349**
 
 ## Состояние
 
@@ -166,11 +166,39 @@
 - Политика приватности: hiredrop-website #280 (все сайты расширения) смержен, ждёт деплоя Vercel (лимит
   сборок); HireDrop #349 (CI-сверка манифест↔/privacy) смержить после деплоя.
 
+## Заход 10-06 (поздний): кап на компанию — В ПОЛЁТЕ
+
+- **Правило Игоря 10-06: ОДНА заявка на компанию за 60 дней** (09-30 было 2). Возврат формы
+  (хендбэк) тоже занимает слот: DoorDash у Игоря открывали 4 раза за 5 дней (10-01 ×2, 10-05 ×2 подряд в
+  одном прогоне), кап считал только поданные.
+- **PR #353** (ветка `queue/company-cap-1`, CI шёл): `COMPANY_CAP` 2→1; `handbacks.companies_handed_back_since()`
+  (без `requeued_at` — повтор «Try again» доходит); тесты обновлены. Агент-скептик запускался — его вердикт
+  НЕ получен (сессия закрыта). **Следующей сессии: перепрогнать скептика** (ретрай-путь: не режет ли его
+  открытый хендбэк ДРУГОЙ вакансии той же компании; `company_key("Doordashusa") == company_key("DoorDash")`
+  на реальных парах; сайт/копирайт «two per company»), потом мержить.
+- **Ветка `queue/company-cap-walks`** (запушена, PR НЕ открыт, стоит поверх #353, 5d383fe): разведка
+  показала, что обходы Indeed/ZipRecruiter кап НЕ проверяют вовсе (прод, 60 дн: 6 вторых вакансий у
+  одного работодателя, 5 на Indeed). Фикс: `fit_queue.companies_holding_slots()` — одно чтение для всех
+  путей; `/tools/assess-fit` отдаёт `skip` + `company_capped` ДО судьи. Расширение не трогали. pytest
+  зелёный. После мержа #353 — rebase на main, PR, скептик.
+- Не закрыто разведкой: пул/by-link (`/campaign/queue`) и тап-режим кап не проверяют; одобренная строка
+  колоды не держит слот (можно одобрить две вакансии одной компании).
+- 22 повторные заявки в ОДНУ вакансию (Indeed, 09-02…09-25) — последняя 09-25, свежих нет.
+- **«Скипает телефон и первый блок» (наблюдение Игоря):** окно, что он видел, было моей пробой
+  dropdown-ов в Chromium (только `fillComboboxes`, без отправки) — там текстовые поля и не заполнялись.
+  Агент проверял настоящий путь заполнения GH (телефон iti, имя/почта/страна/город) на живой форме —
+  отчёт НЕ получен. **Перепроверить в следующей сессии** (prod `diag.invalid` по GH-хендбэкам за 14 дней +
+  прогон реальных функций на `job-boards.greenhouse.io/doordashusa/jobs/8207993`, встроенный Chromium).
+- Политика: web #280 смержен, ждёт деплоя Vercel (лимит сборок); **#349 смержить, когда
+  `python scripts/check_privacy_hosts.py` → exit 0**.
+
 ## Следующий шаг
 
-Модель: **Opus**. 1) ✅ ловушки закрыты (1.8.34 проверена). Длинный прогон — в новый день, когда кап свежий.
-2) `applied_unconfirmed` на отправке черновика Indeed — какая страница после Submit. 3) ✅ GH DoorDash (#351). 4) contact-info-module no-button.
-5) Вернуть tailored PDF на Indeed — когда `🧾 sdr` покажет, чего ждёт шаг.
+Модель: **Opus**. 1) #353: скептик → мерж (Railway деплой; предупредить соседей, если идёт прогон).
+2) `queue/company-cap-walks`: rebase на main → PR → скептик → мерж. 3) GH первый блок/телефон —
+перепроверка (выше). 4) #349 после деплоя сайта. 5) `applied_unconfirmed` на черновиках Indeed и
+contact-info no-button — нужен живой прогон в свежий день (кап). Агентов подключать параллельно,
+каждую правку — через скептика (просьба Игоря 10-06).
 
 Файлы лейна: `chrome-extension/content.js` (waitForFormButton перед waitForFormReady; isShownControl/buttonCensus после findFormButtonIn ~L3970; no-button ветка ~L4690, preferIndeedResume/structuredReviewSnapshot ~L3860, step loop ~L4325), `background.js` forgetHandedBackFromApplied ~L1059, `tests/indeed-resume-choice.test.js`, `tests/applied-rollback.test.js`, `chrome-extension/content.js` (formBlockers ~L3500, fillTextQuestions ~L2990,
 pay/school helpers перед isDemographicQuestion, fillComboboxes, fillCheckboxes),
