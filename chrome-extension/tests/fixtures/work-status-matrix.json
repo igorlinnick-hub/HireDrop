@@ -550,6 +550,54 @@
    ],
    "class": "blank",
    "why": "real label"
+  },
+  {
+   "q": "Since obtaining your most recent citizenship, did you afterwards become a permanent resident in any other country/region? This does not include temporary statuses such as student visas or time-limited work permits.",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "real label (Twitch): export-control claim, profile has no such fact; main said No, branch said Yes"
+  },
+  {
+   "q": "Are you authorized to work in the U.S. on a permanent basis?",
+   "expect": [
+    "Yes",
+    "No",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth_without",
+   "why": "permanent = no sponsorship needed; (T,T) → No"
+  },
+  {
+   "q": "Are you a U.S. citizen or green card holder?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "no citizenship field: never inferred from work_authorized_us"
+  },
+  {
+   "q": "Are you a permanent resident of the United States?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "same"
   }
  ]
 }

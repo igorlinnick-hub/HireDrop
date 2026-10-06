@@ -46,7 +46,7 @@ _MAX_POSTING_CHARS = 1500
 _AUTHORIZATION_Q = re.compile(
     r"(authoriz|authoris|eligible|legally (permitted|authorized|able)|right to work|"
     r"permanent work|work authoriz).{0,40}(work|employ)|"
-    r"(work|employ).{0,40}(authoriz|authoris|eligible|legally)|citizenship status"
+    r"(work|employ).{0,40}(authoriz|authoris|eligible|legally)"
     # "Do you have the right to work in Germany?" ends on the place, with no second
     # "work" for the pattern above to find — so it used to go to the model.
     r"|\bright to work\b",
@@ -83,8 +83,14 @@ _AND_NO_SPONSOR = re.compile(
 )
 _UNRESTRICTED = re.compile(
     r"permanent (?:work|employment) authori[sz]ation|\bunrestricted\b"
-    r"|for any (?:united states )?employer|without (?:any )?restrictions?",
+    r"|for any (?:united states )?employer|without (?:any )?restrictions?"
+    r"|on a permanent basis|permanently",
     re.I,
+)
+# Citizenship / permanent residence / a green card: the profile holds none of these
+# (work_authorized_us is not citizenship) → always refused, never inferred.
+_CITIZENSHIP = re.compile(
+    r"\bcitizen(?:s|ship)?\b|green card|permanent residen(?:t|ce|cy)|lawful permanent", re.I
 )
 _NEGATED = re.compile(
     r"\b(?:not|n't)\s+(?:currently\s+|yet\s+|legally\s+)*"
@@ -223,6 +229,9 @@ def _status_class(question: str) -> str | None:
         _AUTHORIZATION_Q.search(m) or _HOLDS_PERMIT.search(m) or _CAN_WORK_WITHOUT.search(m)
     )
     sponsor_words = bool(_SPONSOR_WORDS.search(m))
+    # Read on the FULL label: a trailing clause must not drop it back to the model's guess.
+    if not auth and _CITIZENSHIP.search(_strip_skip_clause(question)):
+        return "unclear"
     if not (auth or sponsor_words):
         return None
     if _OPEN_Q.search(m):

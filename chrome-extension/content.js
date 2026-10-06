@@ -3714,7 +3714,7 @@
   const WS_AUTH_RE = new RegExp(
     "(authoriz|authoris|eligible|legally (permitted|authorized|able)|right to work|" +
     "permanent work|work authoriz).{0,40}(work|employ)|" +
-    "(work|employ).{0,40}(authoriz|authoris|eligible|legally)|citizenship status|\\bright to work\\b", "i");
+    "(work|employ).{0,40}(authoriz|authoris|eligible|legally)|\\bright to work\\b", "i");
   // "…work IN <place>": the place the question is about, when it says so.
   const WS_WORK_IN_RE = /\b(?:work|working|employment|employed)\b[^.?!]{0,60}?\b(?:in|within|from)\s+((?:the\s+)?[^.?!,;()]{2,60})/i;
   // "US"/"USA" only in capitals: lower-case "us" is the pronoun ("work for us in London").
@@ -3842,7 +3842,10 @@
   const WS_CAN_WORK_WITHOUT_RE = /\b(?:can|could|able to)\s+(?:legally\s+)?work\b[^?]{0,60}\bwithout\b/i;
   const WS_WITHOUT_RE = /\bwithout\b[^?]{0,60}\b(?:sponsor|visa)/i;
   const WS_AND_NO_SPONSOR_RE = /\band\s+(?:do not|don'?t|will not|won'?t|not)\s+(?:need|require)\b/i;
-  const WS_UNRESTRICTED_RE = /permanent (?:work|employment) authori[sz]ation|\bunrestricted\b|for any (?:united states )?employer|without (?:any )?restrictions?/i;
+  const WS_UNRESTRICTED_RE = /permanent (?:work|employment) authori[sz]ation|\bunrestricted\b|for any (?:united states )?employer|without (?:any )?restrictions?|on a permanent basis|permanently/i;
+  // Citizenship / permanent residence / a green card: facts the profile does not hold
+  // (work_authorized_us is not citizenship) → always blank, never inferred.
+  const WS_CITIZENSHIP_RE = /\bcitizen(?:s|ship)?\b|green card|permanent residen(?:t|ce|cy)|lawful permanent/i;
   const WS_NEGATED_RE = /\b(?:not|n't)\s+(?:currently\s+|yet\s+|legally\s+)*(?:authori[sz]ed|eligible|permitted|able to work|require|need)\b/i;
   const WS_EITHER_OR_RE = /\bor\s+(?:will|would|do|does)\s+you\s+(?:require|need)|\bor\s+(?:require|need)\b|\bor\s+(?:will|would|do)\s+you\s+(?:now\s+or\s+in\s+the\s+future\s+)?require/i;
   const WS_OPEN_RE = /^\W*(?:how|what|which|when|why|where)\b|\bplease\s+(?:describe|explain|list|specify|provide)\b/i;
@@ -3853,6 +3856,10 @@
     if (!m.includes("?") && m.length > 150) return null;
     const auth = WS_AUTH_RE.test(m) || WS_HOLDS_PERMIT_RE.test(m) || WS_CAN_WORK_WITHOUT_RE.test(m);
     const sponsorWords = WS_SPONSOR_WORDS_RE.test(m);
+    // "Are you a U.S. citizen or green card holder?", "…did you become a permanent resident
+    // in any other country?" (Twitch; its "visas / work permits" sit after the "?") — read
+    // on the FULL label, so a trailing clause can't drop it back to a Yes default.
+    if (!auth && WS_CITIZENSHIP_RE.test(stripSkipClause(label))) return "unclear";
     if (!auth && !sponsorWords) return null;
     if (WS_OPEN_RE.test(m)) return "unclear";
     const asksRequire = WS_REQ_START_RE.test(m);
@@ -3971,7 +3978,7 @@
   // this company — benign, so it is not one of these.
   function isPersonalKnockout(label) {
     const q = String(label || "");
-    return /(sponsor|visa\b|h-?1b|immigration)/i.test(q) ||
+    return /sponsor|visas?\b|h-?1b|immigration|work permits?\b|green card|permanent residen|\bcitizen(?:s|ship)?\b/i.test(q) ||
       /non-?compet|non-?solicit|(employment|restrictive|post-employment) (agreements?|covenants?|restrictions?)|bound by any agreements?|subject to (any|a) [^?]{0,40}agreements?/i.test(q) ||
       (/(worked (at|for)|employed (by|at|with|for)|(former|previous|current) employee)/i.test(q) &&
        !/how (many|long)/i.test(q));

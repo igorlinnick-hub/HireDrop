@@ -231,6 +231,13 @@ const DOMESTIC = [
     check("radio: UK sponsorship → nothing picked (was “No”)", visaUK.on.length === 0, visaUK.on.join());
     const nc = await radios(group("nc", "Are you currently subject to a non-compete agreement or an agreement not to solicit customers with your current or prior employer which may prevent you from performing the job for which you are applying?", ["Yes", "No"]), US);
     check("radio: non-compete question → nothing picked (was “Yes” via “agree”)", nc.on.length === 0, nc.on.join());
+    // Real label (Twitch, gh_form_schemas.jsonl): main answered No, the first #378 draft
+    // Yes — a false export-control claim. Its "visas / work permits" sit after the "?".
+    const twitch = "Since obtaining your most recent citizenship, did you afterwards become a permanent resident in any other country/region? This does not include temporary statuses such as student visas or time-limited work permits.";
+    const tw = await radios(group("tw", twitch, ["Yes", "No"]), US);
+    check("radio: Twitch permanent-residence question, citizen profile → not Yes (blank)", tw.on.length === 0, tw.on.join());
+    const gc = await radios(group("gc", "Are you a U.S. citizen or green card holder?", ["Yes", "No"]), { work_authorized_us: true, needs_sponsorship: true });
+    check("radio: “U.S. citizen or green card holder?” → blank, never inferred from work authorization", gc.on.length === 0, gc.on.join());
     const age = await radios(group("age", "Are you 18 or older?", ["Yes", "No"]), {});
     check("radio: unrelated eligibility (18+) keeps its Yes", age.on.join() === "age-0", age.on.join());
   }
