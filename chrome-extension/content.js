@@ -6330,11 +6330,18 @@
         det.signal.includes("cdn-cgi/challenge-platform") ||
         det.signal.includes("cdn-cgi/bm");
       if (isCfJsChallenge) {
+        // Durable, not popup-only: this wait (60 s, then up to two reloads) was invisible
+        // in prod, so 3 minutes of "Just a moment" read as a frozen run (10-06, Indeed
+        // /viewjob: three loads 64 s apart and not one line between them).
+        const _cfWhere = `${location.hostname}${location.pathname.slice(0, 30)}`;
+        const _cfT0 = Date.now();
         log("Cloudflare check — waiting for auto-resolve...", "");
+        logBackend(`☁️ Cloudflare check on ${_cfWhere} — waiting up to 60 s for it to clear`, "info");
         for (let i = 0; i < 12; i++) {
           await sleep(5000);
           if (!isDetected().detected) {
             log("Cloudflare resolved — continuing", "ok");
+            logBackend(`☁️ Cloudflare cleared after ${Math.round((Date.now() - _cfT0) / 1000)} s — continuing`, "info");
             return;
           }
         }
@@ -6348,6 +6355,7 @@
         if (cfCount < 2) {
           await storageSet({ cfReloadCount: cfCount + 1 });
           log(`Cloudflare didn't resolve in 60s — reloading tab (try ${cfCount + 1}/2)...`, "");
+          logBackend(`☁️ Cloudflare didn't clear in 60 s on ${_cfWhere} — reloading the tab (try ${cfCount + 1}/2)`, "warn");
           window.location.reload();
           await sleep(15000);
           if (!isDetected().detected) {
@@ -6357,6 +6365,7 @@
           }
         } else {
           log("Cloudflare still flagged after 2 reloads — handing off to you", "err");
+          logBackend(`☁️ Cloudflare still up on ${_cfWhere} after 2 reloads — handing it to you`, "warn");
         }
         // Fall through to the human hand-off if reload also failed / retries exhausted.
       }
