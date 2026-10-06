@@ -9,8 +9,8 @@ WHY
 
     1. YIELD  — of the rows this user would actually be shown (the deck's own cut), how
                 many clear the user's OWN bar (apply_mode: broad 35 / standard 55 /
-                precise 70, ai_fit_judge._MODE_THRESHOLDS)? After the founder's flat rule
-                "max 2 applications per company per 60 days", how many is that per day
+                precise 70, ai_fit_judge._MODE_THRESHOLDS)? After the company cap
+                (modules/fit_queue: 1 per company, 3 per agency, per 60 days), how many is that per day
                 of pool inflow?
     2. ERRORS — when the judge says no, is it right? Only a human read of the refusals
                 answers that, so the script prints them per user: every near-bar refusal
@@ -69,7 +69,6 @@ import argparse
 import json
 import os
 import random
-import re
 import sys
 import tempfile
 import threading
@@ -93,6 +92,7 @@ from app.routers.jobs import (  # noqa: E402
     on_search_filter,
 )
 from modules import ai_cover_letter, ai_fit_judge  # noqa: E402
+from modules.fit_queue import COMPANY_WINDOW_DAYS, company_cap, company_key  # noqa: E402
 
 # $ per million tokens (input, output), Anthropic list prices — same table as
 # measure_ai_cost.py. A model missing here aborts the run instead of costing $0.
@@ -110,10 +110,7 @@ BANDS = ((0, 34), (35, 54), (55, 69), (70, 100))
 NEAR_BAR = 25  # "at the bar" = score in [bar-25, bar-1]
 SHEET_REFUSALS = 20
 SHEET_PASSES = 5
-COMPANY_CAP = 2  # founder's flat rule: max 2 applications per company...
-COMPANY_WINDOW_DAYS = 60  # ...per 60 days
 INFLOW_DAYS = 7
-_CO_SUFFIX = {"inc", "llc", "corp", "ltd", "co"}
 
 _ctx = threading.local()
 _lock = threading.Lock()
@@ -124,11 +121,9 @@ SPENT = {"usd": 0.0}
 
 
 def norm_company(name: str) -> str:
-    """lower, trim, punctuation out, trailing Inc/LLC/Corp/Ltd/Co dropped."""
-    words = re.sub(r"[^\w\s]", " ", (name or "").lower()).split()
-    while words and words[-1] in _CO_SUFFIX:
-        words.pop()
-    return " ".join(words)
+    """The production cap's employer key (modules/fit_queue.company_key) — one rule, so
+    this measure cuts exactly what the queue cuts."""
+    return company_key(name)
 
 
 def desc_kind(description: str) -> str:
@@ -511,10 +506,11 @@ def company_rule(passed: list[dict], applications: list[dict]) -> dict:
     examples = []
     for co, rows in by_co.items():
         k, h = len(rows), applied.get(co, 0)
-        cut = max(0, k - max(0, COMPANY_CAP - h))
+        cap = company_cap(co)
+        cut = max(0, k - max(0, cap - h))
         if not cut:
             continue
-        dupes = max(0, k - COMPANY_CAP)
+        dupes = max(0, k - cap)
         cut_dupes += dupes
         cut_history += cut - dupes
         examples.append((k, f"{co} ×{k} passed, {h} applied/60d → cut {cut}"))

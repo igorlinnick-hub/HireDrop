@@ -36,6 +36,10 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 # hand-back holds the slot too — see app/routers/jobs.py::_prejudged_queue.
 COMPANY_CAP = 1
 COMPANY_WINDOW_DAYS = 60
+# A staffing agency posts many clients' roles under its own name, so one per 60 days would
+# cut unrelated employers — but its recruiter still reads every application, so no
+# exemption either (10-06 measure: 0 users had 2+ agency applications, so 3 costs nothing).
+AGENCY_CAP = 3
 
 # Rows being judged right now in THIS process. The background pass after a sweep and the
 # campaign's own queue read routinely overlap (the extension reads the queue seconds after
@@ -59,6 +63,74 @@ _COMPANY_SUFFIXES = {
 }
 
 
+# Names that hide the employer: "Confidential" alone was 10 unrelated Indeed employers in
+# 60 days (10-06 measure), so one application there blocked the other nine. These keys
+# (after suffixes are dropped: "Confidential Company" -> "confidential") are no employer
+# at all and are never capped, like an empty company.
+_HIDDEN_EMPLOYER_KEYS = {
+    "confidential",
+    "companyconfidential",
+    "confidentialemployer",
+    "confidencial",
+    "hiring",
+    "stealth",
+    "stealthstartup",
+    "stealthmodestartup",
+    "undisclosed",
+    "anonymous",
+    "private",
+    "privatepractice",
+    "ourclient",
+}
+
+# Staffing agencies: the national names (none in the pool on 10-06, but the pool follows
+# the users' trades) plus name markers that caught the local ones that are there
+# ("southgeorgiastaffing", "bitsrecruiting", "restorationpersonnelsource", "solutions
+# driven on behalf of a client"). A false hit only loosens the cap from 1 to 3.
+_AGENCY_KEYS = {
+    "roberthalf",
+    "jobot",
+    "insightglobal",
+    "teksystems",
+    "kforce",
+    "randstad",
+    "adecco",
+    "manpowergroup",
+    "manpowerengineering",
+    "aerotek",
+    "kellyservices",
+    "apexsystems",
+    "cybercoders",
+    "everforthcybercoders",
+    "motionrecruitmentpartners",
+    "actalent",
+    "beaconhillstaffinggroup",
+    "creativecircle",
+    "lhh",
+    "vaco",
+    "addisongroup",
+    "ayahealthcare",
+    "amnhealthcare",
+    "brooksource",
+    "talentclout",
+    "talentrust",
+    "trustaff",
+    "giftedhealthcare",
+    "deltaworkforce",
+    "laborservices",
+    "expressemployment",
+    "expressemploymentprofessionals",
+}
+_AGENCY_MARKERS = ("staffing", "recruit", "personnel", "onbehalfofaclient")
+
+
+def company_cap(key: str) -> int:
+    """How many applications this employer key may take in the window."""
+    if key in _AGENCY_KEYS or any(m in key for m in _AGENCY_MARKERS):
+        return AGENCY_CAP
+    return COMPANY_CAP
+
+
 # Tails an ATS board token glues onto the employer's name ("doordashusa", "grafanalabs").
 # Matched on the space-free key, so "Grafana Labs" and "grafanalabs" land on one key.
 _BOARD_TAILS = ("careers", "jobs", "labs", "usa", "hq")
@@ -70,11 +142,14 @@ def company_key(name: str | None) -> str:
     """One key per employer across boards: "DoorDash, Inc." on Indeed and "doordashusa"
     (the board token Greenhouse rows carry as company) are the same company to the
     recruiter reading both applications. Spaces are dropped ("Muck Rack" = "Muckrack"),
-    because a board token never has them. A false merge only makes the cap stricter."""
+    because a board token never has them. A false merge only makes the cap stricter.
+    A name that hides the employer ("Confidential") gets "" — no key, never capped."""
     tokens = re.findall(r"[a-z0-9]+", (name or "").lower())
     while len(tokens) > 1 and tokens[-1] in _COMPANY_SUFFIXES:
         tokens.pop()
     key = "".join(tokens)
+    if key in _HIDDEN_EMPLOYER_KEYS:
+        return ""
     for tail in _BOARD_TAILS:
         if key.endswith(tail) and len(key) - len(tail) >= _MIN_STEM:
             return key[: -len(tail)]
@@ -106,7 +181,7 @@ def companies_holding_slots(user_id: str) -> list[str]:
 
 def company_slot_taken(company: str | None, taken: list[str]) -> bool:
     key = company_key(company)
-    return bool(key) and sum(1 for c in taken if company_key(c) == key) >= COMPANY_CAP
+    return bool(key) and sum(1 for c in taken if company_key(c) == key) >= company_cap(key)
 
 
 def has_current_verdict(row: dict, version: str) -> bool:
@@ -285,7 +360,7 @@ def build_queue(
     kept, company_capped = [], 0
     for row in kept_rows:
         key = company_key(row.get("company"))
-        if key and sent[key] >= COMPANY_CAP and row.get("id") not in retried_ids:
+        if key and sent[key] >= company_cap(key) and row.get("id") not in retried_ids:
             company_capped += 1
             continue
         if key:
