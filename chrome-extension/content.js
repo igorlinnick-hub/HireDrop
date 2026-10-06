@@ -35,6 +35,9 @@
   const MAX_AI_ANSWERS_PER_FORM = 15;
   let _aiAnswersUsed = 0;
   let _aiBudgetNotified = false;
+  // Text answers we typed on this form (trimmed). Only these are ever rewritten for length
+  // (shortenRefusedAnswers) — never a value the person or the site put in a field.
+  const _ourTextAnswers = new Set();
 
   // Platforms that run under a TIGHTER rail than the number above (backend MAX_PER_PLATFORM
   // mapping, served as limit_by_platform → campaignCaps.byPlatform). LinkedIn's fallback is
@@ -3116,15 +3119,22 @@
       }
       if (group.some((o) => o.checked)) continue; // already answered
 
-      // Determine which option to pick
+      // Determine which option to pick. The option's own text: label[for], else the label
+      // wrapping it (the input may sit in an indicator <span> whose text is empty), else ARIA.
       const labels = group.map((o) => {
-        const lbl = document.querySelector(`label[for="${o.id}"]`)?.textContent?.trim() ||
+        const lbl = (o.id && document.querySelector(`label[for="${CSS.escape(o.id)}"]`)?.textContent?.trim()) ||
+                    ownWrappingLabel(o)?.textContent?.trim() ||
+                    o.getAttribute("aria-label")?.trim() ||
                     o.parentElement?.textContent?.trim() || "";
         return { el: o, lbl };
       });
 
-      // Determine which option to pick
-      const groupLabel = getFieldLabel(group[0].closest("fieldset, [role='radiogroup'], [role='group']") || group[0]);
+      // The QUESTION: the group's legend / aria-label / aria-labelledby (as formBlockers
+      // names it), else the old label search. Indeed's Mosaic radio groups are a
+      // fieldset[role=radiogroup] labelled by aria-labelledby, and getFieldLabel(fieldset)
+      // returns the first <label> inside it — the first OPTION, not the question.
+      const groupBox = group[0].closest("fieldset, [role='radiogroup'], [role='group']");
+      const groupLabel = radioGroupQuestion(groupBox) || getFieldLabel(groupBox || group[0]);
       const optionTexts = labels.map((l) => l.lbl);
       let target = null;
 
@@ -3132,8 +3142,7 @@
       // Form CC-305) → pick the decline option, never a real identity value.
       const isDemo = isDemographicQuestion(groupLabel, optionTexts);
       if (isDemo) {
-        target = (labels.find((l) =>
-          /(decline|prefer not|don'?t wish|do not wish|not to (answer|say|disclose|identify)|rather not)/i.test(l.lbl)) || {}).el;
+        target = (labels.find((l) => isDeclineOption(l.lbl)) || {}).el;
         // No decline option (e.g. only Yes/No for a disability question) → leave it
         // BLANK. These are legally voluntary; never fabricate a protected-class value
         // by falling through to the Yes/first-option default.
@@ -3190,6 +3199,22 @@
     return filled;
   }
 
+  // A radio group's question as the page labels it: <legend>, aria-label, or the text of
+  // its aria-labelledby nodes. "" when it has none (callers fall back to getFieldLabel).
+  function radioGroupQuestion(g) {
+    if (!g) return "";
+    const byIds = (g.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean)
+      .map((id) => document.getElementById(id)?.textContent || "").join(" ");
+    return (g.querySelector(":scope > legend")?.textContent || g.getAttribute("aria-label") || byIds || "")
+      .replace(/\s+/g, " ").trim();
+  }
+
+  // The <label> wrapping exactly this one radio (never a wrapper around the whole group).
+  function ownWrappingLabel(o) {
+    const wrap = o.closest("label");
+    return wrap && wrap.querySelectorAll('input[type="radio"]').length === 1 ? wrap : null;
+  }
+
   // Tick required attestation / agreement / consent checkboxes. These block
   // submission (e.g. "I certify that I have read and understand…", Self Attestation)
   // and are always affirmations the applicant must accept to proceed. We do NOT touch
@@ -3220,7 +3245,7 @@
       if (!isDemographicQuestion(question, texts)) continue;
       demoGroups.add(g);
       if (all.some((c) => c.checked)) continue;
-      const i = texts.findIndex((t) => /(decline|prefer not|don'?t wish|do not wish|not to (answer|say|disclose|identify)|rather not)/i.test(t));
+      const i = texts.findIndex(isDeclineOption);
       if (i < 0) continue;
       const box = all[i];
       const labelEl = box.id ? document.querySelector(`label[for="${CSS.escape(box.id)}"]`) : null;
@@ -3427,6 +3452,121 @@
   // Fill required text/textarea screener fields that are empty.
   // Employer-defined screener questions can be any type — comments, name, date.
   // We infer the right value from the label text.
+  // ── Text answers that must fit a length limit ─────────────────────────────────────────
+  // Indeed validates "Answer must be shorter than 100 characters." only on Continue, with no
+  // maxlength on the field (live 10-06, Lanakila Pacific: "Duties/Responsibilities" and
+  // "If no, why not?" got our 1-3 sentence AI answers, Continue was refused 3×, hand-back).
+  // The limit is read from maxlength, or from the page's own words about the field.
+  // "shorter / less / fewer than N" is strict (N-1); "at most / up to / maximum N" is N.
+  function charLimitFromText(text) {
+    const t = String(text || "").replace(/(\d),(\d{3})/g, "$1$2");
+    let m = /(?:shorter|less|fewer) than (\d+)\s*char/i.exec(t);
+    if (m) return Math.max(1, Number(m[1]) - 1);
+    m = /(?:no more than|not more than|at most|up to|maximum(?: of)?|max\.?|limit(?:ed)? to|cannot exceed|can'?t exceed|must not exceed|exceed) (\d+)\s*char/i.exec(t) ||
+        /(\d+)\s*char\w*\s*(?:or (?:less|fewer)|max(?:imum)?\b)/i.exec(t);
+    return m ? Number(m[1]) : null;
+  }
+
+  // The tightest limit known for this field: maxlength, its own error/description text, and —
+  // only when the page marked THIS field invalid — a page-level alert ("Answer must be…").
+  function fieldCharLimit(el, pageAlertText) {
+    const limits = [];
+    if (el.maxLength > 0) limits.push(el.maxLength);
+    for (const attr of ["aria-errormessage", "aria-describedby"]) {
+      for (const id of (el.getAttribute(attr) || "").split(/\s+/).filter(Boolean)) {
+        const n = charLimitFromText(document.getElementById(id)?.textContent);
+        if (n) limits.push(n);
+      }
+    }
+    if (pageAlertText && el.getAttribute("aria-invalid") === "true") {
+      const n = charLimitFromText(pageAlertText);
+      if (n) limits.push(n);
+    }
+    return limits.length ? Math.min(...limits) : null;
+  }
+
+  // Our prose answer cut to <= limit on a sentence boundary, else a clause boundary, else a
+  // word boundary (never mid-word, no "…"). "" = it cannot be shortened without changing
+  // what it says — one token, a URL, an e-mail, a bare number — and is left for the person.
+  function shortenAnswer(text, limit) {
+    const s = String(text || "").replace(/\s+/g, " ").trim();
+    if (!limit || s.length <= limit) return s;
+    if (!/\s/.test(s) || /https?:\/\/|www\.|\S+@\S+\.\S+/i.test(s) || /^[\d\s$€£%.,:\/+-]+$/.test(s)) return "";
+    // Sentences: end at . ! ? before a space + capital/digit/quote — not after "U.S" or "e.g".
+    const sentences = [];
+    let start = 0;
+    const END = /[.!?]+(?=\s+["'(]?[A-Z0-9]|\s*$)/g;
+    let m;
+    while ((m = END.exec(s))) {
+      const before = s.slice(start, m.index);
+      if (/(?:^|\s|\.)(?:[A-Za-z]|[A-Z]\.[A-Z]|e\.g|i\.e|etc|vs|Mr|Mrs|Ms|Dr|Inc|Jr|Sr|St)$/.test(before)) continue;
+      sentences.push(s.slice(start, m.index + m[0].length).trim());
+      start = m.index + m[0].length;
+    }
+    if (start < s.length && s.slice(start).trim()) sentences.push(s.slice(start).trim());
+    let out = "";
+    for (const sen of sentences) {
+      const next = out ? `${out} ${sen}` : sen;
+      if (next.length > limit) break;
+      out = next;
+    }
+    // Whole sentences, unless that leaves a stub ("No." for "If no, why not?") where a cut
+    // of the next sentence keeps the reason.
+    if (out.length >= limit * 0.4) return out;
+    // Keep the head of the text, ending on a clause, else a word.
+    // A cut head must not end on a word that needed the next one: a preposition, article,
+    // conjunction, auxiliary or negation ("I did not" → "I did" would say the opposite), a
+    // quantity ("for four" without "years"). They are peeled off until the head stands alone.
+    const DANGLING = new Set(("and or but nor so yet for with without to of in on at by as from into onto over under " +
+      "about around than then the a an this that these those which who whom whose while when where because if " +
+      "including such my our your their his her its i we you they he she it me us them " +
+      "do does did am is are was were be been being have has had will would shall should can could may might must " +
+      "not never no nor more most less least very really also just only each every all some any many few several " +
+      "one two three four five six seven eight nine ten eleven twelve twenty hundred thousand nearly almost " +
+      "approximately roughly up").split(" "));
+    const room = s.slice(0, limit - 1); // one char kept for the closing "."
+    const clause = Math.max(room.lastIndexOf(", "), room.lastIndexOf("; "), room.lastIndexOf(" - "), room.lastIndexOf(" — "), room.lastIndexOf(": "));
+    const wordEnd = s[limit - 1] === " " ? room.length : Math.max(room.lastIndexOf(" "), 0);
+    let head = clause >= Math.floor(limit * 0.4) ? room.slice(0, clause) : room.slice(0, wordEnd);
+    for (let prev = ""; prev !== head;) {
+      prev = head;
+      head = head.replace(/[\s,;:\-—(]+$/, "");
+      const last = (head.match(/(\S+)$/) || ["", ""])[1];
+      if (DANGLING.has(last.toLowerCase()) || /^[\d$€£%.,+-]+$/.test(last)) head = head.slice(0, -last.length);
+    }
+    if (head.split(/\s+/).length < 3 || head.length <= out.length) return out;
+    head = /[.!?]$/.test(head) ? head : `${head}.`;
+    return head.length <= limit ? head : out;
+  }
+
+  // The retry leg: after a refused Continue, shorten each of OUR answers the page now says
+  // is too long, once per field. Anything we cannot shorten honestly stays → hand-back.
+  async function shortenRefusedAnswers(scope) {
+    const alertText = Array.from(scope.querySelectorAll('[role="alert"], [aria-live="assertive"], [aria-live="polite"]'))
+      .concat(Array.from(document.querySelectorAll('[role="alert"]')))
+      .map((n) => n.textContent || "").join(" ");
+    let fixed = 0;
+    for (const el of scope.querySelectorAll('input[type="text"], textarea')) {
+      const value = (el.value || "").trim();
+      if (!el.offsetParent || !value || el.dataset.hdShortened || !_ourTextAnswers.has(value)) continue;
+      const limit = fieldCharLimit(el, alertText);
+      if (!limit || value.length <= limit) continue;
+      el.dataset.hdShortened = "1";
+      const short = shortenAnswer(value, limit);
+      const label = (getFieldLabel(el) || el.name || "").slice(0, 50);
+      if (!short) {
+        logBackend(`✂️ "${label}" must be ≤${limit} chars and our answer can't be cut without changing it — leaving it for you`, "warn");
+        continue;
+      }
+      if (el.tagName === "TEXTAREA") quickSet(el, short); else setNativeValue(el, short);
+      _ourTextAnswers.add(short);
+      fixed++;
+      logBackend(`✂️ Shortened our answer to "${label}" to ${short.length} chars (the form allows ${limit})`, "info");
+      await sleep(humanDelay(150, 400));
+    }
+    return fixed;
+  }
+
   async function fillTextQuestions() {
     const storageData = await storageGet(["profile", "currentJobInfo"]);
     const profile = storageData.profile || {};
@@ -3458,11 +3598,13 @@
         return true;
       });
 
-    let filled = 0;
+    // Answers the page refused as too long (we typed them on the previous round).
+    let filled = await shortenRefusedAnswers(scope);
     for (const el of inputs) {
       const rawLabel = getFieldLabel(el);
       const label = rawLabel.toLowerCase();
       const isTextarea = el.tagName === "TEXTAREA";
+      let fromAI = false;
       // A dropdown's search box is not a text question. fillComboboxes owns it; here only
       // the typeaheads whose answer is a profile FACT we type (school, city/location).
       // Without this, a react-select yes/no burned an AI answer and got prose typed into it
@@ -3628,6 +3770,7 @@
             });
             value = res && res.answer ? res.answer : undefined;
           }
+          fromAI = value !== undefined && value !== "";
         }
         if (value === undefined || value === "") {
           log(`Could not answer screener field: "${rawLabel || el.id || el.name}"`, "warn");
@@ -3636,11 +3779,24 @@
       }
 
       if (!value) continue;
+      // A known length limit (maxlength, or the field's own "N characters" note): our AI
+      // prose is cut to fit; a profile fact, URL, number or letter is never truncated — it
+      // stays blank and the field goes back to the person.
+      const limit = isReactSelectField(el) ? null : fieldCharLimit(el, "");
+      if (limit && String(value).trim().length > limit) {
+        const short = fromAI ? shortenAnswer(value, limit) : "";
+        if (!short) {
+          log(`Answer for "${rawLabel.slice(0, 50)}" exceeds the field's ${limit}-char limit — leaving it for you`, "warn");
+          continue;
+        }
+        value = short;
+      }
       if (isReactSelectField(el) && typeahead === "school") {
         if (!(await fillSchoolTypeahead(el, value))) continue; // not offered → hand back
       } else if (isReactSelectField(el)) await fillReactSelect(el, value);   // P1c: GH/Lever location typeahead
       else if (isTextarea) quickSet(el, value);
       else setNativeValue(el, value);
+      if (!isReactSelectField(el)) _ourTextAnswers.add(String(value).trim());
       await sleep(humanDelay(150, 400));
       filled++;
     }
@@ -3785,9 +3941,24 @@
   // Demographic / EEO self-identification — we auto-decline (most privacy-preserving,
   // and these are legally voluntary). Matches the question label OR the option set.
   function isDemographicQuestion(label, optionTexts) {
-    const demo = /(gender|sex\b|race|ethnic|hispanic|latino|veteran|disab|sexual orientation|transgender|pronoun|national origin|self.?identif)/i;
-    const hasDecline = optionTexts.some(t => /(decline|prefer not|don'?t wish|do not wish|not to (answer|say|disclose|identify)|rather not)/i.test(t));
+    // Word-bounded: a bare "race"/"sex" read "embrace", "trace", "Essex" as EEO questions.
+    const demo = /(\bgender|\bsex\b|\brac(e|ial)\b|\bethnic|hispanic|latin[oax]|\bveteran|\bdisab|sexual orientation|transgender|pronoun|national origin|self.?identif)/i;
+    const hasDecline = optionTexts.some(isDeclineOption);
     return demo.test(label) || (hasDecline && demo.test(optionTexts.join(" ")));
+  }
+
+  // The "I don't wish to answer" option of a self-identification question, however the form
+  // words it. ONE matcher for the radio, checkbox, <select> and combobox fillers — four
+  // copies of the old pattern each missed the same two shapes:
+  //  - a typographic apostrophe: Indeed/Greenhouse print "I don’t wish to answer" (U+2019),
+  //    and `don'?t` needs an ASCII one, so the decline was invisible and a required Veteran
+  //    Status group stayed blank → "Choose an option to continue." refused 3× (live 10-06,
+  //    smartapply demographic-questions);
+  //  - "self-identify": "I choose not to self-identify" never read as "not to identify".
+  // A claim stays a claim: "No, I do not identify as transgender" is an answer, not a decline.
+  function isDeclineOption(text) {
+    const t = String(text || "").replace(/[\u2018\u2019\u02BC\u0060\u00B4]/g, "'");
+    return /(decline|prefer not|prefer to not|rather not|(?:do not|don'?t) wish|wish not to|(?:do not|don'?t) want to (?:answer|say|disclose|share|provide|specify|state|(?:self.?)?identify)|not to (?:answer|say|disclose|share|provide|specify|state|(?:self.?)?identify))/i.test(t);
   }
 
   // ── Legal work status: ONE reading for every widget ──────────────────────────────────
@@ -4115,8 +4286,7 @@
     const texts = options.map(o => o.text);
     // Demographic → decline.
     if (isDemographicQuestion(label, texts)) {
-      const decline = options.find(o =>
-        /(decline|prefer not|don'?t wish|do not wish|not to (answer|say|disclose|identify)|rather not)/i.test(o.text));
+      const decline = options.find(o => isDeclineOption(o.text));
       if (decline) return decline;
     }
     const yes = options.find(o => /^yes\b/i.test(o.text));
@@ -4217,6 +4387,11 @@
     const status = await answerWorkStatus(label, options, profile, jobInfo);
     if (status) return status.pick;
     let chosen = pickOptionDeterministic(label, options, profile);
+    // Self-identification is the decline option or nothing: the radio and checkbox fillers
+    // already leave a decline-less EEO group blank, but a dropdown went on to the model and
+    // the fallbacks below, which may hand back "I am not a protected veteran" in the user's
+    // name. Blank → the required field hands the job back to the person.
+    if (isDemographicQuestion(label, options.map(o => o.text))) return chosen || null;
     // Pay is the user's figure or nothing: no model, and none of the fallbacks below (the
     // "first real option" one would put a bracket of ours on the application).
     if (payQuestion(label)) return chosen || null;
@@ -4247,7 +4422,7 @@
     // 1) a neutral/decline option is harmless for ANY question type (incl. an
     //    unlabelled demographic dropdown) → prefer it.
     const neutral = options.find(o =>
-      /(prefer not|decline|do not wish|don'?t wish|rather not|^n\/?a$|not applicable|^other$|^none$)/i.test(o.text));
+      isDeclineOption(o.text) || /(^n\/?a$|not applicable|^other$|^none$)/i.test(o.text));
     if (neutral) return neutral;
     // 2) a knockout about the person — visa sponsorship, having worked for this company —
     //    is answered from the profile or the model, never by position or by the
@@ -5156,7 +5331,7 @@
 
     // Let the step finish rendering before we fill/decide (see waitForFormReady above).
     await waitForFormReady(10000);
-    _aiAnswersUsed = 0; _aiBudgetNotified = false; // fresh AI budget per form
+    _aiAnswersUsed = 0; _aiBudgetNotified = false; _ourTextAnswers.clear(); // fresh AI budget per form
 
     log("Application form detected — filling fields...", "");
     logBackend(`📋 Application form detected — filling fields (${platformLabel()})`, "info");
@@ -6032,7 +6207,7 @@
       await sendMsg({ type: "STOP_CAMPAIGN" });
       return;
     }
-    _aiAnswersUsed = 0; _aiBudgetNotified = false; // fresh AI budget per form
+    _aiAnswersUsed = 0; _aiBudgetNotified = false; _ourTextAnswers.clear(); // fresh AI budget per form
 
     // Job title: Greenhouse h1 = title; Lever h1 = company, title in .posting-headline h2
     let jobTitle = "";
