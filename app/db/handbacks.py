@@ -91,19 +91,23 @@ def _pool_jk(user_id: str, title: str, company: str) -> str | None:
     Measured 10-06 on the 28 Indeed hand-backs since 09-22: 22 unique, 5 ambiguous, 1
     without a title.
     """
-    if not title:
+    # Without a company a lone same-titled row may be another employer's posting
+    # (skeptic, PR #377) — the search link is the honest answer then.
+    if not title or not company:
         return None
     try:
-        q = (
+        rows = (
             get_supabase()
             .table("jobs")
             .select("link")
             .eq("user_id", user_id)  # service_role bypasses RLS — this filter is the check
             .eq("title", title)
+            .eq("company", company)
+            .limit(20)
+            .execute()
+            .data
+            or []
         )
-        if company:
-            q = q.eq("company", company)
-        rows = q.limit(20).execute().data or []
     except Exception:  # noqa: BLE001 — a failed read falls back to the search link
         return None
     jks = {_indeed_jk(r.get("link") or "") for r in rows} - {None}
