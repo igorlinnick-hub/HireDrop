@@ -1081,12 +1081,11 @@ def tailor_job(job_id: str, user=Depends(get_current_user)):
     job = jobs_db.get_job_by_id(user.id, job_id)
     if not job:
         return JSONResponse(status_code=404, content={"error": "Job not found"})
-    _lazy_tailor_for_job(user, job)
-    job = jobs_db.get_job_by_id(user.id, job_id)
-    if job and job.get("tailored_resume_pdf_url"):
+    pdf_path = _lazy_tailor_for_job(user, job)
+    if pdf_path:
         return {
             "tailored": True,
-            "url": resume_storage.signed_url_from_path(job["tailored_resume_pdf_url"], user.id),
+            "url": resume_storage.signed_url_from_path(pdf_path, user.id),
         }
     return {
         "tailored": False,

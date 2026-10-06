@@ -16,7 +16,7 @@ the same paragraph about a different employer.
 
 The key also carries a fingerprint of what the answer was derived from, so a new
 resume (or new education / work-status answers) retires every answer derived from the
-old one instead of silently reusing it — see _resume_identity.
+old one instead of silently reusing it — see resume_identity.
 """
 
 import contextlib
@@ -45,7 +45,7 @@ def _normalise(text: str) -> str:
     return _TRIM.sub("", cleaned).strip().lower()
 
 
-def _resume_identity(profile: dict) -> str | None:
+def resume_identity(profile: dict) -> str | None:
     """What identifies the resume text the answerer reads (resume_text_for), or None
     when it can't be told — the question is then answered live and not cached.
 
@@ -101,8 +101,8 @@ def build_key(question: str, options: list[str] | None, profile: dict) -> str | 
 
     # Sorted: the same radio group can render in a different order on two boards.
     options_norm = "\x1f".join(sorted(o.lower() for o in options))
-    # A different resume must retire the row (see _resume_identity).
-    resume = _resume_identity(profile)
+    # A different resume must retire the row (see resume_identity).
+    resume = resume_identity(profile)
     if resume is None:
         return None
     fingerprint = resume

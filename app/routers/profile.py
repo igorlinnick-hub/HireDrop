@@ -809,10 +809,18 @@ def _split_location(loc: str) -> tuple[str, str, str]:
     return city[:100], state[:100], postal
 
 
-def _store_tailored_pdf(user_id: str, job_id: str, tailored_text: str) -> None:
+def _store_tailored_pdf(
+    user_id: str,
+    job_id: str,
+    tailored_text: str,
+    fingerprint: str | None = None,
+    previous: str | None = None,
+) -> str:
     """Render + store the per-job ATS PDF from already-generated tailored text.
     No paid AI call — used both after a fresh tailor and to rebuild a PDF whose
     prior generation failed (so we never re-pay the Sonnet tailor for a PDF-only error).
+    `fingerprint` names the resume it was built from (resume_storage.tailoring_is_current);
+    `previous` — a stale tailoring this one replaces — is removed once the row moved on.
     """
     from app.db import jobs as jobs_db
     from modules.ai_resume_tailor import SONNET_MODEL as TAILOR_MODEL
@@ -821,8 +829,11 @@ def _store_tailored_pdf(user_id: str, job_id: str, tailored_text: str) -> None:
     # Structured on the tailor's model: this runs inside the apply-time GET too.
     data = structure_resume_data(tailored_text, model=TAILOR_MODEL)
     pdf_bytes = generate_ats_pdf(data=data)
-    pdf_path = resume_storage.upload_job_tailored(user_id, job_id, pdf_bytes)
+    pdf_path = resume_storage.upload_job_tailored(user_id, job_id, pdf_bytes, fingerprint)
     jobs_db.update_tailored_resume_pdf(job_id, pdf_path, user_id)
+    if previous and previous != pdf_path and previous.startswith(f"{user_id}/"):
+        resume_storage.remove_object(previous)
+    return pdf_path
 
 
 # How much posting text tailoring needs to be worth its $0.0070. Deliberately far
@@ -833,7 +844,7 @@ def _store_tailored_pdf(user_id: str, job_id: str, tailored_text: str) -> None:
 MIN_TAILORABLE_DESC = 300
 
 
-def _lazy_tailor_for_job(user, job) -> None:
+def _lazy_tailor_for_job(user, job) -> str | None:
     """Economics #2 — tailor a job's resume ON DEMAND at apply time (when the
     extension fetches the best resume for this specific job), not eagerly for every
     job discovered. Gating: paid tier. Idempotent; best-effort (never raises into
@@ -871,38 +882,54 @@ def _lazy_tailor_for_job(user, job) -> None:
     every application that would be $0.0129 -> $0.0199; spent only where real text
     exists (~14% of current submissions) it is ~$0.001 blended. See
     content-lab/campus/ECONOMICS.md and docs/handoff/pool-quality.md (W2).
+
+    Returns the path of the job's tailored PDF when it is built from the resume the
+    user has now (resume_storage.tailoring_is_current), else None — the caller then
+    sends the base resume. A tailoring from a replaced resume is redone (paid tier) or,
+    without one, never served.
     """
     try:
         from app.db import jobs as jobs_db
 
         job_id = job.get("id")
         if not job_id:
-            return
+            return None
         # Re-read authoritative state — the caller's dict may be a partial column
         # select (get_by_link fetches only id + pdf_url) and a concurrent request may
         # have already tailored this job.
         fresh = jobs_db.get_job_by_id(user.id, job_id) or job
+        previous = fresh.get("tailored_resume_pdf_url")
+        # The fingerprint costs a profile read + a storage call (~0.3 s), so it is taken
+        # only when a tailoring exists to check or is about to be made.
+        prof = fingerprint = None
+        if previous or fresh.get("tailored_resume"):
+            prof = profile_db.get_profile(user.id)
+            fingerprint = resume_storage.tailor_fingerprint(prof)
+        if previous and resume_storage.tailoring_is_current(user.id, previous, prof, fingerprint):
+            return previous  # fully tailored already, from the resume the user has now
         # Nothing to tailor TOWARD -> don't pay, don't pretend. Checked before the
         # tier lookup so the cheapest test runs first.
         if len((fresh.get("description") or "").strip()) < MIN_TAILORABLE_DESC:
-            return
-        if fresh.get("tailored_resume_pdf_url"):
-            return  # fully tailored already
-        if fresh.get("tailored_resume"):
+            return None
+        # A tailoring built from a resume the user has since replaced is stale: its text
+        # goes too, re-tailored below like a job never tailored.
+        if fresh.get("tailored_resume") and not previous:
             # Paid text exists but the PDF step previously failed — rebuild the PDF
             # only (no second ~$0.028 Sonnet call).
             try:
-                _store_tailored_pdf(user.id, job_id, fresh["tailored_resume"])
+                return _store_tailored_pdf(user.id, job_id, fresh["tailored_resume"], fingerprint)
             except Exception as pdf_err:
                 print(f"[profile] tailored PDF rebuild failed: {pdf_err}", file=sys.stderr)
-            return
+            return None
         from app.db.subscriptions import get_tier
 
         # Paid = the full product (everything, incl. ATS tailoring). "pro" is what
         # both the weekly and monthly plans grant; premium kept for legacy grants.
         if get_tier(user.id, getattr(user, "email", None)) not in ("pro", "premium", "admin"):
-            return
-        prof = profile_db.get_profile(user.id)
+            return None
+        if prof is None:
+            prof = profile_db.get_profile(user.id)
+            fingerprint = resume_storage.tailor_fingerprint(prof)
         from modules.ai_cover_letter import resume_text_for
 
         # The resume the user stands behind — a correction made in the editor has to
@@ -911,22 +938,29 @@ def _lazy_tailor_for_job(user, job) -> None:
 
         resume_text = resume_text_for(prof, max_chars=TAILOR_RESUME_CHARS)
         if not resume_text:
-            return
+            return None
 
         tailored = tailor_resume(fresh, prof, resume_text)
         if not tailored:
-            return
+            return None
         # Store the text FIRST so a later PDF/upload failure can never cause a re-tailor.
         jobs_db.update_tailored_resume(job_id, user.id, tailored)
         try:
-            _store_tailored_pdf(user.id, job_id, tailored)
+            return _store_tailored_pdf(user.id, job_id, tailored, fingerprint, previous)
         except Exception as pdf_err:
             print(
                 f"[profile] tailored PDF step failed (text saved, won't re-tailor): {pdf_err}",
                 file=sys.stderr,
             )
+            if previous:
+                # The stale PDF must not outlive its text: with the path cleared the next
+                # call takes the PDF-only rebuild above instead of paying to re-tailor.
+                jobs_db.update_tailored_resume_pdf(job_id, None, user.id)
+                resume_storage.remove_object(previous)
+        return None
     except Exception as e:
         print(f"[profile] lazy tailor skipped: {e}", file=sys.stderr)
+        return None
 
 
 @router.get("/profile/resume/url/best")
@@ -944,11 +978,11 @@ def resume_best_url(job_url: str = None, user=Depends(get_current_user)):
 
     if job_url:
         job = jobs_db.get_by_link(user.id, job_url)
-        if job and not job.get("tailored_resume_pdf_url"):
-            _lazy_tailor_for_job(user, job)
-            job = jobs_db.get_by_link(user.id, job_url)  # re-read for the freshly-stored path
-        if job and job.get("tailored_resume_pdf_url"):
-            url = resume_storage.signed_url_from_path(job["tailored_resume_pdf_url"], user.id)
+        # Tailors now if needed — and redoes a tailoring from a replaced resume (paid
+        # tier); a stale one it can't redo comes back None and the base resume goes.
+        pdf_path = _lazy_tailor_for_job(user, job) if job else None
+        if pdf_path:
+            url = resume_storage.signed_url_from_path(pdf_path, user.id)
             if url:
                 return {
                     "url": url,
