@@ -107,15 +107,27 @@
   его, а не tailored PDF; ответы скринера всё ещё из резюме HireDrop.
 - Не блокеры filler-honest — в файле ревью.
 
+## Заход 10-06 00:00Z: 1.8.33 проверена
+
+- **Прогон Indeed на 1.8.33** (23:57–00:09Z, кончились ключи): открыто 7, подано 2, 5.5 мин/заявку,
+  10.9/ч. review-module: **0 брошено**; 1 визит спас `⏳ button appeared after 2.5s` (Marketing Director,
+  брошен в 21:37). Обе подачи — ранее брошенные черновики (Culinary Khancepts, WhiteWater), обе
+  `applied_unconfirmed` (Submit нажат, страница подтверждения не распознана) — проверить, как Indeed
+  подтверждает отправку черновика.
+- **Ненастоящие jk в пуле**: `0f1e2d3c4b5a6978`, `123456789abcdef0`, `cdef0123456789ab`,
+  `fedcba9876543210` — по 3–4 строки `jobs` у 4 юзеров, с НАСТОЯЩИМИ названиями/компаниями; в коде этих
+  строк нет. Каждый прогон тратит на них «Dead link» (10-06: 4 из 11 открытий). Похоже на jk-приманки
+  Indeed в карточках выдачи → и потеря времени, и сигнал бот-детекции. Лейн сбора (`extractCardInfo`) —
+  выяснить источник jk на живой карточке, не чинить денайлистом вслепую.
+- drive.py `--platform X` сохраняет выбор в профиль: GH-прогон заменил Игорю indeed→greenhouse;
+  возвращено прогоном `--platform indeed` (теперь `indeed|remoteok`).
+
 ## Следующий шаг
 
-Модель: **Opus**. 1) ✅ GH-замер 1.8.33 (23:42–23:53Z, очередь кончилась сама): открыто 7, подано 1
-(+1 «unconfirmed» modernhealth), 10.0 мин/заявку против базы 21.0 (n мало); хендбэков 3: Later — email-код
-GH (ожидаемо), DoorDash ×2 — обязательный «disability status» + безымянное поле не заполнены (react-select
-демографии на GH — дыра филлера, сверить с #318 «decline»).
-2) По «давай» Игоря: Indeed на 1.8.33 — доля review-module SUBMIT/no-button; строки `⏳` = спасённые
-шаги, оставшиеся `🔘 heads=` скажут, что это за страницы. 3) contact-info-module no-button.
-4) Вернуть tailored PDF на Indeed — когда `🧾 sdr` покажет, чего ждёт шаг.
+Модель: **Opus**. 1) Источник ненастоящих jk (выше) — выяснить на живой выдаче, отдать/сделать в лейне сбора.
+2) `applied_unconfirmed` на отправке черновика Indeed — какая страница после Submit. 3) GH: обязательный
+«disability status» (react-select) не заполняется → хендбэк DoorDash ×2. 4) contact-info-module no-button.
+5) Вернуть tailored PDF на Indeed — когда `🧾 sdr` покажет, чего ждёт шаг.
 
 Файлы лейна: `chrome-extension/content.js` (waitForFormButton перед waitForFormReady; isShownControl/buttonCensus после findFormButtonIn ~L3970; no-button ветка ~L4690, preferIndeedResume/structuredReviewSnapshot ~L3860, step loop ~L4325), `background.js` forgetHandedBackFromApplied ~L1059, `tests/indeed-resume-choice.test.js`, `tests/applied-rollback.test.js`, `chrome-extension/content.js` (formBlockers ~L3500, fillTextQuestions ~L2990,
 pay/school helpers перед isDemographicQuestion, fillComboboxes, fillCheckboxes),
