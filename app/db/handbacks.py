@@ -10,7 +10,9 @@ that show this — the extension popup and the dashboard rail — read THIS, so 
 cannot disagree.
 """
 
+import re
 from datetime import UTC, datetime
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from postgrest.exceptions import APIError
 
@@ -54,10 +56,102 @@ def _clean_questions(raw) -> list[dict]:
     return out
 
 
+# --- Identity: one open row per JOB --------------------------------------------------
+#
+# The open-row uniqueness is (user_id, url), so `url` IS the hand-back's identity. Until
+# 10-06 the extension sent the screen it stopped on, and every Indeed application runs
+# through the same smartapply step URLs with no job in them
+# (…/resume-module/structured-data-review, …/questions-module/questions/1). Each new
+# Indeed hand-back therefore overwrote the person's previous one: 15 Indeed jobs handed
+# back from 09-28 to 10-05 left 5 rows. The fix keeps the constraint and makes the URL
+# mean the posting, so no migration and no deploy order.
+
+_INDEED_POSTING = "https://www.indeed.com/viewjob?jk={}"
+_JK = re.compile(r"[a-z0-9]{6,32}")
+
+
+def _indeed_jk(url: str) -> str | None:
+    """The Indeed job key in `url` (jk / vjk / jobKey), or None off Indeed or without one."""
+    try:
+        parsed = urlparse((url or "").strip())
+    except ValueError:
+        return None
+    if "indeed.com" not in (parsed.hostname or "").lower():
+        return None
+    q = parse_qs(parsed.query or "")
+    jk = ((q.get("jk") or q.get("vjk") or q.get("jobKey") or [""])[0]).strip().lower()
+    return jk if _JK.fullmatch(jk) else None
+
+
+def _pool_jk(user_id: str, title: str, company: str) -> str | None:
+    """The posting an old extension's step-URL hand-back was about, from the person's own
+    pool: the walk opened it from there (and /jobs/describe saved it). Only an
+    unambiguous match counts — two postings with this title and company (two locations,
+    a repost) could be either, and a guessed posting is worse than a search link.
+    Measured 10-06 on the 28 Indeed hand-backs since 09-22: 22 unique, 5 ambiguous, 1
+    without a title.
+    """
+    # Without a company a lone same-titled row may be another employer's posting
+    # (skeptic, PR #377) — the search link is the honest answer then.
+    if not title or not company:
+        return None
+    try:
+        rows = (
+            get_supabase()
+            .table("jobs")
+            .select("link")
+            .eq("user_id", user_id)  # service_role bypasses RLS — this filter is the check
+            .eq("title", title)
+            .eq("company", company)
+            .limit(20)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:  # noqa: BLE001 — a failed read falls back to the search link
+        return None
+    jks = {_indeed_jk(r.get("link") or "") for r in rows} - {None}
+    return jks.pop() if len(jks) == 1 else None
+
+
+def posting_url(user_id: str, job: dict) -> str:
+    """The URL a hand-back is stored and deduplicated under — the JOB, not the form screen.
+
+    - Indeed with a job key (ext >= this fix sends the /viewjob URL): one spelling,
+      https://www.indeed.com/viewjob?jk=<jk>, however the query was written.
+    - Indeed without one (an older extension still sending the step URL): the posting
+      from the pool by title + company, else an Indeed search for title + company —
+      distinct per job, and a link the person can actually use (the step URL opens
+      whatever application Indeed has in session, not this one).
+    - Nothing to identify the job by (no title, no company): the URL as sent — those
+      rows still collapse into one, as before, but no longer swallow named jobs.
+    - Every other board: as sent. Greenhouse/Lever/Ashby form URLs carry the posting;
+      ZipRecruiter's differ by query.
+    """
+    url = (job.get("url") or "").strip()
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return url
+    if "indeed.com" not in host:
+        return url
+    jk = _indeed_jk(url)
+    if jk:
+        return _INDEED_POSTING.format(jk)
+    title = " ".join((job.get("job_title") or "").split())[:300]
+    company = " ".join((job.get("company") or "").split())[:200]
+    if not title and not company:
+        return url
+    jk = _pool_jk(user_id, title, company)
+    if jk:
+        return _INDEED_POSTING.format(jk)
+    return "https://www.indeed.com/jobs?" + urlencode({"q": f"{title} {company}".strip()})
+
+
 def add(user_id: str, job: dict) -> dict | None:
-    """Record a hand-back. Idempotent per open URL: a job handed back twice (a re-run that
-    hit the same wall) updates its open row rather than stacking, so the list counts JOBS
-    waiting, not attempts.
+    """Record a hand-back. Idempotent per open posting (posting_url): a job handed back
+    twice (a re-run that hit the same wall) updates its open row rather than stacking, so
+    the list counts JOBS waiting, not attempts — and two different jobs never share a row.
 
     Not an upsert: the uniqueness is a PARTIAL index (`WHERE resolved_at IS NULL`, so a
     resolved job can be handed back again), and Postgres refuses `ON CONFLICT (user_id,
@@ -69,7 +163,7 @@ def add(user_id: str, job: dict) -> dict | None:
         "user_id": user_id,
         "job_title": (job.get("job_title") or "")[:300],
         "company": (job.get("company") or "")[:200],
-        "url": (job.get("url") or "")[:1000],
+        "url": posting_url(user_id, job)[:1000],
         "platform": (job.get("platform") or "")[:40],
         "reason": (job.get("reason") or "")[:500],
         # Screens actually completed before the wall. Bounded because it drives a
@@ -348,12 +442,15 @@ def resolve_for_posting(user_id: str, url: str) -> int:
 
     Until 10-02 only the person could close one ("I finished it"), so a retry by a newer
     build that went through left the job on their to-do list anyway. Matched by posting
-    identity: the hand-back URL is a form screen, the saved URL may be the posting.
+    identity: an older hand-back URL may be a form screen, the saved URL the posting.
     """
     from modules.job_identity import job_identity, normalized_link
 
     def key(link: str) -> str | None:
-        return job_identity(link) or normalized_link(link)
+        # Indeed first: a posting saved as ?vjk= (the SERP spelling) is the same job as the
+        # hand-back's /viewjob?jk=, and job_identity only reads jk.
+        jk = _indeed_jk(link)
+        return f"indeed:{jk}" if jk else (job_identity(link) or normalized_link(link))
 
     target = key(url) if url else None
     if not target:
