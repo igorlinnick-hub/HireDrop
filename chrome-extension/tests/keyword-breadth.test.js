@@ -16,6 +16,9 @@
 //   5. The walk terminates — when the page budget is gone, the caller gets "stop".
 //   6. A single keyword still walks deep (24 pages), exactly as before.
 //   7. A pool / ATS queue walk is never governed by the slice (it has no phrase).
+//   8. The ledger dates ITSELF and is keyed by phrase (10-06): yesterday's counts under
+//      today's todayDate (what background.js's day rollover leaves behind) spend nothing,
+//      and a phrase keeps its count when the server rotates it to another index.
 
 const fs = require("fs");
 const path = require("path");
@@ -24,7 +27,9 @@ const vm = require("vm");
 const SRC = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
 const START = SRC.indexOf("  // ── keyword rotation ──");
 const END = SRC.indexOf("  async function goBackToJobList() {", START);
-if (START < 0 || END < 0) {
+const REC_START = SRC.indexOf("  async function recordLocalApplication(platform) {");
+const REC_END = SRC.indexOf("  // Council 2026-08-04 \"frequency ledger\"", REC_START);
+if (START < 0 || END < 0 || REC_START < 0 || REC_END < 0) {
   console.error("Could not locate the keyword rotation block in content.js — markers moved.");
   process.exit(2);
 }
@@ -55,7 +60,7 @@ function makeSandbox(store) {
     },
   };
   vm.createContext(box);
-  vm.runInContext(SRC.slice(START, END), box);
+  vm.runInContext(SRC.slice(START, END) + SRC.slice(REC_START, REC_END), box);
   return box;
 }
 
@@ -83,7 +88,7 @@ const THREE = ["Welder", "Fabrication", "Fitter"];
   // --- 3: the cap is sliced ---------------------------------------------------------
   check("sub-cap: 15 applications over 3 phrases = 5 each", await box.keywordSubCap(), 5);
   store.kwIndex = 0;
-  store.keywordCounts = { indeed: { 0: 5 } };
+  store.keywordCounts = { day: "2026-09-19", indeed: { welder: 5 } };
   check("sub-cap: phrase #1 with its 5 spent must yield the board",
     await box.keywordCapReached("indeed"), true);
   check("sub-cap: an untouched phrase still has its turn",
@@ -92,7 +97,7 @@ const THREE = ["Welder", "Fabrication", "Fitter"];
   // --- 4: spent and retired phrases are skipped -------------------------------------
   const skipStore = {
     campaignFilters: { keywords: THREE }, kwIndex: 0, kwLap: 0, todayDate: "2026-09-19",
-    keywordCounts: { indeed: { 1: 5 } },   // "Fabrication" spent its slice
+    keywordCounts: { day: "2026-09-19", indeed: { fabrication: 5 } },   // "Fabrication" spent its slice
     kwDone: [2],                            // "Fitter" returned no results this run
   };
   const skipBox = makeSandbox(skipStore);
@@ -107,7 +112,7 @@ const THREE = ["Welder", "Fabrication", "Fitter"];
     await endBox.advanceKeyword("indeed"), false);
   const spentStore = {
     campaignFilters: { keywords: THREE }, kwIndex: 0, kwLap: 0, todayDate: "2026-09-19",
-    keywordCounts: { indeed: { 0: 5, 1: 5, 2: 5 } },
+    keywordCounts: { day: "2026-09-19", indeed: { welder: 5, fabrication: 5, fitter: 5 } },
   };
   check("stop: every slice spent ends the board too",
     await makeSandbox(spentStore).advanceKeyword("indeed"), false);
@@ -127,10 +132,50 @@ const THREE = ["Welder", "Fabrication", "Fitter"];
   // --- 7: the pool walk is not governed by the slice ---------------------------------
   const poolStore = {
     campaignFilters: { keywords: THREE }, kwIndex: 0, kwLap: 0, todayDate: "2026-09-19",
-    keywordCounts: { indeed: { 0: 5 } }, atsPlatform: "pool",
+    keywordCounts: { day: "2026-09-19", indeed: { welder: 5 } }, atsPlatform: "pool",
   };
   check("pool: a queue walk is never rotated by the keyword slice",
     await makeSandbox(poolStore).keywordCapReached("indeed"), false);
+
+  // --- 8: the ledger dates itself and follows the phrase ----------------------------
+  // background.js rolls the day by stamping todayDate = today and zeroing todayCount +
+  // platformCounts — and nothing else. Live 10-06 (0 Indeed applications that day):
+  // every phrase read "spent", the run stopped 2 minutes in.
+  const staleStore = {
+    campaignFilters: { keywords: THREE }, kwIndex: 0, kwLap: 0, todayDate: "2026-09-19",
+    keywordCounts: { day: "2026-09-18", indeed: { welder: 5, fabrication: 5, fitter: 5 } },
+  };
+  const staleBox = makeSandbox(staleStore);
+  check("day: yesterday's ledger under today's todayDate spends nothing",
+    await staleBox.keywordCapReached("indeed"), false);
+  check("day: ... and the board is not 'exhausted' on the first rotation",
+    await staleBox.advanceKeyword("indeed"), true);
+  const oldShape = {
+    campaignFilters: { keywords: THREE }, kwIndex: 0, kwLap: 0, todayDate: "2026-09-19",
+    keywordCounts: { indeed: { 0: 5, 1: 5, 2: 5 } },   // the pre-10-06 index-keyed, undated shape
+  };
+  check("day: the live 10-06 state — undated index ledger from yesterday, todayDate = today — spends nothing",
+    await makeSandbox(oldShape).keywordCapReached("indeed"), false);
+
+  const recStore = { campaignFilters: { keywords: THREE }, kwIndex: 1, kwLap: 0, todayDate: "2026-09-18",
+    keywordCounts: { day: "2026-09-18", indeed: { fabrication: 4 } } };
+  const recBox = makeSandbox(recStore);
+  await recBox.recordLocalApplication("indeed");
+  check("record: a new day starts the ledger fresh, stamped with the day, charged to the phrase",
+    recStore.keywordCounts, { day: "2026-09-19", indeed: { fabrication: 1 } });
+  // Next run the server leads with "Fitter": the list is rotated, indexes move.
+  recStore.campaignFilters = { keywords: ["Fitter", "Welder", "Fabrication"] };
+  recStore.kwIndex = 2;
+  for (let n = 0; n < 4; n++) await recBox.recordLocalApplication("indeed");
+  check("rotate: the phrase keeps its count when it moves to another index",
+    await recBox.keywordCapReached("indeed"), true);
+  recStore.kwIndex = 0;
+  check("rotate: the phrase now at index 0 was not charged for it",
+    await recBox.keywordCapReached("indeed"), false);
+  recStore.kwIndex = 2;
+  await recBox.subtractLocalApplication("indeed");
+  check("subtract: a blocked submit gives the phrase its slot back",
+    recStore.keywordCounts.indeed.fabrication, 4);
 
   console.log(failures ? `\n${failures} failure(s)` : "\nall good");
   process.exit(failures ? 1 : 0);
