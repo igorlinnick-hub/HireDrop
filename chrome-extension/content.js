@@ -4183,6 +4183,58 @@
     return { chosen: true, changed: true };
   }
 
+  // One retry per job after "Review your resume details" refused an UPLOADED file (15 of the
+  // 14-day Indeed hand-backs, 10-06): preferIndeedResume only switched for the NEXT job, so
+  // the first refused job on every browser was handed back. True = go back and retry with the
+  // Indeed Resume now. The job is recorded BEFORE the walk (storage outlives a page load), so
+  // a second refusal of the same job — or a walk that reloads into a fresh phase3 — hands back.
+  // Not when the Indeed Resume itself was refused, nor when resume-selection didn't offer one.
+  async function claimIndeedSdrRetry(jobInfo, resumeKind) {
+    if (resumeKind === "indeed") return false;
+    const { indeedResumeOffered, indeedSdrRetryJob } = await storageGet(["indeedResumeOffered", "indeedSdrRetryJob"]);
+    if (!indeedResumeOffered) return false;
+    const key = `${(jobInfo && jobInfo.url) || location.href.split("?")[0]}|${(jobInfo && jobInfo.title) || ""}@${(jobInfo && jobInfo.company) || ""}`;
+    if (indeedSdrRetryJob === key) return false;
+    await storageSet({ indeedSdrRetryJob: key });
+    return true;
+  }
+
+  // SmartApply's own back control, live in the 🔘 census (10-05 23:26Z: `button:Go back`, page
+  // header, outside <main>). Exact label only — never "Back to search" / a nav link.
+  function findIndeedBackButton() {
+    const flat = (t) => String(t || "").replace(/\s+/g, " ").trim().toLowerCase();
+    for (const b of document.querySelectorAll('button, [role="button"]')) {
+      if (b.disabled || b.closest('[hidden], [aria-hidden="true"]')) continue;
+      if (!(b.offsetWidth || b.offsetHeight || b.getClientRects().length)) continue;
+      if (/^(go )?back$/.test(flat(b.getAttribute("aria-label"))) || /^(go )?back$/.test(flat(b.textContent))) return b;
+    }
+    return null;
+  }
+
+  // structured-data-review → … → resume-selection by "Go back". The steps are SPA routes (one
+  // content script carried STEP 1–7, resume-selection → questions → intervention →
+  // supporting-info → structured-data-intro → structured-data-review, Bowtech 10-05 21:42Z),
+  // so a click is a route change. Bounded: INDEED_BACK_MAX clicks, each must change the path
+  // within 8 s, and it stops if the form is left. Only "Go back" is clicked — nothing that
+  // could submit. False = not reached (the caller hands back as before).
+  const INDEED_BACK_MAX = 8;
+  async function walkBackToResumeSelection() {
+    for (let i = 0; i <= INDEED_BACK_MAX; i++) {
+      if (/resume-selection/.test(location.pathname)) return true;
+      if (i === INDEED_BACK_MAX || !/\/indeedapply\/form\//.test(location.pathname)) return false;
+      if (!(await isCampaignRunning())) return false;
+      let back = findIndeedBackButton();
+      for (let t = 0; !back && t < 10; t++) { await sleep(500); back = findIndeedBackButton(); }
+      if (!back) return false;
+      const before = location.pathname;
+      await humanClick(back);
+      for (let t = 0; location.pathname === before && t < 20; t++) await sleep(400);
+      if (location.pathname === before) return false;
+      await sleep(humanDelay(600, 1200));
+    }
+    return false;
+  }
+
 
   // Indeed's "Review your resume details" refuses Continue with no alert, no aria-invalid and
   // no empty required input (#305 read all three as empty, 3/3 on 10-02). What it renders is
@@ -4706,7 +4758,10 @@
           await uploadResume(resumeInput);
           await sleep(humanDelay(1200, 2200));
           filledAny = true; filled.push("resume");
-          if (detectPlatform() === "indeed") await storageSet({ indeedLastResumeKind: "file" });
+          // indeedResumeOffered: whether this resume-selection ALSO offered the Indeed Resume —
+          // a structured-data-review refusal is retried with it only when there is one.
+          if (detectPlatform() === "indeed") await storageSet({ indeedLastResumeKind: "file",
+            indeedResumeOffered: !!document.querySelector('[data-testid="resume-selection-structured-resume-radio-card-input"]') });
         } catch (e) {
           log("Resume upload failed: " + e.message, "err");
         }
@@ -4771,6 +4826,16 @@
             // too, re-stamping would keep the tailored PDF off Indeed forever for nothing,
             // and the 14 days must be allowed to run out.
             if (indeedLastResumeKind !== "indeed") await storageSet({ indeedSdrRefusedAt: Date.now() });
+            // Don't hand THIS job back yet: the stamp above makes resume-selection pick the
+            // Indeed Resume, so walk back there and go through again — once per job.
+            if (await claimIndeedSdrRetry(jobInfo, indeedLastResumeKind)) {
+              logBackend(`↩️ Indeed refused the uploaded resume at "Review your resume details" — retrying with your Indeed Resume: ${jobInfo.title || "this job"} @ ${jobInfo.company || "?"}`, "info");
+              if (await walkBackToResumeSelection()) {
+                lastSig = ""; stallRounds = 0; prevStepAt = Date.now();
+                continue;
+              }
+              logBackend(`↩️ Couldn't get back to the resume step (@${location.pathname.slice(-70)}) — handing the job back`, "warn");
+            }
           }
           // The invariant: submitted-complete-and-honest OR handed back with a reason.
           // handBackJob is the right channel (records the reason + unfilled labels and

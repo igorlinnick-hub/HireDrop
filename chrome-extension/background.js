@@ -53,7 +53,7 @@ const USER_SCOPED_KEYS = [
   "campaignFilters", "campaignStartedAt", "currentJob",
   "platformConnections", "captchaWaiting", "reviewMode",
   // Indeed resume choice (content.js preferIndeedResume): learned on this user's runs.
-  "indeedSdrRefusedAt", "indeedLastResumeKind",
+  "indeedSdrRefusedAt", "indeedLastResumeKind", "indeedResumeOffered", "indeedSdrRetryJob",
   // content.js submit belt: a pending ATS submit must never be recorded on another account.
   "pendingAtsSubmit", "lastRecordedSubmit",
 ];
