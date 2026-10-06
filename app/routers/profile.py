@@ -898,7 +898,7 @@ def _lazy_tailor_for_job(user, job) -> str | None:
         if not job_id:
             return None
         # Re-read authoritative state — the caller's dict may be a partial column
-        # select (get_by_link fetches only id + pdf_url) and a concurrent request may
+        # select (get_by_link fetches a few identity columns) and a concurrent request may
         # have already tailored this job.
         fresh = jobs_db.get_job_by_id(user.id, job_id) or job
         previous = fresh.get("tailored_resume_pdf_url")

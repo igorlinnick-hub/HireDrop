@@ -1034,6 +1034,7 @@ def describe_job(req: JobDescriptionRequest, user=Depends(get_current_user)):
         title=req.title,
         company=req.company,
         platform=req.platform,
+        location=req.location,
     )
     return {"stored": bool(job_id), "job_id": job_id, "chars": len(text)}
 

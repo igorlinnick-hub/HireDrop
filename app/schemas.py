@@ -132,6 +132,7 @@ class JobDescriptionRequest(BaseModel):
     title: str = ""
     company: str = ""
     platform: str = "unknown"
+    location: str = ""
 
 
 class IngestJobsRequest(BaseModel):
