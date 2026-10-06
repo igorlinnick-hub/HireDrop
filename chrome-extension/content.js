@@ -1546,6 +1546,13 @@
 
     const title = titleEl?.textContent?.trim() || "";
     const company = companyEl?.textContent?.trim() || "";
+    // The card's place line ("Remote in San Francisco, CA", captured 10-05,
+    // tests/fixtures/indeed-serp-decoy.html). Never harvested before: 0 of 344 Indeed pool
+    // rows had a location, so the deck's city filter passed every Indeed job as "unknown".
+    const location = (
+      card.querySelector('[data-testid="text-location"]') ||
+      card.querySelector(".companyLocation")
+    )?.textContent?.replace(/\s+/g, " ").trim() || "";
     const href = titleEl?.getAttribute("href") || "";
     const url = href.startsWith("http") ? href : "https://www.indeed.com" + href;
     let jk = card.getAttribute("data-jk") || titleEl?.getAttribute("data-jk") || "";
@@ -1566,7 +1573,7 @@
       card.querySelector("ul");
     const snippet = (snippetEl?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 1500);
 
-    return { title, company, url, jk, snippet, clickEl: titleEl };
+    return { title, company, location, url, jk, snippet, clickEl: titleEl };
   }
 
   // Indeed plants decoy cards in the SERP (captured live 2026-10-05, fixture
@@ -1638,7 +1645,7 @@
     }
 
     // Filter for "Easily apply" jobs
-    const easyApplyCards = [];
+    const candidates = [];
     const alreadyApplied = await getAppliedUrls();
     const seenKeys = await storageGet("processedJobKeys");
     const processedKeys = new Set(seenKeys.processedJobKeys || []);
@@ -1651,33 +1658,26 @@
       if (isDecoyCard(info)) { decoys.push(info.jk || "?"); continue; }
       if (alreadyApplied.has(info.url)) continue;
       if (info.jk && processedKeys.has(info.jk)) continue;
-      easyApplyCards.push(info);
+      candidates.push(info);
     }
     if (decoys.length) logBackend(`🪤 skipped ${decoys.length} decoy card(s) jk=[${decoys.join(",")}]`, "info");
-
-    if (!easyApplyCards.length) {
-      log("No new Easy Apply jobs found. Checking next page...", "");
-      logBackend("No Easy Apply jobs on this page — going to next", "info");
-      await goToNextPage();
-      return;
-    }
-
-    log(`Found ${easyApplyCards.length} Easy Apply jobs`, "ok");
-    logBackend(`Found ${easyApplyCards.length} Easy Apply jobs on page`, "ok");
 
     // HARVEST-TO-POOL (Igor 2026-07-27): the tap deck needs Indeed/ZR inventory, and the
     // server deliberately never scrapes Indeed (compliant-by-design). So every Easy Apply
     // card this browser SEES is saved to the job pool — canonical /viewjob?jk= link so the
     // pool identity matches the by-link executor and the dedup lane. Fire-and-forget:
     // a slow backend must never stall the walk. Server skips already-known links.
+    // Harvested BEFORE the title gate below: the pool is a shared crawl index, and a title
+    // that is off-target for THIS user's roles is another user's match.
     try {
       const _plat = detectPlatform();
-      const harvest = easyApplyCards
+      const harvest = candidates
         .map((j) => ({
           title: j.title || "",
           company: j.company || "",
           link: j.jk ? `https://www.indeed.com/viewjob?jk=${j.jk}` : (j.url || ""),
           platform: _plat,
+          location: j.location || "",
           // Server scores rows that arrive with a description (>=120 chars) and leaves
           // title-only ones null — see /jobs/ingest. Sending "" is the same as sending
           // nothing, so a card without a snippet degrades to the old behaviour.
@@ -1689,11 +1689,32 @@
       }
     } catch (_) { /* harvest is best-effort */ }
 
+    // Title gate on the CARD, before anything is opened (same rule as the detail phase).
+    const { keep: easyApplyCards, skipped: offTitle } =
+      splitCardsByTitle(candidates, await titleGateKeywords());
+    if (offTitle.length) logBackend(titleSkipSummary(offTitle, candidates.length), "info");
+
+    // A page whose every card failed the title gate moves on exactly like an empty page:
+    // same nav (rotate to the next phrase/lap), and the phrase is NOT retired — it had
+    // results, just none for these roles on this page.
+    if (!easyApplyCards.length) {
+      log("No new Easy Apply jobs found. Checking next page...", "");
+      logBackend(candidates.length
+        ? "None of this page's Easy Apply jobs match your roles — going to next"
+        : "No Easy Apply jobs on this page — going to next", "info");
+      await goToNextPage();
+      return;
+    }
+
+    log(`Found ${easyApplyCards.length} Easy Apply jobs`, "ok");
+    logBackend(`Found ${easyApplyCards.length} Easy Apply jobs on page`, "ok");
+
     // Save pending jobs
     await storageSet({
       pendingJobs: easyApplyCards.map((j) => ({
         title: j.title,
         company: j.company,
+        location: j.location || "",
         url: j.url,
         jk: j.jk,
       })),
@@ -1800,8 +1821,10 @@
   // navigation, so counting here makes the daily cap + count robust regardless of SW
   // state. background's APPLICATION_SAVED no longer increments (backend save only).
   async function recordLocalApplication(platform) {
+    // One read for everything, so two tabs recording at once race over one round-trip.
     const s = await storageGet([
-      "todayCount", "platformCounts", "todayDate", "keywordCounts", "kwIndex", "atsPlatform",
+      "todayCount", "platformCounts", "todayDate", "atsPlatform",
+      "keywordCounts", "campaignFilters", "kwIndex",
     ]);
     const today = localDay();
     const totalCount = (s.todayDate === today ? (s.todayCount || 0) : 0) + 1;
@@ -1811,11 +1834,13 @@
     // out of. Only the LIVE board search has a phrase — a pool/ATS queue walk (atsPlatform
     // set) applies to saved rows, and charging the current phrase for those would rotate
     // the search away from a keyword that never spent anything.
-    const keywordCounts = s.todayDate === today ? (s.keywordCounts || {}) : {};
+    const keywordCounts = ledgerOf(s.keywordCounts);
     if (!s.atsPlatform) {
-      const bucket = keywordCounts[platform] || (keywordCounts[platform] = {});
-      const ki = String(Math.max(0, s.kwIndex || 0));
-      bucket[ki] = (bucket[ki] || 0) + 1;
+      const key = keywordKeyOf(s);
+      if (key) {
+        const bucket = keywordCounts[platform] || (keywordCounts[platform] = {});
+        bucket[key] = (bucket[key] || 0) + 1;
+      }
     }
     await storageSet({ todayCount: totalCount, platformCounts, keywordCounts, todayDate: today });
     return platformCounts[platform];
@@ -1827,7 +1852,8 @@
   // (council 2026-08-04: quality above all — no silent half-deaths).
   async function subtractLocalApplication(platform) {
     const s = await storageGet([
-      "todayCount", "platformCounts", "todayDate", "keywordCounts", "kwIndex", "atsPlatform",
+      "todayCount", "platformCounts", "todayDate", "atsPlatform",
+      "keywordCounts", "campaignFilters", "kwIndex",
     ]);
     const today = localDay();
     if (s.todayDate !== today) return;
@@ -1835,10 +1861,10 @@
     platformCounts[platform] = Math.max(0, (platformCounts[platform] || 0) - 1);
     // Give the phrase its slot back too, or a blocked submit would quietly shrink this
     // keyword's share of the cap for the rest of the day.
-    const keywordCounts = s.keywordCounts || {};
-    if (!s.atsPlatform && keywordCounts[platform]) {
-      const ki = String(Math.max(0, s.kwIndex || 0));
-      keywordCounts[platform][ki] = Math.max(0, (keywordCounts[platform][ki] || 0) - 1);
+    const keywordCounts = ledgerOf(s.keywordCounts);
+    const key = keywordKeyOf(s);
+    if (!s.atsPlatform && key && keywordCounts[platform]) {
+      keywordCounts[platform][key] = Math.max(0, (keywordCounts[platform][key] || 0) - 1);
     }
     await storageSet({
       todayCount: Math.max(0, (s.todayCount || 0) - 1),
@@ -1886,6 +1912,36 @@
     );
     if (!keywordWords.size) return true; // no keywords = no filter, same as at harvest
     return [...keywordWords].some((w) => titleWords.has(w));
+  }
+
+  // The keywords the gate checks against. A pool swipe run gets NONE — the user
+  // hand-picked that job, and a word filter must never veto their pick. The list phase
+  // (card titles) and the detail phase (the opened posting) both read through this, so the
+  // two can never disagree about which keywords or which exception apply.
+  async function titleGateKeywords() {
+    if ((await storageGet("atsPlatform")).atsPlatform === "pool") return [];
+    return ((await storageGet("campaignFilters")).campaignFilters?.keywords || []).filter(Boolean);
+  }
+
+  // List phase: the same rule, on the card title, BEFORE a card is opened. Every card the
+  // detail gate would reject used to cost a full job-page load first — Igor's 10-05 run
+  // opened 26 postings only to skip them on title, against 11 applications, and each open
+  // is time on the walk plus one more page view Indeed's bot detection gets to look at.
+  // The detail-phase check stays as the backstop: a card title can be truncated.
+  function splitCardsByTitle(cards, keywords) {
+    const keep = [];
+    const skipped = [];
+    for (const c of cards || []) (titleMatchesKeywords(c.title, keywords) ? keep : skipped).push(c);
+    return { keep, skipped };
+  }
+
+  // ONE activity-log line per results page, not one per card — the backend log is the
+  // user's feed. A few titles ride along so a wrong skip is still visible (a gate that
+  // drops jobs unread must not drop them silently).
+  function titleSkipSummary(skipped, total) {
+    if (!skipped.length) return "";
+    const eg = skipped.slice(0, 3).map((c) => `"${String(c.title || "").slice(0, 60)}"`).join(", ");
+    return `Skipped ${skipped.length} of ${total} cards: title doesn't match your roles (e.g. ${eg})`;
   }
 
   // A react-select keeps its typing box `<input role=combobox>` at value "" even after a
@@ -2032,11 +2088,16 @@
   // /cmp/ link in the rebuilt header; the name is a bare text node under this testid
   // (captured 10-05, tests/fixtures/indeed-viewjob-no-cmp.html). Missing it took
   // empty-company fit lines from 0% to 16% of Indeed walk postings in three weeks.
-  function readIndeedJobCompany(doc) {
-    const root =
+  function indeedJobRoot(doc) {
+    return (
       doc.querySelector('[data-testid="viewjob-main-content"]') ||
       doc.querySelector('[data-testid="desktop-job-header"]') ||
-      doc.querySelector(".jobsearch-JobComponent");
+      doc.querySelector(".jobsearch-JobComponent")
+    );
+  }
+
+  function readIndeedJobCompany(doc) {
+    const root = indeedJobRoot(doc);
     if (!root) return "";
     const el =
       root.querySelector('a[href*="/cmp/"]') ||
@@ -2046,6 +2107,39 @@
       root.querySelector(".jobsearch-InlineCompanyRating-companyHeader") ||
       root.querySelector(".companyName");
     return (el?.textContent || "").replace(/\s+/g, " ").trim();
+  }
+
+  // ── location on the job page ────────────────────────────────────────────────
+  // Same root, same rule as the company: the open job's place or "". The rebuilt header
+  // has no testid on the city — it is the plain line right after the employer inside
+  // [data-testid="company-info-metadata"] ("Adventure Loom Htx" / "Houston, TX 77074",
+  // tests/fixtures/indeed-viewjob-no-cmp.html). So: the metadata's leaf lines, minus the
+  // employer's own, first one shaped like a place. Then <title> ("Events Associate -
+  // Houston, TX 77074 - Indeed.com"), which has outlived every rebuild — on /viewjob only,
+  // where it names the open job; a results page's <title> names the search.
+  const PLACE_SHAPE = /,\s*[A-Z]{2}\b|\b\d{5}\b|\bremote\b|\bhybrid\b|\bunited states\b/i;
+
+  function readIndeedJobLocation(doc) {
+    const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
+    const root = indeedJobRoot(doc);
+    if (root) {
+      const named = clean(root.querySelector('[data-testid="inlineHeader-companyLocation"]')?.textContent);
+      if (named && PLACE_SHAPE.test(named)) return named;
+      const meta = root.querySelector('[data-testid="company-info-metadata"]');
+      if (meta) {
+        const employer = clean(readIndeedJobCompany(doc));
+        for (const el of meta.querySelectorAll("*")) {
+          if (el.children.length) continue;
+          const line = clean(el.textContent);
+          if (line && line !== employer && PLACE_SHAPE.test(line)) return line;
+        }
+      }
+    }
+    if (!(doc.location?.pathname || "").startsWith("/viewjob")) return "";
+    const parts = clean(doc.title).split(" - ");
+    if (parts.length < 3 || !/indeed\.com$/i.test(parts[parts.length - 1])) return "";
+    const fromTitle = parts[parts.length - 2];
+    return PLACE_SHAPE.test(fromTitle) ? fromTitle : "";
   }
 
   // The posting's identity in a URL: Indeed jk/vjk, ZipRecruiter lk (the card uuid).
@@ -2081,6 +2175,13 @@
       if (row) return { company: row.company.trim(), source: "pool row" };
     }
     return none;
+  }
+
+  // The place the search card showed for this exact posting — by jk, like the company.
+  function cardLocationFor(jobId, pendingJobs) {
+    if (!jobId) return "";
+    const card = (pendingJobs || []).find((j) => j && j.jk === jobId && (j.location || "").trim());
+    return card ? card.location.trim() : "";
   }
 
   // ZipRecruiter right pane. Its only a[href*="/co/"] reads "Learn more about <name>"
@@ -2177,6 +2278,7 @@
     // the walk — 84 postings were skipped on "no job title" before this line existed.
     const jobTitle = titleEl?.textContent?.trim() || titleFromDocumentTitle();
     let jobCompany = readIndeedJobCompany(document);
+    let jobLocation = readIndeedJobLocation(document);
     // 3000, matching the ATS path. 1000 was set when this text only fed a prompt the
     // server clipped anyway; it is now STORED (POST /jobs/describe) and read by three
     // consumers that clip at their own limits — fit judge 2500, resume tailor 1500,
@@ -2219,13 +2321,16 @@
     // The page had no employer we could read — but the card we opened it from did
     // ("Opening job: X @ Y" then "Good fit: X @ " in prod). Take it back ONLY for the
     // same jk; the line lets prod count how often the page alone falls short.
-    if (!jobCompany) {
+    if (!jobCompany || !jobLocation) {
       const st = await storageGet(["pendingJobs", "atsPlatform", "atsQueue"]);
-      const fb = cardCompanyFor(jobIdFromUrl(jobUrl), st.pendingJobs, st.atsPlatform, st.atsQueue);
-      if (fb.company) {
-        jobCompany = fb.company;
-        logBackend(`🏷️ company from ${fb.source}: ${fb.company}`, "info");
+      if (!jobCompany) {
+        const fb = cardCompanyFor(jobIdFromUrl(jobUrl), st.pendingJobs, st.atsPlatform, st.atsQueue);
+        if (fb.company) {
+          jobCompany = fb.company;
+          logBackend(`🏷️ company from ${fb.source}: ${fb.company}`, "info");
+        }
       }
+      if (!jobLocation) jobLocation = cardLocationFor(jobIdFromUrl(jobUrl), st.pendingJobs);
     }
 
     // Deduplicate by job key (jk= / vjk= in URL).
@@ -2257,19 +2362,13 @@
     // Manager" failed both "healthcare marketing" and "social media manager"
     // because no single phrase matched in full. Still blocks fully off-target
     // titles (e.g. "Provider Relations Specialist") from wasting cover-letter calls.
-    {
-      // Pool swipe run: the user hand-picked this job — keyword title-match must not veto it.
-      const _kwPool = (await storageGet("atsPlatform")).atsPlatform === "pool";
-      const kwData = await storageGet("campaignFilters");
-      const kwList = (kwData.campaignFilters?.keywords || []).filter(Boolean);
-      if (!_kwPool && kwList.length > 0) {
-        if (!titleMatchesKeywords(jobTitle, kwList)) {
-          log(`${jobTitle} — title doesn't match keywords, skipping`, "");
-          logBackend(`Skip (title mismatch): ${jobTitle} @ ${jobCompany}`, "info");
-          await skipToNextJob();
-          return;
-        }
-      }
+    // The list phase already ran this on the card title; this is the backstop for a card
+    // whose title was truncated. Pool swipe runs get no keywords (titleGateKeywords).
+    if (!titleMatchesKeywords(jobTitle, await titleGateKeywords())) {
+      log(`${jobTitle} — title doesn't match keywords, skipping`, "");
+      logBackend(`Skip (title mismatch): ${jobTitle} @ ${jobCompany}`, "info");
+      await skipToNextJob();
+      return;
     }
 
     // Fit Engine M1 — decide whether to apply at ALL before spending a cover
@@ -2313,7 +2412,7 @@
     await storageSet({
       currentJobInfo: { title: jobTitle, company: jobCompany, description: jobDesc, url: jobUrl },
     });
-    await recordJobDescription(jobTitle, jobCompany, jobDesc, jobUrl);
+    await recordJobDescription(jobTitle, jobCompany, jobDesc, jobUrl, jobLocation);
 
     // The cover letter is written later, and only if the apply form actually asks for
     // one (ensureCoverLetter, called from the form filler). Indeed's wizard has never
@@ -2461,7 +2560,7 @@
     baseUrl.searchParams.delete("lk");
     const baseSearch = baseUrl.toString();
 
-    const quickApplyJobs = [];
+    const candidates = [];
     for (const wrapper of wrappers) {
       // Quick Apply badge. ZR moved the text around: the FIRST .text-brand in a card is
       // now an EMPTY node, so first-match + text-test silently rejected real Quick Apply
@@ -2502,26 +2601,17 @@
         .filter((t) => t.length > 60);
       const snippet = (zrParas.sort((a, b) => b.length - a.length)[0] || "").slice(0, 1500);
 
-      quickApplyJobs.push({ title, company, url: jobUrl, jk: uuid, snippet });
+      candidates.push({ title, company, url: jobUrl, jk: uuid, snippet });
     }
-
-    if (!quickApplyJobs.length) {
-      log("No new Quick Apply jobs found — checking next page...", "");
-      logBackend("No Quick Apply jobs on this ZipRecruiter page", "info");
-      await goBackToJobList();
-      return;
-    }
-
-    log(`Found ${quickApplyJobs.length} Quick Apply jobs`, "ok");
-    logBackend(`Found ${quickApplyJobs.length} Quick Apply jobs on ZipRecruiter`, "ok");
 
     // HARVEST-TO-POOL (P0c 2026-07-29): server-side ZR scraping is dead (JobSpy → CF 403),
     // so — exactly like Indeed — every Quick Apply card this browser SEES goes to the pool.
     // The link is the search-URL + lk=<uuid> form: that IS ZR's single-job page (detectPhase
     // → "detail" → right-pane apply), so the by-link pool executor can walk it with the
     // selectors we already have. Fire-and-forget; server dedups known links.
+    // BEFORE the title gate, as on Indeed: the pool is a shared crawl index.
     try {
-      const zrHarvest = quickApplyJobs
+      const zrHarvest = candidates
         .map((j) => ({
           title: j.title || "",
           company: j.company || "",
@@ -2534,6 +2624,25 @@
         Promise.resolve(sendMsg({ type: "INGEST_JOBS", data: { jobs: zrHarvest } })).catch(() => {});
       }
     } catch (_) { /* harvest is best-effort */ }
+
+    // Title gate on the card (same rule as the detail phase), before anything is opened.
+    const { keep: quickApplyJobs, skipped: offTitle } =
+      splitCardsByTitle(candidates, await titleGateKeywords());
+    if (offTitle.length) logBackend(titleSkipSummary(offTitle, candidates.length), "info");
+
+    // All filtered = an empty page: next page/phrase, and the phrase is NOT retired (only
+    // a search with no cards at all retires it, above).
+    if (!quickApplyJobs.length) {
+      log("No new Quick Apply jobs found — checking next page...", "");
+      logBackend(candidates.length
+        ? "None of this page's Quick Apply jobs match your roles — going to next"
+        : "No Quick Apply jobs on this ZipRecruiter page", "info");
+      await goBackToJobList();
+      return;
+    }
+
+    log(`Found ${quickApplyJobs.length} Quick Apply jobs`, "ok");
+    logBackend(`Found ${quickApplyJobs.length} Quick Apply jobs on ZipRecruiter`, "ok");
 
     await storageSet({
       pendingJobs: quickApplyJobs,
@@ -2627,20 +2736,13 @@
 
     log(`Job: ${jobTitle} @ ${jobCompany}`, "");
 
-    // Keyword relevance check
-    {
-      // Pool swipe run: the user hand-picked this job — keyword title-match must not veto it.
-      const _kwPool = (await storageGet("atsPlatform")).atsPlatform === "pool";
-      const kwData = await storageGet("campaignFilters");
-      const kwList = (kwData.campaignFilters?.keywords || []).filter(Boolean);
-      if (!_kwPool && kwList.length > 0) {
-        if (!titleMatchesKeywords(jobTitle, kwList)) {
-          log(`${jobTitle} — title doesn't match keywords, skipping`, "");
-          logBackend(`Skip (title mismatch): ${jobTitle} @ ${jobCompany}`, "info");
-          await skipToNextJob();
-          return;
-        }
-      }
+    // Keyword relevance check — the backstop behind the list-phase card filter (same
+    // rule, same keywords, same pool exception: titleGateKeywords).
+    if (!titleMatchesKeywords(jobTitle, await titleGateKeywords())) {
+      log(`${jobTitle} — title doesn't match keywords, skipping`, "");
+      logBackend(`Skip (title mismatch): ${jobTitle} @ ${jobCompany}`, "info");
+      await skipToNextJob();
+      return;
     }
 
     // Already applied on the platform itself (a previous run submitted it, or the user
@@ -5497,13 +5599,16 @@
   // before the resume fetch, which is what tailors against the row.
   //
   // Best-effort and awaited briefly; a describe failure must never cost an application.
-  async function recordJobDescription(title, company, description, url) {
+  //
+  // Company and location ride along: the server fills them into the row only where it
+  // has none (save_description), so the page heals a card that came up empty.
+  async function recordJobDescription(title, company, description, url, location = "") {
     if (!url || (description || "").length < 300) return;
     try {
       await Promise.race([
         sendMsg({
           type: "SAVE_JOB_DESCRIPTION",
-          data: { title, company, description, url, platform: detectPlatform() },
+          data: { title, company, location, description, url, platform: detectPlatform() },
         }),
         sleep(8000),
       ]);
@@ -5636,12 +5741,43 @@
     return Math.max(1, Math.floor(MAX_APPLICATIONS_PER_PLATFORM / n));
   }
 
-  // Applications filed TODAY per keyword index, per platform — the sub-cap's ledger,
-  // written by recordLocalApplication on the same day-key as platformCounts.
+  // Applications filed TODAY per search phrase, per platform — the sub-cap's ledger,
+  // written by recordLocalApplication.
+  //
+  // The ledger carries its OWN day and is keyed by the PHRASE (2026-10-06). It used to
+  // borrow `todayDate` and key by list index, and both were wrong:
+  //   1. background.js rolls the day over in three places (onInstalled — which every
+  //      reload fires —, onStartup, Start) by resetting todayCount + platformCounts and
+  //      stamping todayDate = today. None of them knew about keywordCounts, so yesterday's
+  //      ledger survived under today's date. Live 10-06: 0 Indeed applications that day,
+  //      yet every phrase read "spent" → "Per-keyword cap reached" on the first posting,
+  //      "Indeed exhausted (all keywords searched)" 2 minutes into a 15-minute run.
+  //   2. The server rotates WHICH phrase leads a run (kw_cursor), so index 0 is a
+  //      different phrase from one run to the next — the slice was charged to the wrong one.
+  // A ledger that dates itself (ledgerOf) cannot be resurrected by any other writer of todayDate.
+  function ledgerOf(k) {
+    if (!k || typeof k !== "object" || k.day !== localDay()) return { day: localDay() };
+    return k;
+  }
+
+  function keywordKey(phrase) {
+    return String(phrase || "").trim().toLowerCase();
+  }
+
   async function getKeywordCounts(platform) {
-    const d = await storageGet(["keywordCounts", "todayDate"]);
-    if (d.todayDate !== localDay()) return {};
-    return (d.keywordCounts || {})[platform] || {};
+    return ledgerOf((await storageGet("keywordCounts")).keywordCounts)[platform] || {};
+  }
+
+  // The phrase the live search is on ("" with no keywords at all), from a storage snapshot
+  // holding campaignFilters + kwIndex — same clamping as currentKeywordIndex.
+  function keywordKeyOf(s) {
+    const kws = (s.campaignFilters?.keywords || []).filter(Boolean);
+    if (!kws.length) return "";
+    return keywordKey(kws[Math.min(Math.max(s.kwIndex || 0, 0), kws.length - 1)]);
+  }
+
+  async function currentKeywordKey() {
+    return keywordKeyOf(await storageGet(["campaignFilters", "kwIndex"]));
   }
 
   async function currentKeywordIndex() {
@@ -5661,8 +5797,7 @@
     // search — the 09-13 failure in reverse. The slice governs the live search only.
     if ((await storageGet("atsPlatform")).atsPlatform) return false;
     const counts = await getKeywordCounts(platform);
-    const i = String(await currentKeywordIndex());
-    return (counts[i] || 0) >= (await keywordSubCap());
+    return (counts[await currentKeywordKey()] || 0) >= (await keywordSubCap());
   }
 
   // A phrase whose search came back with no results at all: deeper laps of it would be
@@ -5705,7 +5840,7 @@
       if (i >= kws.length) { i = 0; lap += 1; }
       if (lap >= laps) return false; // page budget spent for every phrase
       if (done.has(i)) continue;
-      if (kws.length > 1 && (counts[String(i)] || 0) >= cap) continue;
+      if (kws.length > 1 && (counts[keywordKey(kws[i])] || 0) >= cap) continue;
       await storageSet({ kwIndex: i, kwLap: lap });
       log(`Keyword done — switching to "${kws[i]}" (page ${lap + 1})`, "");
       logBackend(`Next keyword: ${kws[i]} (page ${lap + 1})`, "info");

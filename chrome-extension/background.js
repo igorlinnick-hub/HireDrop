@@ -2450,6 +2450,7 @@ async function handleMessage(msg, sender) {
           description: j.description,
           title: j.title || "",
           company: j.company || "",
+          location: j.location || "",
           platform: j.platform || "indeed",
         });
         return r;
