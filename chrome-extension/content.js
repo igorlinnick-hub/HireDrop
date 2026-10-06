@@ -3533,17 +3533,26 @@
     const neutral = options.find(o =>
       /(prefer not|decline|do not wish|don'?t wish|rather not|^n\/?a$|not applicable|^other$|^none$)/i.test(o.text));
     if (neutral) return neutral;
-    // 2) eligibility / yes-no phrasing → affirmative, never a stray first option.
+    // 2) a knockout about the person — visa sponsorship, having worked for this company —
+    //    is answered from the profile or the model, never by position or by the
+    //    eligibility rule below (DoorDash's sponsorship question says "eligibility" and
+    //    "authorization", which step 3 read as "say Yes"). The first option on
+    //    DoorDash's sponsorship questions is "Yes", on "Have you worked at DoorDash?" it is
+    //    "I am a previous employee" (live 10-06). Blank → hand-back, the person answers.
+    if (/(sponsor|visa\b|h-?1b|immigration|worked (at|for)|employed (by|at|with|for)|(former|previous|current) employee)/i.test(label)) {
+      return null;
+    }
+    // 3) eligibility / yes-no phrasing → affirmative, never a stray first option.
     if (/(authoriz|eligible|legally|right to work|able to|18 (years|or older)|over 18|consent|agree|background)/i.test(label)) {
       const yes = options.find(o => /^yes\b/i.test(o.text));
       if (yes) return yes;
     }
-    // 3) a demographic-looking option set with no neutral → leave unfilled rather
+    // 4) a demographic-looking option set with no neutral → leave unfilled rather
     //    than fabricate an identity value.
     if (/(male|female|non.?binary|hispanic|latino|black|white|asian|veteran|disab)/i.test(options.map(o => o.text).join(" "))) {
       return null;
     }
-    // 4) genuinely benign dropdown → first real option.
+    // 5) genuinely benign dropdown → first real option.
     return options[0];
   }
 
@@ -3713,9 +3722,28 @@
     return lbs.length ? lbs[lbs.length - 1] : null;
   }
 
-  // Label for a custom combobox: text of the enclosing question block minus the
-  // combobox's own placeholder text.
+  // Label the page itself ties to this element — aria-labelledby, label[for], aria-label —
+  // and nothing guessed from the surrounding block.
+  function explicitLabel(el) {
+    if (!el) return "";
+    const ids = (el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean);
+    const byIds = ids.map(id => document.getElementById(id)?.textContent || "").join(" ");
+    const byFor = el.id ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.textContent : "";
+    return (byIds || byFor || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+  }
+
+  // Label for a custom combobox. The page's own label wins: a Greenhouse react-select
+  // control is a bare DIV, its label belongs to the input[role=combobox] inside it.
+  // Without that, getFieldLabel walked up to the shared wrapper and took ITS first label:
+  // on DoorDash (live 10-06) Country read "Phone" (the phone fieldset's legend), Location
+  // read "First Name", and work authorization, both visa-sponsorship questions and "Have
+  // you worked at DoorDash?" all read "LinkedIn Profile*" — so the profile's sponsorship
+  // answer never applied and the first option ("Yes") went out instead.
+  // Otherwise: text of the enclosing question block minus the combobox's own placeholder.
   function getComboLabel(combo) {
+    const own = combo.matches('[role="combobox"]') ? combo : combo.querySelector('[role="combobox"]');
+    const named = explicitLabel(own);
+    if (named && !/^(select an option|choose|please select)/i.test(named)) return named;
     const direct = getFieldLabel(combo);
     if (direct && !/select an option|choose|please select/i.test(direct)) return direct;
     const container = combo.closest("[class*='question' i], fieldset, [role='group'], li, div");
