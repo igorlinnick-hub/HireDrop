@@ -1,6 +1,6 @@
 # apply-losses — где теряются подачи: хендбэки, потерянные записи, вход в Indeed
 
-Обновлено: 2026-10-06 · ветка: main (1.8.35 #344 739d791 синкнута; **в CWS отправлена 1.8.35** 10-06, ревью 1–14 дн.; в Chrome Игоря 1.8.34 до релоада)
+Обновлено: 2026-10-06 · ветка: main (1.8.36 #351 78a811b синкнута; в CWS на ревью 1.8.35; в Chrome Игоря 1.8.34 до релоада)
 
 ## Состояние
 
@@ -156,11 +156,20 @@
   activity_log — политика приватности/раскрытие в CWS должны покрывать «page diagnostics on failed steps».
   Zip: `dist/hiredrop-ext-1.8.35.zip` (состав как 1.8.29). Статус — `cws_publish.py status`.
 
+- **GH DoorDash ×2 закрыт — #351, ext 1.8.36.** Причина не в disability-логике: `fillComboboxes` имел
+  плоский бюджет 14 проходов (1 виджет за проход), на форме 16 react-select → «combo×14», последние
+  демографии не открывались (diag `invalid=[Disability Status]`; `reqEmpty` там — ложная пустота #307).
+  Теперь бюджет = 2×виджетов на форме (14…80). Живьём встроенным Chromium на реальной форме с настоящими
+  open/click/menu: старый код оставляет пустыми Race/Veteran/Disability, новый — заполняет. Тест
+  `combo-pass-budget.test.js` на дословной форме `fixtures/gh-doordash-form.html`. Числовой id `1337`
+  у поля — не причина (в content.js везде `CSS.escape`).
+- Политика приватности: hiredrop-website #280 (все сайты расширения) смержен, ждёт деплоя Vercel (лимит
+  сборок); HireDrop #349 (CI-сверка манифест↔/privacy) смержить после деплоя.
+
 ## Следующий шаг
 
 Модель: **Opus**. 1) ✅ ловушки закрыты (1.8.34 проверена). Длинный прогон — в новый день, когда кап свежий.
-2) `applied_unconfirmed` на отправке черновика Indeed — какая страница после Submit. 3) GH: обязательный
-«disability status» (react-select) не заполняется → хендбэк DoorDash ×2. 4) contact-info-module no-button.
+2) `applied_unconfirmed` на отправке черновика Indeed — какая страница после Submit. 3) ✅ GH DoorDash (#351). 4) contact-info-module no-button.
 5) Вернуть tailored PDF на Indeed — когда `🧾 sdr` покажет, чего ждёт шаг.
 
 Файлы лейна: `chrome-extension/content.js` (waitForFormButton перед waitForFormReady; isShownControl/buttonCensus после findFormButtonIn ~L3970; no-button ветка ~L4690, preferIndeedResume/structuredReviewSnapshot ~L3860, step loop ~L4325), `background.js` forgetHandedBackFromApplied ~L1059, `tests/indeed-resume-choice.test.js`, `tests/applied-rollback.test.js`, `chrome-extension/content.js` (formBlockers ~L3500, fillTextQuestions ~L2990,
