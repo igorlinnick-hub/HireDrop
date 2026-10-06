@@ -3594,11 +3594,17 @@
       return PLACEHOLDER_RE.test(txt) || txt.length <= 24; // short label = affordance, not an answer
     };
 
+    const COMBO_SEL = '[role="combobox"], button[aria-haspopup="listbox"], [class*="select__control"]';
     let filled = 0;
     // Re-query each pass instead of iterating a captured snapshot: a React re-render
     // after filling one combobox can detach the others, so cached nodes would no-op.
     // data-hd-skip marks un-openable ones so we don't loop on them forever.
-    for (let pass = 0; pass < 14; pass++) {
+    // The pass budget scales with the form: one pass per attempt, up to 2 attempts per
+    // widget. A flat 14 ran out on DoorDash's Greenhouse form (16 react-selects, live
+    // 10-05): "combo×14", then the last one on the page — Disability Status, required —
+    // was never opened and both applications were handed back.
+    const maxPasses = Math.min(80, Math.max(14, 2 * formScope().querySelectorAll(COMBO_SEL).length));
+    for (let pass = 0; pass < maxPasses; pass++) {
       // Scoped to the apply modal like every other filler. Unscoped, this reached the
       // BOARD's own controls: on a one-tap ZipRecruiter job the modal holds no fields, so
       // the scope falls back to the document, and the page's filter chips (Remote, Date
@@ -3606,14 +3612,10 @@
       // 22:56 on Subway "Manager, Social & Activation": the engine opened the apply modal,
       // then spent 36 seconds operating the search filters behind it, which re-rendered
       // the results and closed the modal. No application, no log line, nothing.
-      const combo = Array.from(
-        formScope().querySelectorAll(
-          // Indeed DIV combobox + native ARIA listbox buttons + react-select controls
-          // (Greenhouse/Lever new UI render multi_value_single_select as react-select,
-          //  invisible to querySelectorAll('select') — 2026-08-09 #11 detect-gap).
-          '[role="combobox"], button[aria-haspopup="listbox"], [class*="select__control"]'
-        )
-      ).find(isUnfilled);
+      // Indeed DIV combobox + native ARIA listbox buttons + react-select controls
+      // (Greenhouse/Lever new UI render multi_value_single_select as react-select,
+      //  invisible to querySelectorAll('select') — 2026-08-09 #11 detect-gap).
+      const combo = Array.from(formScope().querySelectorAll(COMBO_SEL)).find(isUnfilled);
       if (!combo) break;
 
       const label = getComboLabel(combo);
