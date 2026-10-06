@@ -1,7 +1,7 @@
 // HireDrop service worker
 // All API communication, campaign state, and tab management
 
-importScripts("config.js", "pill-everywhere.js");
+importScripts("config.js", "pill-everywhere.js", "linkedin-beta.js");
 
 // ---------------------------------------------------------------------------
 // Auth helpers
@@ -406,6 +406,7 @@ const DEFAULT_DAILY_TOTAL = 30; // matches the paid (pro) auto cap; real value f
 
 chrome.runtime.onInstalled.addListener(async () => {
   hdPillEverywhereSync(); // an update may move the job-board list the pill excludes
+  hdLinkedInBetaSync(); // off unless linkedinBeta + the linkedin.com grant (linkedin-beta.js)
   await chrome.storage.local.set({
     campaignRunning: false,
     campaignFilters: {},
@@ -459,6 +460,7 @@ function localDay() {
 
 chrome.runtime.onStartup.addListener(async () => {
   hdPillEverywhereSync();
+  hdLinkedInBetaSync();
   const data = await chrome.storage.local.get("todayDate");
   const today = localDay();
   if (data.todayDate !== today) {
@@ -537,6 +539,16 @@ healPingBridges();
 // Chrome's prompt opens, so nothing after its request() call can be relied on to run.
 chrome.permissions.onAdded.addListener(() => hdPillEverywhereSync({ injectOpenTabs: true }));
 chrome.permissions.onRemoved.addListener(() => hdPillEverywhereSync());
+
+// LinkedIn beta (linkedin-beta.js): registered only while the dev flag is on AND linkedin.com
+// is granted. Same event-driven shape as the pill — the popup may close the moment Chrome's
+// prompt opens — plus the flag itself, which the popup's dev section writes. No open-tab
+// injection on purpose: a LinkedIn tab picks the script up on its next load, never mid-page.
+chrome.permissions.onAdded.addListener(() => hdLinkedInBetaSync());
+chrome.permissions.onRemoved.addListener(() => hdLinkedInBetaSync());
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === "local" && changes[HD_LINKEDIN_BETA_FLAG]) hdLinkedInBetaSync();
+});
 
 // ---------------------------------------------------------------------------
 // Badge
@@ -987,12 +999,18 @@ function platformEntryUrl(platform) {
 // LinkedIn = native search-walk like Indeed/ZR (v1 semi-auto: fills, human submits).
 const AUTO_APPLY_PLATFORMS = ["indeed", "ziprecruiter", "linkedin"];
 
+// The boards a campaign may actually OPEN on. LinkedIn stays in the list above (login links,
+// labels) but is filtered out here until a live-verified apply path ships — see
+// linkedin-beta.js HD_LINKEDIN_CAMPAIGN_ENABLED and docs/handoff/linkedin.md. Every
+// campaign-start decision (opener, primary board, "has a board") reads THIS list.
+const CAMPAIGN_START_PLATFORMS = hdCampaignStartPlatforms(AUTO_APPLY_PLATFORMS);
+
 // The campaign window targets the first auto-apply platform in the filter list.
 // Selecting by membership (not platforms[0]) is robust to discovery platforms
 // appearing first in the array.
 function pickPrimaryPlatform(platforms) {
   const list = platforms || [];
-  return list.find((p) => AUTO_APPLY_PLATFORMS.includes(p)) || "indeed";
+  return list.find((p) => CAMPAIGN_START_PLATFORMS.includes(p)) || "indeed";
 }
 
 // ATS platforms applied to POOL-DRIVEN: discovery (board API) fills the job pool, then the
@@ -1013,7 +1031,7 @@ const ATS_ZERO_TOUCH_PLATFORMS = ["greenhouse"];
 /** The stage a run OPENS on: a selected board always outranks the pool. */
 function pickAtsOpener(platforms) {
   const list = platforms || [];
-  if (list.some((p) => AUTO_APPLY_PLATFORMS.includes(p))) return null;
+  if (list.some((p) => CAMPAIGN_START_PLATFORMS.includes(p))) return null;
   return list.find((p) => ATS_ZERO_TOUCH_PLATFORMS.includes(p)) || null;
 }
 
@@ -1931,6 +1949,10 @@ async function handleMessage(msg, sender) {
         reviewMode: false,
         campaignCaps: {
           perPlatform: (preSt && preSt.limit_per_platform > 0) ? preSt.limit_per_platform : 20,
+          // Platforms under a tighter ban rail than perPlatform (backend MAX_PER_PLATFORM,
+          // LinkedIn 5). Older backends don't send it; content.js platformCap() fails safe.
+          byPlatform: (preSt && preSt.limit_by_platform && typeof preSt.limit_by_platform === "object")
+            ? preSt.limit_by_platform : {},
           dailyTotal: (preSt && preSt.daily_limit > 0) ? preSt.daily_limit : 50,
         },
       });
@@ -1995,7 +2017,7 @@ async function handleMessage(msg, sender) {
       //
       // ORDER: see pickAtsOpener — a selected board outranks the pool, and the pool is
       // reached through PLATFORM_EXHAUSTED once the boards are done.
-      const hasBoard = (filters.platforms || []).some((p) => AUTO_APPLY_PLATFORMS.includes(p));
+      const hasBoard = (filters.platforms || []).some((p) => CAMPAIGN_START_PLATFORMS.includes(p));
       let atsTarget = pickAtsOpener(filters.platforms);
       // Lever-only runs: no board, no zero-touch pool, just Lever. `hasBoard` guards it
       // because atsTarget is now null whenever a board leads the run — without this, any
@@ -2010,6 +2032,19 @@ async function handleMessage(msg, sender) {
             message: "Lever applications need Tap mode (their captcha requires a human). Switch to Tap and start again.",
           };
         }
+      }
+
+      // LinkedIn is not a campaign platform yet (linkedin-beta.js). A selection where it is
+      // the only thing to run would otherwise fall through to pickPrimaryPlatform's Indeed
+      // default — applying on a board the user never picked. Say so instead. The beta flag
+      // does not change this: it only lets the capture kit run on a LinkedIn tab.
+      if (!tapPoolQueue.length && !atsTarget && !hasBoard &&
+          hdLinkedInOnlySelection(filters.platforms, CAMPAIGN_START_PLATFORMS, ATS_PLATFORMS)) {
+        return {
+          started: false,
+          error: "linkedin_not_ready",
+          message: "LinkedIn isn't available for campaigns yet. Pick Indeed, ZipRecruiter or a company-site platform and start again.",
+        };
       }
 
       // Pre-flight login check applies only to native board platforms (Indeed/ZR). ATS apply

@@ -79,8 +79,30 @@ def test_per_platform_ceiling_applies_before_the_daily_budget():
     pool = [_row(f"gh{i}", jid=f"80953{i:03d}") for i in range(20)]
     out = _queue(pool, budget=100)
 
-    assert out["ready"] == campaign_router.MAX_PER_PLATFORM
-    assert out["cap_per_platform"] == campaign_router.MAX_PER_PLATFORM
+    assert out["ready"] == campaign_router.DEFAULT_MAX_PER_PLATFORM
+    assert out["cap_per_platform"] == campaign_router.DEFAULT_MAX_PER_PLATFORM
+
+
+def test_linkedin_runs_under_its_own_tighter_ceiling():
+    # LinkedIn's ban rail is 5, not the default 15 — and the tighter number on one platform
+    # must not shrink anybody else's slice in the same queue. LinkedIn is not a tap platform
+    # yet, so the test widens TAP_APPLY_PLATFORMS to reach the cap loop at all.
+    pool = [_row(f"li{i}", platform="linkedin", jid=f"80954{i:03d}") for i in range(9)]
+    pool += [_row(f"gh{i}", jid=f"80955{i:03d}") for i in range(20)]
+    with patch("app.routers.jobs.TAP_APPLY_PLATFORMS", ("greenhouse", "linkedin")):
+        out = _queue(pool, budget=100)
+
+    by: dict[str, int] = {}
+    for j in out["queue"]:
+        by[j["platform"]] = by.get(j["platform"], 0) + 1
+    assert by == {"linkedin": 5, "greenhouse": 15}
+    assert out["cap_by_platform"] == {"linkedin": 5}
+
+
+def test_linkedin_is_not_a_tap_platform_yet():
+    # Groundwork only (docs/handoff/linkedin.md): an approved LinkedIn row is not offered.
+    out = _queue([_row("li", platform="linkedin", jid="8095499")], budget=100)
+    assert out["queue"] == []
 
 
 def test_an_exhausted_daily_budget_returns_an_empty_queue_not_an_error():

@@ -6,10 +6,12 @@ the per-mode daily caps. Pure functions — no network, no DB.
 
 import modules.captcha_profile as cp
 from app.db.subscriptions import (
+    DEFAULT_MAX_PER_PLATFORM,
     MAX_PER_PLATFORM,
     TAP_DAILY_LIMIT,
     TIER_LIMITS,
     daily_limit,
+    max_per_platform,
 )
 from app.routers.jobs import _with_captcha
 
@@ -330,7 +332,22 @@ def test_daily_limit_defaults_to_auto():
 
 def test_per_platform_rail_is_ban_safety_value():
     # 15/day per platform (Igor 2026-07-16, tap-pool era; was 20)
-    assert MAX_PER_PLATFORM == 15
+    assert DEFAULT_MAX_PER_PLATFORM == 15
+    for platform in ("indeed", "ziprecruiter", "greenhouse", "lever", "ashby"):
+        assert max_per_platform(platform) == 15
+
+
+def test_linkedin_rail_is_tighter():
+    # LinkedIn restricts accounts for automation fastest: 5/day to start (docs/handoff/linkedin.md)
+    assert MAX_PER_PLATFORM["linkedin"] == 5
+    assert max_per_platform("linkedin") == 5
+    assert max_per_platform("LinkedIn") == 5
+
+
+def test_unknown_or_missing_platform_falls_back_to_the_default():
+    assert max_per_platform("workday") == DEFAULT_MAX_PER_PLATFORM
+    assert max_per_platform(None) == DEFAULT_MAX_PER_PLATFORM
+    assert max_per_platform("") == DEFAULT_MAX_PER_PLATFORM
 
 
 # ---------- watchlist ordering: relevance decides what survives the cap ----------

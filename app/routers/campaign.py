@@ -15,12 +15,14 @@ from app.db import jobs as jobs_db
 from app.db.client import get_supabase
 from app.db.profile import get_profile
 from app.db.subscriptions import (
+    DEFAULT_MAX_PER_PLATFORM,
     FREE_APP_LIMIT,
     MAX_PER_PLATFORM,
     daily_limit,
     get_free_apps_used,
     get_submit_mode,
     get_tier,
+    max_per_platform,
     read_submit_mode,
 )
 from app.db.user_day import day_start, remember_zone, stored_zone
@@ -107,7 +109,7 @@ def campaign_queue(
     capped: list[dict] = []
     for job in waiting:
         platform = job.get("platform")
-        if per.get(platform, 0) >= MAX_PER_PLATFORM:
+        if per.get(platform, 0) >= max_per_platform(platform):
             continue
         per[platform] = per.get(platform, 0) + 1
         capped.append(job)
@@ -133,7 +135,9 @@ def campaign_queue(
         "held_by_caps": len(waiting) - len(queue),
         "done_today": done_today,
         "daily_limit": budget,
-        "cap_per_platform": MAX_PER_PLATFORM,
+        "cap_per_platform": DEFAULT_MAX_PER_PLATFORM,
+        # Platforms under their own ceiling (LinkedIn 5) — absent from here means the default.
+        "cap_by_platform": dict(MAX_PER_PLATFORM),
         # Rows the user approved that were already applied under another URL spelling.
         "already_applied": len(approved) - len(waiting),
     }
@@ -182,7 +186,10 @@ def campaign_status(
         "platform_counts": platform_counts,
         # Two-cap model: per-platform ceiling (ban-safety rail, counted per platform)
         # + total daily budget (tier value/cost, raised in tap mode). Extension enforces BOTH pre-submit.
-        "limit_per_platform": MAX_PER_PLATFORM,
+        # `limit_per_platform` stays ONE number (the default) for every extension build in
+        # the wild; `limit_by_platform` carries the platforms that run tighter (LinkedIn 5).
+        "limit_per_platform": DEFAULT_MAX_PER_PLATFORM,
+        "limit_by_platform": dict(MAX_PER_PLATFORM),
         "daily_limit": daily_limit(tier, submit_mode),
         "tier": tier,
         "submit_mode": submit_mode,

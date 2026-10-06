@@ -36,17 +36,33 @@
   let _aiAnswersUsed = 0;
   let _aiBudgetNotified = false;
 
+  // Platforms that run under a TIGHTER rail than the number above (backend MAX_PER_PLATFORM
+  // mapping, served as limit_by_platform → campaignCaps.byPlatform). LinkedIn's fallback is
+  // its own 5 even before the backend answers: a missing number must fail toward fewer
+  // applications on the platform that bans fastest, never toward the default 20.
+  let CAP_BY_PLATFORM = {};
+  const CAP_FALLBACK_BY_PLATFORM = { linkedin: 5 };
+  function platformCap(p) {
+    const own = CAP_BY_PLATFORM[p];
+    if (typeof own === "number" && own > 0) return own;
+    return CAP_FALLBACK_BY_PLATFORM[p] || MAX_APPLICATIONS_PER_PLATFORM;
+  }
+  function mirrorCaps(caps) {
+    const pp = caps && caps.perPlatform;
+    if (typeof pp === "number" && pp > 0) MAX_APPLICATIONS_PER_PLATFORM = pp;
+    const by = caps && caps.byPlatform;
+    if (by && typeof by === "object") CAP_BY_PLATFORM = by;
+  }
+
   (async () => {
     try {
       const s = await storageGet("campaignCaps");
-      const pp = s.campaignCaps && s.campaignCaps.perPlatform;
-      if (typeof pp === "number" && pp > 0) MAX_APPLICATIONS_PER_PLATFORM = pp;
+      mirrorCaps(s.campaignCaps);
     } catch {}
   })();
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local" || !changes.campaignCaps) return;
-    const pp = changes.campaignCaps.newValue && changes.campaignCaps.newValue.perPlatform;
-    if (typeof pp === "number" && pp > 0) MAX_APPLICATIONS_PER_PLATFORM = pp;
+    mirrorCaps(changes.campaignCaps.newValue);
   });
 
   // =========================================================================
@@ -5732,8 +5748,8 @@
   async function phase2_linkedinDetail() {
     if (!(await isCampaignRunning())) return;
     const count = await getPlatformCount("linkedin");
-    if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
-      log(`LinkedIn daily limit reached (${count}/${MAX_APPLICATIONS_PER_PLATFORM}). Stopping.`, "");
+    if (count >= platformCap("linkedin")) {
+      log(`LinkedIn daily limit reached (${count}/${platformCap("linkedin")}). Stopping.`, "");
       await sendMsg({ type: "STOP_CAMPAIGN" });
       return;
     }
@@ -5809,8 +5825,8 @@
   async function phase1_linkedinList() {
     if (!(await isCampaignRunning())) return;
     const count = await getPlatformCount("linkedin");
-    if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
-      log(`LinkedIn daily limit reached (${count}/${MAX_APPLICATIONS_PER_PLATFORM}). Stopping.`, "");
+    if (count >= platformCap("linkedin")) {
+      log(`LinkedIn daily limit reached (${count}/${platformCap("linkedin")}). Stopping.`, "");
       await sendMsg({ type: "STOP_CAMPAIGN" });
       return;
     }
@@ -5981,8 +5997,23 @@
 
   let _runPhaseActive = false;
 
+  // LinkedIn lane is GROUNDWORK (docs/handoff/linkedin.md, linkedin-beta.js). content.js only
+  // reaches a LinkedIn tab when the dev flag is on AND the user granted linkedin.com, and even
+  // then the v1 phases below must not drive the page: they predate the ban-safety plan (no
+  // pacing, DETECTION_TRIPPED instead of a hand-back). Flip this only in the PR that ships a
+  // live-verified, tap-first LinkedIn path. The capture kit does not go through runPhase.
+  const LINKEDIN_APPLY_ENABLED = false;
+  let _linkedinIdleLogged = false;
+
   async function runPhase() {
     if (_runPhaseActive) return;
+    if (!LINKEDIN_APPLY_ENABLED && detectPlatform() === "linkedin") {
+      if (!_linkedinIdleLogged) {
+        _linkedinIdleLogged = true;
+        log("LinkedIn apply is not enabled in this build — staying idle (capture kit only)", "");
+      }
+      return;
+    }
     if (!(await isCampaignRunning())) return;
     if (!navigator.onLine) {
       await waitForOnline();
@@ -6409,12 +6440,234 @@
     }, 1000);
   });
 
+  // ---- CAPTURE KIT -----------------------------------------------------------------------
+  // LinkedIn capture kit (docs/handoff/linkedin.md). DEV ONLY: answers just on a LinkedIn tab
+  // with the `linkedinBeta` flag on, and only when the popup's dev section asks. It turns the
+  // page the human is looking at into an HTML file for test fixtures — the repo rule is that
+  // fixtures are CAPTURED from real pages, never written from memory (a made-up fixture once
+  // passed 12 checks and matched nothing live).
+  //
+  // What leaves the page, and what does not:
+  //   * <script> bodies, hidden <code> JSON blobs (LinkedIn ships its API payloads there, the
+  //     member's profile included), typed input values, textarea and contenteditable text;
+  //   * emails and phone-like numbers (maskPii), profile slugs (/in/<slug>), member URNs;
+  //   * the member's own name/email/phone/address/profile URL from the cached HireDrop
+  //     profile, and the name on the nav "Me" photo, wherever they appear as text;
+  //   * the "Me" menu / identity card containers and profile photos.
+  // Masking is best effort against a DOM we have not seen yet — the file must be READ before
+  // it is committed. Nothing is sent anywhere: the popup saves it as a download.
+
+  const CAPTURE_MEMBER_SELECTORS = [
+    ".global-nav__me", ".global-nav__me-content", "[data-test-global-nav-me]",
+    ".feed-identity-module", ".profile-card", ".artdeco-entity-lockup--member",
+  ].join(", ");
+  // Input types whose value is a fixed option or a button label, not something typed.
+  const CAPTURE_KEEP_VALUE_TYPES = new Set(["radio", "checkbox", "submit", "button", "reset", "image"]);
+  // Attributes a human reads — phone-like numbers there are masked like text. Everything else
+  // keeps its digits: job ids (data-occludable-job-id, /jobs/view/<id>) ARE the fixture.
+  const CAPTURE_TEXT_ATTRS = new Set(["aria-label", "title", "alt", "placeholder", "aria-description", "aria-valuetext", "data-tooltip"]);
+
+  function captureEscapeRe(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  // Pure: the strings that identify the member, longest first so "Jane Doe" goes before "Jane".
+  function captureIdentityTerms(profile, doc) {
+    const p = profile || {};
+    const out = new Set();
+    const add = (v) => {
+      const s = String(v || "").replace(/\s+/g, " ").trim();
+      if (s.length >= 3) out.add(s);
+    };
+    add(p.name); add(p.first_name); add(p.last_name);
+    add([p.first_name, p.last_name].filter(Boolean).join(" "));
+    for (const part of String(p.name || "").split(/\s+/)) add(part);
+    add(p.email); add(p.phone); add(p.street_address);
+    for (const u of [p.linkedin_url, p.linkedin]) {
+      const m = /\/in\/([^/?#\s]+)/i.exec(String(u || ""));
+      if (m) add(m[1]);
+    }
+    if (doc) {
+      for (const img of doc.querySelectorAll("img.global-nav__me-photo, .global-nav__me img, [data-test-global-nav-me] img")) {
+        const alt = (img.getAttribute("alt") || "").replace(/^photo of\s+/i, "");
+        add(alt);
+        for (const part of alt.split(/\s+/)) add(part);
+      }
+    }
+    return Array.from(out).sort((a, b) => b.length - a.length);
+  }
+
+  function captureMaskTerms(s, terms) {
+    let v = s;
+    for (const t of terms || []) {
+      const edgeA = /^\w/.test(t) ? "\\b" : "";
+      const edgeB = /\w$/.test(t) ? "\\b" : "";
+      v = v.replace(new RegExp(edgeA + captureEscapeRe(t) + edgeB, "gi"), "<member>");
+    }
+    return v;
+  }
+
+  function captureMaskIds(s) {
+    return s
+      .replace(/\/in\/[^/?#"'\s<>]+/gi, "/in/redacted")
+      .replace(/urn:li:(fsd_profile|fs_miniProfile|fsd_miniProfile|fs_profile|member|profile):[A-Za-z0-9_-]+/g, "urn:li:$1:redacted");
+  }
+
+  function captureScrubText(s, terms) {
+    return captureMaskTerms(captureMaskIds(maskPii(s)), terms);
+  }
+
+  function captureScrubAttr(name, value, terms) {
+    let v = captureMaskIds(value.replace(/\S+@\S+\.\S+/g, "<email>"));
+    if (CAPTURE_TEXT_ATTRS.has(name)) v = maskPii(v);
+    return captureMaskTerms(v, terms);
+  }
+
+  // Scrub a subtree in place: an Element, a detached clone, or a <template>'s content.
+  function captureScrub(root, terms) {
+    const els = root.querySelectorAll ? Array.from(root.querySelectorAll("*")) : [];
+    if (root.nodeType === 1) els.unshift(root);
+    for (const el of els) {
+      const tag = el.tagName.toLowerCase();
+      if (tag === "template" && el.content) captureScrub(el.content, terms);
+      if (tag === "script") el.textContent = "";
+      // LinkedIn's server-rendered API payloads: hidden <code> elements holding JSON.
+      if (tag === "code" && /^\s*[{[]/.test(el.textContent || "") && (el.textContent || "").length > 40) el.textContent = "";
+      if (tag === "textarea") el.textContent = "";
+      if (tag === "input") {
+        const type = (el.getAttribute("type") || "text").toLowerCase();
+        if (!CAPTURE_KEEP_VALUE_TYPES.has(type)) el.removeAttribute("value");
+      }
+      if (tag === "option" && el.hasAttribute("value")) el.setAttribute("value", captureScrubText(el.getAttribute("value"), terms));
+      const ce = el.getAttribute("contenteditable");
+      if (ce !== null && ce !== "false") el.textContent = "";
+      if (tag === "meta" && /csrf|token|session|member|user/i.test(`${el.getAttribute("name") || ""} ${el.getAttribute("http-equiv") || ""}`)) {
+        el.removeAttribute("content");
+      }
+      if (tag === "img" && /profile-(display|framed)photo/i.test(`${el.getAttribute("src") || ""} ${el.getAttribute("srcset") || ""}`)) {
+        el.removeAttribute("src"); el.removeAttribute("srcset");
+      }
+      for (const a of Array.from(el.attributes)) {
+        const nv = captureScrubAttr(a.name, a.value, terms);
+        if (nv !== a.value) el.setAttribute(a.name, nv);
+      }
+    }
+    // The member's own identity card / nav "Me" menu: keep the structure, drop the words.
+    if (root.querySelectorAll) {
+      for (const box of root.querySelectorAll(CAPTURE_MEMBER_SELECTORS)) {
+        const tw = (box.ownerDocument || box).createTreeWalker(box, 4 /* SHOW_TEXT */);
+        for (let n = tw.nextNode(); n; n = tw.nextNode()) if (n.nodeValue.trim()) n.nodeValue = "<member>";
+        for (const img of box.querySelectorAll("img")) {
+          img.removeAttribute("src"); img.removeAttribute("srcset"); img.setAttribute("alt", "<member>");
+        }
+      }
+    }
+    const owner = root.ownerDocument || root;
+    const tw = owner.createTreeWalker(root, 4 /* SHOW_TEXT */);
+    for (let n = tw.nextNode(); n; n = tw.nextNode()) {
+      const parent = n.parentNode && n.parentNode.nodeName ? n.parentNode.nodeName.toLowerCase() : "";
+      if (parent === "style" || parent === "script") continue; // CSS digits are not phones
+      const nv = captureScrubText(n.nodeValue, terms);
+      if (nv !== n.nodeValue) n.nodeValue = nv;
+    }
+  }
+
+  // The whole page as a standalone, PII-masked HTML string. Open shadow roots go in as
+  // declarative <template shadowrootmode="open"> so the file renders like the page did;
+  // closed ones are invisible to us and stay out.
+  function captureSanitizedHtml(doc, terms) {
+    const root = doc.documentElement;
+    const clone = root.cloneNode(true);
+    const origAll = root.querySelectorAll("*");
+    const cloneAll = clone.querySelectorAll("*");
+    for (let i = 0; i < origAll.length && i < cloneAll.length; i++) {
+      const sr = origAll[i].shadowRoot;
+      if (!sr) continue;
+      const holder = doc.createElement("div");
+      holder.innerHTML = sr.innerHTML;
+      captureScrub(holder, terms);
+      const tpl = doc.createElement("template");
+      tpl.setAttribute("shadowrootmode", "open");
+      tpl.innerHTML = holder.innerHTML;
+      cloneAll[i].insertBefore(tpl, cloneAll[i].firstChild);
+    }
+    captureScrub(clone, terms);
+    return clone.outerHTML;
+  }
+
+  function captureEasyApplyModal(doc) {
+    const strict = doc.querySelector(".jobs-easy-apply-modal, .jobs-easy-apply-content");
+    if (strict) return strict.closest("[role='dialog']") || strict;
+    for (const d of doc.querySelectorAll("[role='dialog']")) {
+      const label = `${d.getAttribute("aria-label") || ""} ${d.getAttribute("aria-labelledby") ? (doc.getElementById(d.getAttribute("aria-labelledby")) || {}).textContent || "" : ""}`;
+      if (/easy apply|apply to/i.test(label) || d.querySelector(".jobs-easy-apply-form-section__grouping, [data-easy-apply-next-button]")) return d;
+    }
+    return null;
+  }
+
+  // Pure (given the memo): which page this is, for the file name. Modal steps are numbered
+  // by DISTINCT step state seen in this tab, so capturing the same step twice keeps its N.
+  function capturePageKind(url, doc, memo) {
+    const m = memo || { states: [] };
+    const modal = captureEasyApplyModal(doc);
+    const text = (modal ? modal.textContent : "") || "";
+    if (/\/post-apply\b/i.test(url) || (modal && /(your )?application (was )?sent/i.test(text))) {
+      m.states = [];
+      return "confirmation";
+    }
+    if (modal) {
+      const heading = ((modal.querySelector("h2, h3") || {}).textContent || "").replace(/\s+/g, " ").trim();
+      const bar = modal.querySelector("[role='progressbar']");
+      const progress = bar ? bar.getAttribute("aria-valuenow") || "" : "";
+      const fields = modal.querySelectorAll("input, select, textarea").length;
+      const sig = `${heading}|${progress}|${fields}`;
+      let idx = m.states.indexOf(sig);
+      if (idx < 0) { m.states.push(sig); idx = m.states.length - 1; }
+      return `modal-step-${idx + 1}`;
+    }
+    m.states = [];
+    if (/\/jobs\/(search|collections)\b/i.test(url)) return "search";
+    if (/\/jobs\/view\//i.test(url)) return "view";
+    return "other";
+  }
+
+  function captureTimestamp(d) {
+    return d.toISOString().replace(/\.\d+Z$/, "Z").replace(/:/g, "-");
+  }
+
+  const _captureMemo = { states: [] };
+
+  async function captureLinkedInPage() {
+    if (detectPlatform() !== "linkedin") return { ok: false, error: "not_linkedin" };
+    const s = await storageGet(["linkedinBeta", "profile"]);
+    if (s.linkedinBeta !== true) return { ok: false, error: "flag_off" };
+    const terms = captureIdentityTerms(s.profile || {}, document);
+    const kind = capturePageKind(window.location.href, document, _captureMemo);
+    let ver = "?"; try { ver = chrome.runtime.getManifest().version; } catch { /* context gone */ }
+    // Not maskPii: the job id in /jobs/view/<id>/ reads as a phone number to it.
+    const where = captureMaskTerms(captureMaskIds(window.location.origin + window.location.pathname), terms);
+    const header =
+      `<!-- HireDrop capture kit · ext ${ver} · ${new Date().toISOString()} · ${kind} · ${where}\n` +
+      "     PII masked best-effort (emails, phones, input values, scripts, member name/links).\n" +
+      "     READ IT before committing as a fixture. -->\n";
+    const html = "<!DOCTYPE html>\n" + header + captureSanitizedHtml(document, terms);
+    const filename = `linkedin-${kind}-${captureTimestamp(new Date())}.html`;
+    return { ok: true, kind, filename, html, bytes: html.length };
+  }
+  // ---- END CAPTURE KIT -------------------------------------------------------------------
+
   // =========================================================================
   // Message listener
   // =========================================================================
 
   chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     switch (msg.type) {
+      case "HD_LINKEDIN_CAPTURE":
+        // Async answer: keep the channel open (return true). The kit refuses off LinkedIn and
+        // with the flag off, so this is inert on every page the manifest injects into.
+        captureLinkedInPage().then(sendResponse, (e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+        return true;
+
       case "CAMPAIGN_STARTED":
         log("Campaign started — beginning automation", "ok");
         lastPhase = "";
