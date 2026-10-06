@@ -55,6 +55,7 @@ def _no_company_history_network():
         patch("app.db.applications.companies_applied_since", return_value=[]),
         patch("app.db.handbacks.companies_handed_back_since", return_value=[]),
         patch("app.db.handbacks.requeued_urls", return_value=[]),
+        patch("app.db.handbacks.requeued_companies", return_value=[]),
     ):
         yield
 

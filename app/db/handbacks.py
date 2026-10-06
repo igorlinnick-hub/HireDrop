@@ -270,6 +270,29 @@ def requeued_urls(user_id: str, cap: int = 5000) -> list[str]:
     return [r["url"] for r in fetch_paged(build, cap) if r.get("url")]
 
 
+def requeued_companies(user_id: str, cap: int = 5000) -> list[str]:
+    """Company of every open hand-back the person sent back with "Try again" — for the
+    live judge (/tools/assess-fit), which sees a company name but no URL. A retried ATS
+    posting passed the cap in build_queue; without this the judge capped it again at
+    apply time because the company's OTHER hand-backs hold the slot (skeptic on #359).
+    """
+
+    def build(start: int, end: int):
+        return (
+            get_supabase()
+            .table("handbacks")
+            .select("company")
+            .eq("user_id", user_id)
+            .is_("resolved_at", "null")
+            .not_.is_("requeued_at", "null")
+            .order("created_at", desc=True)
+            .order("id")
+            .range(start, end)
+        )
+
+    return [r["company"] for r in fetch_paged(build, cap) if r.get("company")]
+
+
 def _current_build(user_id: str) -> tuple[str | None, str | None]:
     """(version, first seen at) of the extension this user runs now — from the ping.
 

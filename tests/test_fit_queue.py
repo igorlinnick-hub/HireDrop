@@ -461,7 +461,7 @@ def test_requeued_urls_reads_only_open_retried_rows(real_requeued_urls):
 # --- the live walks: /tools/assess-fit ---------------------------------------------------
 
 
-def _assess(company, history, handbacks=()):
+def _assess(company, history, handbacks=(), retried=()):
     from app.routers import tools
     from app.schemas import AssessFitRequest
 
@@ -474,6 +474,7 @@ def _assess(company, history, handbacks=()):
         patch.object(tools, "get_profile", return_value={"apply_mode": "standard"}),
         patch("app.db.applications.companies_applied_since", return_value=list(history)),
         patch("app.db.handbacks.companies_handed_back_since", return_value=list(handbacks)),
+        patch("app.db.handbacks.requeued_companies", return_value=list(retried)),
         patch.object(
             tools, "assess_fit", return_value={"fit_score": 80, "decision": "apply"}
         ) as judge,
@@ -487,6 +488,9 @@ def test_the_indeed_walk_skips_a_company_already_applied_to():
     out, judge = _assess("DoorDash, Inc.", history=["doordashusa"])
     assert out["decision"] == "skip" and out["company_capped"] is True
     judge.assert_not_called()  # a capped posting costs no AI call
+    # Not a bad fit: no score, and the reason is what run-report keys the loss on.
+    assert out["fit_score"] is None
+    assert out["reason"].startswith("Company cap — ")
 
 
 def test_a_hand_back_holds_the_slot_on_the_walk_too():
@@ -499,3 +503,34 @@ def test_a_new_company_goes_to_the_judge():
     out, judge = _assess("Acme", history=["DoorDash"])
     assert out == {"fit_score": 80, "decision": "apply"}
     judge.assert_called_once()
+
+
+def test_a_retried_posting_is_not_capped_again_by_the_judge():
+    # Skeptic on #359: build_queue let the "Try again" posting through (#353), then the
+    # ATS walk asked assess-fit, and the company's OTHER open hand-backs capped it again.
+    out, judge = _assess(
+        "DoorDash",
+        history=[],
+        handbacks=["Doordashusa", "Doordashusa"],
+        retried=["DoorDash, Inc."],
+    )
+    assert out == {"fit_score": 80, "decision": "apply"}
+    judge.assert_called_once()
+
+
+def test_the_retry_exemption_is_per_company():
+    out, judge = _assess("DoorDash", history=["DoorDash"], retried=["Acme"])
+    assert out["decision"] == "skip"
+    judge.assert_not_called()
+
+
+def test_a_cap_skip_is_its_own_loss_not_the_fit_gate():
+    from app.db.activity import _categorize
+
+    # The exact line the extension prints for this verdict (content.js phase_ats).
+    line = (
+        "Skipped (fit ?): Marketing Manager @ DoorDash — Company cap — already tried "
+        "DoorDash in the last 60 days, one application per company."
+    )
+    assert _categorize(line) == "company_capped"
+    assert _categorize("⏭️ Skipped (fit 40): Role @ Acme — weak match") == "skipped_fit"
