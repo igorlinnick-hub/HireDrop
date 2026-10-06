@@ -48,11 +48,14 @@ const constOf = (name) => (new RegExp(`const ${name} = ([^;]+);`).exec(SRC) || [
 
 const fns = {
   prefer: extract("  async function preferIndeedResume(filled) {"),
-  claim: extract("  async function claimIndeedSdrRetry(jobInfo, resumeKind) {"),
+  claim: extract("  async function claimIndeedSdrRetry(jobInfo, choice) {"),
+  jobKey: extract("  function indeedJobKey(jobInfo) {"),
+  choiceFor: extract("  async function indeedResumeChoiceFor(jobInfo) {"),
+  snap: (extract("  function maskPii(s) {") || "") && extract("  function maskPii(s) {") + "\n" + extract("  function structuredReviewSnapshot() {"),
   findBack: extract("  function findIndeedBackButton() {"),
   walk: extract("  async function walkBackToResumeSelection() {"),
 };
-check("claimIndeedSdrRetry / findIndeedBackButton / walkBackToResumeSelection exist in content.js",
+check("claimIndeedSdrRetry / indeedResumeChoiceFor / findIndeedBackButton / walkBackToResumeSelection exist in content.js",
   Object.values(fns).every(Boolean) && !!constOf("INDEED_BACK_MAX"),
   Object.entries(fns).filter(([, v]) => !v).map(([k]) => k).join(","));
 
@@ -107,13 +110,18 @@ function world({ storage = {}, start = ROUTES.length - 1, back, asyncRoute = fal
   w.humanDelay = () => 0;
   w.eval(`const INDEED_SDR_TTL_MS = ${constOf("INDEED_SDR_TTL_MS")};
 const INDEED_BACK_MAX = ${constOf("INDEED_BACK_MAX")};
-${fns.prefer}\n${fns.claim}\n${fns.findBack}\n${fns.walk}
-window.__prefer = preferIndeedResume; window.__claim = claimIndeedSdrRetry;
+${fns.prefer}\n${fns.claim}\n${fns.jobKey}\n${fns.choiceFor}\n${fns.findBack}\n${fns.walk}\n${fns.snap}
+window.__prefer = preferIndeedResume; window.__snap = structuredReviewSnapshot;
+window.__claim = async (job, choice) => claimIndeedSdrRetry(job, choice || await indeedResumeChoiceFor(job));
+window.__choice = indeedResumeChoiceFor; window.__key = indeedJobKey;
 window.__find = findIndeedBackButton; window.__walk = walkBackToResumeSelection;`);
   return w;
 }
 const q = (w, id) => w.document.querySelector(`[data-testid="${id}"]`);
 const job = { url: "https://www.indeed.com/viewjob?jk=abc123", title: "Event Coordinator", company: "Bowtech Archery" };
+const keyOf = (j) => `${j.url || ""}|${j.title || ""}@${j.company || ""}`; // = indeedJobKey (checked below)
+// What the upload branch writes for a job: kind, whether the Indeed Resume was offered, and whose.
+const uploaded = (j, offered = true) => ({ indeedLastResumeKind: "file", indeedResumeOffered: offered, indeedResumeJob: keyOf(j) });
 
 (async () => {
   if (!Object.values(fns).every(Boolean)) {
@@ -123,8 +131,9 @@ const job = { url: "https://www.indeed.com/viewjob?jk=abc123", title: "Event Coo
 
   // 1. The retry itself: refused review → back to resume-selection → the Indeed Resume.
   {
-    const w = world({ storage: { indeedLastResumeKind: "file", indeedResumeOffered: true, indeedSdrRefusedAt: Date.now() }, asyncRoute: true });
-    check("claims the one retry for this job", await w.__claim(job, "file") === true);
+    const w = world({ storage: { ...uploaded(job), indeedSdrRefusedAt: Date.now() }, asyncRoute: true });
+    check("indeedJobKey = url|title@company", w.__key(job) === keyOf(job), w.__key(job));
+    check("claims the one retry for this job", await w.__claim(job) === true);
     const ok = await w.__walk();
     check("walks back from structured-data-review to resume-selection", ok && /resume-selection$/.test(w.location.pathname), w.location.pathname);
     check("…one Go back per step (5), nothing else clicked", w.__clicks === 5, `clicks=${w.__clicks}`);
@@ -138,17 +147,32 @@ const job = { url: "https://www.indeed.com/viewjob?jk=abc123", title: "Event Coo
 
   // 2. One retry per job, and only when it can help.
   {
-    const w = world({ storage: { indeedResumeOffered: true } });
-    check("first refusal of a job → retry", await w.__claim(job, "file") === true);
-    check("…the job key is in storage (survives a page load)", typeof w.__store.indeedSdrRetryJob === "string" && w.__store.indeedSdrRetryJob.includes("abc123"));
-    check("same job refused again → no second retry (hand back)", await w.__claim(job, "file") === false);
-    check("a different job → its own retry", await w.__claim({ ...job, url: "https://www.indeed.com/viewjob?jk=zzz", title: "Other" }, "file") === true);
-    check("the Indeed Resume itself refused → no retry", await w.__claim({ ...job, url: "u3" }, "indeed") === false);
+    const w = world({ storage: uploaded(job) });
+    check("first refusal of a job → retry", await w.__claim(job) === true);
+    check("…the job key is in storage (survives a page load)", w.__store.indeedSdrRetryJob === keyOf(job));
+    check("same job refused again → no second retry (hand back)", await w.__claim(job) === false);
+    const other = { ...job, url: "https://www.indeed.com/viewjob?jk=zzz", title: "Other" };
+    Object.assign(w.__store, uploaded(other));
+    check("a different job that uploaded → its own retry", await w.__claim(other) === true);
+    const third = { ...job, url: "u3" };
+    Object.assign(w.__store, { indeedLastResumeKind: "indeed", indeedResumeJob: keyOf(third) });
+    check("the Indeed Resume itself refused → no retry", await w.__claim(third) === false);
   }
   {
-    const w = world({ storage: { indeedResumeOffered: false } });
-    check("resume-selection offered no Indeed Resume → no retry (it would upload the same file)", await w.__claim(job, "file") === false);
+    const w = world({ storage: uploaded(job, false) });
+    check("resume-selection offered no Indeed Resume → no retry (it would upload the same file)", await w.__claim(job) === false);
     check("…and nothing is recorded", w.__store.indeedSdrRetryJob === undefined);
+  }
+  {
+    // Skeptic note 2: kind/offered were browser-global, so a job with no upload of its own
+    // (draft resumed mid-form) inherited the previous job's "file" + "offered".
+    const prev = { ...job, url: "https://www.indeed.com/viewjob?jk=prev", title: "Previous" };
+    const w = world({ storage: uploaded(prev) });
+    const c = await w.__choice(job);
+    check("another job's upload is not this job's: kind unknown, not offered", c.kind === undefined && c.offered === false, JSON.stringify(c));
+    check("…so no retry for a job that never uploaded here", await w.__claim(job) === false && w.__store.indeedSdrRetryJob === undefined);
+    const mine = await w.__choice(prev);
+    check("…while the job that did upload still reads its own choice", mine.kind === "file" && mine.offered === true);
   }
 
   // 3. Bounds on the walk: it never spins and never clicks anything but "Go back".
@@ -182,17 +206,56 @@ const job = { url: "https://www.indeed.com/viewjob?jk=abc123", title: "Event Coo
   // 4. Wiring in the step loop (the loop itself needs a live form; its shape is pinned here).
   const stall = SRC.slice(SRC.indexOf("if (stallRounds >= 2) {"), SRC.indexOf("await handBackJob(", SRC.indexOf("if (stallRounds >= 2) {")));
   check("the refusal stamps indeedSdrRefusedAt BEFORE claiming the retry (the return trip must pick the Indeed Resume)",
-    /indeedSdrRefusedAt: Date\.now\(\)[\s\S]*claimIndeedSdrRetry\(jobInfo, indeedLastResumeKind\)/.test(stall));
+    /indeedSdrRefusedAt: Date\.now\(\)[\s\S]*claimIndeedSdrRetry\(jobInfo, choice\)/.test(stall));
   check("…logs 'retrying with your Indeed Resume', walks back, resets the stall guard and continues — before any hand-back",
     /retrying with your Indeed Resume[\s\S]{0,200}await walkBackToResumeSelection\(\)\) \{\s*lastSig = ""; stallRounds = 0;[^}]*continue;/.test(stall));
   check("…a failed walk falls through to the hand-back with a line saying so",
     /Couldn't get back to the resume step/.test(stall)); // `stall` ends at the first handBackJob call
-  check("the upload records whether resume-selection offered the Indeed Resume",
-    /indeedLastResumeKind: "file",\s*indeedResumeOffered: !!document\.querySelector\('\[data-testid="resume-selection-structured-resume-radio-card-input"\]'\)/.test(SRC));
+  check("the upload records kind + whether the Indeed Resume was offered, tagged with THIS job",
+    /indeedLastResumeKind: "file",\s*indeedResumeOffered: !!document\.querySelector\('\[data-testid="resume-selection-structured-resume-radio-card-input"\]'\),\s*indeedResumeJob: indeedJobKey\(jobInfo\) \}\)/.test(SRC));
+  check("choosing the Indeed Resume tags the job too",
+    /if \(indeedResumeChosen\) await storageSet\(\{ indeedResumeJob: indeedJobKey\(jobInfo\) \}\);/.test(SRC));
+  check("the refusal reads THIS job's choice, not the browser's last one",
+    /const choice = await indeedResumeChoiceFor\(jobInfo\);\s*const indeedLastResumeKind = choice\.kind;/.test(stall) && /claimIndeedSdrRetry\(jobInfo, choice\)/.test(stall));
+
+  // Skeptic note 1: the retry pass walks the form again; with the first pass's steps it could
+  // run past maxSteps=20, and running out of steps was a silent skip with no hand-back.
+  check("the retry pass gets its own step budget",
+    /let maxSteps = STEP_BUDGET;/.test(SRC) && /stallRounds = 0;[^}]*maxSteps = formStepCount \+ STEP_BUDGET;\s*continue;/.test(stall));
+  const tail = SRC.slice(SRC.indexOf("if (formStepCount >= maxSteps"), SRC.indexOf("Form abandoned without submit", SRC.indexOf("if (formStepCount >= maxSteps")));
+  check("running out of steps hands the job back with a reason, then advances — no silent skip",
+    /if \(formStepCount >= maxSteps && !stoppedEarly\) \{[\s\S]*await handBackJob\(`the form ran past \$\{maxSteps\} steps[\s\S]*await skipToNextJob\(\);\s*return;/.test(tail), tail.slice(0, 200));
+  const loop = SRC.slice(SRC.indexOf("  async function _phase3_fillForm() {"), SRC.indexOf("if (formStepCount >= maxSteps"));
+  check("…but a break (no button / Submit vanished) still ends as 'abandoned', not as out-of-steps",
+    (loop.match(/stoppedEarly = true;\s*break;/g) || []).length === 2 && (loop.match(/\n\s*break;/g) || []).length === 2);
   check("the new keys are user-scoped (cleared on a dashboard user switch)",
-    /USER_SCOPED_KEYS = \[[\s\S]*"indeedResumeOffered", "indeedSdrRetryJob"/.test(BG));
+    /USER_SCOPED_KEYS = \[[\s\S]*"indeedResumeOffered", "indeedSdrRetryJob", "indeedResumeJob"/.test(BG));
   // No double submit: the retry path clicks only Go back — the walk has no submit/record call.
   check("the walk never records or submits", !/addAppliedUrl|recordLocalApplication|findFormButton|classifyFormButton|APPLICATION_SAVED/.test(fns.walk + fns.claim + fns.findBack));
+
+  // Skeptic note 3: the snapshot showed `education-card-validation-error` but never its text.
+  // SYNTHETIC page: testids are the live ones from the 10-05 21:44Z `🧾 sdr` line; the error
+  // wording is invented (the live text was never captured — that is what this logs now).
+  {
+    const long = "Add the dates you attended this school so employers can see your timeline ".repeat(3);
+    const w = world({}); // any page; the snapshot reads <main>
+    w.document.getElementById("mn").innerHTML = `<div data-testid="structured-data-review-page">
+      <section data-testid="structured-data-review-page-education-section"><ul data-testid="education-list">
+        <li data-testid="education-card"><h3 data-testid="education-card-title">B.S. Marketing</h3>
+          <div data-testid="education-card-place">University of Hawaii</div>
+          <div data-testid="education-card-validation-error">Add dates of attendance</div>
+          <button data-testid="education-card-edit-btn">Edit B.S.</button></li>
+        <li data-testid="education-card"><div data-testid="education-card-validation-error">${long} jane@x.com (808) 555-0123</div></li>
+      </ul></section><button data-testid="continue-button">Continue</button></div>`;
+    const line = w.__snap();
+    check("snapshot logs Indeed's validation-error text with its testid",
+      /errs=\[[^\]]*"education-card-validation-error:Add dates of attendance"/.test(line), line.slice(0, 300));
+    const errs = JSON.parse(/errs=(\[[^\]]*\])/.exec(line)[1]);
+    check("…each error capped at 120 chars, contacts masked", errs.length === 2 && errs.every((e) => e.split(":").slice(1).join(":").length <= 120) &&
+      !/jane@|555/.test(line), JSON.stringify(errs));
+    check("…the card itself stays out (title, school)", !/B\.S\. Marketing"|University of Hawaii/.test(line), line);
+    check("…and comes before acts/ids (the 1950-char slice cuts ids first)", line.indexOf("errs=") < line.indexOf("acts=") && line.indexOf("acts=") < line.indexOf("ids="));
+  }
 
   console.log(failures ? `\n${failures} failure(s)` : "\nall good");
   process.exit(failures ? 1 : 0);

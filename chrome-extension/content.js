@@ -4188,15 +4188,28 @@
   // the first refused job on every browser was handed back. True = go back and retry with the
   // Indeed Resume now. The job is recorded BEFORE the walk (storage outlives a page load), so
   // a second refusal of the same job — or a walk that reloads into a fresh phase3 — hands back.
-  // Not when the Indeed Resume itself was refused, nor when resume-selection didn't offer one.
-  async function claimIndeedSdrRetry(jobInfo, resumeKind) {
-    if (resumeKind === "indeed") return false;
-    const { indeedResumeOffered, indeedSdrRetryJob } = await storageGet(["indeedResumeOffered", "indeedSdrRetryJob"]);
-    if (!indeedResumeOffered) return false;
-    const key = `${(jobInfo && jobInfo.url) || location.href.split("?")[0]}|${(jobInfo && jobInfo.title) || ""}@${(jobInfo && jobInfo.company) || ""}`;
+  // Only when THIS job uploaded a file and its resume-selection offered the Indeed Resume.
+  async function claimIndeedSdrRetry(jobInfo, choice) {
+    if (!choice || choice.kind !== "file" || !choice.offered) return false;
+    const key = indeedJobKey(jobInfo);
+    const { indeedSdrRetryJob } = await storageGet("indeedSdrRetryJob");
     if (indeedSdrRetryJob === key) return false;
     await storageSet({ indeedSdrRetryJob: key });
     return true;
+  }
+
+  function indeedJobKey(jobInfo) {
+    const j = jobInfo || {};
+    return `${j.url || ""}|${j.title || ""}@${j.company || ""}`;
+  }
+
+  // What THIS job used at resume-selection. The kind/offered keys are tagged with the job
+  // (indeedResumeJob), so a job that never passed resume-selection here (a draft resumed
+  // mid-form) reads "unknown" instead of inheriting the previous job's upload.
+  async function indeedResumeChoiceFor(jobInfo) {
+    const s = await storageGet(["indeedLastResumeKind", "indeedResumeOffered", "indeedResumeJob"]);
+    if (s.indeedResumeJob !== indeedJobKey(jobInfo)) return { kind: undefined, offered: false };
+    return { kind: s.indeedLastResumeKind, offered: !!s.indeedResumeOffered };
   }
 
   // SmartApply's own back control, live in the 🔘 census (10-05 23:26Z: `button:Go back`, page
@@ -4258,11 +4271,15 @@
         .map((e) => flat(maskPii(flat(e.getAttribute("aria-label") || e.textContent))).split(" ").slice(0, 2).join(" ") +
           (e.disabled || e.getAttribute("aria-disabled") === "true" ? "(off)" : ""))
         .filter(Boolean).slice(0, 25);
+      // Indeed's own error text on a card (10-05: `education-card-validation-error` was the
+      // only sign of what the step refused). Masked, 120 chars each — the wording, not the card.
+      const errs = [...root.querySelectorAll('[data-testid$="validation-error"]')].filter(vis)
+        .map((e) => `${e.getAttribute("data-testid")}:${maskPii(flat(e.textContent)).slice(0, 120)}`).slice(0, 6);
       let ids = JSON.stringify([...new Set([...root.querySelectorAll("[data-testid]")].filter(vis)
         .map((e) => e.getAttribute("data-testid")))].slice(0, 60));
       if (ids.length > 900) ids = ids.slice(0, 900) + "…";
-      // Badges and actions first: they are the diagnosis, ids are context the slice may cut.
-      return `badges=${JSON.stringify(badges)} acts=${JSON.stringify(acts)} ids=${ids}`;
+      // Badges, errors and actions first: they are the diagnosis, ids are context the slice may cut.
+      return `badges=${JSON.stringify(badges)} errs=${JSON.stringify(errs)} acts=${JSON.stringify(acts)} ids=${ids}`;
     } catch (e) {
       return `sdr=? (${String((e && e.message) || e).slice(0, 80)})`;
     }
@@ -4684,7 +4701,9 @@
       : "";
 
     let formStepCount = 0;
-    const maxSteps = 20; // Safety: don't loop forever (some jobs have 10+ steps)
+    const STEP_BUDGET = 20; // Safety: don't loop forever (some jobs have 10+ steps)
+    let maxSteps = STEP_BUDGET; // raised once by the Indeed resume retry (its own budget)
+    let stoppedEarly = false; // a break below, not the step budget, ended the loop
     // Stall guard: a step that fills nothing AND leaves the form byte-identical means
     // "Continue" is being refused (unanswered validation) — clicking it again just
     // repeats the refusal. Live 08-15: ZR's screener step ate 20 identical rounds and
@@ -4753,6 +4772,7 @@
 
       // Resume upload
       const resumeInput = indeedResumeChosen ? null : findResumeInput();
+      if (indeedResumeChosen) await storageSet({ indeedResumeJob: indeedJobKey(jobInfo) });
       if (resumeInput && !resumeInput.files?.length) {
         try {
           await uploadResume(resumeInput);
@@ -4761,7 +4781,8 @@
           // indeedResumeOffered: whether this resume-selection ALSO offered the Indeed Resume —
           // a structured-data-review refusal is retried with it only when there is one.
           if (detectPlatform() === "indeed") await storageSet({ indeedLastResumeKind: "file",
-            indeedResumeOffered: !!document.querySelector('[data-testid="resume-selection-structured-resume-radio-card-input"]') });
+            indeedResumeOffered: !!document.querySelector('[data-testid="resume-selection-structured-resume-radio-card-input"]'),
+            indeedResumeJob: indeedJobKey(jobInfo) });
         } catch (e) {
           log("Resume upload failed: " + e.message, "err");
         }
@@ -4820,7 +4841,8 @@
           // Whole line capped: POST /activity drops a message over 2000 chars (422).
           logBackend(Array.from(`🖐 ${dialogSnapshot()} ${formBlockersLine(formBlockers())}`).slice(0, 1950).join(""), "warn");
           if (/structured-data-review/.test(location.pathname)) {
-            const { indeedLastResumeKind } = await storageGet("indeedLastResumeKind");
+            const choice = await indeedResumeChoiceFor(jobInfo);
+            const indeedLastResumeKind = choice.kind; // this job's, else unknown
             logBackend(Array.from(`🧾 sdr resume=${indeedLastResumeKind || "?"} ${structuredReviewSnapshot()}`).slice(0, 1950).join(""), "warn");
             // Stamped only by a refusal of an UPLOADED file: if the Indeed Resume is refused
             // too, re-stamping would keep the tailored PDF off Indeed forever for nothing,
@@ -4828,10 +4850,12 @@
             if (indeedLastResumeKind !== "indeed") await storageSet({ indeedSdrRefusedAt: Date.now() });
             // Don't hand THIS job back yet: the stamp above makes resume-selection pick the
             // Indeed Resume, so walk back there and go through again — once per job.
-            if (await claimIndeedSdrRetry(jobInfo, indeedLastResumeKind)) {
+            if (await claimIndeedSdrRetry(jobInfo, choice)) {
               logBackend(`↩️ Indeed refused the uploaded resume at "Review your resume details" — retrying with your Indeed Resume: ${jobInfo.title || "this job"} @ ${jobInfo.company || "?"}`, "info");
               if (await walkBackToResumeSelection()) {
                 lastSig = ""; stallRounds = 0; prevStepAt = Date.now();
+                // Its own step budget: the retry walks the form again. Still bounded — one retry per job.
+                maxSteps = formStepCount + STEP_BUDGET;
                 continue;
               }
               logBackend(`↩️ Couldn't get back to the resume step (@${location.pathname.slice(-70)}) — handing the job back`, "warn");
@@ -4997,6 +5021,7 @@
         } else {
           log("Submit button not found on final step", "err");
           logBackend(`⚠️ Submit button vanished on final step — giving up on ${jobInfo.title} @ ${jobInfo.company}`, "warn");
+          stoppedEarly = true;
           break;
         }
       }
@@ -5063,13 +5088,20 @@
         }
         logBackend(`⚠️ Form step had no Continue/Submit button (${location.hostname}) — giving up on this job — ${dialogSnapshot()}`, "warn");
         logBackend(Array.from(`🔘 @${location.pathname.slice(-70)} ${buttonCensus()}`).slice(0, 1950).join(""), "warn");
+        stoppedEarly = true;
         break;
       }
     }
 
-    if (formStepCount >= maxSteps) {
+    if (formStepCount >= maxSteps && !stoppedEarly) {
       log("Too many form steps — skipping job", "err");
       logBackend(`⚠️ Too many form steps (${maxSteps}) — giving up on ${jobInfo.title} @ ${jobInfo.company}`, "warn");
+      // A hand-back with a reason, not a silent skip — the same channel the stall guard in
+      // this loop already uses on every phase3 board (Indeed and ZipRecruiter alike).
+      await handBackJob(`the form ran past ${maxSteps} steps without reaching Submit`,
+        { title: jobInfo.title, company: jobInfo.company, platform: detectPlatform(), steps: formStepCount });
+      await skipToNextJob();
+      return;
     }
 
     // If we got here without submitting, skip to next job
