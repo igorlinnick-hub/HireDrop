@@ -40,36 +40,141 @@ _MAX_POSTING_CHARS = 1500
 # So: if the profile says, answer exactly that (and skip the model call entirely). If it
 # doesn't, return "" — the extension leaves the field blank and hands the form back to
 # the human, which is the honest outcome for a question only they can answer.
-_SPONSORSHIP_Q = re.compile(r"sponsor|visa\b|h-?1b|immigration (case|status)|work permit", re.I)
+# One reading, mirrored in content.js (workStatusClass / workStatus): the two must agree,
+# or a question gets two answers depending on which widget it was drawn with. Pinned by
+# tests/test_screener_policy.py (matrix) and chrome-extension/tests/work-status.test.js.
 _AUTHORIZATION_Q = re.compile(
-    r"(authoriz|eligible|legally (permitted|authorized|able)|right to work|"
+    r"(authoriz|authoris|eligible|legally (permitted|authorized|able)|right to work|"
     r"permanent work|work authoriz).{0,40}(work|employ)|"
-    r"(work|employ).{0,40}(authoriz|eligible|legally)|citizenship status"
+    r"(work|employ).{0,40}(authoriz|authoris|eligible|legally)|citizenship status"
     # "Do you have the right to work in Germany?" ends on the place, with no second
     # "work" for the pattern above to find — so it used to go to the model.
     r"|\bright to work\b",
     re.I,
 )
-
-
-# "…without (the need for) (employer) sponsorship": Yes = needs NO sponsorship.
-_SPONSOR_FLIPPED = re.compile(
-    r"without\s+(the\s+need\s+(for|of)\s+|needing\s+|requiring\s+)?(any\s+)?"
-    r"((employer|company|visa|immigration|employment)\s+)*sponsor",
+_SPONSOR_WORDS = re.compile(r"sponsor|visa\b|h-?1b|immigration|work permit", re.I)
+# "…will you (now or in the future) require/need…", "Does your work authorization require
+# <company> to sponsor…", "I will (not) require…" — anywhere in the question.
+_ASKS_REQUIRE = re.compile(
+    r"\b(?:will|would|do|does|did)\s+(?:you|your\b[^?]{0,40}?)\b[^?]{0,80}?\b(?:require|need)s?\b"
+    r"|^\W*i\s+(?:will|would|do)\s+(?:not\s+)?(?:require|need)\b",
     re.I,
 )
-_SPONSOR_NEGATED = re.compile(r"\bwithout\b|\b(do not|don'?t|not) (need|require)", re.I)
+# "Are you …" / "Do you have …" up front: authorization. Also asking "will you require …"
+# makes it two questions in one → refuse.
+_AUTH_START = re.compile(
+    r"^\W*(?:[^:?]{0,60}[:,]\s*)?(?:are|is)\s+you\b"
+    r"|^\W*(?:[^:?]{0,60}[:,]\s*)?(?:do|does)\s+you\s+(?:currently\s+)?(?:have|hold|possess)\b",
+    re.I,
+)
+# A work AUTHORIZATION one would need granted is sponsorship by another name.
+_REQUIRED_THING = re.compile(
+    r"sponsor|visa\b|h-?1b|immigration|work permit|work authori[sz]ation", re.I
+)
+_HOLDS_PERMIT = re.compile(
+    r"\b(?:have|hold|possess)\b[^?]{0,30}\bwork (?:permit|authori[sz]ation)\b", re.I
+)
+_CAN_WORK_WITHOUT = re.compile(
+    r"\b(?:can|could|able to)\s+(?:legally\s+)?work\b[^?]{0,60}\bwithout\b", re.I
+)
+_WITHOUT_SPONSOR = re.compile(r"\bwithout\b[^?]{0,60}\b(?:sponsor|visa)", re.I)
+_AND_NO_SPONSOR = re.compile(
+    r"\band\s+(?:do not|don'?t|will not|won'?t|not)\s+(?:need|require)\b", re.I
+)
+_UNRESTRICTED = re.compile(
+    r"permanent (?:work|employment) authori[sz]ation|\bunrestricted\b"
+    r"|for any (?:united states )?employer|without (?:any )?restrictions?",
+    re.I,
+)
+_NEGATED = re.compile(
+    r"\b(?:not|n't)\s+(?:currently\s+|yet\s+|legally\s+)*"
+    r"(?:authori[sz]ed|eligible|permitted|able to work|require|need)\b",
+    re.I,
+)
+_EITHER_OR = re.compile(
+    r"\bor\s+(?:will|would|do|does)\s+you\s+(?:require|need)|\bor\s+(?:require|need)\b"
+    r"|\bor\s+(?:will|would|do)\s+you\s+(?:now\s+or\s+in\s+the\s+future\s+)?require",
+    re.I,
+)
+_OPEN_Q = re.compile(
+    r"^\W*(?:how|what|which|when|why|where)\b"
+    r"|\bplease\s+(?:describe|explain|list|specify|provide)\b",
+    re.I,
+)
+_REQUIRE_WORD = re.compile(r"\b(?:require|need)s?\b|\brequired\b|\bneeded\b", re.I)
 
+# "(Skip this question if you are applying to work in Canada or the UK). Do you …
+# require sponsorship?" (4 of the 320 schemas) names foreign places; the question is the US one.
+_SKIP_PAREN = re.compile(r"\(\s*(?:please\s+)?(?:skip|ignore|disregard)\b[^)]*\)", re.I)
+_SKIP_SENTENCE = re.compile(
+    r"(?:^|[.!?]\s+)(?:please\s+)?(?:skip|ignore|disregard) this question if[^.?!]*[.!]", re.I
+)
+
+# Places spelled with dots or foreign-looking words. "U.K." used to be cut at "U" (the
+# dots end _WORK_IN's place) and read as the US; "New Mexico", "Paris, Texas", "Dublin,
+# Ohio" read as Mexico / France / Ireland.
+_US_STATE_NAMES = (
+    "Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|"
+    "Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|"
+    "Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|"
+    "New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|"
+    "Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|"
+    "Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming"
+)
+_US_STATE_CODES = (
+    "AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|"
+    "NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC"
+)
+# Case-sensitive on purpose: "London, Ontario" stays foreign, "Dublin, CA" is California.
+_US_CITY_STATE = re.compile(
+    r"\b[A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*){0,2},\s*(?:(?:"
+    + _US_STATE_NAMES
+    + r")\b|(?:"
+    + _US_STATE_CODES
+    + r")\b)"
+)
+_DOTTED_US = re.compile(r"\bU\.\s?S\.?(?:\s?A\.?)?(?![a-z])", re.I)
+_DOTTED_UK = re.compile(r"\bU\.\s?K\.?(?![a-z])", re.I)
+_DOTTED_EU = re.compile(r"\bE\.\s?U\.?(?![a-z])", re.I)
+_US_NEW_STATES = re.compile(r"\bnew\s+(?:mexico|england|jersey|york|hampshire)\b", re.I)
+# Not in job_location's lists (those are about board locations, not questions).
+_UK_PARTS = re.compile(r"\b(?:great britain|britain|scotland|wales|northern ireland)\b", re.I)
 
 # "…work IN <place>": the place the question is actually about, when it says so.
 _WORK_IN = re.compile(
-    r"\b(?:work|working|employment|employed)\b[^.?!]{0,60}?\b(?:in|within)\s+"
+    r"\b(?:work|working|employment|employed)\b[^.?!]{0,60}?\b(?:in|within|from)\s+"
     r"((?:the\s+)?[^.?!,;()]{2,60})",
     re.I,
 )
-_US_NAMED = re.compile(r"\b(?:u\.s\.a?\.?|usa?|united states(?: of america)?)\b", re.I)
+# "US"/"USA" only in capitals: lower-case "us" is the pronoun ("work for us in London").
+_US_CAPS = re.compile(r"\bU\.?S\.?A?(?![A-Za-z])")
+_US_WORDS = re.compile(r"\bunited states\b|\bu\.\s?s\.|\bamerica\b(?!s)", re.I)
+_AMERICA_REGIONS = re.compile(r"\b(north|latin|south|central)\s+america\b", re.I)
 # Wider than the US: "authorized to work in the Americas" is not answered by a US flag.
 _WIDER_THAN_US = re.compile(r"\b(?:the americas|north america|worldwide|globally)\b", re.I)
+
+
+def _strip_skip_clause(text: str) -> str:
+    return _SKIP_SENTENCE.sub(" ", _SKIP_PAREN.sub(" ", text or ""))
+
+
+def _normalise_places(text: str) -> str:
+    t = _DOTTED_US.sub(" United States ", text or "")
+    t = _DOTTED_UK.sub(" United Kingdom ", t)
+    t = _DOTTED_EU.sub(" European Union ", t)
+    t = _US_NEW_STATES.sub(" United States ", t)
+    return _US_CITY_STATE.sub(" United States ", t)
+
+
+def _names_foreign(text: str) -> bool:
+    from modules.job_location import names_non_us_place
+
+    return bool(names_non_us_place(text) or _UK_PARTS.search(text) or _WIDER_THAN_US.search(text))
+
+
+def _names_us(text: str) -> bool:
+    t = _AMERICA_REGIONS.sub(" ", text or "")
+    return bool(_US_CAPS.search(t) or _US_WORDS.search(t))
 
 
 def _asks_about_another_place(question: str) -> bool:
@@ -79,33 +184,78 @@ def _asks_about_another_place(question: str) -> bool:
     answer, a foreign country / city / region → not. A US mention elsewhere in the
     sentence does not rescue it ("…work in Canada? US-based applicants see below"), and a
     foreign mention elsewhere does not sink a US question ("…work in the US without
-    sponsorship, e.g. TN for Canada/Mexico"). With no "work in" to go by, any foreign
-    place and no US at all is enough to refuse. A question that names nowhere is about
-    the job's country, which for this product is the US.
+    sponsorship, e.g. TN for Canada/Mexico"). "the US or Canada" is answered by the US fact
+    (either is enough); "both the US and Canada" is not. With no "work in" to go by, any
+    foreign place and no US at all is enough to refuse. A question that names nowhere is
+    about the job's country, which for this product is the US.
     """
-    from modules.job_location import names_non_us_place
-
-    anchored = _WORK_IN.search(question)
+    q = _normalise_places(question)
+    anchored = _WORK_IN.search(q)
     if anchored:
         place = anchored.group(1)
-        if _US_NAMED.search(place):
-            return False
-        if names_non_us_place(place) or _WIDER_THAN_US.search(place):
+        if _names_us(place):
+            return _names_foreign(place) and bool(re.search(r"\b(?:and|both)\b|&", place, re.I))
+        if _names_foreign(place):
             return True
-    return (
-        names_non_us_place(question) or bool(_WIDER_THAN_US.search(question))
-    ) and not _US_NAMED.search(question)
+    return _names_foreign(q) and not _names_us(q)
+
+
+def _main_question(question: str) -> str:
+    """The question itself: no parentheticals ("(e.g. H-1B)", "(we can't sponsor visas)",
+    "(Answer No if you can work without sponsorship)"), nothing after the first "?", no
+    note in front of it. Which fact is asked, and which way Yes points, is read from here
+    only — a visa note used to turn an authorization question into a sponsorship one."""
+    t = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", _normalise_places(_strip_skip_clause(question)))
+    q = t.find("?")
+    if q >= 0:
+        t = re.split(r"[.!;]\s+(?=[A-Z])", t[: q + 1])[-1]
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def _status_class(question: str) -> str | None:
+    """auth (→ authorized) / auth_without (→ authorized AND no sponsorship needed) /
+    sponsor (→ needs sponsorship) / unclear (→ refuse) / None (not a status question)."""
+    m = _main_question(question)
+    # A paragraph with no question in it (E-Verify notice, "I certify…") is not one.
+    if "?" not in m and len(m) > 150:
+        return None
+    auth = bool(
+        _AUTHORIZATION_Q.search(m) or _HOLDS_PERMIT.search(m) or _CAN_WORK_WITHOUT.search(m)
+    )
+    sponsor_words = bool(_SPONSOR_WORDS.search(m))
+    if not (auth or sponsor_words):
+        return None
+    if _OPEN_Q.search(m):
+        return "unclear"
+    asks_require = bool(_ASKS_REQUIRE.search(m))
+    if asks_require and _AUTH_START.search(m):
+        return "unclear"
+    if asks_require and _REQUIRED_THING.search(m):
+        if _NEGATED.search(m) or _WITHOUT_SPONSOR.search(m):
+            return "unclear"
+        return "sponsor"
+    if auth:
+        if _EITHER_OR.search(m):
+            return "unclear"
+        if _WITHOUT_SPONSOR.search(m) or _AND_NO_SPONSOR.search(m) or _UNRESTRICTED.search(m):
+            rest = _AND_NO_SPONSOR.sub(" ", m)
+            return "unclear" if _NEGATED.search(rest) else "auth_without"
+        return "unclear" if _NEGATED.search(m) else "auth"
+    if _REQUIRE_WORD.search(m) and not _NEGATED.search(m) and not _WITHOUT_SPONSOR.search(m):
+        return "sponsor"
+    return "unclear"
 
 
 def _status_from_profile(question: str, profile: dict, options: list[str]) -> str | None:
     """A yes/no for a work-status question, straight from the profile.
 
-    Returns the answer string, "" to refuse (profile silent), or None when the question
-    isn't about legal status at all and normal handling should continue.
+    Returns the answer string, "" to refuse (profile silent, another country, a wording
+    we cannot read), or None when the question isn't about legal status at all.
+    The two flags are independent selects in Settings, so every combination is real —
+    "not authorized" + "needs no sponsorship" included.
     """
-    is_sponsor = bool(_SPONSORSHIP_Q.search(question))
-    is_auth = bool(_AUTHORIZATION_Q.search(question))
-    if not (is_sponsor or is_auth):
+    kind = _status_class(question)
+    if kind is None:
         return None
 
     # BOTH PROFILE FLAGS ARE ABOUT THE UNITED STATES. A question about working somewhere
@@ -113,28 +263,30 @@ def _status_from_profile(question: str, profile: dict, options: list[str]) -> st
     # 09-30: "Are you legally authorized to work in Canada?" → Yes, off
     # `work_authorized_us`, on a "(Canada)" role that had reached a US-only queue. That
     # is a false statement about someone's legal status; refuse instead.
-    if _asks_about_another_place(question):
+    if _asks_about_another_place(_strip_skip_clause(question)):
         return ""
 
-    # Sponsorship wins when a question mentions both ("are you authorized to work
-    # without sponsorship?"): the sponsorship field is the more specific fact.
-    flag = profile.get("needs_sponsorship") if is_sponsor else profile.get("work_authorized_us")
-    if flag is None:
-        return ""  # the profile does not know → we do not answer
+    a = profile.get("work_authorized_us")
+    n = profile.get("needs_sponsorship")
+    a = a if isinstance(a, bool) else None
+    n = n if isinstance(n, bool) else None
+    want_yes: bool | None = None
+    if kind == "auth":
+        want_yes = a
+    elif kind == "sponsor":
+        want_yes = n
+    elif kind == "auth_without":
+        # "Authorized … without sponsorship / for any employer / permanently": both facts.
+        if a is False or n is True:
+            want_yes = False
+        elif a is True and n is False:
+            want_yes = True
+    if want_yes is None:
+        return ""  # the profile does not know, or the wording is unreadable → we do not answer
 
-    want_yes = bool(flag)
-    if is_sponsor:
-        # Which way Yes points (mirrors content.js sponsorshipSaysYes). "Are you authorized
-        # to work in the US WITHOUT sponsorship?" — Yes means the person needs none; read
-        # like "will you require sponsorship?" it told employers a US citizen was not
-        # authorized. Any other negation is a guess → refuse.
-        if _SPONSOR_FLIPPED.search(question):
-            want_yes = not want_yes
-        elif _SPONSOR_NEGATED.search(question):
-            return ""
     if not options:
         return "Yes" if want_yes else "No"
-    wanted = re.compile(r"^yes\b", re.I) if want_yes else re.compile(r"^no\b", re.I)
+    wanted = re.compile(r"^\W*yes\b", re.I) if want_yes else re.compile(r"^\W*no\b", re.I)
     matches = [o for o in options if wanted.match(o.strip())]
     # Exactly one match is an answer. Several are a question the boolean cannot settle:
     # GitLab's sponsorship dropdown lists seven visa types, all starting "Yes, …", and

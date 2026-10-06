@@ -116,12 +116,14 @@ const { getComboLabel, chooseOption } = ctx.T;
   check("the model was asked the real question, not “LinkedIn Profile”",
     asked.length > 0 && asked.every((q) => !/linkedin/i.test(q)), JSON.stringify(asked));
 
-  // Other negated wordings: which way Yes points is unclear → no profile answer, and with
-  // the model silent the field stays blank instead of "No" (= "not authorized").
+  // Conjunctions of both facts ("authorized … without being sponsored", "… and do not
+  // require sponsorship"): Yes only when authorized AND needing none (skeptic 10-06).
   for (const q of ["Are you authorized to work in the US without being sponsored?",
     "Are you authorized to work in the US and do not require visa sponsorship?"]) {
-    check(`unclear negation left to the model/person: “${q.slice(36, 70)}…”`,
-      (await chooseOption(q, noYes, p, {})) === null);
+    check(`both facts: “${q.slice(36, 70)}…” → Yes for authorized + no sponsorship`,
+      (await chooseOption(q, noYes, p, {}))?.text === "Yes");
+    check(`both facts: “${q.slice(36, 70)}…” → No when sponsorship is needed`,
+      (await chooseOption(q, yesNo, { work_authorized_us: true, needs_sponsorship: true }, {}))?.text === "No");
   }
   check("“How long will you require visa sponsorship?” is still a knockout",
     (await chooseOption("How long will you require visa sponsorship?", [{ text: "1 year" }, { text: "Not needed" }], {}, {})) === null);

@@ -86,7 +86,7 @@ const DOMESTIC = [
   ["Are you legally authorised to work full-time in the country where this job is based?", "auth"],
   ["Will you now or in the future require sponsorship for employment visa status?", "sponsor"],
   // Foreign places named only as visa examples / as "skip if" — still the US question.
-  ["Are you authorized to work in the US without sponsorship (e.g. TN for Canada/Mexico)?", "sponsor"],
+  ["Are you authorized to work in the US without sponsorship (e.g. TN for Canada/Mexico)?", "auth_without"],
   ["(Skip this question if you are applying to work in Canada or the UK). Do you now or in the future require sponsorship? ", "sponsor"],
 ];
 
@@ -109,6 +109,37 @@ const DOMESTIC = [
   check("“the Americas” is wider than the US",
     W.W.workStatus("Are you eligible to work in the Americas?", US).foreign === true);
   check("not a status question → null", W.W.workStatus("Why do you want to work at Discord?", US) === null);
+
+  // ---- 1b. The truth table: question × profile, every cell TRUE for the person ---------
+  // fixtures/work-status-matrix.json — the SAME table tests/test_screener_policy.py runs
+  // against the backend's _status_from_profile, so browser and server agree. The skeptic's
+  // rows (10-06): "without sponsorship" with (not authorized, needs none) said Yes; a
+  // clarifying "(Answer No if you can work without sponsorship)" flipped "Do you require
+  // sponsorship?"; "U.K." read as the US; "New Mexico"/"Paris, Texas" read as abroad.
+  {
+    const M = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures", "work-status-matrix.json"), "utf8"));
+    const ctx = makeCtx();
+    vm.runInContext(`${CHOOSERS}\nglobalThis.A = answerWorkStatus; globalThis.choose = chooseOption;`, ctx);
+    let cells = 0;
+    const bad = [];
+    for (const row of M.rows) {
+      for (let i = 0; i < M.profiles.length; i++) {
+        const [a, n] = M.profiles[i];
+        const prof = {};
+        if (a !== null) prof.work_authorized_us = a;
+        if (n !== null) prof.needs_sponsorship = n;
+        const want = row.expect[i];
+        const text = await ctx.A(row.q, null, prof, {});
+        const sel = await ctx.choose(row.q, yesNo, prof, {});
+        const gotText = text && text.pick ? text.pick : "";
+        const gotSel = sel ? sel.text : "";
+        cells++;
+        if (gotText !== want || gotSel !== want) bad.push(`(${a},${n}) want “${want}” text “${gotText}” select “${gotSel}” | ${row.q}`);
+      }
+    }
+    check(`matrix: ${cells} cells (${M.rows.length} questions × ${M.profiles.length} profiles), text and select both true`,
+      bad.length === 0, bad.slice(0, 6).join("\n        "));
+  }
 
   // ---- 2. Dropdowns / comboboxes (chooseOption) ----------------------------------------
   {

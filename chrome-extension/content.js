@@ -3711,8 +3711,6 @@
   // Detection is wider than what the profile may answer: anything that smells of status
   // (a "work permit", "immigration support") must never fall to a "Yes"/first-option
   // default — it is answered from the profile only when the wording is one we can read.
-  const WS_SPONSOR_RE = /sponsor|visa\b|h-?1b|immigration|work permit/i;
-  const WS_SPONSOR_READABLE_RE = /sponsor|visa\b|h-?1b|immigration case/i;
   const WS_AUTH_RE = new RegExp(
     "(authoriz|authoris|eligible|legally (permitted|authorized|able)|right to work|" +
     "permanent work|work authoriz).{0,40}(work|employ)|" +
@@ -3758,6 +3756,30 @@
       .replace(/(?:^|[.!?]\s+)(?:please\s+)?(?:skip|ignore|disregard) this question if[^.?!]*[.!]/gi, " ");
   }
 
+  // Places spelled with dots or with foreign-looking words, rewritten before the country
+  // reading: "U.K." is the United Kingdom (its dots used to cut the place at "U", which
+  // then read as the US), while "New Mexico", "New England", "Paris, Texas" and "Dublin,
+  // Ohio/CA" are in the United States (they used to read as Mexico/England/France/Ireland).
+  const WS_US_STATE_NAMES = "alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new hampshire|new jersey|new mexico|new york|north carolina|north dakota|ohio|oklahoma|oregon|pennsylvania|rhode island|south carolina|south dakota|tennessee|texas|utah|vermont|virginia|washington|west virginia|wisconsin|wyoming";
+  const WS_US_STATE_CODES = "AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC";
+  const WS_US_CITY_STATE_RE = new RegExp(
+    "\\b[A-Z][A-Za-z.'-]*(?:\\s+[A-Z][A-Za-z.'-]*){0,2},\\s*(?:(?:" +
+    WS_US_STATE_NAMES.split("|").map((n) => n.replace(/\b[a-z]/g, (c) => `[${c.toUpperCase()}${c}]`)).join("|") +
+    ")\\b|(?:" + WS_US_STATE_CODES + ")\\b)", "g");
+  function normalisePlaces(text) {
+    return String(text || "")
+      .replace(/\bU\.\s?S\.?(?:\s?A\.?)?(?![a-z])/gi, " United States ")
+      .replace(/\bU\.\s?K\.?(?![a-z])/gi, " United Kingdom ")
+      .replace(/\bE\.\s?U\.?(?![a-z])/gi, " European Union ")
+      .replace(/\bnew\s+(?:mexico|england|jersey|york|hampshire)\b/gi, " United States ")
+      .replace(WS_US_CITY_STATE_RE, " United States ");
+  }
+  // Not in job_location's list, which is about board locations rather than questions.
+  const WS_UK_PARTS_RE = /\b(?:great britain|britain|scotland|wales|northern ireland)\b/i;
+  function namesForeign(text) {
+    return WS_NON_US_RE.test(text) || WS_UK_PARTS_RE.test(text) || WS_WIDER_RE.test(text);
+  }
+
   function namesUS(text) {
     // "North/Latin/South America" are regions, not the US (WS_WIDER_RE / WS_NON_US_RE).
     const t = String(text || "").replace(/\b(north|latin|south|central)\s+america\b/gi, " ");
@@ -3767,51 +3789,112 @@
   // Is this work-status question about somewhere other than the United States? Where the
   // question says "work in <place>", that place decides; a US mention elsewhere does not
   // rescue it, and a foreign one elsewhere ("e.g. TN for Canada/Mexico") does not sink a
-  // US question. With no "work in", any foreign place and no US at all is enough. A
-  // question that names nowhere is about the job's country — for this product, the US.
+  // US question. "the US or Canada" is answered by the US fact (either one is enough);
+  // "both the US and Canada" is not. With no "work in", any foreign place and no US at all
+  // is enough. A question that names nowhere is about the job's country — here, the US.
   function asksAboutAnotherPlace(question) {
-    const anchored = WS_WORK_IN_RE.exec(question);
+    const q = normalisePlaces(question);
+    const anchored = WS_WORK_IN_RE.exec(q);
     if (anchored) {
       const place = anchored[1];
-      if (namesUS(place)) return false;
-      if (WS_NON_US_RE.test(place) || WS_WIDER_RE.test(place)) return true;
+      if (namesUS(place)) return namesForeign(place) && /\b(?:and|both)\b|&/i.test(place);
+      if (namesForeign(place)) return true;
     }
-    return (WS_NON_US_RE.test(question) || WS_WIDER_RE.test(question)) && !namesUS(question);
+    return namesForeign(q) && !namesUS(q);
   }
 
-  // Which way a sponsorship question points. "Will you require sponsorship?" — Yes means
-  // the person needs it. "Are you authorized to work … without the need for sponsorship?"
-  // — Yes means they do NOT. Read the second like the first and someone who needs no
-  // visa answers "No", i.e. "not authorized": screened out (~4 of the 320 GH schemas;
-  // skeptic 10-06, reachable on dropdowns once their real labels were read).
-  function sponsorshipSaysYes(label, needsSponsorship) {
-    const flips = /without\s+(the\s+need\s+(for|of)\s+|needing\s+|requiring\s+)?(any\s+)?((employer|company|visa|immigration|employment)\s+)*sponsor/i;
-    if (flips.test(label)) return !needsSponsorship;
-    // Any other negation ("without being sponsored", "and do not require sponsorship") and
-    // which way Yes points is a guess — null: the model reads it, or the person does.
-    if (/\bwithout\b|\b(do not|don'?t|not) (need|require)/i.test(label)) return null;
-    return needsSponsorship;
+  // The question itself, without what surrounds it: parentheticals ("(e.g. H-1B)", "(we
+  // can't sponsor visas)", "(Answer No if you can work without sponsorship)"), anything
+  // after the first "?", and a note in front of it ("We cannot sponsor. Are you …?").
+  // Which fact is asked, and which way Yes points, is read from this part only — a visa
+  // note used to turn "Are you authorized to work in the US? (we can't sponsor visas)"
+  // into a sponsorship question, and "…without sponsorship" in an explanatory clause
+  // flipped "Do you require sponsorship?".
+  function mainQuestion(label) {
+    let t = normalisePlaces(stripSkipClause(label)).replace(/\([^)]*\)|\[[^\]]*\]/g, " ");
+    const q = t.indexOf("?");
+    if (q >= 0) t = t.slice(0, q + 1);
+    const parts = t.split(/[.!;]\s+(?=[A-Z])/);
+    return (q >= 0 ? parts[parts.length - 1] : t).replace(/\s+/g, " ").trim();
+  }
+
+  // What a work-status question asks, read from the main question:
+  //   "auth"         — authorized / eligible / right to work / a valid work permit    → A
+  //   "auth_without" — authorized WITHOUT sponsorship, for any employer, permanent or
+  //                    unrestricted authorization ("…and do not require sponsorship")   → A && !N
+  //   "sponsor"      — will you require / need sponsorship (or a visa, a work permit)    → N
+  //   "unclear"      — a negated main verb ("Are you NOT authorized…?", "Do you not
+  //                    require…?"), an either/or ("…without restriction, or will you
+  //                    require sponsorship?"), or not a yes/no ("How long will you…")   → blank
+  //   null           — not a work-status question.
+  const WS_SPONSOR_WORDS_RE = /sponsor|visa\b|h-?1b|immigration|work permit/i;
+  // "…will you (now or in the future) require/need…", "Does your work authorization
+  // require <company> to sponsor…", "I will (not) require…" — anywhere in the question
+  // ("In the country where you plan to work, will you … require … sponsorship?").
+  const WS_REQ_START_RE = /\b(?:will|would|do|does|did)\s+(?:you|your\b[^?]{0,40}?)\b[^?]{0,80}?\b(?:require|need)s?\b|^\W*i\s+(?:will|would|do)\s+(?:not\s+)?(?:require|need)\b/i;
+  // "Are you …" / "Do you have …" up front: an authorization question. If it ALSO asks
+  // "will you require …", it is two questions in one → blank.
+  const WS_AUTH_START_RE = /^\W*(?:[^:?]{0,60}[:,]\s*)?(?:are|is)\s+you\b|^\W*(?:[^:?]{0,60}[:,]\s*)?(?:do|does)\s+you\s+(?:currently\s+)?(?:have|hold|possess)\b/i;
+  // Required: a work AUTHORIZATION one would need granted is sponsorship by another name
+  // ("Will you require U.S. work authorization (e.g., visa sponsorship)…?").
+  const WS_REQUIRED_THING_RE = /sponsor|visa\b|h-?1b|immigration|work permit|work authori[sz]ation/i;
+  const WS_HOLDS_PERMIT_RE = /\b(?:have|hold|possess)\b[^?]{0,30}\bwork (?:permit|authori[sz]ation)\b/i;
+  const WS_CAN_WORK_WITHOUT_RE = /\b(?:can|could|able to)\s+(?:legally\s+)?work\b[^?]{0,60}\bwithout\b/i;
+  const WS_WITHOUT_RE = /\bwithout\b[^?]{0,60}\b(?:sponsor|visa)/i;
+  const WS_AND_NO_SPONSOR_RE = /\band\s+(?:do not|don'?t|will not|won'?t|not)\s+(?:need|require)\b/i;
+  const WS_UNRESTRICTED_RE = /permanent (?:work|employment) authori[sz]ation|\bunrestricted\b|for any (?:united states )?employer|without (?:any )?restrictions?/i;
+  const WS_NEGATED_RE = /\b(?:not|n't)\s+(?:currently\s+|yet\s+|legally\s+)*(?:authori[sz]ed|eligible|permitted|able to work|require|need)\b/i;
+  const WS_EITHER_OR_RE = /\bor\s+(?:will|would|do|does)\s+you\s+(?:require|need)|\bor\s+(?:require|need)\b|\bor\s+(?:will|would|do)\s+you\s+(?:now\s+or\s+in\s+the\s+future\s+)?require/i;
+  const WS_OPEN_RE = /^\W*(?:how|what|which|when|why|where)\b|\bplease\s+(?:describe|explain|list|specify|provide)\b/i;
+  function workStatusClass(label) {
+    const m = mainQuestion(label);
+    // A paragraph with no question in it (an E-Verify notice, an "I certify…" block) is
+    // not a work-status question, whatever words it uses; a statement box is short.
+    if (!m.includes("?") && m.length > 150) return null;
+    const auth = WS_AUTH_RE.test(m) || WS_HOLDS_PERMIT_RE.test(m) || WS_CAN_WORK_WITHOUT_RE.test(m);
+    const sponsorWords = WS_SPONSOR_WORDS_RE.test(m);
+    if (!auth && !sponsorWords) return null;
+    if (WS_OPEN_RE.test(m)) return "unclear";
+    const asksRequire = WS_REQ_START_RE.test(m);
+    if (asksRequire && WS_AUTH_START_RE.test(m)) return "unclear";
+    if (asksRequire && WS_REQUIRED_THING_RE.test(m)) {
+      // "Do you require sponsorship?" — unless the main verb is negated or "without".
+      if (WS_NEGATED_RE.test(m) || WS_WITHOUT_RE.test(m)) return "unclear";
+      return "sponsor";
+    }
+    if (auth) {
+      if (WS_EITHER_OR_RE.test(m)) return "unclear";
+      if (WS_WITHOUT_RE.test(m) || WS_AND_NO_SPONSOR_RE.test(m) || WS_UNRESTRICTED_RE.test(m)) {
+        // "authorized … and do not require sponsorship" is a conjunction, not a negation.
+        const rest = m.replace(WS_AND_NO_SPONSOR_RE, " ");
+        return WS_NEGATED_RE.test(rest) ? "unclear" : "auth_without";
+      }
+      return WS_NEGATED_RE.test(m) ? "unclear" : "auth";
+    }
+    // Sponsorship words with no clear verb ("Sponsorship required?", "Visa sponsorship
+    // needed now or in the future") → N; anything else ("Do you have an H-1B visa?") → blank.
+    if (/\b(?:require|need)s?\b|\brequired\b|\bneeded\b/i.test(m) && !WS_NEGATED_RE.test(m) && !WS_WITHOUT_RE.test(m)) return "sponsor";
+    return "unclear";
   }
 
   // null → not a work-status question (the caller's other rules apply).
-  // Otherwise { kind: "sponsor"|"auth", foreign, says } where `says` is the Yes/No the
-  // profile gives (true = Yes), or null = we do not know it and must not guess.
+  // Otherwise { kind, foreign, says } where `says` is the Yes/No that is TRUE for the
+  // person (true = Yes), or null = we do not know it and must not guess. The two profile
+  // flags are independent selects (Settings), so every combination is real — including
+  // "not authorized" + "needs no sponsorship".
   function workStatus(label, profile) {
-    const q = stripSkipClause(label);
-    const sponsor = WS_SPONSOR_RE.test(q);
-    const auth = WS_AUTH_RE.test(q);
-    if (!sponsor && !auth) return null;
-    // Sponsorship wins when a question mentions both: it is the more specific fact.
-    const kind = sponsor ? "sponsor" : "auth";
-    if (asksAboutAnotherPlace(q)) return { kind, foreign: true, says: null };
+    const kind = workStatusClass(label);
+    if (!kind) return null;
+    if (asksAboutAnotherPlace(stripSkipClause(label))) return { kind, foreign: true, says: null };
     const p = profile || {};
+    const A = typeof p.work_authorized_us === "boolean" ? p.work_authorized_us : null;
+    const N = typeof p.needs_sponsorship === "boolean" ? p.needs_sponsorship : null;
     let says = null;
-    if (kind === "sponsor") {
-      if (WS_SPONSOR_READABLE_RE.test(q) && typeof p.needs_sponsorship === "boolean") {
-        says = sponsorshipSaysYes(q, p.needs_sponsorship);
-      }
-    } else if (typeof p.work_authorized_us === "boolean") {
-      says = p.work_authorized_us;
+    if (kind === "auth") says = A;
+    else if (kind === "sponsor") says = N;
+    else if (kind === "auth_without") {
+      if (A === false || N === true) says = false;
+      else if (A === true && N === false) says = true;
     }
     return { kind, foreign: false, says };
   }

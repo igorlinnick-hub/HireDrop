@@ -7,6 +7,9 @@ half is just as binding: employers, titles, certifications, licenses, degrees, c
 are never invented — a faked credential surfaces at the interview and burns the candidate.
 """
 
+import json
+from pathlib import Path
+
 import pytest
 
 from modules.ai_question_answer import _system_prompt
@@ -318,28 +321,31 @@ def test_unattended_mode_turns_unknown_into_no_answer_and_shows_the_facts():
     assert out == "Yes" and "UNATTENDED MODE" not in system and "FACTS ON FILE" not in prompt
 
 
+_MATRIX = json.loads(
+    (
+        Path(__file__).resolve().parent.parent
+        / "chrome-extension/tests/fixtures/work-status-matrix.json"
+    ).read_text()
+)
+
+
 @pytest.mark.parametrize(
-    ("question", "needs", "answer"),
+    ("question", "profile", "answer"),
     [
-        # Same reading as content.js sponsorshipSaysYes (chrome-extension/tests/gh-combo-labels).
         (
-            "Are you legally authorized to work in the United States for any employer without"
-            " the need for sponsorship (now or in the future)?",
-            False,
-            "Yes",
-        ),
-        (
-            "Are you legally authorized to work in the United States for any employer without"
-            " the need for sponsorship (now or in the future)?",
-            True,
-            "No",
-        ),
-        ("Will you now or in the future require visa sponsorship?", True, "Yes"),
-        # Other negations: which way Yes points is a guess → refuse, the person answers.
-        ("Are you authorized to work in the US without being sponsored?", False, ""),
-        ("Are you authorized to work in the US and do not require visa sponsorship?", False, ""),
+            row["q"],
+            {
+                k: v
+                for k, v in zip(("work_authorized_us", "needs_sponsorship"), prof, strict=True)
+                if v is not None
+            },
+            want,
+        )
+        for row in _MATRIX["rows"]
+        for prof, want in zip(_MATRIX["profiles"], row["expect"], strict=True)
     ],
 )
-def test_sponsorship_polarity_follows_the_wording(question, needs, answer):
-    profile = {"work_authorized_us": True, "needs_sponsorship": needs}
+def test_work_status_matrix_is_true_for_the_person(question, profile, answer):
+    """Every cell must be TRUE for the person, or blank. The same table drives
+    chrome-extension/tests/work-status.test.js, so browser and server agree."""
     assert _status_from_profile(question, profile, ["Yes", "No"]) == answer
