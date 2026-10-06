@@ -314,12 +314,90 @@ def assess_fit_endpoint(req: AssessFitRequest, user=Depends(get_current_user)):
             "company_capped": True,
         }
 
+    resume_text = None
+    fresh_because = None
+    if req.job_id:
+        reused, resume_text, fresh_because = _stored_verdict(user.id, profile, req.job_id)
+        if reused is not None:
+            return reused
+
     result = assess_fit(
         job={"title": req.job_title, "company": req.company, "description": req.description},
         profile=profile,
         screener_questions=req.screener_questions,
+        resume_text=resume_text,
     )
+    if isinstance(result, dict) and result.get("judged"):
+        result["verdict_source"] = "live"
+        if fresh_because:
+            result["fresh_because"] = fresh_because
     return result
+
+
+def _stored_verdict(
+    user_id: str, profile: dict, job_id: str
+) -> tuple[dict | None, str | None, str]:
+    """The verdict the server queue already holds for this pool row, if it is still true.
+
+    -> (verdict or None, resume text read on the way, why a fresh judge is needed).
+
+    The ATS walk opens the postings the queue served — rows the server judged on the full
+    description and kept because they cleared the user's bar. Judging them again on the page
+    text was a second authority over the same decision (#184's class): 10-02 the queue held
+    Wikimedia 38 / Grafana 42 / Hightouch 38 on a broad bar of 35 and the live judge said
+    22-30, so three of five opened postings were skipped by a verdict the list contradicted.
+
+    STALE = the row's fit_version is not the current ai_fit_judge.verdict_version() — the
+    fingerprint of prompt version + apply mode + preferences/keywords + resume text. Edit the
+    resume, switch the mode or change the keywords and every stored verdict is stale, here
+    exactly as in the queue (fit_queue.has_current_verdict). No score, a stale score, or a
+    row that is not this user's -> judge live, as before. The bar is the same clears_bar()
+    the queue filtered with.
+    """
+    from modules.ai_fit_judge import clears_bar, mode_threshold, verdict_version
+    from modules.fit_queue import has_current_verdict
+
+    try:
+        # Filtered by user_id: service_role bypasses RLS (IDOR rule) — another user's row
+        # id reads as "not in your pool" and gets the live judge.
+        row = jobs_db.get_job_by_id(user_id, job_id)
+    except Exception as e:  # noqa: BLE001 — an unreadable row costs a judge call, nothing else
+        print(f"[assess-fit] pool row unreadable: {e}", file=sys.stderr)
+        return None, None, "stored score unreadable"
+    if not row:
+        return None, None, "not in your list"
+    if row.get("fit_score") is None:
+        return None, None, "no stored score"
+    resume_text = resume_text_for(profile)
+    version = verdict_version(profile, resume_text)
+    if not has_current_verdict(row, version):
+        return None, resume_text, "profile or resume changed since it was scored"
+
+    threshold = mode_threshold(profile)
+    score = int(row["fit_score"])
+    mode = profile.get("apply_mode") or "standard"
+    if mode not in ("broad", "standard", "precise"):
+        mode = "standard"  # as assess_fit and mode_threshold read an unknown mode
+    return (
+        {
+            "fit_score": score,
+            "decision": "apply" if clears_bar(score, threshold) else "skip",
+            "reason": row.get("fit_reason") or "",
+            "concerns": [],
+            "judged": True,
+            "apply_mode": mode,
+            "threshold": threshold,
+            "judge_model": row.get("fit_model") or "",
+            "escalated": False,
+            "model_decision": None,
+            # The log says which verdict decided: the extension prints "from your list"
+            # for this and "judged now" for a live one.
+            "verdict_source": "queue",
+            "judged_at": row.get("fit_judged_at"),
+        },
+        resume_text,
+        "",
+    )
 
 
 def _match_human_answer(question: str, human: dict[str, str], options: list[str]) -> str | None:

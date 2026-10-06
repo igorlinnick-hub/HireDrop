@@ -32,6 +32,8 @@ import time
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
+from modules.ai_fit_judge import clears_bar
+
 # One application per employer per 60 days (Igor, 10-06; 09-30 said two). An open
 # hand-back holds the slot too — see app/routers/jobs.py::_prejudged_queue.
 COMPANY_CAP = 1
@@ -352,7 +354,7 @@ def build_queue(
     """
     kept_rows, below_bar = [], 0
     for row in rows:
-        if has_current_verdict(row, version) and (row.get("fit_score") or 0) < bar:
+        if has_current_verdict(row, version) and not clears_bar(row.get("fit_score"), bar):
             below_bar += 1
         else:
             kept_rows.append(row)

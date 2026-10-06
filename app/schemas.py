@@ -59,6 +59,11 @@ class AssessFitRequest(BaseModel):
     company: str = Field("", max_length=300)
     description: str = Field("", max_length=8000)
     screener_questions: list[str] = Field(default_factory=list, max_length=40)
+    # The pool row the ATS walk is on (the head of the server queue). With it the endpoint
+    # reuses the verdict the queue was built from instead of judging the posting a second
+    # time on the page text — 10-02: 38/42 stored, 22-32 live, three of five opens lost.
+    # Absent on the Indeed/ZipRecruiter walks, which judge live as before.
+    job_id: str | None = Field(None, max_length=64)
 
 
 class ApplicationSaveRequest(BaseModel):
