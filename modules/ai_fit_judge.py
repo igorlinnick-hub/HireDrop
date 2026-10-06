@@ -68,6 +68,15 @@ def mode_threshold(profile: dict | None) -> int:
     return _MODE_THRESHOLDS.get(mode, _MODE_THRESHOLDS["standard"])
 
 
+def clears_bar(score: int | None, threshold: int) -> bool:
+    """THE verdict: does this score clear the user's bar? One function for every path that
+    decides — the live judge (assess_fit), the prejudged queue (fit_queue.build_queue) and
+    a stored verdict reused at apply time (/tools/assess-fit with a job_id). Two spellings
+    of one comparison drift; that is how the model's own "skip" word overruled the dial
+    (#184). No score (unparseable, never judged) never clears it."""
+    return score is not None and score >= threshold
+
+
 def verdict_version(profile: dict | None, resume_text: str | None = None) -> str:
     """Fingerprint of everything a verdict depends on besides the posting itself.
 
@@ -302,7 +311,7 @@ Decide: should this candidate apply? Return the JSON object only."""
     # is the comparable quantity; the bar belongs to the user. A hard blocker is still expressible
     # — the prompt binds it to a 0-34 score, which lands below every bar.
     model_decision = data.get("decision")
-    decision = "apply" if score >= threshold else "skip"
+    decision = "apply" if clears_bar(score, threshold) else "skip"
     reason = str(data.get("reason") or "").strip()[:300]
     concerns = [str(c).strip()[:120] for c in (data.get("concerns") or []) if str(c).strip()][:5]
     return {

@@ -5401,6 +5401,19 @@
   // Reuses the universal filler helpers (findFieldBySelectorsOrLabel, screener
   // answerers, resume upload, classifyFormButton) — no board-specific navigation.
   // =========================================================================
+  // Which verdict decided — the log must say whether the score was reused from the list
+  // the server built (no second model call) or judged just now on this page. Only the
+  // server's own word counts: a cap skip or an older backend carries no verdict_source,
+  // and then the line says nothing rather than guess.
+  function fitSourceNote(fit) {
+    if (!fit || !fit.verdict_source) return "";
+    if (fit.verdict_source === "queue") {
+      const day = typeof fit.judged_at === "string" ? fit.judged_at.slice(5, 10) : "";
+      return ` · score from your list${day ? ` (judged ${day})` : ""}, not re-judged`;
+    }
+    return ` · judged now${fit.fresh_because ? ` (${fit.fresh_because})` : ""}`;
+  }
+
   async function phase_ats(platform) {
     if (!(await isCampaignRunning())) return;
     const label = platform === "lever" ? "Lever" : platform === "ashby" ? "Ashby" : "Greenhouse";
@@ -5456,15 +5469,21 @@
     if (preApproved) {
       logBackend(`Applying your approved pick: ${jobTitle} @ ${jobCompany}`, "info");
     } else {
-      const fit = await sendMsg({ type: "ASSESS_FIT", data: { job_title: jobTitle, company: jobCompany, description: jobDesc } });
+      // job_url lets the background match this page to the head of the server queue and
+      // send its row id: the server then reuses the verdict the queue was built from
+      // instead of judging the posting a second time on the page text (10-02: 3 of 5
+      // opened postings lost to that second verdict). The full href: jobUrl drops the
+      // query, and an employer-hosted Greenhouse page carries its posting id in ?gh_jid=.
+      const fit = await sendMsg({ type: "ASSESS_FIT", data: { job_title: jobTitle, company: jobCompany, description: jobDesc, job_url: window.location.href } });
+      const src = fitSourceNote(fit);
       // FAIL CLOSED: only proceed on an explicit "apply" (null/missing verdict → skip).
       if (!fit || fit.decision !== "apply") {
         const why = (fit && fit.reason ? fit.reason : "fit check unavailable — skipped for safety").slice(0, 140);
-        logBackend(`Skipped (fit ${(fit && fit.fit_score != null) ? fit.fit_score : "?"}): ${jobTitle} @ ${jobCompany} — ${why}`, (!fit || fit.failClosed) ? "warn" : "info");
+        logBackend(`Skipped (fit ${(fit && fit.fit_score != null) ? fit.fit_score : "?"}): ${jobTitle} @ ${jobCompany} — ${why}${src}`, (!fit || fit.failClosed) ? "warn" : "info");
         await sendMsg({ type: "ATS_JOB_DONE" }); // fit-skip must still advance the pool walk
         return;
       }
-      if (fit.judged) logBackend(`Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}`, "info");
+      if (fit.judged) logBackend(`Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}${src}`, "info");
     }
 
     await recordJobDescription(jobTitle, jobCompany, jobDesc, jobUrl);
