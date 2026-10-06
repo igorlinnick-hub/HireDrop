@@ -22,6 +22,13 @@
 const HD_AUTO_DAILY_KEY = "autoDaily"; // { enabled, hour, enabledAt }
 const HD_AUTO_DAILY_STATE_KEY = "autoDailyState"; // today's record, see hdAutoDailyPlan
 const HD_LAST_LAUNCH_KEY = "lastLaunch"; // { filters, at } — written at every manual start
+// The last refusal we NOTIFIED about: { reason, at }. Spans days on purpose — the same
+// refusal every morning (quota used up, employer answers missing…) is a feed line, not a
+// daily notification. A different reason or a successful start resets it.
+const HD_AUTO_DAILY_NOTICE_KEY = "autoDailyLastNotice";
+// A claimed start that never recorded its outcome (the worker died mid-start) is called
+// interrupted once it's this old — a real start answers well within it.
+const HD_AUTO_DAILY_STALE_START_MS = 5 * 60 * 1000;
 const HD_AUTO_DAILY_DEFAULT_HOUR = 9;
 // Latest selectable hour: 20:00 + 40 min jitter = 20:40, still inside the 21:00 cut-off.
 const HD_AUTO_DAILY_MAX_HOUR = 20;
@@ -171,14 +178,39 @@ async function hdAutoDailyTick(trigger, deps) {
   let state = planned.state;
   if (planned.changed) await deps.set({ [HD_AUTO_DAILY_STATE_KEY]: state });
 
-  const decision = hdAutoDailyDecide(cfg, state, now);
-  if (decision === "off" || decision === "done" || decision === "wait") return { action: decision };
-
   const finish = async (outcome, reason, message, extra) => {
     state = { ...state, done: true, outcome, reason, message: message || "", at: now.getTime(), retryAt: null, ...(extra || {}) };
     await deps.set({ [HD_AUTO_DAILY_STATE_KEY]: state });
     return { action: outcome, reason };
   };
+
+  // Tell the user once per reason. Same refusal as the last one we notified about → the
+  // feed has it, the notification stays quiet (no daily nag).
+  const notifyOnce = async (reason, title, message, path) => {
+    const last = (await deps.get([HD_AUTO_DAILY_NOTICE_KEY]))[HD_AUTO_DAILY_NOTICE_KEY];
+    if (last && last.reason === reason) return false;
+    await deps.notify(title, message, path);
+    await deps.set({ [HD_AUTO_DAILY_NOTICE_KEY]: { reason, at: now.getTime() } });
+    return true;
+  };
+
+  // A start claimed earlier that never wrote its outcome: the worker died mid-start. Find out
+  // what actually happened instead of letting "claimed" read as "started".
+  if (state.done && state.outcome === "starting") {
+    if (now.getTime() - (state.claimedAt || 0) < HD_AUTO_DAILY_STALE_START_MS) return { action: "starting" };
+    if (await deps.isRunningLocally()) return finish("started", null, "");
+    state = { ...state, done: false, outcome: null };
+    if (state.tries >= HD_AUTO_DAILY_MAX_TRIES || hdMinuteOfDay(now) >= HD_AUTO_DAILY_CUTOFF_MIN) {
+      await deps.log("⏰ Daily auto-start didn't start today — the start was interrupted.", "warn");
+      return finish("failed", "interrupted", "Didn't start — the start was interrupted (Chrome closed or the extension restarted).");
+    }
+    // Still inside the bounded retry budget: try again on this tick.
+    state = { ...state, reason: "interrupted", message: "The start was interrupted", retryAt: null };
+    await deps.set({ [HD_AUTO_DAILY_STATE_KEY]: state });
+  }
+
+  const decision = hdAutoDailyDecide(cfg, state, now);
+  if (decision === "off" || decision === "done" || decision === "wait") return { action: decision };
 
   if (decision === "too_late") {
     // Retries ran out of day: name the real reason, not "Chrome wasn't running".
@@ -200,18 +232,26 @@ async function hdAutoDailyTick(trigger, deps) {
   }
 
   // Claim the day BEFORE any await that could overlap with the next tick (the start itself
-  // takes several seconds): a second tick sees done=true and walks away.
-  state = { ...state, done: true, tries: (state.tries || 0) + 1, retryAt: null };
+  // takes several seconds): a second tick sees done=true and walks away. The claim is an
+  // explicit "starting" — only a start that returned started:true is ever reported as one.
+  state = { ...state, done: true, outcome: "starting", message: "Starting now…", claimedAt: now.getTime(),
+    tries: (state.tries || 0) + 1, retryAt: null };
   await deps.set({ [HD_AUTO_DAILY_STATE_KEY]: state });
 
   const retryOrFinish = async (reason, message) => {
     if (state.tries < HD_AUTO_DAILY_MAX_TRIES) {
-      state = { ...state, done: false, reason, message: message || "", retryAt: now.getTime() + HD_AUTO_DAILY_RETRY_MS };
+      state = { ...state, done: false, outcome: null, reason, message: message || "", retryAt: now.getTime() + HD_AUTO_DAILY_RETRY_MS };
       await deps.set({ [HD_AUTO_DAILY_STATE_KEY]: state });
       return { action: "retry", reason };
     }
+    // Still "running" after every retry: a real run elsewhere (another computer), not an
+    // error — record it honestly and stay quiet.
+    if (reason === "server_running") {
+      return finish("skipped", "already_running_elsewhere",
+        "Skipped today — a campaign was already running (maybe on another computer).");
+    }
     await deps.log(`⏰ Daily auto-start couldn't run today (${message || reason}).`, "warn");
-    await deps.notify("HireDrop didn't start today", `${message || reason} — open HireDrop to start it.`, "/dashboard");
+    await notifyOnce(reason, "HireDrop didn't start today", `${message || reason} — open HireDrop to start it.`, "/dashboard");
     return finish("failed", reason, message);
   };
 
@@ -253,14 +293,18 @@ async function hdAutoDailyTick(trigger, deps) {
   } catch (e) {
     return retryOrFinish("start_threw", (e && e.message) || "the start failed");
   }
-  if (res && res.started) return finish("started", null, "");
+  if (res && res.started) {
+    await deps.set({ [HD_AUTO_DAILY_NOTICE_KEY]: null }); // a success resets the "already told you"
+    return finish("started", null, "");
+  }
   const reason = (res && res.error) || "unknown";
   const message = (res && res.message) || hdStartRefusal(reason).text;
   if (HD_AUTO_DAILY_TRANSIENT.includes(reason)) return retryOrFinish(reason, message);
-  // Server refusals were already logged + notified inside startCampaign (res.notified).
+  // Every refusal reaches the feed (startCampaign already wrote the line for a server
+  // refusal — res.logged); the notification only the first time for this reason.
+  if (!(res && res.logged)) await deps.log(`⏰ Daily auto-start didn't start: ${message}`, "warn");
   if (!(res && res.notified)) {
-    await deps.log(`⏰ Daily auto-start didn't start: ${message}`, "warn");
-    await deps.notify("HireDrop didn't start today", `${message} — open HireDrop to fix.`, hdStartRefusal(reason).path);
+    await notifyOnce(reason, "HireDrop didn't start today", `${message} — open HireDrop to fix.`, hdStartRefusal(reason).path);
   }
   return finish("refused", reason, message);
 }
@@ -297,7 +341,7 @@ if (typeof module === "object" && module.exports) {
   module.exports = {
     HD_AUTO_DAILY_KEY, HD_AUTO_DAILY_STATE_KEY, HD_LAST_LAUNCH_KEY,
     HD_AUTO_DAILY_MAX_HOUR, HD_AUTO_DAILY_MAX_JITTER_MIN, HD_AUTO_DAILY_CUTOFF_MIN,
-    HD_AUTO_DAILY_MAX_TRIES, HD_AUTO_DAILY_RETRY_MS,
+    HD_AUTO_DAILY_MAX_TRIES, HD_AUTO_DAILY_RETRY_MS, HD_AUTO_DAILY_NOTICE_KEY, HD_AUTO_DAILY_STALE_START_MS,
     hdAutoDailyNormalize, hdAutoDailyPlan, hdAutoDailyDecide, hdAutoDailyNextRun,
     hdAutoDailyAfterSet, hdAutoDailyAfterUserStop, hdAutoDailyTick, hdAutoDailyView, hdStartRefusal, hdHourLabel,
   };

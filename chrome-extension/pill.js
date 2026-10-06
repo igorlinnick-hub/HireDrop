@@ -284,7 +284,7 @@ function hdPillBoot() {
     }
     if (what === "stop") {
       el.go.disabled = true;
-      await send({ type: "STOP_CAMPAIGN", reason: "stopped from the edge pill" });
+      await send({ type: "STOP_CAMPAIGN", reason: "stopped from the edge pill", userStop: true });
       if (el) el.go.disabled = false;
       return;
     }

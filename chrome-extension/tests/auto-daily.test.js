@@ -191,6 +191,51 @@ function harness(opts = {}) {
       { state: h.store.autoDailyState, notes: h.notes.length });
   }
 
+  {
+    // 2. Running on another computer the whole time → honest, quiet skip after the retries.
+    const h = harness({ now: at(6, 9, 30), status: { running: true } });
+    for (let i = 0; i < AD.HD_AUTO_DAILY_MAX_TRIES + 1; i++) {
+      await h.tick();
+      h.clock = new Date(h.clock.getTime() + AD.HD_AUTO_DAILY_RETRY_MS + 60000);
+    }
+    const st = h.store.autoDailyState;
+    check("server 'running' through every retry → skipped (maybe another computer), not failed",
+      st.done && st.outcome === "skipped" && st.reason === "already_running_elsewhere" && /another computer/.test(st.message), st);
+    check("…and nobody is notified or warned", h.notes.length === 0 && h.logs.length === 0, { notes: h.notes, logs: h.logs });
+  }
+  {
+    // 3. The claim is "starting", never "started", until the start returns started:true.
+    let release;
+    const h = harness({ now: at(6, 9, 30), startResult: () => new Promise((r) => { release = r; }) });
+    const pending = h.tick();
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    const mid = h.store.autoDailyState;
+    check("while the start is in flight the record says 'starting'", mid.done && mid.outcome === "starting", mid);
+    const view = AD.hdAutoDailyView(AD.hdAutoDailyNormalize({ enabled: true, hour: 9 }), mid, LAST, at(6, 9, 30));
+    check("…and the dashboard view says starting, not started", view.today.status === "starting", view.today);
+    release({ started: true });
+    await pending;
+    check("…'started' only after the start succeeded", h.store.autoDailyState.outcome === "started");
+  }
+  {
+    // 3. Worker died mid-start: claim left with no outcome.
+    const claim = { day: dayOf(at(6, 9)), jitterMin: 20, done: true, outcome: "starting", claimedAt: at(6, 9, 20).getTime(), tries: 1 };
+    const fresh = harness({ now: at(6, 9, 22), store: { autoDailyState: { ...claim } } });
+    check("a fresh claim (<5 min) is left alone", (await fresh.tick()).action === "starting" && fresh.starts.length === 0);
+    const retried = harness({ now: at(6, 9, 40), store: { autoDailyState: { ...claim } } });
+    const r = await retried.tick();
+    check("a stale claim within the retry budget → retried, and only 'started' once it succeeds",
+      r.action === "started" && retried.starts.length === 1, r);
+    const alive = harness({ now: at(6, 9, 40), running: true, store: { autoDailyState: { ...claim } } });
+    check("a stale claim whose run IS alive → started, no second start",
+      (await alive.tick()).action === "started" && alive.starts.length === 0);
+    const spent = harness({ now: at(6, 9, 40), store: { autoDailyState: { ...claim, tries: AD.HD_AUTO_DAILY_MAX_TRIES } } });
+    const r2 = await spent.tick();
+    check("a stale claim with no retries left → 'didn't start (interrupted)', no start",
+      r2.action === "failed" && r2.reason === "interrupted" && spent.starts.length === 0 && /interrupted/.test(spent.store.autoDailyState.message), r2);
+  }
+
   // ── 3. catch-up after sleep / Chrome closed ─────────────────────────────────────────
   {
     // Nothing ran at 9:20 (asleep). First wake / onStartup at 13:07 → fires.
@@ -348,9 +393,35 @@ function harness(opts = {}) {
     const r = await h.tick();
     check("auto refusal → today's outcome is 'refused' with the server's reason", r.action === "refused" && r.reason === "us_only" &&
       h.store.autoDailyState.reason === "us_only", r);
-    check("…announced once (startCampaign's notification, not a second from the tick)", sb.notes.length === 1 && h.notes.length === 0,
+    check("…announced once (the schedule's notification, none from startCampaign)", sb.notes.length === 0 && h.notes.length === 1,
       { sb: sb.notes.length, tick: h.notes.length });
-    check("…the feed line says it was the daily auto-start", sb.logs.some((l) => l.startsWith("⏰ Daily auto-start refused")));
+    check("…one feed line, and it says it was the daily auto-start",
+      sb.logs.filter((l) => l.startsWith("⏰ Daily auto-start refused")).length === 1 && h.logs.filter((l) => l.includes("didn't start")).length === 0,
+      { sb: sb.logs, tick: h.logs });
+
+    // 4. The same refusal the next morning: feed line yes, notification no.
+    h.clock = at(7, 9, 30);
+    await h.tick();
+    check("same refusal next day → logged again, NOT notified again",
+      h.notes.length === 1 && sb.logs.filter((l) => l.startsWith("⏰ Daily auto-start refused")).length === 2, { notes: h.notes.length });
+  }
+  {
+    // 4. A different reason notifies; a success resets so the old reason notifies again.
+    let result = { started: false, error: "free_limit_reached", message: "You've used all 40 free applications" };
+    const h = harness({ now: at(6, 9, 30), startResult: () => result });
+    await h.tick();
+    h.clock = at(7, 9, 30); await h.tick();
+    check("free quota used up two mornings → one notification, two feed lines",
+      h.notes.length === 1 && h.logs.filter((l) => l.includes("didn't start")).length === 2, { notes: h.notes, logs: h.logs });
+    result = { started: false, error: "no_approved_jobs", message: "Nothing new to apply" };
+    h.clock = at(8, 9, 30); await h.tick();
+    check("a different reason notifies", h.notes.length === 2);
+    result = { started: true };
+    h.clock = at(9, 9, 30); await h.tick();
+    check("a success clears the remembered notice", h.store.autoDailyLastNotice === null);
+    result = { started: false, error: "no_approved_jobs", message: "Nothing new to apply" };
+    h.clock = at(10, 9, 30); await h.tick();
+    check("…so the same reason after a success notifies again", h.notes.length === 3);
   }
   {
     // An extension-side refusal during auto (not from the server) is notified by the tick.
@@ -384,6 +455,12 @@ function harness(opts = {}) {
     check("a human Stop marks today's schedule", stop.includes("msg.userStop === true") && stop.includes("hdAutoDailyAfterUserStop"));
     check("ping.js marks the dashboard's Stop as a human one", /type: "STOP_CAMPAIGN", userStop: true/.test(PING));
     check("popup marks its Stop as a human one", /type: "STOP_CAMPAIGN", userStop: true/.test(POPUP));
+    const PILL = fs.readFileSync(path.join(__dirname, "..", "pill.js"), "utf8");
+    check("the edge pill marks its Stop as a human one", /type: "STOP_CAMPAIGN", reason: "stopped from the edge pill", userStop: true/.test(PILL));
+    // Every other STOP_CAMPAIGN sender in content.js is a cap/limit stop, not a human — it must
+    // NOT claim userStop, or a cap hit at 8 AM would cancel today's schedule for no reason.
+    const CT = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
+    check("content.js cap stops are not marked as human", !/STOP_CAMPAIGN[^}]*userStop/.test(CT));
     check("ping.js bridges GET and SET", ["HIREDROP_GET_AUTO_DAILY", "HIREDROP_SET_AUTO_DAILY", "HIREDROP_AUTO_DAILY"].every((t) => PING.includes(t)));
     check("background answers both", ['case "AUTO_DAILY_GET"', 'case "AUTO_DAILY_SET"'].every((t) => BG.includes(t)));
     check("no new permission was needed (alarms + notifications already there)",

@@ -58,7 +58,7 @@ const USER_SCOPED_KEYS = [
   "pendingAtsSubmit", "lastRecordedSubmit",
   // Daily auto-start (auto-daily.js): the opt-in, its day record and the launch it repeats
   // are one user's consent and one user's search — a new user on this browser starts OFF.
-  "autoDaily", "autoDailyState", "lastLaunch",
+  "autoDaily", "autoDailyState", "lastLaunch", "autoDailyLastNotice",
 ];
 
 // Self-bootstrap the durable key: any connected user has a (dashboard-pushed) Supabase
@@ -1847,14 +1847,16 @@ function platformLabel(platform) {
 
 // A start the server refused, surfaced. Feed line (local + the backend /activity mirror in
 // addToActivityLog) and a system notification whose click opens the page that fixes it.
-// `notified: true` tells the daily auto-start not to announce the same refusal twice.
+// A manual start notifies here. An auto start leaves the notification to the schedule
+// (auto-daily.js notifyOnce), which tells the user only once per repeated reason instead of
+// every morning; `logged` keeps it from writing the same feed line twice.
 async function refuseStart(reason, source) {
   const r = hdStartRefusal(reason);
   await addToActivityLog(
     `${source === "auto" ? "⏰ Daily auto-start" : "Start"} refused by HireDrop: ${r.text}. Open HireDrop to fix it.`,
     "warn");
-  notifyOpenHireDrop("HireDrop didn't start", `${r.text} — open HireDrop to fix.`, r.path);
-  return { started: false, error: reason, message: `${r.text} — open HireDrop to fix it.`, notified: true };
+  if (source !== "auto") notifyOpenHireDrop("HireDrop didn't start", `${r.text} — open HireDrop to fix.`, r.path);
+  return { started: false, error: reason, message: `${r.text} — open HireDrop to fix it.`, logged: true, notified: source !== "auto" };
 }
 
 // A notification whose click opens hiredrop.io<path>. The path rides in the id, so a click
