@@ -367,7 +367,7 @@ async def ats_generate(body: dict = None, user=Depends(get_current_user)):
     Accepts optional body: {"answers": [{"question": "...", "answer": "..."}]}
     Answers are incorporated into the generated content to fill resume gaps.
 
-    Stores results as resume_ats.pdf and resume_ats.docx in Supabase Storage
+    Stores results as resume_ats-<id>.pdf and its .docx twin in Supabase Storage
     (DOCX for employers/boards that don't accept PDF). The resume is structured
     once via Claude, then rendered into both formats. Returns signed preview URLs.
     """
@@ -410,7 +410,7 @@ async def ats_generate(body: dict = None, user=Depends(get_current_user)):
     ats_path = resume_storage.upload_ats(user.id, ats_pdf_bytes)
     docx_path = None
     try:
-        docx_path = resume_storage.upload_ats_docx(user.id, ats_docx_bytes)
+        docx_path = resume_storage.upload_ats_docx(user.id, ats_docx_bytes, ats_path)
     except Exception as e:
         # DOCX is a bonus format — don't fail the whole request if it can't store
         print(f"[ats] DOCX upload failed (non-fatal): {e}")
@@ -486,7 +486,7 @@ async def ats_generate_from_text(body: dict, user=Depends(get_current_user)):
 
     ats_path = resume_storage.upload_ats(user.id, ats_pdf_bytes)
     try:
-        resume_storage.upload_ats_docx(user.id, ats_docx_bytes)
+        resume_storage.upload_ats_docx(user.id, ats_docx_bytes, ats_path)
     except Exception as e:
         print(f"[profile] DOCX upload failed (non-fatal): {e}", file=sys.stderr)
     profile_db.update_ats(
@@ -544,7 +544,7 @@ def ats_structure_put(body: dict, user=Depends(get_current_user)):
 
     ats_path = resume_storage.upload_ats(user.id, ats_pdf_bytes)
     try:
-        resume_storage.upload_ats_docx(user.id, ats_docx_bytes)
+        resume_storage.upload_ats_docx(user.id, ats_docx_bytes, ats_path)
     except Exception as e:
         print(f"[profile] DOCX upload failed (non-fatal): {e}", file=sys.stderr)
 
@@ -693,7 +693,7 @@ async def skills_resume_generate(body: dict = None, user=Depends(get_current_use
 
     skills_path = resume_storage.upload_skills(user.id, skills_pdf_bytes)
     try:
-        resume_storage.upload_skills_docx(user.id, skills_docx_bytes)
+        resume_storage.upload_skills_docx(user.id, skills_docx_bytes, skills_path)
     except Exception as e:
         print(f"[skills] DOCX upload failed (non-fatal): {e}")
     profile_db.update_skills_resume(
