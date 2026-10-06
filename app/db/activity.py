@@ -77,6 +77,10 @@ def _categorize(msg: str) -> str | None:
         return "resume_fail"
     if "api 401" in m or "token stale" in m:
         return "auth_401"
+    # Before the fit check: the extension prints a cap skip as "Skipped (fit ?): … — Company
+    # cap — …" (/tools/assess-fit), and one application per company is not a bad fit.
+    if "— company cap —" in m:
+        return "company_capped"
     if "⏭️ skipped (fit" in m or "skipped (fit" in m:
         return "skipped_fit"
     if "captcha" in m:
@@ -205,6 +209,7 @@ def run_report(
 
     losses = {
         "fit gate": by_type.get("skipped_fit", 0),
+        "company cap": by_type.get("company_capped", 0),
         "title mismatch": by_type.get("skipped_title", 0),
         "no apply button": by_type.get("skipped_no_button", 0),
         "dead links": by_type.get("dead_link", 0),
@@ -288,6 +293,11 @@ def _verdict(
         return (
             f"Applying, but {handed} forms were handed back to you for {applied} sent — "
             "the filler stops before submit."
+        )
+    if applied and top_n > applied * 3 and top_loss == "company cap":
+        return (
+            f"Applying, but {top_n} postings were skipped by the one-per-company cap for every "
+            f"{applied} sent — the search keeps finding employers already tried."
         )
     if applied and top_n > applied * 3:
         return f"Applying, but {top_n} postings were lost to {top_loss} for every {applied} sent — the search is aimed wrong."

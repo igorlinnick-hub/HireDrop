@@ -456,3 +456,131 @@ def test_requeued_urls_reads_only_open_retried_rows(real_requeued_urls):
     # requeued rows only: requeued_at=not.is.null, never the plain is.null
     negated.is_.assert_called_with("requeued_at", "null")
     assert ("requeued_at", "null") not in [c.args for c in q.is_.call_args_list]
+
+
+# --- the live walks: /tools/assess-fit ---------------------------------------------------
+
+
+def _assess(company, history, handbacks=(), retried=()):
+    from app.routers import tools
+    from app.schemas import AssessFitRequest
+
+    class _User:
+        id = "u1"
+
+    req = AssessFitRequest(job_title="Marketing Manager", company=company, description="x" * 200)
+    with (
+        patch.object(tools, "_assess_fit_gate", return_value=None),
+        patch.object(tools, "get_profile", return_value={"apply_mode": "standard"}),
+        patch("app.db.applications.companies_applied_since", return_value=list(history)),
+        patch("app.db.handbacks.companies_handed_back_since", return_value=list(handbacks)),
+        patch("app.db.handbacks.requeued_companies", return_value=list(retried)),
+        patch.object(
+            tools, "assess_fit", return_value={"fit_score": 80, "decision": "apply"}
+        ) as judge,
+    ):
+        return tools.assess_fit_endpoint(req, user=_User()), judge
+
+
+def test_the_indeed_walk_skips_a_company_already_applied_to():
+    # The walks never pass through build_queue: before this, Indeed applied to the same
+    # employer again (prod, 60 days: 5 second postings at one company on Indeed).
+    out, judge = _assess("DoorDash, Inc.", history=["doordashusa"])
+    assert out["decision"] == "skip" and out["company_capped"] is True
+    judge.assert_not_called()  # a capped posting costs no AI call
+    # Not a bad fit: no score, and the reason is what run-report keys the loss on.
+    assert out["fit_score"] is None
+    assert out["reason"].startswith("Company cap — ")
+
+
+def test_a_hand_back_holds_the_slot_on_the_walk_too():
+    out, judge = _assess("DoorDash", history=[], handbacks=["Doordashusa"])
+    assert out["decision"] == "skip"
+    judge.assert_not_called()
+
+
+def test_a_new_company_goes_to_the_judge():
+    out, judge = _assess("Acme", history=["DoorDash"])
+    assert out == {"fit_score": 80, "decision": "apply"}
+    judge.assert_called_once()
+
+
+def test_a_retried_posting_is_not_capped_again_by_the_judge():
+    # Skeptic on #359: build_queue let the "Try again" posting through (#353), then the
+    # ATS walk asked assess-fit, and the company's OTHER open hand-backs capped it again.
+    out, judge = _assess(
+        "DoorDash",
+        history=[],
+        handbacks=["Doordashusa", "Doordashusa"],
+        retried=["DoorDash, Inc."],
+    )
+    assert out == {"fit_score": 80, "decision": "apply"}
+    judge.assert_called_once()
+
+
+def test_the_retry_exemption_is_per_company():
+    out, judge = _assess("DoorDash", history=["DoorDash"], retried=["Acme"])
+    assert out["decision"] == "skip"
+    judge.assert_not_called()
+
+
+def test_a_cap_skip_is_its_own_loss_not_the_fit_gate():
+    from app.db.activity import _categorize
+
+    # The exact line the extension prints for this verdict (content.js phase_ats).
+    line = (
+        "Skipped (fit ?): Marketing Manager @ DoorDash — Company cap — already tried "
+        "DoorDash in the last 60 days, one application per company."
+    )
+    assert _categorize(line) == "company_capped"
+    assert _categorize("⏭️ Skipped (fit 40): Role @ Acme — weak match") == "skipped_fit"
+
+
+def test_only_recent_requeueable_retries_exempt_a_company(real_requeued_companies):
+    # Skeptic r2 on #359: an answered native Indeed hand-back (no job_id) or a retry the
+    # judge skipped stays open with requeued_at set forever — it must not lift the cap.
+    from unittest.mock import MagicMock
+
+    from app.db import handbacks as hb_db
+
+    q = MagicMock()
+    for m in ("table", "select", "eq", "is_", "gte", "order", "range"):
+        getattr(q, m).return_value = q
+    q.execute.return_value = MagicMock(
+        data=[
+            {"company": "DoorDash", "platform": "greenhouse", "job_id": None},
+            {"company": "Indeed Co", "platform": "indeed", "job_id": None},
+            {"company": "Pool Co", "platform": "indeed", "job_id": "j1"},
+            {"company": None, "platform": "lever", "job_id": None},
+        ]
+    )
+    with patch.object(hb_db, "get_supabase", return_value=q):
+        out = real_requeued_companies("u1")
+    assert out == ["DoorDash", "Pool Co"]
+    q.is_.assert_any_call("resolved_at", "null")
+    col, since = next(c.args for c in q.gte.call_args_list if c.args[0] == "requeued_at")
+    age = datetime.now(UTC) - datetime.fromisoformat(since)
+    assert (
+        timedelta(days=hb_db.RETRY_EXEMPT_DAYS - 1)
+        < age
+        <= timedelta(days=hb_db.RETRY_EXEMPT_DAYS, minutes=1)
+    )
+
+
+def test_a_run_lost_to_the_cap_does_not_blame_the_search():
+    from app.db import activity as activity_db
+
+    counts = {
+        "since": None,
+        "total": 20,
+        "by_type": {"opened": 18, "applied": 2, "company_capped": 12},
+        "auth_401": 0,
+    }
+    with (
+        patch.object(activity_db, "summary", return_value=counts),
+        patch.object(activity_db, "_minutes_spanned", return_value=10),
+    ):
+        out = activity_db.run_report("u1")
+    assert out["losses"] == {"company cap": 12}
+    assert "one-per-company cap" in out["verdict"]
+    assert "aimed wrong" not in out["verdict"]

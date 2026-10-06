@@ -33,6 +33,7 @@ def fake_user():
 # Captured before the autouse patch below replaces it, for the test that checks its query.
 _REAL_HANDED_BACK_SINCE = _handbacks_module.companies_handed_back_since
 _REAL_REQUEUED_URLS = _handbacks_module.requeued_urls
+_REAL_REQUEUED_COMPANIES = _handbacks_module.requeued_companies
 
 
 @pytest.fixture
@@ -45,6 +46,11 @@ def real_requeued_urls():
     return _REAL_REQUEUED_URLS
 
 
+@pytest.fixture
+def real_requeued_companies():
+    return _REAL_REQUEUED_COMPANIES
+
+
 @pytest.fixture(autouse=True)
 def _no_company_history_network():
     """The auto ATS queue reads application history for the per-company cap
@@ -55,6 +61,7 @@ def _no_company_history_network():
         patch("app.db.applications.companies_applied_since", return_value=[]),
         patch("app.db.handbacks.companies_handed_back_since", return_value=[]),
         patch("app.db.handbacks.requeued_urls", return_value=[]),
+        patch("app.db.handbacks.requeued_companies", return_value=[]),
     ):
         yield
 

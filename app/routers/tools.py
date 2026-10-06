@@ -31,6 +31,12 @@ from modules.ai_fit_judge import assess_fit
 from modules.ai_keyword_normalize import normalize_keywords
 from modules.ai_question_answer import answer_screener_question
 from modules.ai_role_suggest import ROLE_LIMITS, role_limit, suggest_roles
+from modules.fit_queue import (
+    COMPANY_WINDOW_DAYS,
+    companies_holding_slots,
+    company_key,
+    company_slot_taken,
+)
 
 router = APIRouter(tags=["tools"])
 
@@ -243,6 +249,25 @@ def suggest_roles_endpoint(mode: str | None = None, user=Depends(get_current_use
     }
 
 
+def _company_capped(user_id: str, company: str) -> bool:
+    """Is this company's one slot taken — unless the person retried a hand-back there?
+
+    The judge gets a company name, no URL. A "Try again" posting already passed the cap in
+    build_queue (#353); the ATS walk then asks this judge, and the company's other open
+    hand-backs would cap it right back (skeptic on #359). So a company with a recent retried
+    ATS hand-back is not capped here while that retry is open (handbacks.requeued_companies
+    bounds it).
+    """
+    if not company_slot_taken(company, companies_holding_slots(user_id)):
+        return False
+    try:
+        retried = {company_key(c) for c in handbacks_db.requeued_companies(user_id)}
+    except Exception as e:  # noqa: BLE001 — unreadable retries: the cap stands
+        print(f"[assess-fit] retried hand-backs unreadable: {e}", file=sys.stderr)
+        retried = set()
+    return company_key(company) not in retried
+
+
 @router.post("/tools/assess-fit")
 def assess_fit_endpoint(req: AssessFitRequest, user=Depends(get_current_user)):
     """Decide whether the candidate should apply to a job (Fit Engine M1).
@@ -268,6 +293,25 @@ def assess_fit_endpoint(req: AssessFitRequest, user=Depends(get_current_user)):
                 "judged": True,
                 "apply_mode": "broad",
             }
+
+    # One application per company per 60 days, on the live walks too (Igor, 10-06). The
+    # Indeed and ZipRecruiter walks never pass through the server queue, so before this they
+    # applied to a company the queue would have capped: 6 second postings at one employer in
+    # 60 days, 5 of them Indeed. Same read as the queue (fit_queue.companies_holding_slots),
+    # and before the judge, so a capped posting costs no AI call.
+    if _company_capped(user.id, req.company):
+        # fit_score None, not 0: this is not a bad fit, and the extension prints the score.
+        # The reason opens with "Company cap" — activity._categorize counts it as its own
+        # loss instead of "fit gate" (run-report).
+        return {
+            "fit_score": None,
+            "decision": "skip",
+            "reason": f"Company cap — already tried {req.company} in the last "
+            f"{COMPANY_WINDOW_DAYS} days, one application per company.",
+            "concerns": ["Company cap — one application per employer per 60 days"],
+            "judged": True,
+            "company_capped": True,
+        }
 
     result = assess_fit(
         job={"title": req.job_title, "company": req.company, "description": req.description},

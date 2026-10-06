@@ -360,10 +360,9 @@ def _prejudged_queue(
     version: str | None = None,
 ) -> dict:
     """Judge what is missing (bounded), then order the rows into the queue (fit_queue)."""
-    from app.db import applications as apps_db
     from modules.ai_cover_letter import resume_text_for
     from modules.ai_fit_judge import mode_threshold, verdict_version
-    from modules.fit_queue import COMPANY_WINDOW_DAYS, build_queue, judge_pending
+    from modules.fit_queue import build_queue, companies_holding_slots, judge_pending
 
     # The resume is a storage read — skip it when the caller brought the version and
     # asked for no judging (the deck's read).
@@ -380,20 +379,13 @@ def _prejudged_queue(
             resume_text=resume_text,
             version=version,
         )
-    try:
-        applied = apps_db.companies_applied_since(user_id, COMPANY_WINDOW_DAYS)
-    except Exception as e:  # noqa: BLE001 — in-list cap still holds; history read is best-effort
-        print(f"[ats-queue] company history unreadable: {e}", file=sys.stderr)
-        applied = []
-    # A hand-back holds the company's slot like an application does (handbacks.py).
-    try:
-        from app.db import handbacks as hb_db
-
-        applied += hb_db.companies_handed_back_since(user_id, COMPANY_WINDOW_DAYS)
-    except Exception as e:  # noqa: BLE001 — same best-effort as the application history
-        print(f"[ats-queue] hand-back history unreadable: {e}", file=sys.stderr)
     return build_queue(
-        rows, version, mode_threshold(profile), applied, limit, _retried_ids(user_id, rows)
+        rows,
+        version,
+        mode_threshold(profile),
+        companies_holding_slots(user_id),
+        limit,
+        _retried_ids(user_id, rows),
     )
 
 
