@@ -56,6 +56,7 @@ vm.runInContext([
   extract("  function explicitLabel(el) {"),
   extract("  function getComboLabel(combo) {"),
   extract("  function isDemographicQuestion(label, optionTexts) {"),
+  extract("  function sponsorshipSaysYes(label, needsSponsorship) {"),
   extract("  function pickOptionDeterministic(label, options, profile) {"),
   extract("  async function chooseOption(label, options, profile, jobInfo) {"),
   "globalThis.T = { getComboLabel, chooseOption };",
@@ -78,6 +79,8 @@ const { getComboLabel, chooseOption } = ctx.T;
   const control = (re) => boxes.find((b) => re.test(b.querySelector("label")?.textContent || ""))
     ?.querySelector('[class*="select__control"]');
   const yesNo = ["Yes", "No"].map((text) => ({ text }));
+  // "No" first, so a positional fallback can't pass a check that expects "Yes".
+  const noYes = ["No", "Yes"].map((text) => ({ text }));
   const sponsorNow = getComboLabel(control(/now require immigration sponsorship/));
   const sponsorLater = getComboLabel(control(/future require immigration sponsorship/));
   const auth = getComboLabel(control(/legally authorized/));
@@ -86,9 +89,20 @@ const { getComboLabel, chooseOption } = ctx.T;
   const p = { needs_sponsorship: false, work_authorized_us: true };
   check("sponsorship (now) → the profile's No", (await chooseOption(sponsorNow, yesNo, p, {}))?.text === "No");
   check("sponsorship (future) → the profile's No", (await chooseOption(sponsorLater, yesNo, p, {}))?.text === "No");
-  check("work authorization → the profile's Yes", (await chooseOption(auth, yesNo, p, {}))?.text === "Yes");
+  check("work authorization → the profile's Yes", (await chooseOption(auth, noYes, p, {}))?.text === "Yes");
   const p2 = { needs_sponsorship: true };
-  check("sponsorship with needs_sponsorship=true → Yes", (await chooseOption(sponsorNow, yesNo, p2, {}))?.text === "Yes");
+  check("sponsorship with needs_sponsorship=true → Yes", (await chooseOption(sponsorNow, noYes, p2, {}))?.text === "Yes");
+
+  // The reverse wording: Yes = needs NO sponsorship. Reached on dropdowns only once the
+  // real label is read (skeptic 10-06: ~4 of 320 GH schemas) — a plain read answered "No",
+  // i.e. "not authorized to work".
+  const without = "Are you legally authorized to work in the United States for any employer without the need for sponsorship (now or in the future)?";
+  check("“authorized … without sponsorship”, needs none → Yes", (await chooseOption(without, noYes, p, {}))?.text === "Yes");
+  check("“authorized … without sponsorship”, needs it → No", (await chooseOption(without, yesNo, p2, {}))?.text === "No");
+  check("“without requiring employer visa sponsorship” reads the same way",
+    (await chooseOption("Are you legally authorized to work in the country where this role is based, now and in the future, without requiring employer visa sponsorship?", noYes, p, {}))?.text === "Yes");
+  check("“without restriction, or will you require sponsorship?” is NOT reversed",
+    (await chooseOption("Are you able to work without restriction, or will you require sponsorship?", yesNo, p, {}))?.text === "No");
 
   // No profile answer and a silent model: blank (→ hand-back), never the first option.
   check("sponsorship, nothing on file, model silent → left blank",
@@ -101,6 +115,8 @@ const { getComboLabel, chooseOption } = ctx.T;
   check("the model was asked the real question, not “LinkedIn Profile”",
     asked.length > 0 && asked.every((q) => !/linkedin/i.test(q)), JSON.stringify(asked));
 
+  check("“How many years have you worked for a SaaS company?” is not a knockout",
+    (await chooseOption("How many years have you worked for a B2B SaaS company?", [{ text: "0-2" }, { text: "3-5" }], {}, {}))?.text === "0-2");
   // A benign dropdown still gets the first-option fallback — the guard is for knockouts only.
   check("benign dropdown keeps the first-option fallback",
     (await chooseOption("Preferred office", [{ text: "Austin" }, { text: "Denver" }], {}, {}))?.text === "Austin");

@@ -3205,8 +3205,9 @@
         if (!value) continue;
       } else if (/(sponsor|visa\b|h-?1b|immigration case)/i.test(label)) {
         // Knockout — never guess in free text either. Explicit profile only, else AI/hand-back.
-        if (profile.needs_sponsorship === true) value = "Yes";
-        else if (profile.needs_sponsorship === false) value = "No";
+        if (typeof profile.needs_sponsorship === "boolean") {
+          value = sponsorshipSaysYes(label, profile.needs_sponsorship) ? "Yes" : "No";
+        }
         // else: fall through to the AI branch (answers from the resume) or hand-back
       }
 
@@ -3398,6 +3399,16 @@
 
   // Pick a dropdown option deterministically (no AI) for the common cases.
   // Returns the chosen option object, or null if it needs AI / a fallback.
+  // Which way a sponsorship question points. "Will you require sponsorship?" — Yes means
+  // the person needs it. "Are you authorized to work … without the need for sponsorship?"
+  // — Yes means they do NOT. Read the second like the first and someone who needs no
+  // visa answers "No", i.e. "not authorized": screened out (~4 of the 320 GH schemas;
+  // skeptic 10-06, reachable on dropdowns once their real labels were read).
+  function sponsorshipSaysYes(label, needsSponsorship) {
+    const flips = /without\s+(the\s+need\s+(for|of)\s+|needing\s+|requiring\s+)?(any\s+)?((employer|company|visa|immigration|employment)\s+)*sponsor/i;
+    return flips.test(label) ? !needsSponsorship : needsSponsorship;
+  }
+
   function pickOptionDeterministic(label, options, profile) {
     const texts = options.map(o => o.text);
     // Demographic → decline.
@@ -3413,9 +3424,8 @@
     // vice versa). Answer ONLY from an explicit profile field; otherwise punt to
     // AI-with-resume / hand-back — never guess a knockout under the user's name.
     if (/(sponsor|visa\b|h-?1b|immigration case)/i.test(label)) {
-      if (profile.needs_sponsorship === true && yes) return yes;
-      if (profile.needs_sponsorship === false && no) return no;
-      return null;
+      if (typeof profile.needs_sponsorship !== "boolean") return null;
+      return (sponsorshipSaysYes(label, profile.needs_sponsorship) ? yes : no) || null;
     }
     // Marketing/SMS opt-in → No. It is the platform asking to text the user, not the
     // employer asking anything about the candidate, and nothing about the application
@@ -3539,7 +3549,10 @@
     //    "authorization", which step 3 read as "say Yes"). The first option on
     //    DoorDash's sponsorship questions is "Yes", on "Have you worked at DoorDash?" it is
     //    "I am a previous employee" (live 10-06). Blank → hand-back, the person answers.
-    if (/(sponsor|visa\b|h-?1b|immigration|worked (at|for)|employed (by|at|with|for)|(former|previous|current) employee)/i.test(label)) {
+    //    "How many years have you worked for a SaaS company" is about the person's history,
+    //    not this company — benign, so it keeps the fallbacks below.
+    if (/(sponsor|visa\b|h-?1b|immigration|worked (at|for)|employed (by|at|with|for)|(former|previous|current) employee)/i.test(label) &&
+        !/how (many|long)/i.test(label)) {
       return null;
     }
     // 3) eligibility / yes-no phrasing → affirmative, never a stray first option.
@@ -3729,7 +3742,7 @@
     const ids = (el.getAttribute("aria-labelledby") || "").split(/\s+/).filter(Boolean);
     const byIds = ids.map(id => document.getElementById(id)?.textContent || "").join(" ");
     const byFor = el.id ? document.querySelector(`label[for="${CSS.escape(el.id)}"]`)?.textContent : "";
-    return (byIds || byFor || el.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim();
+    return (byIds || byFor || el.getAttribute("aria-label") || "").replace(/[\u200b-\u200d\ufeff]/g, "").replace(/\s+/g, " ").trim();
   }
 
   // Label for a custom combobox. The page's own label wins: a Greenhouse react-select
@@ -3743,7 +3756,7 @@
   function getComboLabel(combo) {
     const own = combo.matches('[role="combobox"]') ? combo : combo.querySelector('[role="combobox"]');
     const named = explicitLabel(own);
-    if (named && !/^(select an option|choose|please select)/i.test(named)) return named;
+    if (named && !/^[-\s]*(select|choose|please select)( an?| one)?( option)?[\s.…-]*$/i.test(named)) return named;
     const direct = getFieldLabel(combo);
     if (direct && !/select an option|choose|please select/i.test(direct)) return direct;
     const container = combo.closest("[class*='question' i], fieldset, [role='group'], li, div");
