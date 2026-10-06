@@ -256,3 +256,24 @@ def test_charge_refunded_reverses(client, stripe_mock, billing_db_mock):
 
     assert r.status_code == 200
     aff.reverse_for_invoice.assert_called_once_with("in_1")
+
+
+def test_dispute_reverses_via_invoice_payment(client, stripe_mock, billing_db_mock):
+    """A chargeback voids the commission. The dispute carries no invoice id, so the
+    invoice comes from InvoicePayment by payment intent."""
+    stripe_mock.Webhook.construct_event.return_value = {
+        "id": "evt_d",
+        "type": "charge.dispute.created",
+        "data": {"object": {"charge": "ch_1", "payment_intent": "pi_1"}},
+    }
+    stripe_mock.InvoicePayment.list.return_value = {"data": [{"invoice": "in_1"}]}
+
+    with patch("app.routers.billing.affiliates_db") as aff:
+        r = client.post(f"{API}/billing/webhook", content=b"{}", headers={"stripe-signature": "x"})
+
+    assert r.status_code == 200
+    assert stripe_mock.InvoicePayment.list.call_args.kwargs["payment"] == {
+        "type": "payment_intent",
+        "payment_intent": "pi_1",
+    }
+    aff.reverse_for_invoice.assert_called_once_with("in_1")

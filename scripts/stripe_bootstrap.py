@@ -43,6 +43,8 @@ WEBHOOK_EVENTS = [
     "invoice.paid",
     # Affiliate clawback — a refunded charge voids the commission it earned.
     "charge.refunded",
+    # No refunds by policy, so a chargeback is the other way money comes back.
+    "charge.dispute.created",
 ]
 # Affiliate Connect onboarding fires `account.updated` ON THE CONNECTED ACCOUNT.
 # An account endpoint (above) only ever hears the platform's own account, so these

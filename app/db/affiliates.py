@@ -3,6 +3,7 @@
 Two entry points, both called from the Stripe webhook (app/routers/billing.py):
   invoice.paid    -> accrue_from_invoice()   a paid invoice becomes a commission
   charge.refunded -> reverse_for_invoice()   the customer got the money back
+  charge.dispute.created -> reverse_for_invoice()   ...or the bank is taking it back
 
 Deliberately NOT driven by signups: a referral that never pays is worth $0, and
 paying on registration is how affiliate programs get farmed with dead accounts.
