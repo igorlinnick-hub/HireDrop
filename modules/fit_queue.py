@@ -95,9 +95,11 @@ _AGENCY_KEYS = {
     "kforce",
     "randstad",
     "adecco",
+    "manpower",
     "manpowergroup",
     "manpowerengineering",
     "aerotek",
+    "kelly",
     "kellyservices",
     "apexsystems",
     "cybercoders",
@@ -121,7 +123,7 @@ _AGENCY_KEYS = {
     "expressemployment",
     "expressemploymentprofessionals",
 }
-_AGENCY_MARKERS = ("staffing", "recruit", "personnel", "onbehalfofaclient")
+_AGENCY_MARKERS = ("staffing", "recruit", "personnel", "onbehalfofaclient", "roberthalf")
 
 
 def company_cap(key: str) -> int:
@@ -152,8 +154,10 @@ def company_key(name: str | None) -> str:
         return ""
     for tail in _BOARD_TAILS:
         if key.endswith(tail) and len(key) - len(tail) >= _MIN_STEM:
-            return key[: -len(tail)]
-    return key
+            key = key[: -len(tail)]
+            break
+    # Again after the tail: "Confidential Careers" is no employer either.
+    return "" if key in _HIDDEN_EMPLOYER_KEYS else key
 
 
 def companies_holding_slots(user_id: str) -> list[str]:

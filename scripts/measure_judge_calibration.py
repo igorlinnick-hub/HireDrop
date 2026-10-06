@@ -488,7 +488,7 @@ def _bands(rows: list[dict]) -> dict:
 
 
 def company_rule(passed: list[dict], applications: list[dict]) -> dict:
-    """How many PASSED rows the flat 2-per-company-per-60-days rule removes. The count is
+    """How many PASSED rows the company cap (fit_queue.company_cap) removes. The count is
     order-independent: per company, allowed = max(0, cap - already applied).
 
     Split by cause: `dupes` is what the sample would lose on its own (k - cap), `history`

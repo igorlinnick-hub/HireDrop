@@ -193,8 +193,15 @@ def test_without_retries_the_cap_is_unchanged():
 
 def test_a_hidden_employer_is_no_employer():
     # 10-06 measure: "Confidential" was 10 unrelated Indeed employers in 60 days.
-    for name in ("Confidential", "Confidential Company", "Company Confidential", "Hiring Company"):
-        assert fq.company_key(name) == ""
+    for name in (
+        "Confidential",
+        "Confidential Company",
+        "Company Confidential",
+        "Hiring Company",
+        "Confidential Careers",
+        "Private Careers Inc",
+    ):
+        assert fq.company_key(name) == "", name
     rows = [_row(f"c{i}", score=80, age=i, company="Confidential") for i in range(3)]
     out = build_queue(rows, V, bar=55, applied_companies=["Confidential"], limit=30)
     assert [r["id"] for r in out["jobs"]] == ["c0", "c1", "c2"]
@@ -210,6 +217,7 @@ def test_an_agency_takes_three_not_one():
     # Local agencies are caught by the name, not the list.
     assert fq.company_cap(fq.company_key("South Georgia Staffing")) == 3
     assert fq.company_cap(fq.company_key("BITS Recruiting LLC")) == 3
+    assert fq.company_cap(fq.company_key("Robert Half Technology")) == 3
     assert fq.company_slot_taken("Jobot", ["jobot"] * 3)
     assert not fq.company_slot_taken("Jobot", ["jobot"] * 2)
 
