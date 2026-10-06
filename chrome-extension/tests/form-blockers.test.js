@@ -42,6 +42,7 @@ function extract(signature) {
 }
 
 const parts = {
+  maskPii: extract("  function maskPii(s) {"),
   formBlockers: extract("  function formBlockers() {"),
   formBlockersLine: extract("  function formBlockersLine(fb) {"),
   getFieldLabel: extract("  function getFieldLabel(el) {"),
@@ -72,7 +73,7 @@ function load(html, { url, classify } = {}) {
     return btn ? { btn, submit: false, label: btn.textContent.trim() } : { btn: null, submit: false, label: "" };
   });
   w.eval(`${fieldish[0]}\n${parts.getFieldLabel}\n${parts.visibleApplyDialogs}\n${parts.formScope}\n` +
-    `${parts.formBlockers}\n${parts.formBlockersLine}\n` +
+    `${parts.maskPii}\n${parts.formBlockers}\n${parts.formBlockersLine}\n` +
     "window.__fb = formBlockers; window.__line = formBlockersLine;");
   return w;
 }

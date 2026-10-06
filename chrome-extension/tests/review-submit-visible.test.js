@@ -40,6 +40,7 @@ function slice(from, to) {
 const CODE =
   slice("  function isVisibleBox(el, minW, minH) {", "  // Returns { gated: bool, label: string }") +
   slice("  function findFormButtonIn(scope) {", "  function isFormVisible() {") +
+  slice("  function maskPii(s) {", "  function formBlockers() {") +
   "\n  function findFormButton() { return findFormButtonIn(document); }\n";
 
 function page(body) {
