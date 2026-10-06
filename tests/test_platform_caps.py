@@ -33,6 +33,16 @@ def test_linkedin_stops_at_five():
     assert "5 applications per platform" in res["reason"]
 
 
+def test_admin_is_held_to_the_linkedin_ceiling():
+    # Skeptic on #362: admins bypassed every cap, and the first account to run LinkedIn
+    # is Igor's own — the ban rail must hold there too.
+    assert _check("linkedin", 4, tier="admin")["allowed"] is True
+    res = _check("linkedin", 5, tier="admin")
+    assert res["allowed"] is False and res["platform_used"] == 5
+    # Platforms on the default keep the admin bypass.
+    assert _check("indeed", 40, tier="admin")["allowed"] is True
+
+
 def test_other_platforms_keep_fifteen():
     for platform in ("indeed", "ziprecruiter", "greenhouse", "lever", "ashby"):
         assert _check(platform, 5)["allowed"] is True

@@ -53,6 +53,11 @@ const SYNTHETIC_GENERIC_PAGE = `<!DOCTYPE html><html><head>
     <p>Contact jane.doe@example.com or call (808) 555-1234.</p>
     <p>Posted by <a href="https://social.example/in/jane-doe-12ab/">Jane</a> · urn:li:fsd_profile:ACoAAB1234xyz</p>
     <code style="display:none" id="bpr-guid-1">{"data":{"firstName":"Jane","lastName":"Doe","publicIdentifier":"jane-doe-12ab"}}</code>
+    <code style="display:none" id="bpr-guid-2"><!--{"data":{"firstName":"Janet","publicIdentifier":"janet-secret-slug","emailAddress":"janet@corp.test"}}--></code>
+    <!-- member: Janet Q, janet@corp.test -->
+    <div data-csrf="ajax:feedfacecafe" data-test-x="1">csrf in an attribute</div>
+    <div class="avatar" style="width:4px;background-image:url('https://media.example/profile-photo-of-janet.jpg')"></div>
+    <span>urn:li:person:ABC123secret</span>
     <div role="dialog" aria-label="Easy Apply to Acme">
       <h3>Contact info</h3>
       <div role="progressbar" aria-valuenow="25"></div>
@@ -104,6 +109,11 @@ check("member urn masked", /urn:li:fsd_profile:redacted/.test(out) && !/ACoAAB12
 check("script bodies stripped", !/__secret|"token"/.test(out) && /<script><\/script>/.test(out));
 check("JSON <code> blob stripped", !/firstName|publicIdentifier/.test(out));
 check("csrf meta content stripped", !/0123456789abcdef/.test(out));
+check("JSON inside an HTML comment in <code> stripped", !/janet-secret-slug|janet@corp|Janet/.test(out), out.match(/.{0,60}[Jj]anet.{0,60}/));
+check("no HTML comments survive", !/<!--/.test(out), out.match(/<!--.{0,60}/));
+check("csrf data attribute removed", !/feedfacecafe|data-csrf/.test(out) && /data-test-x="1"/.test(out));
+check("inline background photo redacted, other style kept", !/profile-photo-of/.test(out) && /width:4px/.test(out));
+check("person urn masked", /urn:li:person:redacted/.test(out) && !/ABC123secret/.test(out));
 check("typed input values stripped", !/<input[^>]*type="(email|tel|hidden)"[^>]*value=/.test(out));
 check("radio option value kept (not typed, fixture needs it)", /type="radio" name="auth" value="Yes"/.test(out));
 check("textarea text stripped", !/love widgets/.test(out));

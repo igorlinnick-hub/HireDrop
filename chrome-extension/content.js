@@ -6510,7 +6510,7 @@
   function captureMaskIds(s) {
     return s
       .replace(/\/in\/[^/?#"'\s<>]+/gi, "/in/redacted")
-      .replace(/urn:li:(fsd_profile|fs_miniProfile|fsd_miniProfile|fs_profile|member|profile):[A-Za-z0-9_-]+/g, "urn:li:$1:redacted");
+      .replace(/urn:li:(fsd_profile|fs_miniProfile|fsd_miniProfile|fs_profile|member|person|profile):[A-Za-z0-9_-]+/g, "urn:li:$1:redacted");
   }
 
   function captureScrubText(s, terms) {
@@ -6531,8 +6531,10 @@
       const tag = el.tagName.toLowerCase();
       if (tag === "template" && el.content) captureScrub(el.content, terms);
       if (tag === "script") el.textContent = "";
-      // LinkedIn's server-rendered API payloads: hidden <code> elements holding JSON.
-      if (tag === "code" && /^\s*[{[]/.test(el.textContent || "") && (el.textContent || "").length > 40) el.textContent = "";
+      // LinkedIn's server-rendered API payloads live in hidden <code> elements — as JSON
+      // text, escaped JSON, or JSON inside an HTML comment (textContent misses that one).
+      // A selector fixture never needs a <code> body, so every one is emptied.
+      if (tag === "code") el.textContent = "";
       if (tag === "textarea") el.textContent = "";
       if (tag === "input") {
         const type = (el.getAttribute("type") || "text").toLowerCase();
@@ -6548,6 +6550,13 @@
         el.removeAttribute("src"); el.removeAttribute("srcset");
       }
       for (const a of Array.from(el.attributes)) {
+        // data-csrf, data-token, …: request credentials, never needed by a selector.
+        if (/csrf|token|session/i.test(a.name)) { el.removeAttribute(a.name); continue; }
+        // Inline photos (style="background-image:url(…)") — the member's face among them.
+        if (a.name === "style" && /url\(/i.test(a.value)) {
+          el.setAttribute("style", a.value.replace(/url\([^)]*\)/gi, "url(redacted)"));
+          continue;
+        }
         const nv = captureScrubAttr(a.name, a.value, terms);
         if (nv !== a.value) el.setAttribute(a.name, nv);
       }
@@ -6563,6 +6572,12 @@
       }
     }
     const owner = root.ownerDocument || root;
+    // Comments carry data too (LinkedIn has shipped JSON payloads as <!--{…}-->) and are
+    // invisible to the text walk below — drop them all.
+    const cw = owner.createTreeWalker(root, 128 /* SHOW_COMMENT */);
+    const comments = [];
+    for (let n = cw.nextNode(); n; n = cw.nextNode()) comments.push(n);
+    for (const c of comments) c.parentNode && c.parentNode.removeChild(c);
     const tw = owner.createTreeWalker(root, 4 /* SHOW_TEXT */);
     for (let n = tw.nextNode(); n; n = tw.nextNode()) {
       const parent = n.parentNode && n.parentNode.nodeName ? n.parentNode.nodeName.toLowerCase() : "";

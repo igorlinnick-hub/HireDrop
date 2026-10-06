@@ -190,7 +190,26 @@ def check_can_apply(user_id: str, platform: str, email: str | None = None) -> di
     tier = get_tier(user_id, email)
 
     if tier == "admin":
-        # Admins bypass everything — no count, no platform cap.
+        # Admins bypass the budgets — except a platform with its own ban ceiling
+        # (MAX_PER_PLATFORM: LinkedIn). That rail protects the account, not our costs, and
+        # the first account to run LinkedIn is Igor's own (skeptic on #362).
+        key = (platform or "").strip().lower()
+        if key in MAX_PER_PLATFORM:
+            used_here = apps_db.count_today_by_platform(user_id, day).get(key, 0)
+            if used_here >= MAX_PER_PLATFORM[key]:
+                return {
+                    "allowed": False,
+                    "reason": (
+                        f"Daily {platform} limit reached ({MAX_PER_PLATFORM[key]}) — "
+                        "account safety. Resumes tomorrow."
+                    ),
+                    "tier": "admin",
+                    "used_today": apps_db.count_today(user_id, day),
+                    "daily_limit": ADMIN_DAILY_LIMIT,
+                    "platform_used": used_here,
+                    "free_used": None,
+                    "free_limit": None,
+                }
         return {
             "allowed": True,
             "reason": "",
