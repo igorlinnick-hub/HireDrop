@@ -1,6 +1,6 @@
 # apply-losses — где теряются подачи: хендбэки, потерянные записи, вход в Indeed
 
-Обновлено: 2026-10-06 · ветка: main (ext 1.8.36 #351 синкнута; CWS на ревью 1.8.35; в Chrome Игоря 1.8.34 до релоада) · **открыто: #353, ветка `queue/company-cap-walks`, #349**
+Обновлено: 2026-10-06 · ветка: main (ext 1.8.37 #357 синкнута на Рабочий стол, в Chrome — после OFF/ON; CWS: 1.8.37 отправлена на ревью поверх 1.8.35) · **открыто: #353, ветка `queue/company-cap-walks`, #349**
 
 ## Состояние
 
@@ -192,22 +192,35 @@
 - **Первый блок GH — в порядке (агент, живой прогон настоящего content.js, без отправки):** имя, фамилия,
   почта, телефон (iti, переформатирован в (808) 555-1234), страна, город — заполняются. Прод: First/Last/
   Email/Phone — 0 из 34 GH-хендбэков. Пустую форму Игорь видел в моей пробе / при повторном открытии.
-- 🔴 **НАСТОЯЩИЙ БАГ (приоритет №1): неверные подписи выпадающих списков на GH.** `fillComboboxes` берёт
-  `DIV.select__control`, а `getFieldLabel` (content.js:~1031) хватает первую подпись в общем обёртке
-  `div.application--questions`. На DoorDash: Country подписан «Phone»; work authorization, ОБА вопроса про
-  sponsorship и «Have you worked at DoorDash?» подписаны «LinkedIn Profile*» → ответы профиля про визу/
-  разрешение на работу НЕ применяются; без ИИ-ответа падают на ПЕРВЫЙ вариант = «Yes» на sponsorship и
-  «I am a previous employee». **Фикс:** в `getComboLabel` (content.js:~3718) брать подпись по внутреннему
-  `input[role=combobox]` (`label[for]` / `aria-labelledby`) раньше общего обёртки; тест на фикстуре
-  `fixtures/gh-doordash-form.html` с реальными подписями. Проверить прод: что реально уходило в ответах
-  на sponsorship в GH-заявках.
+- ✅ **Подписи dropdown на GH — #357 (смержен, 2ebd994), ext 1.8.37.** Было хуже, чем думали: на DoorDash
+  10 из 16 списков под чужой подписью (Location → «First Name», School/Degree/вся демография → ""). Фикс:
+  `explicitLabel()` внутреннего `[role=combobox]` (aria-labelledby/label[for]) раньше догадки по обёртке.
+  Второй слой (поймал тест): визовый вопрос DoorDash содержит «eligibility»/«authorization» → правило
+  «eligibility → Yes» в `chooseOption` срабатывало и с верной подписью. Теперь визовые/«работали у нас»
+  ответы — только профиль или ИИ, иначе пусто → хендбэк. Скептик р1 BLOCK: верная подпись открыла старый
+  баг «authorized … WITHOUT sponsorship» → «No» (= «не имею права работать»), и он же жил в ТЕКСТОВЫХ
+  вопросах → `sponsorshipSaysYes()` (5 формулировок корпуса; прочие отрицания → модели). Р2 SHIP-WITH-NITS,
+  ниты взяты. Тест `gh-combo-labels.test.js` (20 проверок, 11 падают на старом), сьюта 36/36.
+- **Прод (агент, только чтение) — что уже ушло работодателям.** Выбранные значения нигде не пишутся
+  (`log()` не идёт на бэкенд); след — `screener_answer_cache.question` = подпись, отправленная ИИ.
+  Коллизия подтверждена на GH: Cision, Flexport, oura, tanium, Chime, Snorkel, Cloudflare, Affirm, Later,
+  Hightouch, Honor, Muckrack. **Вероятно неверный ответ про визу/право на работу ушёл**: Antonia — Cision
+  (09-23, sponsorship=Yes, сильно доказано), Flexport (09-21, authorized=No); Igor — oura (09-24), tanium
+  (10-02), modernhealth (10-05, средн.); Dakota (внешний) — Chime (09-28), Snorkel (09-28). У всех троих
+  `needs_sponsorship=false`. Lever/Ashby — подписи чистые. Сообщать ли юзерам — решение Игоря.
+  Кэш с отравленными ключами (`'LinkedIn Profile*'=>'Yes'`, 14 hits) НЕ чистили: 1.8.37 их не попадёт,
+  старым версиям удаление не поможет (они заново спросят ту же бессмыслицу).
+- Попутно: **6 GH-подач дошли до /confirmation без строки в `applications`** (Antonia Flexport/Cision,
+  Igor masterclass ×2/tia, Dakota Snorkel) — отдельная дыра учёта. Lever Entrata (Dakota): ИИ выбрал
+  штат Florida при Иллинойсе (подачи не было); Flexport: `Race => White` выбрал ИИ вместо decline.
+  Инструмента «что ответили в дропдаунах» нет — скрипты агента были разовыми.
 - `diag.reqEmpty` по-прежнему врёт (Country/Location/Resume/work-auth «пустые», хотя отвечены).
 - Политика: web #280 смержен, ждёт деплоя Vercel (лимит сборок); **#349 смержить, когда
   `python scripts/check_privacy_hosts.py` → exit 0**.
 
 ## Следующий шаг
 
-Модель: **Opus**. 0) 🔴 подписи dropdown на GH (выше) — sponsorship мог уходить «Yes». 1) #353: фикс ретрая (выше, BLOCK скептика) → повторный скептик → мерж (Railway деплой; предупредить соседей, если идёт прогон).
+Модель: **Opus**. 0) ✅ подписи GH (#357, 1.8.37 на ревью CWS) — Игорю: OFF/ON расширения; решить, сообщать ли Antonia/Dakota про Cision/Flexport/Chime/Snorkel. 1) #353: фикс ретрая (выше, BLOCK скептика) → повторный скептик → мерж (Railway деплой; предупредить соседей, если идёт прогон).
 2) `queue/company-cap-walks`: rebase на main → PR → скептик → мерж. 3) GH первый блок/телефон —
 перепроверка (выше). 4) #349 после деплоя сайта. 5) `applied_unconfirmed` на черновиках Indeed и
 contact-info no-button — нужен живой прогон в свежий день (кап). Агентов подключать параллельно,
