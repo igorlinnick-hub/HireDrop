@@ -294,6 +294,11 @@ def _verdict(
             f"Applying, but {handed} forms were handed back to you for {applied} sent — "
             "the filler stops before submit."
         )
+    if applied and top_n > applied * 3 and top_loss == "company cap":
+        return (
+            f"Applying, but {top_n} postings were skipped by the one-per-company cap for every "
+            f"{applied} sent — the search keeps finding employers already tried."
+        )
     if applied and top_n > applied * 3:
         return f"Applying, but {top_n} postings were lost to {top_loss} for every {applied} sent — the search is aimed wrong."
     # Under 3/hour after half an hour. A live application takes ~30-160s end to end

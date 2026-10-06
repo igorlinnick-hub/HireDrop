@@ -270,27 +270,38 @@ def requeued_urls(user_id: str, cap: int = 5000) -> list[str]:
     return [r["url"] for r in fetch_paged(build, cap) if r.get("url")]
 
 
+RETRY_EXEMPT_DAYS = 14
+
+
 def requeued_companies(user_id: str, cap: int = 5000) -> list[str]:
     """Company of every open hand-back the person sent back with "Try again" — for the
     live judge (/tools/assess-fit), which sees a company name but no URL. A retried ATS
     posting passed the cap in build_queue; without this the judge capped it again at
     apply time because the company's OTHER hand-backs hold the slot (skeptic on #359).
+
+    Only retries the queue actually re-runs (requeueable: an ATS board or a pool row with
+    a job_id), and only for RETRY_EXEMPT_DAYS. A native Indeed/ZipRecruiter hand-back
+    answered on the dashboard, or a retry the judge skipped, stays open with requeued_at
+    set — unbounded, that company would lose the cap on every walk (skeptic r2 on #359).
     """
+    from datetime import timedelta
+
+    since = (datetime.now(UTC) - timedelta(days=RETRY_EXEMPT_DAYS)).isoformat()
 
     def build(start: int, end: int):
         return (
             get_supabase()
             .table("handbacks")
-            .select("company")
+            .select("company, platform, job_id")
             .eq("user_id", user_id)
             .is_("resolved_at", "null")
-            .not_.is_("requeued_at", "null")
+            .gte("requeued_at", since)
             .order("created_at", desc=True)
             .order("id")
             .range(start, end)
         )
 
-    return [r["company"] for r in fetch_paged(build, cap) if r.get("company")]
+    return [r["company"] for r in fetch_paged(build, cap) if r.get("company") and requeueable(r)]
 
 
 def _current_build(user_id: str) -> tuple[str | None, str | None]:

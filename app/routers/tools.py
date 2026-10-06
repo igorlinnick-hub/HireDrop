@@ -254,9 +254,9 @@ def _company_capped(user_id: str, company: str) -> bool:
 
     The judge gets a company name, no URL. A "Try again" posting already passed the cap in
     build_queue (#353); the ATS walk then asks this judge, and the company's other open
-    hand-backs would cap it right back (skeptic on #359). So a company with a retried
-    hand-back is not capped here while that retry is open — on Indeed/ZipRecruiter this is
-    also the only way a retried posting there can get through.
+    hand-backs would cap it right back (skeptic on #359). So a company with a recent retried
+    ATS hand-back is not capped here while that retry is open (handbacks.requeued_companies
+    bounds it).
     """
     if not company_slot_taken(company, companies_holding_slots(user_id)):
         return False

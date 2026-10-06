@@ -534,3 +534,53 @@ def test_a_cap_skip_is_its_own_loss_not_the_fit_gate():
     )
     assert _categorize(line) == "company_capped"
     assert _categorize("⏭️ Skipped (fit 40): Role @ Acme — weak match") == "skipped_fit"
+
+
+def test_only_recent_requeueable_retries_exempt_a_company(real_requeued_companies):
+    # Skeptic r2 on #359: an answered native Indeed hand-back (no job_id) or a retry the
+    # judge skipped stays open with requeued_at set forever — it must not lift the cap.
+    from unittest.mock import MagicMock
+
+    from app.db import handbacks as hb_db
+
+    q = MagicMock()
+    for m in ("table", "select", "eq", "is_", "gte", "order", "range"):
+        getattr(q, m).return_value = q
+    q.execute.return_value = MagicMock(
+        data=[
+            {"company": "DoorDash", "platform": "greenhouse", "job_id": None},
+            {"company": "Indeed Co", "platform": "indeed", "job_id": None},
+            {"company": "Pool Co", "platform": "indeed", "job_id": "j1"},
+            {"company": None, "platform": "lever", "job_id": None},
+        ]
+    )
+    with patch.object(hb_db, "get_supabase", return_value=q):
+        out = real_requeued_companies("u1")
+    assert out == ["DoorDash", "Pool Co"]
+    q.is_.assert_any_call("resolved_at", "null")
+    col, since = next(c.args for c in q.gte.call_args_list if c.args[0] == "requeued_at")
+    age = datetime.now(UTC) - datetime.fromisoformat(since)
+    assert (
+        timedelta(days=hb_db.RETRY_EXEMPT_DAYS - 1)
+        < age
+        <= timedelta(days=hb_db.RETRY_EXEMPT_DAYS, minutes=1)
+    )
+
+
+def test_a_run_lost_to_the_cap_does_not_blame_the_search():
+    from app.db import activity as activity_db
+
+    counts = {
+        "since": None,
+        "total": 20,
+        "by_type": {"opened": 18, "applied": 2, "company_capped": 12},
+        "auth_401": 0,
+    }
+    with (
+        patch.object(activity_db, "summary", return_value=counts),
+        patch.object(activity_db, "_minutes_spanned", return_value=10),
+    ):
+        out = activity_db.run_report("u1")
+    assert out["losses"] == {"company cap": 12}
+    assert "one-per-company cap" in out["verdict"]
+    assert "aimed wrong" not in out["verdict"]
