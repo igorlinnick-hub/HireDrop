@@ -1800,7 +1800,11 @@
   // navigation, so counting here makes the daily cap + count robust regardless of SW
   // state. background's APPLICATION_SAVED no longer increments (backend save only).
   async function recordLocalApplication(platform) {
-    const s = await storageGet(["todayCount", "platformCounts", "todayDate", "atsPlatform"]);
+    // One read for everything, so two tabs recording at once race over one round-trip.
+    const s = await storageGet([
+      "todayCount", "platformCounts", "todayDate", "atsPlatform",
+      "keywordCounts", "campaignFilters", "kwIndex",
+    ]);
     const today = localDay();
     const totalCount = (s.todayDate === today ? (s.todayCount || 0) : 0) + 1;
     const platformCounts = s.todayDate === today ? (s.platformCounts || {}) : {};
@@ -1809,9 +1813,9 @@
     // out of. Only the LIVE board search has a phrase — a pool/ATS queue walk (atsPlatform
     // set) applies to saved rows, and charging the current phrase for those would rotate
     // the search away from a keyword that never spent anything.
-    const keywordCounts = await readKeywordLedger();
+    const keywordCounts = ledgerOf(s.keywordCounts);
     if (!s.atsPlatform) {
-      const key = await currentKeywordKey();
+      const key = keywordKeyOf(s);
       if (key) {
         const bucket = keywordCounts[platform] || (keywordCounts[platform] = {});
         bucket[key] = (bucket[key] || 0) + 1;
@@ -1826,15 +1830,18 @@
   // claiming "applied" for an application that never left the page is lying to the user
   // (council 2026-08-04: quality above all — no silent half-deaths).
   async function subtractLocalApplication(platform) {
-    const s = await storageGet(["todayCount", "platformCounts", "todayDate", "atsPlatform"]);
+    const s = await storageGet([
+      "todayCount", "platformCounts", "todayDate", "atsPlatform",
+      "keywordCounts", "campaignFilters", "kwIndex",
+    ]);
     const today = localDay();
     if (s.todayDate !== today) return;
     const platformCounts = s.platformCounts || {};
     platformCounts[platform] = Math.max(0, (platformCounts[platform] || 0) - 1);
     // Give the phrase its slot back too, or a blocked submit would quietly shrink this
     // keyword's share of the cap for the rest of the day.
-    const keywordCounts = await readKeywordLedger();
-    const key = await currentKeywordKey();
+    const keywordCounts = ledgerOf(s.keywordCounts);
+    const key = keywordKeyOf(s);
     if (!s.atsPlatform && key && keywordCounts[platform]) {
       keywordCounts[platform][key] = Math.max(0, (keywordCounts[platform][key] || 0) - 1);
     }
@@ -5275,10 +5282,8 @@
   //      "Indeed exhausted (all keywords searched)" 2 minutes into a 15-minute run.
   //   2. The server rotates WHICH phrase leads a run (kw_cursor), so index 0 is a
   //      different phrase from one run to the next — the slice was charged to the wrong one.
-  // A ledger that dates itself cannot be resurrected by any other writer of todayDate.
-  async function readKeywordLedger() {
-    const d = await storageGet("keywordCounts");
-    const k = d.keywordCounts;
+  // A ledger that dates itself (ledgerOf) cannot be resurrected by any other writer of todayDate.
+  function ledgerOf(k) {
     if (!k || typeof k !== "object" || k.day !== localDay()) return { day: localDay() };
     return k;
   }
@@ -5288,14 +5293,19 @@
   }
 
   async function getKeywordCounts(platform) {
-    return (await readKeywordLedger())[platform] || {};
+    return ledgerOf((await storageGet("keywordCounts")).keywordCounts)[platform] || {};
   }
 
-  // The phrase the live search is on right now ("" with no keywords at all).
-  async function currentKeywordKey() {
-    const kws = await keywordList();
+  // The phrase the live search is on ("" with no keywords at all), from a storage snapshot
+  // holding campaignFilters + kwIndex — same clamping as currentKeywordIndex.
+  function keywordKeyOf(s) {
+    const kws = (s.campaignFilters?.keywords || []).filter(Boolean);
     if (!kws.length) return "";
-    return keywordKey(kws[await currentKeywordIndex()]);
+    return keywordKey(kws[Math.min(Math.max(s.kwIndex || 0, 0), kws.length - 1)]);
+  }
+
+  async function currentKeywordKey() {
+    return keywordKeyOf(await storageGet(["campaignFilters", "kwIndex"]));
   }
 
   async function currentKeywordIndex() {
