@@ -101,8 +101,8 @@ const { getComboLabel, chooseOption } = ctx.T;
   check("“authorized … without sponsorship”, needs it → No", (await chooseOption(without, yesNo, p2, {}))?.text === "No");
   check("“without requiring employer visa sponsorship” reads the same way",
     (await chooseOption("Are you legally authorized to work in the country where this role is based, now and in the future, without requiring employer visa sponsorship?", noYes, p, {}))?.text === "Yes");
-  check("“without restriction, or will you require sponsorship?” is NOT reversed",
-    (await chooseOption("Are you able to work without restriction, or will you require sponsorship?", yesNo, p, {}))?.text === "No");
+  check("“without restriction, or will you require sponsorship?” is not reversed — it goes to the model",
+    (await chooseOption("Are you able to work without restriction, or will you require sponsorship?", yesNo, p, {})) === null);
 
   // No profile answer and a silent model: blank (→ hand-back), never the first option.
   check("sponsorship, nothing on file, model silent → left blank",
@@ -115,6 +115,15 @@ const { getComboLabel, chooseOption } = ctx.T;
   check("the model was asked the real question, not “LinkedIn Profile”",
     asked.length > 0 && asked.every((q) => !/linkedin/i.test(q)), JSON.stringify(asked));
 
+  // Other negated wordings: which way Yes points is unclear → no profile answer, and with
+  // the model silent the field stays blank instead of "No" (= "not authorized").
+  for (const q of ["Are you authorized to work in the US without being sponsored?",
+    "Are you authorized to work in the US and do not require visa sponsorship?"]) {
+    check(`unclear negation left to the model/person: “${q.slice(36, 70)}…”`,
+      (await chooseOption(q, noYes, p, {})) === null);
+  }
+  check("“How long will you require visa sponsorship?” is still a knockout",
+    (await chooseOption("How long will you require visa sponsorship?", [{ text: "1 year" }, { text: "Not needed" }], {}, {})) === null);
   check("“How many years have you worked for a SaaS company?” is not a knockout",
     (await chooseOption("How many years have you worked for a B2B SaaS company?", [{ text: "0-2" }, { text: "3-5" }], {}, {}))?.text === "0-2");
   // A benign dropdown still gets the first-option fallback — the guard is for knockouts only.

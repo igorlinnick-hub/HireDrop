@@ -3205,9 +3205,9 @@
         if (!value) continue;
       } else if (/(sponsor|visa\b|h-?1b|immigration case)/i.test(label)) {
         // Knockout — never guess in free text either. Explicit profile only, else AI/hand-back.
-        if (typeof profile.needs_sponsorship === "boolean") {
-          value = sponsorshipSaysYes(label, profile.needs_sponsorship) ? "Yes" : "No";
-        }
+        const says = typeof profile.needs_sponsorship === "boolean"
+          ? sponsorshipSaysYes(label, profile.needs_sponsorship) : null;
+        if (says !== null) value = says ? "Yes" : "No";
         // else: fall through to the AI branch (answers from the resume) or hand-back
       }
 
@@ -3406,7 +3406,11 @@
   // skeptic 10-06, reachable on dropdowns once their real labels were read).
   function sponsorshipSaysYes(label, needsSponsorship) {
     const flips = /without\s+(the\s+need\s+(for|of)\s+|needing\s+|requiring\s+)?(any\s+)?((employer|company|visa|immigration|employment)\s+)*sponsor/i;
-    return flips.test(label) ? !needsSponsorship : needsSponsorship;
+    if (flips.test(label)) return !needsSponsorship;
+    // Any other negation ("without being sponsored", "and do not require sponsorship") and
+    // which way Yes points is a guess — null: the model reads it, or the person does.
+    if (/\bwithout\b|\b(do not|don'?t|not) (need|require)/i.test(label)) return null;
+    return needsSponsorship;
   }
 
   function pickOptionDeterministic(label, options, profile) {
@@ -3425,7 +3429,9 @@
     // AI-with-resume / hand-back — never guess a knockout under the user's name.
     if (/(sponsor|visa\b|h-?1b|immigration case)/i.test(label)) {
       if (typeof profile.needs_sponsorship !== "boolean") return null;
-      return (sponsorshipSaysYes(label, profile.needs_sponsorship) ? yes : no) || null;
+      const says = sponsorshipSaysYes(label, profile.needs_sponsorship);
+      if (says === null) return null;
+      return (says ? yes : no) || null;
     }
     // Marketing/SMS opt-in → No. It is the platform asking to text the user, not the
     // employer asking anything about the candidate, and nothing about the application
@@ -3551,8 +3557,9 @@
     //    "I am a previous employee" (live 10-06). Blank → hand-back, the person answers.
     //    "How many years have you worked for a SaaS company" is about the person's history,
     //    not this company — benign, so it keeps the fallbacks below.
-    if (/(sponsor|visa\b|h-?1b|immigration|worked (at|for)|employed (by|at|with|for)|(former|previous|current) employee)/i.test(label) &&
-        !/how (many|long)/i.test(label)) {
+    if (/(sponsor|visa\b|h-?1b|immigration)/i.test(label) ||
+        (/(worked (at|for)|employed (by|at|with|for)|(former|previous|current) employee)/i.test(label) &&
+         !/how (many|long)/i.test(label))) {
       return null;
     }
     // 3) eligibility / yes-no phrasing → affirmative, never a stray first option.
