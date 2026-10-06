@@ -17,6 +17,7 @@ from app.db import screener_cache
 from app.db import usage as usage_db
 from app.db.profile import get_profile
 from app.db.subscriptions import get_usage_summary, is_admin
+from app.db.user_day import user_day_start
 from app.deps import get_current_user
 from app.schemas import (
     AnswerQuestionRequest,
@@ -257,7 +258,7 @@ def assess_fit_endpoint(req: AssessFitRequest, user=Depends(get_current_user)):
     profile = get_profile(user.id)
 
     if (profile.get("apply_mode") or "standard") == "broad":
-        today_count = apps_db.count_today(user.id)
+        today_count = apps_db.count_today(user.id, user_day_start(user.id))
         if today_count >= _BROAD_DAILY_CAP:
             return {
                 "fit_score": 0,

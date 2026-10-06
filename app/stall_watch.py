@@ -39,6 +39,7 @@ from app.db.subscriptions import (
     get_submit_mode,
     get_tier,
 )
+from app.db.user_day import user_day_start
 from config import (
     ALERT_EMAIL,
     FREE_APP_LIMIT,
@@ -145,7 +146,7 @@ def judge_user(user_id: str, state: dict, *, now: datetime | None = None) -> dic
         state,
         last_applied_at=apps_db.last_applied_at(user_id),
         submit_mode=submit_mode,
-        today_count=apps_db.count_today(user_id),
+        today_count=apps_db.count_today(user_id, user_day_start(user_id)),
         cap=daily_limit(tier, submit_mode),
         free_used=get_free_apps_used(user_id) if free else None,
         free_limit=FREE_APP_LIMIT if free else None,
