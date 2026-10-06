@@ -54,6 +54,8 @@ const USER_SCOPED_KEYS = [
   "platformConnections", "captchaWaiting", "reviewMode",
   // Indeed resume choice (content.js preferIndeedResume): learned on this user's runs.
   "indeedSdrRefusedAt", "indeedLastResumeKind",
+  // content.js submit belt: a pending ATS submit must never be recorded on another account.
+  "pendingAtsSubmit", "lastRecordedSubmit",
 ];
 
 // Self-bootstrap the durable key: any connected user has a (dashboard-pushed) Supabase

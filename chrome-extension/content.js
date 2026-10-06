@@ -735,6 +735,93 @@
     "/success", "/confirmation", "application-submitted", "applysuccess",
   ];
 
+  function isPostApplyPath(pathname) {
+    const p = (pathname || "").toLowerCase();
+    return POSTAPPLY_URL_HINTS.some((h) => p.includes(h));
+  }
+
+  // ---- Submit belt: record a full-page ATS submit whichever page wakes up after it ----
+  //
+  // A Greenhouse Submit is a full page load to /jobs/<id>/confirmation. It kills the
+  // phase_ats context before APPLICATION_SAVED goes out, so the record used to depend on
+  // the NEW page's script reaching recordWokeOnPostApply — which only the two queue walks
+  // call, and only in the campaign tab with the campaign still running. When anything else
+  // woke up (Snorkel 09-28: "Staying idle … /con — not the campaign tab"), a sent
+  // application left no applications row: backend dedup went blind and the same posting
+  // was applied to again (masterclass/8174068 twice, tia/8005735003 attempted 3x).
+  //
+  // So phase_ats writes `pendingAtsSubmit` right before the click, and init asks this
+  // BEFORE any gate: a confirmation page of the SAME posting within 10 minutes of our own
+  // click is that submit landing. It records — it never advances a queue or starts work.
+  // One record per submit: whoever records (this belt, the walk's recordWokeOnPostApply,
+  // phase_ats itself when the context survives) clears the pending key and leaves
+  // `lastRecordedSubmit`, which the others check before writing a second row.
+  const PENDING_SUBMIT_MAX_AGE_MS = 10 * 60 * 1000;
+
+  // The posting a URL belongs to: host + path without query, the post-apply segment
+  // (/confirmation, /thank-you, …) and a trailing /apply|/application. The form URL
+  // phase_ats records (location.href minus the query — the same normalisation as
+  // appliedUrls) and its confirmation URL map to the same identity.
+  function postingIdentity(url) {
+    let u;
+    try { u = new URL(url, location.href); } catch { return ""; }
+    let p = u.pathname.toLowerCase().replace(/\/+$/, "");
+    for (const h of POSTAPPLY_URL_HINTS) {
+      const i = p.indexOf(h);
+      if (i > -1) { p = p.slice(0, Math.max(0, p.lastIndexOf("/", i))); break; }
+    }
+    p = p.replace(/\/(apply|application)$/, "").replace(/\/+$/, "");
+    return `${u.hostname.toLowerCase()}${p}`;
+  }
+
+  async function markSubmitRecorded(url) {
+    await storageSet({ lastRecordedSubmit: { identity: postingIdentity(url), ts: Date.now() } });
+    await storageRemove("pendingAtsSubmit");
+  }
+
+  async function submitAlreadyRecorded(url) {
+    const r = (await storageGet("lastRecordedSubmit")).lastRecordedSubmit;
+    return !!(r && r.identity && r.identity === postingIdentity(url)
+      && Date.now() - (r.ts || 0) < PENDING_SUBMIT_MAX_AGE_MS);
+  }
+
+  async function _recordPendingSubmitOnce() {
+    if (!isPostApplyPath(location.pathname)) return false;
+    const pend = (await storageGet("pendingAtsSubmit")).pendingAtsSubmit;
+    if (!pend || !pend.url) return false;
+    if (!(Date.now() - (pend.ts || 0) < PENDING_SUBMIT_MAX_AGE_MS)) {
+      await storageRemove("pendingAtsSubmit"); // stale: whatever it was, it is not this page
+      return false;
+    }
+    if (postingIdentity(location.href) !== postingIdentity(pend.url)) return false;
+    // Claim first, then send: a second wake on this page must find nothing to record.
+    await markSubmitRecorded(pend.url);
+    logBackend(`⚠️ Applied (unconfirmed — recorded on the confirmation page): ${pend.title} @ ${pend.company || "?"}`, "warn");
+    await sendMsg({
+      type: "APPLICATION_SAVED",
+      data: {
+        job_title: pend.title, company: pend.company || "",
+        platform: pend.platform || detectPlatform() || "",
+        job_url: pend.url,
+        cover_letter: pend.letter || "",
+        // Same honesty rule as recordWokeOnPostApply: this context never saw the form.
+        status: "applied_unconfirmed", verified: false,
+        verify_signal: "pending-submit-postapply-url",
+      },
+    });
+    return true;
+  }
+
+  // Memoised per URL: init and a walk branch may both ask on the same page, and two
+  // concurrent reads of the pending key would otherwise both record.
+  let _pendingBelt = null;
+  function recordPendingSubmitOnConfirmation() {
+    if (!_pendingBelt || _pendingBelt.href !== location.href) {
+      _pendingBelt = { href: location.href, promise: _recordPendingSubmitOnce().catch(() => false) };
+    }
+    return _pendingBelt.promise;
+  }
+
   /**
    * Woke on a post-apply page? Then this is a SENT application, not a broken job page.
    *
@@ -753,6 +840,13 @@
   async function recordWokeOnPostApply() {
     const _path = location.pathname.toLowerCase();
     if (!POSTAPPLY_URL_HINTS.some((h) => _path.includes(h))) return false;
+    // The submit belt (init) or an earlier wake already wrote this submit's row: advance
+    // the walk, never write a second one — the applications insert has no dedup.
+    if ((await recordPendingSubmitOnConfirmation()) || (await submitAlreadyRecorded(location.href))) {
+      logBackend(`Post-apply page reached (${location.hostname}${_path}) — already recorded, next job`, "info");
+      await sendMsg({ type: "ATS_JOB_DONE" });
+      return true;
+    }
     const _q = (await storageGet("atsQueue")).atsQueue || [];
     const _cur = _q[0] || {};
     // Unconfirmed, not "applied": the URL says the submit landed, but this
@@ -782,6 +876,7 @@
           verify_signal: "reinit-postapply-url",
         },
       });
+      await markSubmitRecorded(location.href);
     } else {
       // Queue empty/mismatched — still not a skip: say what we saw.
       logBackend(`Post-apply page reached (${location.hostname}${_path}) but no queue item to record`, "warn");
@@ -5480,6 +5575,16 @@
     await addAppliedUrl(jobUrl);
     await addAppliedJobKey(jobTitle, jobCompany);
     await recordLocalApplication(platform);
+    // Submit belt: if the click reloads the page (Greenhouse → /confirmation), this
+    // context dies before APPLICATION_SAVED below — whichever script wakes on the
+    // confirmation page records it from this key (recordPendingSubmitOnConfirmation).
+    await storageSet({
+      pendingAtsSubmit: {
+        url: jobUrl, jobKey: jobDedupKey(jobTitle, jobCompany),
+        title: jobTitle, company: jobCompany, platform,
+        letter: coverLetter || "", ts: Date.now(),
+      },
+    });
     // Pre-click snapshot: ATS pages carry the job description (with thank-you-ish
     // boilerplate) on the apply page itself — it must not verify the submit.
     const baselineText = document.body.textContent || "";
@@ -5496,6 +5601,7 @@
       // Checked first: with every field filled, the code prompt leaves no leftover and no
       // invalid field, and the job would be counted "Applied (unconfirmed)" — unsent.
       if (greenhouseAsksEmailCode()) {
+        await storageRemove("pendingAtsSubmit"); // nothing left the page — nothing to record
         await subtractLocalApplication(platform);
         await handBackJob(
           "Greenhouse asked for the verification code it just emailed you — nothing was sent. Open the posting, enter the code from your inbox and submit",
@@ -5510,6 +5616,7 @@
       // mercor). Primary signal is leftover (required fields still empty).
       const invalidEl = document.querySelector('[aria-invalid="true"], [role="alert"]:not(:empty)');
       if (leftover.length || invalidEl) {
+        await storageRemove("pendingAtsSubmit"); // nothing left the page — nothing to record
         await subtractLocalApplication(platform);
         const reason = leftover.length
           ? `submit blocked — ${leftover.length} required field${leftover.length === 1 ? "" : "s"} still empty`
@@ -5545,6 +5652,8 @@
         verified: result.verified, verify_signal: result.signal,
       },
     });
+    // Recorded here — the belt must not write this submit a second time on a later wake.
+    await markSubmitRecorded(jobUrl);
   }
 
   // Tap-mode review ("тапалка"): publish the filled application to the DASHBOARD via
@@ -6005,6 +6114,47 @@
   const LINKEDIN_APPLY_ENABLED = false;
   let _linkedinIdleLogged = false;
 
+  // Only the campaign's OWN tab may automate (see init for the 08-15 history). init used to
+  // be the only place that asked, but runPhase has three other callers — the DOM observer
+  // (any tab, any time campaignRunning is true) and CAMPAIGN_STARTED — and on 09-28 a
+  // Snorkel form was filled + submitted in a tab init itself called "not the campaign tab":
+  // the submit's reload then woke into init's idle gate and the application was never
+  // recorded. So the answer is asked once, cached, and enforced in runPhase for every
+  // caller. The cache is keyed by the stored campaignTabId because background moves the
+  // campaign to the campaign window's active tab (captureActiveAutomationTab): when that
+  // changes, the old answer is stale and we ask again. No answer → fail OPEN, uncached
+  // (the same behaviour init always had).
+  let _tabVerdict = null; // { tabId, ok, who, logged }
+  async function campaignTabVerdict() {
+    const { campaignTabId } = await storageGet("campaignTabId");
+    if (_tabVerdict && _tabVerdict.tabId === campaignTabId) return _tabVerdict;
+    let who = null;
+    try { who = await sendMsg({ type: "AM_I_CAMPAIGN_TAB" }); } catch { who = null; }
+    if (!who) return { ok: true, who: null };
+    // `known:false` = background has no campaign tab recorded. NOT permission to take over:
+    // a tab the user opened themselves would start walking the board (live 08-15).
+    const ok = !(who.isCampaignTab === false || who.known === false);
+    _tabVerdict = { tabId: campaignTabId, ok, who, logged: false };
+    return _tabVerdict;
+  }
+
+  async function mayAutomateThisTab() {
+    const v = await campaignTabVerdict();
+    if (v.ok) return true;
+    if (!v.logged) {
+      v.logged = true;
+      log("Not the campaign tab — staying idle", "");
+      // Durable: this guard silences a page completely, so when it fires by mistake
+      // the run looks like it simply stopped existing — 32 minutes of a live
+      // campaign with no log line at all (08-17). A decision that can end a run
+      // must be visible in the same place as every other stop reason.
+      logBackend(
+        `🛈 Staying idle on ${location.hostname}${location.pathname.slice(0, 30)} — not the campaign tab ` +
+        `(known=${v.who.known}, isCampaignTab=${v.who.isCampaignTab})`, "warn");
+    }
+    return false;
+  }
+
   async function runPhase() {
     if (_runPhaseActive) return;
     if (!LINKEDIN_APPLY_ENABLED && detectPlatform() === "linkedin") {
@@ -6015,6 +6165,7 @@
       return;
     }
     if (!(await isCampaignRunning())) return;
+    if (!(await mayAutomateThisTab())) return;
     if (!navigator.onLine) {
       await waitForOnline();
       if (!(await isCampaignRunning())) return; // Stop may have landed while parked
@@ -6686,7 +6837,8 @@
       case "CAMPAIGN_STARTED":
         log("Campaign started — beginning automation", "ok");
         lastPhase = "";
-        runPhase();
+        _tabVerdict = null; // a (re)start may have moved the campaign tab — ask afresh
+        runPhase(); // gated: runPhase → mayAutomateThisTab
         sendResponse({ ok: true });
         break;
 
@@ -6718,33 +6870,21 @@
       // …and keep it fresh while the tab lives (SPA logins, expiring sessions).
       watchPlatformAuth();
 
+      // Submit belt — BEFORE every gate below. A full-page ATS submit (Greenhouse →
+      // /confirmation) wakes a fresh script here; if this tab is not the campaign tab, or
+      // the run has stopped since the click, nothing after this line would record the
+      // application. Records only: no queue advance, no automation.
+      await recordPendingSubmitOnConfirmation();
+
       let campaignOn = await isCampaignRunning();
       // Only the campaign's OWN tab may automate. Chrome restores the previous session's
       // windows on restart, so a stopped run's job tabs come back to life, see
       // campaignRunning=true, and all start walking at once — nine of them raced each
-      // other on 08-15, stepping on the live run's navigation. Fail OPEN: if the
-      // background can't answer, behave exactly as before.
-      if (campaignOn) {
-        try {
-          const who = await sendMsg({ type: "AM_I_CAMPAIGN_TAB" });
-          // `known:false` means the background has no campaign tab recorded. That is NOT
-          // permission to take over: a tab the user opened themselves then starts walking
-          // the board (live 08-15 — the automation window was gone, and the human's own
-          // ZipRecruiter tab got paginated out from under them). Only a tab that IS the
-          // campaign tab may automate; when the answer is unknown, stay put.
-          if (who && (who.isCampaignTab === false || who.known === false)) {
-            log("Not the campaign tab — staying idle", "");
-            // Durable: this guard silences a page completely, so when it fires by mistake
-            // the run looks like it simply stopped existing — 32 minutes of a live
-            // campaign with no log line at all (08-17). A decision that can end a run
-            // must be visible in the same place as every other stop reason.
-            logBackend(
-              `🛈 Staying idle on ${location.hostname}${location.pathname.slice(0, 30)} — not the campaign tab ` +
-              `(known=${who.known}, isCampaignTab=${who.isCampaignTab})`, "warn");
-            campaignOn = false;
-          }
-        } catch { /* no answer → proceed as before */ }
-      }
+      // other on 08-15, stepping on the live run's navigation. `known:false` (no campaign
+      // tab recorded) is not permission either: the human's own ZipRecruiter tab got
+      // paginated out from under them that way. Fail OPEN on no answer. The answer is
+      // cached and runPhase enforces it for every caller (mayAutomateThisTab).
+      if (campaignOn && !(await mayAutomateThisTab())) campaignOn = false;
       if (campaignOn) {
         // Version in the line = proof of WHICH content.js is injected (store vs unpacked,
         // pre/post reload) — the 08-15 double-install cost a whole run to "assumed 1.4.4".
