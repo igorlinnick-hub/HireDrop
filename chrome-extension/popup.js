@@ -505,6 +505,75 @@ $("btn-pill-everywhere").addEventListener("click", () => {
 
 renderPillEverywhere();
 
+// LinkedIn beta — DEV ONLY (linkedin-beta.js, docs/handoff/linkedin.md). Shown on unpacked
+// builds, or anywhere the flag is somehow on (so it can always be turned off). Turning it on
+// asks for linkedin.com alone — inside optional_host_permissions, so no manifest change and
+// no Web Store warning. request() goes first in the click (it needs the gesture and the
+// prompt may close this popup); the background registers content.js on the flag/permission
+// events, never from here.
+const LI_ORIGINS = { origins: ["https://www.linkedin.com/*"] };
+
+function liDevMsg(text) {
+  $("li-dev-msg").textContent = text || "";
+}
+
+async function renderLinkedInDev() {
+  let dev = false;
+  try { dev = (await chrome.management.getSelf()).installType === "development"; } catch {}
+  let on = false;
+  try { on = (await chrome.storage.local.get("linkedinBeta")).linkedinBeta === true; } catch {}
+  if (!dev && !on) return;
+  let granted = false;
+  try { granted = await chrome.permissions.contains(LI_ORIGINS); } catch {}
+  $("li-dev").style.display = "";
+  $("li-dev-text").textContent = !on
+    ? "LinkedIn beta (dev): off"
+    : granted ? "LinkedIn beta (dev): on" : "LinkedIn beta (dev): on, linkedin.com not granted";
+  $("btn-li-dev").textContent = !on ? "Turn on" : granted ? "Turn off" : "Grant access";
+  $("btn-li-dev").dataset.on = on ? "1" : "";
+  $("btn-li-dev").dataset.granted = granted ? "1" : "";
+  $("li-dev-capture").style.display = on && granted ? "" : "none";
+}
+
+$("btn-li-dev").addEventListener("click", () => {
+  const on = $("btn-li-dev").dataset.on === "1";
+  const granted = $("btn-li-dev").dataset.granted === "1";
+  if (on && granted) {
+    chrome.storage.local.set({ linkedinBeta: false }).catch(() => {}).finally(renderLinkedInDev);
+    return;
+  }
+  const ask = chrome.permissions.request(LI_ORIGINS);
+  if (!on) chrome.storage.local.set({ linkedinBeta: true }).catch(() => {});
+  ask.catch(() => {}).finally(renderLinkedInDev);
+});
+
+$("btn-li-capture").addEventListener("click", async () => {
+  liDevMsg("Capturing…");
+  let tab = null;
+  try { [tab] = await chrome.tabs.query({ active: true, currentWindow: true }); } catch {}
+  if (!tab || !/^https:\/\/www\.linkedin\.com\//.test(tab.url || "")) {
+    liDevMsg("Open the LinkedIn page in this window first.");
+    return;
+  }
+  let res = null;
+  try { res = await chrome.tabs.sendMessage(tab.id, { type: "HD_LINKEDIN_CAPTURE" }); } catch {}
+  if (!res || !res.ok) {
+    liDevMsg(res && res.error === "flag_off"
+      ? "The beta flag is off on that page."
+      : "No HireDrop script on that tab yet. Reload the LinkedIn tab and try again.");
+    return;
+  }
+  const url = URL.createObjectURL(new Blob([res.html], { type: "text/html" }));
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = res.filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+  liDevMsg(`Saved ${res.filename} (${Math.round(res.bytes / 1024)} KB). Read it before committing.`);
+});
+
+renderLinkedInDev();
+
 // ---------------------------------------------------------------------------
 // Message listener — LOG, AUTH_EXPIRED, DETECTION_TRIPPED
 // ---------------------------------------------------------------------------

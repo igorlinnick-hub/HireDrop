@@ -28,7 +28,12 @@ if (START < 0 || END < 0) {
   process.exit(2);
 }
 
-const sandbox = { AUTO_APPLY_PLATFORMS: ["indeed", "ziprecruiter", "linkedin"] };
+// The opener reads the campaign-START list (LinkedIn filtered out, linkedin-beta.js); its own
+// guard is pinned in linkedin-beta.test.js.
+const sandbox = {
+  AUTO_APPLY_PLATFORMS: ["indeed", "ziprecruiter", "linkedin"],
+  CAMPAIGN_START_PLATFORMS: require("../linkedin-beta.js").hdCampaignStartPlatforms(["indeed", "ziprecruiter", "linkedin"]),
+};
 vm.createContext(sandbox);
 vm.runInContext(
   'const ATS_ZERO_TOUCH_PLATFORMS = ["greenhouse"];\n' + SRC.slice(START, END),

@@ -112,6 +112,7 @@ def stats(user=Depends(get_current_user)):
         "remaining_today": usage["remaining_today"],
         "platform_counts": usage["platform_counts"],
         "max_per_platform": usage["max_per_platform"],
+        "max_by_platform": usage.get("max_by_platform", {}),
         # Free taste (FREE_TASTE_PLAN.md): dashboard renders "N / 40 free used"
         # and flips to the paywall at the limit. None for paid/admin tiers.
         "free_used": usage["free_used"],

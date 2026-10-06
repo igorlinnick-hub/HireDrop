@@ -40,7 +40,20 @@ TIER_LIMITS = {
 # change the cap, edit this one value (and TIER_LIMITS above for the daily budget).
 # 15 per platform per day (Igor 2026-07-16, "пока что" — was 20): the ban-safety rail for
 # the tap-pool era where one session can touch several platforms at once.
-MAX_PER_PLATFORM = 15
+#
+# Per platform since 10-05: ban risk is not the same everywhere. LinkedIn restricts accounts
+# for automation far faster than a job board or a guest-apply ATS (User Agreement §8.2), so
+# its lane opens at 5/day (docs/handoff/linkedin.md: 5 for two clean weeks, then 10, ceiling
+# 15). Every platform not listed here keeps the default. Read it through max_per_platform()
+# — never index the mapping directly, an unlisted platform is a KeyError there.
+DEFAULT_MAX_PER_PLATFORM = 15
+MAX_PER_PLATFORM: dict[str, int] = {"linkedin": 5}
+
+
+def max_per_platform(platform: str | None) -> int:
+    """Today's ban-safety ceiling for one platform: its own number, else the default."""
+    return MAX_PER_PLATFORM.get((platform or "").strip().lower(), DEFAULT_MAX_PER_PLATFORM)
+
 
 # Tap-mode daily cap. Tap is the QUALITY/control lane, not a volume lane: the user reviews +
 # approves every card, and we KEEP per-job resume tailoring ON (the differentiator). Council
@@ -177,7 +190,26 @@ def check_can_apply(user_id: str, platform: str, email: str | None = None) -> di
     tier = get_tier(user_id, email)
 
     if tier == "admin":
-        # Admins bypass everything — no count, no platform cap.
+        # Admins bypass the budgets — except a platform with its own ban ceiling
+        # (MAX_PER_PLATFORM: LinkedIn). That rail protects the account, not our costs, and
+        # the first account to run LinkedIn is Igor's own (skeptic on #362).
+        key = (platform or "").strip().lower()
+        if key in MAX_PER_PLATFORM:
+            used_here = apps_db.count_today_by_platform(user_id, day).get(key, 0)
+            if used_here >= MAX_PER_PLATFORM[key]:
+                return {
+                    "allowed": False,
+                    "reason": (
+                        f"Daily {platform} limit reached ({MAX_PER_PLATFORM[key]}) — "
+                        "account safety. Resumes tomorrow."
+                    ),
+                    "tier": "admin",
+                    "used_today": apps_db.count_today(user_id, day),
+                    "daily_limit": ADMIN_DAILY_LIMIT,
+                    "platform_used": used_here,
+                    "free_used": None,
+                    "free_limit": None,
+                }
         return {
             "allowed": True,
             "reason": "",
@@ -223,11 +255,12 @@ def check_can_apply(user_id: str, platform: str, email: str | None = None) -> di
 
     platform_counts = apps_db.count_today_by_platform(user_id, day)
     platform_used = platform_counts.get(platform, 0)
+    platform_cap = max_per_platform(platform)
 
-    if platform_used >= MAX_PER_PLATFORM:
+    if platform_used >= platform_cap:
         return {
             "allowed": False,
-            "reason": f"Platform limit reached ({MAX_PER_PLATFORM} applications per platform per day).",
+            "reason": f"Platform limit reached ({platform_cap} applications per platform per day).",
             "tier": tier,
             "used_today": used_today,
             "daily_limit": limit,
@@ -262,6 +295,7 @@ def get_usage_summary(user_id: str, email: str | None = None) -> dict:
             "remaining_today": ADMIN_DAILY_LIMIT,
             "platform_counts": platform_counts,
             "max_per_platform": ADMIN_DAILY_LIMIT,
+            "max_by_platform": {},
             "free_used": None,
             "free_limit": None,
         }
@@ -275,7 +309,11 @@ def get_usage_summary(user_id: str, email: str | None = None) -> dict:
         "used_today": used_today,
         "remaining_today": max(0, limit - used_today),
         "platform_counts": platform_counts,
-        "max_per_platform": MAX_PER_PLATFORM,
+        # The default ceiling (every surface that shows ONE number reads this) plus the
+        # platforms that run under a different one. A consumer that only knows the single
+        # number keeps working; it just shows LinkedIn's bar against 15 instead of 5.
+        "max_per_platform": DEFAULT_MAX_PER_PLATFORM,
+        "max_by_platform": dict(MAX_PER_PLATFORM),
         "submit_mode": submit_mode,
         "free_used": get_free_apps_used(user_id) if free else None,
         "free_limit": FREE_APP_LIMIT if free else None,
