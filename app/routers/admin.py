@@ -1006,7 +1006,13 @@ def _section_ads(
             status = "ad_spend unreadable (see Spend)"
         elif platform == "meta":
             status = meta_state.get("error") or (
-                "connected" if meta_connected else meta_spend.NOT_CONNECTED
+                (
+                    "connected (ads-manager agent, Meta MCP)"
+                    if meta_state.get("via") == "mcp"
+                    else "connected"
+                )
+                if meta_connected
+                else meta_spend.NOT_CONNECTED
             )
         elif platform == "google":
             status = (

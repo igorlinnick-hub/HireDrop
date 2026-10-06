@@ -640,7 +640,8 @@ def test_insights_paginates(monkeypatch):
 
 
 def test_sync_if_stale_not_connected():
-    state = meta_spend.sync_if_stale()
+    with patch("app.ads.meta_spend.spend_db.newest_sync", return_value=None):
+        state = meta_spend.sync_if_stale()
     assert state["connected"] is False
     assert state["error"] == meta_spend.NOT_CONNECTED
 
@@ -652,8 +653,8 @@ def test_sync_if_stale_skips_fresh_data(monkeypatch):
     monkeypatch.setenv("META_AD_ACCOUNT_ID", "1")
     with (
         patch(
-            "app.ads.meta_spend.spend_db.newest_synced_at",
-            return_value=datetime.now(UTC).isoformat(),
+            "app.ads.meta_spend.spend_db.newest_sync",
+            return_value={"synced_at": datetime.now(UTC).isoformat(), "source": "meta_insights"},
         ),
         patch("app.ads.meta_spend.sync") as sync,
     ):
@@ -666,7 +667,7 @@ def test_sync_if_stale_runs_and_names_a_failure_once_per_hour(monkeypatch):
     monkeypatch.setenv("META_ADS_TOKEN", "t")
     monkeypatch.setenv("META_AD_ACCOUNT_ID", "1")
     with (
-        patch("app.ads.meta_spend.spend_db.newest_synced_at", return_value=None),
+        patch("app.ads.meta_spend.spend_db.newest_sync", return_value=None),
         patch(
             "app.ads.meta_spend.sync", side_effect=meta_spend.MetaSpendError("token expired")
         ) as sync,
@@ -676,6 +677,114 @@ def test_sync_if_stale_runs_and_names_a_failure_once_per_hour(monkeypatch):
     assert sync.call_count == 1  # the memo stops a Meta call on every board load
     assert "token expired" in state["error"]
     assert "token expired" in again["error"]
+
+
+# ------------------------------------------------------------ Meta spend via the agent (MCP)
+
+# The exact shape the MCP returned on 10-05: the list is JSON-encoded inside JSON.
+MCP_ANSWER = {
+    "ad_entities": (
+        '[{"id":"ad_1","name":"M1 \\u00b7 Drop","campaign_id":"c1","campaign_name":"R1",'
+        '"adset_id":"as1","amount_spent":"4.27","impressions":"812","link_click":"9"},'
+        '{"id":"ad_2","name":"M2","campaign_id":"c1","campaign_name":"R1","adset_id":"as1"}]'
+    )
+}
+
+
+def test_mcp_answer_maps_to_ad_spend_and_skips_undelivered_ads():
+    rows = meta_spend.mcp_to_rows(meta_spend.mcp_entities(MCP_ANSWER), "2026-10-06", "777")
+    assert rows == [
+        {
+            "date": "2026-10-06",
+            "platform": "meta",
+            "account_id": "777",
+            "campaign_id": "c1",
+            "campaign_name": "R1",
+            "adset_id": "as1",
+            "ad_id": "ad_1",
+            "ad_name": "M1 · Drop",
+            "spend_usd": 4.27,
+            "impressions": 812,
+            "clicks": 9,
+            "source": meta_spend.MCP_SOURCE,
+        }
+    ]
+
+
+def test_mcp_answer_accepts_decoded_list_and_raw_string():
+    import json
+
+    decoded = json.loads(MCP_ANSWER["ad_entities"])
+    assert meta_spend.mcp_entities(decoded) == decoded
+    assert meta_spend.mcp_entities(json.dumps(MCP_ANSWER)) == decoded
+
+
+@pytest.mark.parametrize(
+    "value,dollars",
+    [(4.5, 4.5), (3, 3.0), ("4.50", 4.5), ("$1,012.30", 1012.3), ({"amount": "2.1"}, 2.1)],
+)
+def test_mcp_money_shapes(value, dollars):
+    assert meta_spend._mcp_money(value) == dollars
+
+
+@pytest.mark.parametrize("value", ["four dollars", True, {"amount": "1", "currency": "EUR"}])
+def test_mcp_money_refuses_unknown_shapes(value):
+    with pytest.raises(meta_spend.MetaSpendError):
+        meta_spend._mcp_money(value)
+
+
+def test_mcp_ad_with_metrics_but_no_spend_is_refused_not_zeroed():
+    with pytest.raises(meta_spend.MetaSpendError):
+        meta_spend.mcp_to_rows([{"id": "a", "impressions": "50"}], "2026-10-06", "1")
+
+
+def test_mcp_paged_answer_is_refused():
+    with pytest.raises(meta_spend.MetaSpendError):
+        meta_spend.mcp_entities({"ad_entities": "[]", "pagination": {"next_cursor": "abc"}})
+    with pytest.raises(meta_spend.MetaSpendError):
+        meta_spend.mcp_entities({"something_else": []})
+
+
+def test_agent_rows_keep_the_dead_token_quiet(monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    monkeypatch.setenv("META_ADS_TOKEN", "dead")
+    monkeypatch.setenv("META_AD_ACCOUNT_ID", "1")
+    written = (datetime.now(UTC) - timedelta(hours=5)).isoformat()
+    with (
+        patch(
+            "app.ads.meta_spend.spend_db.newest_sync",
+            return_value={"synced_at": written, "source": meta_spend.MCP_SOURCE},
+        ),
+        patch("app.ads.meta_spend.sync") as sync,
+    ):
+        state = meta_spend.sync_if_stale()
+    sync.assert_not_called()  # 5 h old would be "stale" for the token path
+    assert state["connected"] is True and state["error"] is None and state["via"] == "mcp"
+
+
+def test_agent_rows_count_without_a_token():
+    from datetime import UTC, datetime
+
+    with patch(
+        "app.ads.meta_spend.spend_db.newest_sync",
+        return_value={"synced_at": datetime.now(UTC).isoformat(), "source": meta_spend.MCP_SOURCE},
+    ):
+        state = meta_spend.sync_if_stale()
+    assert state["connected"] is True and state["error"] is None
+
+
+def test_agent_missed_day_is_named():
+    from datetime import UTC, datetime, timedelta
+
+    written = (datetime.now(UTC) - timedelta(hours=30)).isoformat()
+    with patch(
+        "app.ads.meta_spend.spend_db.newest_sync",
+        return_value={"synced_at": written, "source": meta_spend.MCP_SOURCE},
+    ):
+        state = meta_spend.sync_if_stale()
+    assert state["connected"] is True
+    assert "ads-manager agent" in state["error"] and "30 h ago" in state["error"]
 
 
 # ------------------------------------------------------------ Funnel section
@@ -878,6 +987,23 @@ def test_ads_joins_spend_to_signups_by_ad():
     assert channels["chatgpt.com"]["spend"] is None
 
     assert [p["value"] for p in section["timeseries"]["points"]] == [20.0, 46.0]
+
+
+def test_ads_board_names_the_agent_as_the_meta_source():
+    agent = {
+        "connected": True,
+        "ran": False,
+        "rows": None,
+        "error": None,
+        "via": "mcp",
+        "newest_synced_at": "x",
+    }
+    spend = [{**_meta_row("ad_1", "2026-09-10", 4.27), "source": meta_spend.MCP_SOURCE}]
+    section = _ads_section([], spend_rows=spend, meta_state=agent)
+    assert _metrics(section)["spend"]["value"] == 4.27
+    meta = next(r for r in _table_rows(section, "sources") if r["platform"] == "meta")
+    assert meta["status"] == "connected (ads-manager agent, Meta MCP)"
+    assert meta["spend"] == 4.27
 
 
 def test_manual_spend_is_matched_to_its_utm_source():

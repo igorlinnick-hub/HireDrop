@@ -56,7 +56,8 @@ scripts/run_history.py --email <почта> [--days 14] [--gap-min 20]` реже
 **Реклама (траты, подключения) — `scripts/ads_spend.py`, вкладка Ads в админ-борде.**
 `.venv/bin/python scripts/ads_spend.py status` — что подключено (Meta spend / Meta CAPI /
 Google ingest), строк и последний синк по платформам; `sync-meta --days N` — стянуть Meta
-Insights сейчас; `add --platform manual --channel <utm_source> --date … --campaign … --spend …`
+Insights сейчас (токен мёртв с 10-05); `ingest-mcp --date D <файл>` — один день ответа Meta Ads MCP
+(`ads_get_ad_entities` level=ad) в `ad_spend`, так трату Meta пишет агент `ads-manager`; `add --platform manual --channel <utm_source> --date … --campaign … --spend …`
 — трата в канале без API. Цифры CAC/ROAS/вердикты по объявлениям смотреть в секции `ads`
 `GET /admin/metrics`, не считать руками. Хендофф: `docs/handoff/ads-board.md`.
 
