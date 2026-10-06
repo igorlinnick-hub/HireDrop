@@ -2054,6 +2054,15 @@
     }
   }
 
+  // A ZipRecruiter posting has no path of its own: it is the results page plus `?lk=<uuid>`
+  // (/jobs-search/2?…&lk=PpfY8jOjIWgxM4IiHjAsag, the shape in applications). Keyed by path,
+  // every posting on one results page was the same "job" — the first was processed, the
+  // rest were skipped as "already processed" (07-06 → 10-06; one ZR row in applications ever).
+  // The uuid is also what the list phase stores per card, so both phases now agree.
+  function zrDedupeKey(url) {
+    return jobIdFromUrl(url) || String(url || "").split("?")[0];
+  }
+
   // The employer the search CARD showed for this exact posting — matched by id, never by
   // position (currentJobIndex drifts on redirects/skips; a positional match would file the
   // application under the neighbour's name). Search walk → pendingJobs[].jk; pool run →
@@ -2586,7 +2595,7 @@
     // Dedup — session (processedJobKeys) AND cross-session (appliedUrls). Without
     // the appliedUrls check a job applied in a PREVIOUS campaign got re-applied on
     // the next run — a real duplicate to the employer (seen live: Sushi House twice).
-    const dedupeKey = jobUrl.split("?")[0];
+    const dedupeKey = zrDedupeKey(jobUrl);
     {
       const appliedSet = await getAppliedUrls();
       const appliedJobs = await getAppliedJobKeys();
@@ -2605,6 +2614,7 @@
       const keys = seen.processedJobKeys || [];
       if (keys.includes(dedupeKey)) {
         log(`${jobTitle} — already processed, skipping`, "");
+        logBackend(`Skip (already processed this run): ${jobTitle} @ ${jobCompany}`, "info");
         await skipToNextJob();
         return;
       }
