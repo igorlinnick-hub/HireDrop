@@ -3711,10 +3711,25 @@
   // Detection is wider than what the profile may answer: anything that smells of status
   // (a "work permit", "immigration support") must never fall to a "Yes"/first-option
   // default — it is answered from the profile only when the wording is one we can read.
+  // "Can you legally work…", "Are you able to legally work…", "legally allowed / entitled
+  // to work…", "allowed to work in…", "proof of eligibility to work…": the same
+  // authorization question in other words. Until
+  // 10-06 these fell through to the generic "eligible|legally|able to → Yes" rule, so a
+  // profile that says "not authorized" told employers "Yes" (neo4j, cision, Indeed/ZR).
   const WS_AUTH_RE = new RegExp(
-    "(authoriz|authoris|eligible|legally (permitted|authorized|able)|right to work|" +
-    "permanent work|work authoriz).{0,40}(work|employ)|" +
-    "(work|employ).{0,40}(authoriz|authoris|eligible|legally)|\\bright to work\\b", "i");
+    "(authoriz|authoris|eligible|legally (permitted|authorized|able|allowed|entitled|eligible)|" +
+    "lawfully|right to work|permanent work|work authoriz).{0,40}(work|employ)|" +
+    "(work|employ).{0,40}(authoriz|authoris|eligible|legally|lawfully)|\\bright to work\\b|" +
+    "\\b(legally|lawfully)\\s+(work|be employed)\\b|" +
+    "\\b(entitled|eligibility)\\s+to\\s+(legally\\s+)?work\\b|\\b(allowed|permitted)\\s+to\\s+work\\s+(in|within|from)\\b", "i");
+  // Smells of legal work status but is no wording we can answer from the two flags
+  // ("work eligibility", "immigration status", "eligible … employment", OPT / CPT / EAD).
+  // Such a question is "unclear" → blank, never left to a generic "Yes" default.
+  const WS_STATUS_LOOK_RE = /\bwork (?:eligibility|status|rights?)\b|\b(?:employment|immigration|visa|residency) status\b|\b(?:legal(?:ly)?|lawful(?:ly)?)\b[^?]{0,40}\b(?:work|employ)|\beligib\w*\b[^?]{0,40}\b(?:work|employ)/i;
+  // Student / visa-programme status (case-sensitive acronyms): the profile does not hold
+  // it — "are you eligible for a 24-month OPT extension?" is not "authorized to work".
+  const WS_VISA_PROGRAMME_RE = /optional practical training|curricular practical training|stem (?:opt )?extension/i;
+  const WS_VISA_ACRONYM_RE = /\b(?:OPT|CPT|EAD)\b/;
   // "…work IN <place>": the place the question is about, when it says so.
   const WS_WORK_IN_RE = /\b(?:work|working|employment|employed)\b[^.?!]{0,60}?\b(?:in|within|from)\s+((?:the\s+)?[^.?!,;()]{2,60})/i;
   // "US"/"USA" only in capitals: lower-case "us" is the pronoun ("work for us in London").
@@ -3860,9 +3875,13 @@
     // in any other country?" (Twitch; its "visas / work permits" sit after the "?") — read
     // on the FULL label, so a trailing clause can't drop it back to a Yes default.
     if (!auth && WS_CITIZENSHIP_RE.test(stripSkipClause(label))) return "unclear";
-    if (!auth && !sponsorWords) return null;
+    // Looks like work status, but not a wording read below → blank, not a "Yes" default.
+    const visaProgramme = WS_VISA_PROGRAMME_RE.test(m) || WS_VISA_ACRONYM_RE.test(m);
+    if (!auth && !sponsorWords) return WS_STATUS_LOOK_RE.test(m) || visaProgramme ? "unclear" : null;
     if (WS_OPEN_RE.test(m)) return "unclear";
     const asksRequire = WS_REQ_START_RE.test(m);
+    // On OPT / CPT / a STEM extension: a visa programme, not the authorization flag.
+    if (!asksRequire && visaProgramme) return "unclear";
     if (asksRequire && WS_AUTH_START_RE.test(m)) return "unclear";
     if (asksRequire && WS_REQUIRED_THING_RE.test(m)) {
       // "Do you require sponsorship?" — unless the main verb is negated or "without".

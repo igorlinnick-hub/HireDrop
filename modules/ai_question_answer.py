@@ -44,14 +44,33 @@ _MAX_POSTING_CHARS = 1500
 # or a question gets two answers depending on which widget it was drawn with. Pinned by
 # tests/test_screener_policy.py (matrix) and chrome-extension/tests/work-status.test.js.
 _AUTHORIZATION_Q = re.compile(
-    r"(authoriz|authoris|eligible|legally (permitted|authorized|able)|right to work|"
-    r"permanent work|work authoriz).{0,40}(work|employ)|"
-    r"(work|employ).{0,40}(authoriz|authoris|eligible|legally)"
+    r"(authoriz|authoris|eligible|legally (permitted|authorized|able|allowed|entitled|eligible)|"
+    r"lawfully|right to work|permanent work|work authoriz).{0,40}(work|employ)|"
+    r"(work|employ).{0,40}(authoriz|authoris|eligible|legally|lawfully)"
     # "Do you have the right to work in Germany?" ends on the place, with no second
     # "work" for the pattern above to find — so it used to go to the model.
-    r"|\bright to work\b",
+    r"|\bright to work\b"
+    # "Can you legally work…", "Are you able to legally work…", "legally allowed / entitled
+    # to work…", "allowed to work in…", "proof of eligibility to work…": the same question. Until 10-06 the
+    # extension sent these to its generic "legally → Yes" rule (neo4j, cision, Indeed/ZR).
+    r"|\b(legally|lawfully)\s+(work|be employed)\b"
+    r"|\b(entitled|eligibility)\s+to\s+(legally\s+)?work\b|\b(allowed|permitted)\s+to\s+work\s+(in|within|from)\b",
     re.I,
 )
+# Smells of legal work status but is no wording the two flags answer ("work eligibility",
+# "immigration status", "eligible … employment") → refused, never left to a guess.
+_STATUS_LOOK = re.compile(
+    r"\bwork (?:eligibility|status|rights?)\b|\b(?:employment|immigration|visa|residency) status\b"
+    r"|\b(?:legal(?:ly)?|lawful(?:ly)?)\b[^?]{0,40}\b(?:work|employ)"
+    r"|\beligib\w*\b[^?]{0,40}\b(?:work|employ)",
+    re.I,
+)
+# Student / visa-programme status: the profile does not hold it. "Are you eligible for a
+# 24-month OPT extension?" is not "are you authorized to work". Acronyms case-sensitive.
+_VISA_PROGRAMME = re.compile(
+    r"optional practical training|curricular practical training|stem (?:opt )?extension", re.I
+)
+_VISA_ACRONYM = re.compile(r"\b(?:OPT|CPT|EAD)\b")
 _SPONSOR_WORDS = re.compile(r"sponsor|visa\b|h-?1b|immigration|work permit", re.I)
 # "…will you (now or in the future) require/need…", "Does your work authorization require
 # <company> to sponsor…", "I will (not) require…" — anywhere in the question.
@@ -232,11 +251,16 @@ def _status_class(question: str) -> str | None:
     # Read on the FULL label: a trailing clause must not drop it back to the model's guess.
     if not auth and _CITIZENSHIP.search(_strip_skip_clause(question)):
         return "unclear"
+    visa_programme = bool(_VISA_PROGRAMME.search(m) or _VISA_ACRONYM.search(m))
     if not (auth or sponsor_words):
-        return None
+        # Looks like work status, but not a wording read below → refuse, not the model.
+        return "unclear" if (_STATUS_LOOK.search(m) or visa_programme) else None
     if _OPEN_Q.search(m):
         return "unclear"
     asks_require = bool(_ASKS_REQUIRE.search(m))
+    # On OPT / CPT / a STEM extension: a visa programme, not the authorization flag.
+    if not asks_require and visa_programme:
+        return "unclear"
     if asks_require and _AUTH_START.search(m):
         return "unclear"
     if asks_require and _REQUIRED_THING.search(m):

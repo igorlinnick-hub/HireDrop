@@ -172,6 +172,48 @@ const DOMESTIC = [
       (await ctx.choose("Do you acknowledge and agree to our GDPR policy.", noYes, US, {}))?.text === "Yes");
   }
 
+  // ---- 2b. Other wordings of "authorized", with their REAL options, 4 profiles ---------
+  // Skeptic 10-06 (node vm, origin/main vs #378 chooseOption on the 320 schemas): these
+  // were not recognised as work status, so they fell to the generic "eligible|legally|able
+  // to → Yes" fallback — main said No for a not-authorized profile (its old
+  // work_authorized_us === false override), #378 said Yes. Unrecognised-but-status-looking
+  // wording must be blank, never a guessed Yes. Real labels: neo4j, cision, instacart,
+  // duolingo (gh_form_schemas.jsonl); the "US" ones are synthetic Indeed/ZR-style wording.
+  {
+    const P4 = {
+      US, VISA: NEEDS_VISA,
+      UNAUTH: { work_authorized_us: false, needs_sponsorship: true },
+      UNAUTH_NS: { work_authorized_us: false, needs_sponsorship: false },
+    };
+    const yna = ["Yes", "No", "NA"].map((text) => ({ text }));
+    const CASES = [
+      // [label, options, expected per profile US / VISA / UNAUTH / UNAUTH_NS ("" = blank)]
+      ["Are you able to legally work in the region you are applying for?", yesNo, ["Yes", "Yes", "No", "No"]],
+      ["Are you legally allowed to work in the country you are applying for without restrictions?\n", yesNo, ["Yes", "No", "No", "No"]],
+      ["Are you legally entitled to work in Canada?", yesNo, ["", "", "", ""]],
+      ["If so, are you eligible or currently in a period of Optional Practical Training (OPT)?", yna, ["", "", "", ""]],
+      ["After the OPT, are you eligible for a 24-month OPT extension or are currently in a 24-month OPT extension based upon a degree from a qualifying U.S. institution in Science, Technology, Engineering, or Mathematics after the Optional Practical Training (OPT)?", yna, ["", "", "", ""]],
+      ["Can you legally work in the United States?", yesNo, ["Yes", "Yes", "No", "No"]],
+      ["Are you legally allowed to work in the US?", yesNo, ["Yes", "Yes", "No", "No"]],
+      ["Are you legally entitled to work in the US?", yesNo, ["Yes", "Yes", "No", "No"]],
+      ["Are you legally entitled to work in the United States?", yesNo, ["Yes", "Yes", "No", "No"]],
+      ["Are you able to legally work in the US?", yesNo, ["Yes", "Yes", "No", "No"]],
+    ];
+    const cells = [];
+    for (const [q, opts, want] of CASES) {
+      Object.keys(P4).forEach((pn, i) => cells.push([pn, q, opts, want[i]]));
+    }
+    const wrong = [];
+    for (const [pn, q, opts, want] of cells) {
+      const ctx = makeCtx();
+      vm.runInContext(`${CHOOSERS}\nglobalThis.choose = chooseOption;`, ctx);
+      const got = (await ctx.choose(q, opts, P4[pn], {}))?.text || "";
+      if (got !== want) wrong.push(`${pn} want “${want}” got “${got}” | ${q.trim()}`);
+    }
+    check(`select: ${CASES.length} other wordings × 4 profiles answer as the person (never a generic Yes)`,
+      wrong.length === 0, wrong.slice(0, 6).join("\n        "));
+  }
+
   // ---- 3. The SMS / opt-in rule (pickOptionDeterministic) ------------------------------
   {
     const ctx = makeCtx();
@@ -222,6 +264,10 @@ const DOMESTIC = [
     check("radio: US → the profile's Yes", u.on.join() === "us-1", u.on.join());
     const nu = await radios(group("us", "Are you legally authorized to work in the United States?", ["Yes", "No"]), { work_authorized_us: false });
     check("radio: US, profile not authorized → No (was “Yes”: the radio never read the profile)", nu.on.join() === "us-1", nu.on.join());
+    // neo4j's wording, not-authorized profile: the radio has the same generic Yes fallback.
+    const neo = await radios(group("neo", "Are you able to legally work in the region you are applying for?", ["Yes", "No"]),
+      { work_authorized_us: false, needs_sponsorship: true });
+    check("radio: “able to legally work in the region”, not authorized → No (was “Yes”)", neo.on.join() === "neo-1", neo.on.join());
     const blank = await radios(group("us", "Are you legally authorized to work in the United States?", ["Yes", "No"]), {});
     check("radio: US, profile silent → nothing picked (was “Yes”)", blank.on.length === 0, blank.on.join());
     const visa = await radios(group("sp", "Will you now or in the future require sponsorship for employment visa status?",

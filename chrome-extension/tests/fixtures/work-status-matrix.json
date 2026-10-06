@@ -598,6 +598,162 @@
    ],
    "class": "blank",
    "why": "same"
+  },
+  {
+   "q": "Are you able to legally work in the region you are applying for?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "neo4j/4662175006 (x4). 10-06 skeptic: main No -> #378 Yes for a not-authorized profile (fell to the generic 'legally -> Yes' rule)"
+  },
+  {
+   "q": "Are you legally allowed to work in the country you are applying for without restrictions?\n",
+   "expect": [
+    "Yes",
+    "No",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth_without",
+   "why": "cision/4845035101. 10-06 skeptic: main No -> #378 Yes for a not-authorized profile (fell to the generic 'legally -> Yes' rule)"
+  },
+  {
+   "q": "Are you legally entitled to work in Canada?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "instacart/7658241 (x2): another country, never the US flag (was Yes for everyone)"
+  },
+  {
+   "q": "If so, are you eligible or currently in a period of Optional Practical Training (OPT)?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "duolingo/8653419002: OPT is a visa programme, not the authorization flag (was Yes)"
+  },
+  {
+   "q": "After the OPT, are you eligible for a 24-month OPT extension or are currently in a 24-month OPT extension based upon a degree from a qualifying U.S. institution in Science, Technology, Engineering, or Mathematics after the Optional Practical Training (OPT)?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "duolingo/8653419002: same"
+  },
+  {
+   "q": "Can you legally work in the United States?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "synthetic Indeed/ZR-style wording, same cause as the neo4j row"
+  },
+  {
+   "q": "Are you legally allowed to work in the US?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "synthetic Indeed/ZR-style wording, same cause as the neo4j row"
+  },
+  {
+   "q": "Are you legally entitled to work in the US?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "synthetic Indeed/ZR-style wording, same cause as the neo4j row"
+  },
+  {
+   "q": "Are you legally entitled to work in the United States?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "synthetic Indeed/ZR-style wording, same cause as the neo4j row"
+  },
+  {
+   "q": "Are you able to legally work in the US?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "synthetic Indeed/ZR-style wording, same cause as the neo4j row"
+  },
+  {
+   "q": "Are you lawfully able to work in the U.S.?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "synthetic Indeed/ZR-style wording, same cause as the neo4j row"
+  },
+  {
+   "q": "Are you permitted to work in the United States?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "synthetic Indeed/ZR-style wording, same cause as the neo4j row"
+  },
+  {
+   "q": "Can you provide proof of eligibility to work in the US?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "synthetic Indeed/ZR-style wording, same cause as the neo4j row"
   }
  ]
 }
