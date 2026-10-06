@@ -1638,7 +1638,7 @@
     }
 
     // Filter for "Easily apply" jobs
-    const easyApplyCards = [];
+    const candidates = [];
     const alreadyApplied = await getAppliedUrls();
     const seenKeys = await storageGet("processedJobKeys");
     const processedKeys = new Set(seenKeys.processedJobKeys || []);
@@ -1651,28 +1651,20 @@
       if (isDecoyCard(info)) { decoys.push(info.jk || "?"); continue; }
       if (alreadyApplied.has(info.url)) continue;
       if (info.jk && processedKeys.has(info.jk)) continue;
-      easyApplyCards.push(info);
+      candidates.push(info);
     }
     if (decoys.length) logBackend(`🪤 skipped ${decoys.length} decoy card(s) jk=[${decoys.join(",")}]`, "info");
-
-    if (!easyApplyCards.length) {
-      log("No new Easy Apply jobs found. Checking next page...", "");
-      logBackend("No Easy Apply jobs on this page — going to next", "info");
-      await goToNextPage();
-      return;
-    }
-
-    log(`Found ${easyApplyCards.length} Easy Apply jobs`, "ok");
-    logBackend(`Found ${easyApplyCards.length} Easy Apply jobs on page`, "ok");
 
     // HARVEST-TO-POOL (Igor 2026-07-27): the tap deck needs Indeed/ZR inventory, and the
     // server deliberately never scrapes Indeed (compliant-by-design). So every Easy Apply
     // card this browser SEES is saved to the job pool — canonical /viewjob?jk= link so the
     // pool identity matches the by-link executor and the dedup lane. Fire-and-forget:
     // a slow backend must never stall the walk. Server skips already-known links.
+    // Harvested BEFORE the title gate below: the pool is a shared crawl index, and a title
+    // that is off-target for THIS user's roles is another user's match.
     try {
       const _plat = detectPlatform();
-      const harvest = easyApplyCards
+      const harvest = candidates
         .map((j) => ({
           title: j.title || "",
           company: j.company || "",
@@ -1688,6 +1680,26 @@
         Promise.resolve(sendMsg({ type: "INGEST_JOBS", data: { jobs: harvest } })).catch(() => {});
       }
     } catch (_) { /* harvest is best-effort */ }
+
+    // Title gate on the CARD, before anything is opened (same rule as the detail phase).
+    const { keep: easyApplyCards, skipped: offTitle } =
+      splitCardsByTitle(candidates, await titleGateKeywords());
+    if (offTitle.length) logBackend(titleSkipSummary(offTitle, candidates.length), "info");
+
+    // A page whose every card failed the title gate moves on exactly like an empty page:
+    // same nav (rotate to the next phrase/lap), and the phrase is NOT retired — it had
+    // results, just none for these roles on this page.
+    if (!easyApplyCards.length) {
+      log("No new Easy Apply jobs found. Checking next page...", "");
+      logBackend(candidates.length
+        ? "None of this page's Easy Apply jobs match your roles — going to next"
+        : "No Easy Apply jobs on this page — going to next", "info");
+      await goToNextPage();
+      return;
+    }
+
+    log(`Found ${easyApplyCards.length} Easy Apply jobs`, "ok");
+    logBackend(`Found ${easyApplyCards.length} Easy Apply jobs on page`, "ok");
 
     // Save pending jobs
     await storageSet({
@@ -1886,6 +1898,36 @@
     );
     if (!keywordWords.size) return true; // no keywords = no filter, same as at harvest
     return [...keywordWords].some((w) => titleWords.has(w));
+  }
+
+  // The keywords the gate checks against. A pool swipe run gets NONE — the user
+  // hand-picked that job, and a word filter must never veto their pick. The list phase
+  // (card titles) and the detail phase (the opened posting) both read through this, so the
+  // two can never disagree about which keywords or which exception apply.
+  async function titleGateKeywords() {
+    if ((await storageGet("atsPlatform")).atsPlatform === "pool") return [];
+    return ((await storageGet("campaignFilters")).campaignFilters?.keywords || []).filter(Boolean);
+  }
+
+  // List phase: the same rule, on the card title, BEFORE a card is opened. Every card the
+  // detail gate would reject used to cost a full job-page load first — Igor's 10-05 run
+  // opened 26 postings only to skip them on title, against 11 applications, and each open
+  // is time on the walk plus one more page view Indeed's bot detection gets to look at.
+  // The detail-phase check stays as the backstop: a card title can be truncated.
+  function splitCardsByTitle(cards, keywords) {
+    const keep = [];
+    const skipped = [];
+    for (const c of cards || []) (titleMatchesKeywords(c.title, keywords) ? keep : skipped).push(c);
+    return { keep, skipped };
+  }
+
+  // ONE activity-log line per results page, not one per card — the backend log is the
+  // user's feed. A few titles ride along so a wrong skip is still visible (a gate that
+  // drops jobs unread must not drop them silently).
+  function titleSkipSummary(skipped, total) {
+    if (!skipped.length) return "";
+    const eg = skipped.slice(0, 3).map((c) => `"${String(c.title || "").slice(0, 60)}"`).join(", ");
+    return `Skipped ${skipped.length} of ${total} cards: title doesn't match your roles (e.g. ${eg})`;
   }
 
   // A react-select keeps its typing box `<input role=combobox>` at value "" even after a
@@ -2257,19 +2299,13 @@
     // Manager" failed both "healthcare marketing" and "social media manager"
     // because no single phrase matched in full. Still blocks fully off-target
     // titles (e.g. "Provider Relations Specialist") from wasting cover-letter calls.
-    {
-      // Pool swipe run: the user hand-picked this job — keyword title-match must not veto it.
-      const _kwPool = (await storageGet("atsPlatform")).atsPlatform === "pool";
-      const kwData = await storageGet("campaignFilters");
-      const kwList = (kwData.campaignFilters?.keywords || []).filter(Boolean);
-      if (!_kwPool && kwList.length > 0) {
-        if (!titleMatchesKeywords(jobTitle, kwList)) {
-          log(`${jobTitle} — title doesn't match keywords, skipping`, "");
-          logBackend(`Skip (title mismatch): ${jobTitle} @ ${jobCompany}`, "info");
-          await skipToNextJob();
-          return;
-        }
-      }
+    // The list phase already ran this on the card title; this is the backstop for a card
+    // whose title was truncated. Pool swipe runs get no keywords (titleGateKeywords).
+    if (!titleMatchesKeywords(jobTitle, await titleGateKeywords())) {
+      log(`${jobTitle} — title doesn't match keywords, skipping`, "");
+      logBackend(`Skip (title mismatch): ${jobTitle} @ ${jobCompany}`, "info");
+      await skipToNextJob();
+      return;
     }
 
     // Fit Engine M1 — decide whether to apply at ALL before spending a cover
@@ -2461,7 +2497,7 @@
     baseUrl.searchParams.delete("lk");
     const baseSearch = baseUrl.toString();
 
-    const quickApplyJobs = [];
+    const candidates = [];
     for (const wrapper of wrappers) {
       // Quick Apply badge. ZR moved the text around: the FIRST .text-brand in a card is
       // now an EMPTY node, so first-match + text-test silently rejected real Quick Apply
@@ -2502,26 +2538,17 @@
         .filter((t) => t.length > 60);
       const snippet = (zrParas.sort((a, b) => b.length - a.length)[0] || "").slice(0, 1500);
 
-      quickApplyJobs.push({ title, company, url: jobUrl, jk: uuid, snippet });
+      candidates.push({ title, company, url: jobUrl, jk: uuid, snippet });
     }
-
-    if (!quickApplyJobs.length) {
-      log("No new Quick Apply jobs found — checking next page...", "");
-      logBackend("No Quick Apply jobs on this ZipRecruiter page", "info");
-      await goBackToJobList();
-      return;
-    }
-
-    log(`Found ${quickApplyJobs.length} Quick Apply jobs`, "ok");
-    logBackend(`Found ${quickApplyJobs.length} Quick Apply jobs on ZipRecruiter`, "ok");
 
     // HARVEST-TO-POOL (P0c 2026-07-29): server-side ZR scraping is dead (JobSpy → CF 403),
     // so — exactly like Indeed — every Quick Apply card this browser SEES goes to the pool.
     // The link is the search-URL + lk=<uuid> form: that IS ZR's single-job page (detectPhase
     // → "detail" → right-pane apply), so the by-link pool executor can walk it with the
     // selectors we already have. Fire-and-forget; server dedups known links.
+    // BEFORE the title gate, as on Indeed: the pool is a shared crawl index.
     try {
-      const zrHarvest = quickApplyJobs
+      const zrHarvest = candidates
         .map((j) => ({
           title: j.title || "",
           company: j.company || "",
@@ -2534,6 +2561,25 @@
         Promise.resolve(sendMsg({ type: "INGEST_JOBS", data: { jobs: zrHarvest } })).catch(() => {});
       }
     } catch (_) { /* harvest is best-effort */ }
+
+    // Title gate on the card (same rule as the detail phase), before anything is opened.
+    const { keep: quickApplyJobs, skipped: offTitle } =
+      splitCardsByTitle(candidates, await titleGateKeywords());
+    if (offTitle.length) logBackend(titleSkipSummary(offTitle, candidates.length), "info");
+
+    // All filtered = an empty page: next page/phrase, and the phrase is NOT retired (only
+    // a search with no cards at all retires it, above).
+    if (!quickApplyJobs.length) {
+      log("No new Quick Apply jobs found — checking next page...", "");
+      logBackend(candidates.length
+        ? "None of this page's Quick Apply jobs match your roles — going to next"
+        : "No Quick Apply jobs on this ZipRecruiter page", "info");
+      await goBackToJobList();
+      return;
+    }
+
+    log(`Found ${quickApplyJobs.length} Quick Apply jobs`, "ok");
+    logBackend(`Found ${quickApplyJobs.length} Quick Apply jobs on ZipRecruiter`, "ok");
 
     await storageSet({
       pendingJobs: quickApplyJobs,
@@ -2627,20 +2673,13 @@
 
     log(`Job: ${jobTitle} @ ${jobCompany}`, "");
 
-    // Keyword relevance check
-    {
-      // Pool swipe run: the user hand-picked this job — keyword title-match must not veto it.
-      const _kwPool = (await storageGet("atsPlatform")).atsPlatform === "pool";
-      const kwData = await storageGet("campaignFilters");
-      const kwList = (kwData.campaignFilters?.keywords || []).filter(Boolean);
-      if (!_kwPool && kwList.length > 0) {
-        if (!titleMatchesKeywords(jobTitle, kwList)) {
-          log(`${jobTitle} — title doesn't match keywords, skipping`, "");
-          logBackend(`Skip (title mismatch): ${jobTitle} @ ${jobCompany}`, "info");
-          await skipToNextJob();
-          return;
-        }
-      }
+    // Keyword relevance check — the backstop behind the list-phase card filter (same
+    // rule, same keywords, same pool exception: titleGateKeywords).
+    if (!titleMatchesKeywords(jobTitle, await titleGateKeywords())) {
+      log(`${jobTitle} — title doesn't match keywords, skipping`, "");
+      logBackend(`Skip (title mismatch): ${jobTitle} @ ${jobCompany}`, "info");
+      await skipToNextJob();
+      return;
     }
 
     // Already applied on the platform itself (a previous run submitted it, or the user
