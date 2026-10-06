@@ -1,6 +1,6 @@
 # apply-losses — где теряются подачи: хендбэки, потерянные записи, вход в Indeed
 
-Обновлено: 2026-10-06 (ночь) · ветка: main · ext main = **1.8.40** (#365 + #366), синкнута на Рабочий стол (main@9aab0f0), в Chrome — после OFF/ON Игоря; **CWS: 1.8.40 отправлен на ревью 10-06** (стор отдаёт 1.8.37) · #349
+Обновлено: 2026-10-06 (вечер) · ветка: main · ext main = **1.8.40** (#365 + #366), Рабочий стол синкнут, в Chrome 1.8.40 подтверждён прогоном; **CWS: 1.8.40 на ревью** · **в полёте: ext #369 (1.8.41) + web #285 — НЕ смержены, скептик шёл в момент /clear**
 
 ## Состояние
 
@@ -270,14 +270,28 @@
   (б) `open` «адоптирует» окно, в котором была hiredrop, даже если оно теперь окно автоматизации на /viewjob
   → «btn-ext-reload not found». Не чинил; обход — закрыть окно автоматизации после прогона.
 
+- **В полёте (10-06 вечер), не смержено:**
+  - **ext #369 (1.8.41)** `ext-1.8.41-cf-wait-visible`: ожидание Cloudflare «Just a moment» (content.js ~L6326) пишет
+    logBackend на старте/сбросе/перезагрузке/сдаче; тест `tests/cf-wait-visible.test.js` (весь content.js в jsdom)
+    2/2 падает на 1.8.40. test:ext 41/41.
+  - **web #285** `fix/ext-probe-debounce` (hiredrop-website): чек-лист не мигает «Turn the extension back on» при
+    перезагрузке расширения — `ChecklistCard.tsx` переспрашивает 4×3 с, пока «выключено» — опрос каждые 10 с.
+    Причина мигания: DEV_RELOAD драйвера перед каждым прогоном (Игорь заметил 10-06). tsc/eslint/76 тестов ок.
+  - Скептик на оба PR был запущен, его отчёт потерян с /clear → **перезапустить скептика**, затем мерж.
+  - Worktree'ы: `/Users/igorlinnik/Code/JobFlow/.wt-cf` (ext #369), `.wt-web-debounce` (web #285) — удалить после мержа.
+- **drive.py (корень, локальный репо без remote):** 2c5e2c6 — стартовая строка с `secure.indeed.com/auth?continue=`
+  больше не «стена логина»; 7582546 — exec_js бьёт во вкладку hiredrop окна, а не в активную; open_window сначала
+  берёт окно, где дашборд — активная вкладка (проверено живьём: чужая активная вкладка не мешает).
+
 ## Следующий шаг
 
-Модель: **Opus**. 1) Игорю: OFF/ON на chrome://extensions (1.8.40) + перезагрузить дашборд. В логе прогона
-следить: строки «Staying idle» (гейт вкладки #366 — их быть не должно на вкладке кампании), «🏷️ company from
-card|pool row» (#365), «recorded on the confirmation page» (#366). 2) ZR дедуп по пути (находка выше): logBackend
-на «already processed» → замер → ключ = uuid. 3) LinkedIn — чей аккаунт + ручная сессия снимков (linkedin.md).
-4) Замер капа в живом прогоне (`run_history.py`: «company cap»). 5) GH первый блок/телефон; #349 после деплоя
-сайта; `applied_unconfirmed` на черновиках Indeed. `cws_publish.py status` — дошёл ли 1.8.40. Каждую правку — через скептика.
+Модель: **Opus**. 1) Скептик на ext #369 + web #285 (вопросы: перекрытие/утечка проб после unmount и задержка
+честного «off» в ChecklistCard; шум logBackend на чистых страницах Indeed) → мерж #369 → `sync-ext.sh` → CWS
+(`cws_publish.py ship`, 1.8.41 заменит 1.8.40 на ревью) → мерж #285 (Vercel мог быть в rate-limit). 2) #365
+живьём не проверен: Indeed сейчас за Cloudflare-стеной — прогон Indeed, когда стена спадёт («🏷️ company from card»).
+3) ZR дедуп по пути URL (находка выше): logBackend на «already processed» → замер → ключ = uuid. 4) LinkedIn —
+аккаунт (linkedin.md). 5) GH первый блок/телефон; #349; `applied_unconfirmed` на черновиках Indeed. Профиль
+платформ после GH-прогона = greenhouse; следующий запуск «All connected» вернёт все.
 
 Файлы лейна: `chrome-extension/content.js` (waitForFormButton перед waitForFormReady; isShownControl/buttonCensus после findFormButtonIn ~L3970; no-button ветка ~L4690, preferIndeedResume/structuredReviewSnapshot ~L3860, step loop ~L4325), `background.js` forgetHandedBackFromApplied ~L1059, `tests/indeed-resume-choice.test.js`, `tests/applied-rollback.test.js`, `chrome-extension/content.js` (formBlockers ~L3500, fillTextQuestions ~L2990,
 pay/school helpers перед isDemographicQuestion, fillComboboxes, fillCheckboxes),
