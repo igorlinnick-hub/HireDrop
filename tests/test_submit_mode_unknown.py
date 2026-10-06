@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from app.db import subscriptions
 from app.routers import campaign as campaign_router
+from tests.test_employer_answers_api import READY
 
 
 def _profile_read_raises():
@@ -60,11 +61,44 @@ def test_status_tells_the_extension_the_mode_was_unreadable(auth_client):
     assert body["submit_mode"] == "auto"
 
 
-def test_status_marks_a_real_answer_as_known(auth_client):
+def _status(client, profile, running=False):
     with (
         patch.object(campaign_router, "read_submit_mode", return_value="tap"),
         patch.object(campaign_router, "get_tier", return_value="pro"),
+        patch.object(campaign_router, "get_profile", return_value=profile),
+        patch.object(
+            campaign_router.campaign_db,
+            "get_effective_state",
+            return_value={"running": running, "filters": None, "started_at": None},
+        ),
     ):
-        body = auth_client.get("/api/v1/campaign/status").json()
+        return client.get("/api/v1/campaign/status").json()
+
+
+def test_status_marks_a_real_answer_as_known(auth_client):
+    body = _status(auth_client, READY)
     assert body["submit_mode_known"] is True
     assert body["submit_mode"] == "tap"
+    assert body["start_refusal"] is None
+
+
+def test_status_refuses_the_extension_what_start_would_refuse(auth_client):
+    # The store extension swallows a 403 from /campaign/start, walks anyway and is then
+    # stopped by /extension/ping mid-run. An unknown mode it refuses before opening anything.
+    for profile, why in (
+        ({**READY, "resume_url": None}, "resume_missing"),
+        ({**READY, "school": ""}, "employer_answers_missing"),
+        ({**READY, "onboarding_completed": False}, "onboarding_incomplete"),
+    ):
+        body = _status(auth_client, profile)
+        assert body["submit_mode_known"] is False
+        assert body["start_refusal"] == why
+        # The mode itself is still reported as read — the dashboard chip is unchanged.
+        assert body["submit_mode"] == "tap"
+
+
+def test_status_never_flags_a_running_campaign(auth_client):
+    # Nothing reads the flag mid-run, and a run the dashboard started passed the gate.
+    body = _status(auth_client, {**READY, "resume_url": None}, running=True)
+    assert body["submit_mode_known"] is True
+    assert body["start_refusal"] is None

@@ -6,10 +6,11 @@ and a blank box nobody can be bothered to type into is how those fields stayed e
 months (mailing address: 1 profile in 28). So the form arrives filled in and the person
 confirms.
 
-When the user built an ATS resume the stored structure already holds these
-(employer_answers.suggestions) and no model is called. This module is the other case:
-the ATS step in onboarding is optional, and without it there is no structure — only a
-PDF. One Haiku call reads it.
+The facts come from the PDF the person uploaded, never from the generated ATS resume
+(`ats_structure`): that one is a model's rewrite — its title is not necessarily the title
+they held — and it can belong to an earlier upload, since a new resume does not clear it.
+One Haiku call reads the PDF, and the result is kept on the profile with the resume it
+was read from (`record` / `stored`), so the same file is never paid for twice.
 
 NOTHING HERE IS TRUSTED TO INVENT. Every value the model returns must literally appear
 in the resume text — as whole words, not as letters inside another word — and make sense
@@ -21,6 +22,7 @@ import hashlib
 import json
 import re
 import time
+from datetime import UTC, datetime
 
 from config import ANTHROPIC_API_KEY
 from modules.ai_cover_letter import get_anthropic_client
@@ -153,10 +155,39 @@ def extract_facts(resume_text: str | None) -> dict[str, str] | None:
     return grounded(raw, text)
 
 
-# One read per resume. The endpoint is called every time the answers form opens with a
-# blank box; without this each new tab — and each reload by someone whose resume simply
-# does not state these facts — was another paid call. Keyed by the TEXT, so a re-upload
-# under the same path is read afresh. Per process (two workers = at most two reads).
+def record(resume_url: str, facts: dict[str, str]) -> dict:
+    """What profiles.resume_facts holds: the facts AND the resume they were read from."""
+    return {
+        "resume_url": resume_url,
+        "facts": dict(facts),
+        "extracted_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def stored(saved: object, resume_url: str | None) -> dict[str, str] | None:
+    """The facts already read from THIS resume, or None when there are none to reuse.
+
+    Every upload gets a new file name, so facts read from another resume_url belong to a
+    resume the person has replaced. The row is user-writable (RLS), so only known keys
+    with short string values are taken from it.
+    """
+    if not resume_url or not isinstance(saved, dict) or saved.get("resume_url") != resume_url:
+        return None
+    facts = saved.get("facts")
+    if not isinstance(facts, dict):
+        return None
+    return {
+        k: v.strip()[:_MAX_VALUE]
+        for k, v in facts.items()
+        if k in FACT_KEYS and isinstance(v, str) and v.strip()
+    }
+
+
+# One read per resume within a process — the fallback while profiles.resume_facts does
+# not exist yet (or a write to it failed). The endpoint is called every time the answers
+# form opens with a blank box; without this each new tab — and each reload by someone
+# whose resume simply does not state these facts — was another paid call. Keyed by the
+# TEXT, so a re-upload under the same path is read afresh.
 _MEMO: dict[tuple[str, str], tuple[float, dict[str, str]]] = {}
 _MEMO_TTL_S = 6 * 3600
 _MEMO_MAX = 500

@@ -64,6 +64,10 @@ _DEFAULTS = {
     "work_setting": "",
     # The stored structure behind the generated resume — resume_text_for() reads it.
     "ats_structure": None,
+    # What the uploaded resume states, keyed by the resume it was read from
+    # (modules/ai_resume_facts.py, migrations/add_resume_facts.sql). None before the
+    # column exists — `select *` simply has no such key, so nothing here can fail on it.
+    "resume_facts": None,
 }
 
 
@@ -149,6 +153,7 @@ def get_profile(user_id: str) -> dict:
         "salary_listed_only": bool(p.get("salary_listed_only")),
         "work_setting": p.get("work_setting") or "",
         "ats_structure": p.get("ats_structure"),
+        "resume_facts": p.get("resume_facts"),
     }
 
 
@@ -203,47 +208,46 @@ def update_employer_answers(user_id: str, answers: dict) -> dict:
     return get_profile(user_id)
 
 
-def fill_current_employment_if_blank(user_id: str, employer: str, title: str) -> dict:
-    """Seed current_employer / current_title from the resume the user uploaded.
+def fill_postal_if_blank(user_id: str, postal_code: str, resume_city: str) -> dict:
+    """Seed the zip from the resume's contact block — the ZipRecruiter contact step needs
+    one (#110/#152) and a hand-back there loses the application.
 
-    Only fills what is EMPTY — a value the user typed in Settings always wins, and a
-    re-generated resume never overwrites their correction. Returns what was written.
-
-    Why this exists: a profile field nobody fills is worth nothing. The mailing address
-    shipped 2026-08-15 and three weeks later exactly 1 of 28 profiles had one, while
-    'current employer/title' is the biggest hand-back cause on real forms. The resume
-    already names both — experience[0] — so we take them from there instead of asking.
+    The only resume value still written without asking, because it is not one of the
+    employer questions and has no form to confirm it in. So it is held to the person's
+    OWN city: written only when the zip is empty and the resume's city is the city they
+    answered — a Miami zip under the Austin they typed would be a false address.
     """
-    filled = {}
+    postal = (postal_code or "").strip()
     current = get_profile(user_id)
-    if employer and employer.strip() and not current.get("current_employer"):
-        filled["current_employer"] = employer.strip()[:200]
-    if title and title.strip() and not current.get("current_title"):
-        filled["current_title"] = title.strip()[:200]
-    if filled:
-        get_supabase().table("profiles").update(filled).eq("user_id", user_id).execute()
-    return filled
+    city = str(current.get("city") or "").strip().lower()
+    if (
+        not postal
+        or current.get("postal_code")
+        or not city
+        or city != (resume_city or "").strip().lower()
+    ):
+        return {}
+    get_supabase().table("profiles").update({"postal_code": postal[:100]}).eq(
+        "user_id", user_id
+    ).execute()
+    return {"postal_code": postal[:100]}
 
 
-def fill_address_if_blank(user_id: str, city: str, state: str, postal_code: str) -> dict:
-    """Seed city/state/zip from the resume's contact block — same contract as
-    fill_current_employment_if_blank: only EMPTY fields, user input always wins.
+def save_resume_facts(user_id: str, facts: dict) -> bool:
+    """Keep what the resume states (ai_resume_facts.record) so it is read once per upload.
 
-    Resumes almost never carry a street address, so street stays user-supplied and is
-    asked for only when a form actually requires it (honest hand-back) — but the
-    "City, ST ZIP" most resumes DO carry covers the usual contact step (ZR included)
-    without the user ever visiting Settings.
+    Best-effort: False when it could not be stored — before migrations/add_resume_facts.sql
+    is applied PostgREST refuses the unknown column (PGRST204) — and the caller simply
+    reads the resume again next time.
     """
-    candidate = {"city": city, "state": state, "postal_code": postal_code}
-    filled = {}
-    current = get_profile(user_id)
-    for col, val in candidate.items():
-        v = (val or "").strip()
-        if v and not current.get(col):
-            filled[col] = v[:100]
-    if filled:
-        get_supabase().table("profiles").update(filled).eq("user_id", user_id).execute()
-    return filled
+    try:
+        get_supabase().table("profiles").update({"resume_facts": facts}).eq(
+            "user_id", user_id
+        ).execute()
+        return True
+    except Exception as e:  # noqa: BLE001 — a cache write never fails the request
+        print(f"[profile] resume_facts not stored: {e}")
+        return False
 
 
 def update_apply_mode(user_id: str, mode: str, ideal_job_description: str | None = None) -> None:

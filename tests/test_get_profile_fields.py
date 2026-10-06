@@ -135,3 +135,10 @@ def test_the_signed_download_never_resolves_to_a_foreign_file():
     ):
         assert resume_storage.resolved_resume_path(ME) is None
     assert f"{VICTIM}/resume.pdf" not in looked_up
+
+
+def test_resume_facts_come_back_and_are_none_before_the_column_exists():
+    stored = {"resume_url": "user-1/r.pdf", "facts": {"school": "UH"}}
+    assert _profile_from_row(_row(resume_facts=stored))["resume_facts"] == stored
+    assert _profile_from_row(_row())["resume_facts"] is None
+    assert _profile_from_row(None)["resume_facts"] is None
