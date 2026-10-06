@@ -257,6 +257,19 @@
   драйвер сам не тикал 114→467 с) → «asleep ~6 min» → Stop. Подач 0, вывода про #365/#366 по подачам нет —
   повторить прогон при открытой крышке.
 
+- **Прогоны 10-06 ~20:00Z на 1.8.40.** (1) GH-only (`--platform greenhouse`, 4 в очереди): Grafanalabs подан →
+  «recorded on the confirmation page» → «already recorded, next job» → следующей открылась 4-я (Hightouch,
+  закрыта) → «run complete». В applications ровно 1 строка. **#366 подтверждён живьём**: одна запись, один сдвиг.
+  (2) Indeed (all connected): ext ждёт Cloudflare «Just a moment» — 3 загрузки /viewjob ровно через 64 с
+  (60 с ожидания + перезагрузка ×2), затем «Detection tripped» → хендофф капчи. Не регрессия: CF-стена на
+  Indeed для этого браузера (10-05 23:05 то же на /jobs). Дыра наблюдаемости: ожидание CF пишет только `log()`
+  → в проде 3 минуты выглядят как зависание; поднять «Cloudflare check — waiting» в `logBackend` (content.js
+  ~L6330). #365 живьём не проверен (на Indeed до оценки не дошло).
+- **drive.py:** (а) читал URL из стартовой строки «Opening the automation window → secure.indeed.com/auth?continue=»
+  как стену логина и гасил прогон на 1 с — починено (корень, 2c5e2c6, +кейс в test_diagnose.py);
+  (б) `open` «адоптирует» окно, в котором была hiredrop, даже если оно теперь окно автоматизации на /viewjob
+  → «btn-ext-reload not found». Не чинил; обход — закрыть окно автоматизации после прогона.
+
 ## Следующий шаг
 
 Модель: **Opus**. 1) Игорю: OFF/ON на chrome://extensions (1.8.40) + перезагрузить дашборд. В логе прогона
