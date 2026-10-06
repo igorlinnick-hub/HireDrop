@@ -1800,8 +1800,10 @@
   // navigation, so counting here makes the daily cap + count robust regardless of SW
   // state. background's APPLICATION_SAVED no longer increments (backend save only).
   async function recordLocalApplication(platform) {
+    // One read for everything, so two tabs recording at once race over one round-trip.
     const s = await storageGet([
-      "todayCount", "platformCounts", "todayDate", "keywordCounts", "kwIndex", "atsPlatform",
+      "todayCount", "platformCounts", "todayDate", "atsPlatform",
+      "keywordCounts", "campaignFilters", "kwIndex",
     ]);
     const today = localDay();
     const totalCount = (s.todayDate === today ? (s.todayCount || 0) : 0) + 1;
@@ -1811,11 +1813,13 @@
     // out of. Only the LIVE board search has a phrase — a pool/ATS queue walk (atsPlatform
     // set) applies to saved rows, and charging the current phrase for those would rotate
     // the search away from a keyword that never spent anything.
-    const keywordCounts = s.todayDate === today ? (s.keywordCounts || {}) : {};
+    const keywordCounts = ledgerOf(s.keywordCounts);
     if (!s.atsPlatform) {
-      const bucket = keywordCounts[platform] || (keywordCounts[platform] = {});
-      const ki = String(Math.max(0, s.kwIndex || 0));
-      bucket[ki] = (bucket[ki] || 0) + 1;
+      const key = keywordKeyOf(s);
+      if (key) {
+        const bucket = keywordCounts[platform] || (keywordCounts[platform] = {});
+        bucket[key] = (bucket[key] || 0) + 1;
+      }
     }
     await storageSet({ todayCount: totalCount, platformCounts, keywordCounts, todayDate: today });
     return platformCounts[platform];
@@ -1827,7 +1831,8 @@
   // (council 2026-08-04: quality above all — no silent half-deaths).
   async function subtractLocalApplication(platform) {
     const s = await storageGet([
-      "todayCount", "platformCounts", "todayDate", "keywordCounts", "kwIndex", "atsPlatform",
+      "todayCount", "platformCounts", "todayDate", "atsPlatform",
+      "keywordCounts", "campaignFilters", "kwIndex",
     ]);
     const today = localDay();
     if (s.todayDate !== today) return;
@@ -1835,10 +1840,10 @@
     platformCounts[platform] = Math.max(0, (platformCounts[platform] || 0) - 1);
     // Give the phrase its slot back too, or a blocked submit would quietly shrink this
     // keyword's share of the cap for the rest of the day.
-    const keywordCounts = s.keywordCounts || {};
-    if (!s.atsPlatform && keywordCounts[platform]) {
-      const ki = String(Math.max(0, s.kwIndex || 0));
-      keywordCounts[platform][ki] = Math.max(0, (keywordCounts[platform][ki] || 0) - 1);
+    const keywordCounts = ledgerOf(s.keywordCounts);
+    const key = keywordKeyOf(s);
+    if (!s.atsPlatform && key && keywordCounts[platform]) {
+      keywordCounts[platform][key] = Math.max(0, (keywordCounts[platform][key] || 0) - 1);
     }
     await storageSet({
       todayCount: Math.max(0, (s.todayCount || 0) - 1),
@@ -5264,12 +5269,43 @@
     return Math.max(1, Math.floor(MAX_APPLICATIONS_PER_PLATFORM / n));
   }
 
-  // Applications filed TODAY per keyword index, per platform — the sub-cap's ledger,
-  // written by recordLocalApplication on the same day-key as platformCounts.
+  // Applications filed TODAY per search phrase, per platform — the sub-cap's ledger,
+  // written by recordLocalApplication.
+  //
+  // The ledger carries its OWN day and is keyed by the PHRASE (2026-10-06). It used to
+  // borrow `todayDate` and key by list index, and both were wrong:
+  //   1. background.js rolls the day over in three places (onInstalled — which every
+  //      reload fires —, onStartup, Start) by resetting todayCount + platformCounts and
+  //      stamping todayDate = today. None of them knew about keywordCounts, so yesterday's
+  //      ledger survived under today's date. Live 10-06: 0 Indeed applications that day,
+  //      yet every phrase read "spent" → "Per-keyword cap reached" on the first posting,
+  //      "Indeed exhausted (all keywords searched)" 2 minutes into a 15-minute run.
+  //   2. The server rotates WHICH phrase leads a run (kw_cursor), so index 0 is a
+  //      different phrase from one run to the next — the slice was charged to the wrong one.
+  // A ledger that dates itself (ledgerOf) cannot be resurrected by any other writer of todayDate.
+  function ledgerOf(k) {
+    if (!k || typeof k !== "object" || k.day !== localDay()) return { day: localDay() };
+    return k;
+  }
+
+  function keywordKey(phrase) {
+    return String(phrase || "").trim().toLowerCase();
+  }
+
   async function getKeywordCounts(platform) {
-    const d = await storageGet(["keywordCounts", "todayDate"]);
-    if (d.todayDate !== localDay()) return {};
-    return (d.keywordCounts || {})[platform] || {};
+    return ledgerOf((await storageGet("keywordCounts")).keywordCounts)[platform] || {};
+  }
+
+  // The phrase the live search is on ("" with no keywords at all), from a storage snapshot
+  // holding campaignFilters + kwIndex — same clamping as currentKeywordIndex.
+  function keywordKeyOf(s) {
+    const kws = (s.campaignFilters?.keywords || []).filter(Boolean);
+    if (!kws.length) return "";
+    return keywordKey(kws[Math.min(Math.max(s.kwIndex || 0, 0), kws.length - 1)]);
+  }
+
+  async function currentKeywordKey() {
+    return keywordKeyOf(await storageGet(["campaignFilters", "kwIndex"]));
   }
 
   async function currentKeywordIndex() {
@@ -5289,8 +5325,7 @@
     // search — the 09-13 failure in reverse. The slice governs the live search only.
     if ((await storageGet("atsPlatform")).atsPlatform) return false;
     const counts = await getKeywordCounts(platform);
-    const i = String(await currentKeywordIndex());
-    return (counts[i] || 0) >= (await keywordSubCap());
+    return (counts[await currentKeywordKey()] || 0) >= (await keywordSubCap());
   }
 
   // A phrase whose search came back with no results at all: deeper laps of it would be
@@ -5333,7 +5368,7 @@
       if (i >= kws.length) { i = 0; lap += 1; }
       if (lap >= laps) return false; // page budget spent for every phrase
       if (done.has(i)) continue;
-      if (kws.length > 1 && (counts[String(i)] || 0) >= cap) continue;
+      if (kws.length > 1 && (counts[keywordKey(kws[i])] || 0) >= cap) continue;
       await storageSet({ kwIndex: i, kwLap: lap });
       log(`Keyword done — switching to "${kws[i]}" (page ${lap + 1})`, "");
       logBackend(`Next keyword: ${kws[i]} (page ${lap + 1})`, "info");
