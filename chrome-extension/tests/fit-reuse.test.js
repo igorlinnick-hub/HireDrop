@@ -106,15 +106,21 @@ const ASHBY_ROW = { id: "row-ash", link: "https://jobs.ashbyhq.com/hightouch/0b4
     );
     ok("another posting gets no id (live judge)", !("job_id" in body), JSON.stringify(body));
   }
-  // 2d. Employer-hosted page without a posting id: title must match.
+  // 2d. Employer-hosted page without a posting id. The head HAS an id, so a same-titled page
+  // without one may be a different posting elsewhere -> live judge (skeptic, PR #374).
+  // Title decides only when the head carries no posting id either.
   {
     const st = { atsPlatform: "greenhouse", atsQueue: [head(GH_ROW)] };
     const same = await assess(st, { ...ghPage, job_url: "https://wikimediafoundation.org/careers/" });
     const embedded = await assess(st, { ...ghPage, job_title: "Head of Marketing (Remote)", job_url: "https://wikimediafoundation.org/careers/?gh_jid=7012345" });
     ok("employer page with ?gh_jid= matches by id even if the title differs", embedded.body.job_id === "row-gh", JSON.stringify(embedded.body));
     const other = await assess(st, { ...ghPage, job_title: "Head of Sales", job_url: "https://wikimediafoundation.org/careers/" });
-    ok("no posting id + same title -> id", same.body.job_id === "row-gh", JSON.stringify(same.body));
+    ok("head has an id, page has none, same title -> no id (live judge)", !("job_id" in same.body), JSON.stringify(same.body));
     ok("no posting id + other title -> no id", !("job_id" in other.body), JSON.stringify(other.body));
+    const idless = { ...GH_ROW, link: "https://careers.wikimedia.example/head-of-marketing" };
+    const st2 = { atsPlatform: "greenhouse", atsQueue: [head(idless)] };
+    const byTitle = await assess(st2, { ...ghPage, job_url: "https://careers.wikimedia.example/head-of-marketing/apply" });
+    ok("neither has a posting id + same title -> id", byTitle.body.job_id === "row-gh", JSON.stringify(byTitle.body));
   }
   // 2e. Not an ATS queue walk: pool run, native walk, missing id.
   {

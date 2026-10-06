@@ -1177,6 +1177,9 @@ function queueJobIdFor(atsPlatform, atsQueue, pageUrl, pageTitle) {
   const want = postingIdOf(head.applyUrl);
   const got = postingIdOf(pageUrl);
   if (want && got) return want === got ? head.id : null;
+  // Title alone only when the head has no posting id either: a head WITH an id and a page
+  // without one (employer-hosted copy) can be a same-titled posting elsewhere.
+  if (want) return null;
   const norm = (s) => String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
   return norm(head.title) && norm(head.title) === norm(pageTitle) ? head.id : null;
 }
