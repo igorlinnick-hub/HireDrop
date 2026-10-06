@@ -100,15 +100,15 @@ def test_freshest_first_whatever_the_pool_score():
     assert [c["link"] for c in out["cards"]] == ["https://x/new", "https://x/mid", "https://x/old"]
 
 
-def test_the_deck_keeps_two_per_company():
-    # Same build_queue() as the auto queue: a third posting from one employer is not offered.
+def test_the_deck_keeps_one_per_company():
+    # Same build_queue() as the auto queue: a second posting from one employer is not offered.
     rows = [
         {**_row("AI Engineer", link=f"https://x/{i}"), "date_found": _days_ago(i)} for i in range(3)
     ]
     out = _deck(rows, ["ai engineer"])
 
-    assert [c["link"] for c in out["cards"]] == ["https://x/0", "https://x/1"]
-    assert out["company_capped"] == 1
+    assert [c["link"] for c in out["cards"]] == ["https://x/0"]
+    assert out["company_capped"] == 2
 
 
 def test_the_deck_filters_with_the_same_rule_the_harvest_fills_with():

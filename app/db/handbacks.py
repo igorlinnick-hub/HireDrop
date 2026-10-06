@@ -185,6 +185,36 @@ def retry(user_id: str, handback_id: str) -> dict | None:
     return (res.data or [None])[0]
 
 
+def companies_handed_back_since(user_id: str, since_days: int, cap: int = 5000) -> list[str]:
+    """Company of every hand-back in the last `since_days`, one entry per row — counted
+    against the per-company cap next to real applications (modules/fit_queue.py).
+
+    Without it a company whose form always stalls was never "applied to", so it came back
+    every run: DoorDash on Igor's account was opened 4 times in 5 days (10-01 ×2, 10-05 ×2),
+    each one a filled-and-abandoned form at the same employer. Rows the person sent back
+    (`requeued_at` set: "Try again" / answered questions) do not hold the slot — that retry
+    is the person's own call and must reach the queue.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    since = (datetime.now(UTC) - timedelta(days=since_days)).isoformat()
+
+    def build(start: int, end: int):
+        return (
+            get_supabase()
+            .table("handbacks")
+            .select("company")
+            .eq("user_id", user_id)
+            .gte("created_at", since)
+            .is_("requeued_at", "null")
+            .order("created_at", desc=True)
+            .order("id")
+            .range(start, end)
+        )
+
+    return [r["company"] for r in fetch_paged(build, cap) if r.get("company")]
+
+
 def open_urls(user_id: str, cap: int = 5000, waiting_only: bool = False) -> list[str]:
     """The URL of EVERY open hand-back — for a walk that must leave those jobs alone.
 

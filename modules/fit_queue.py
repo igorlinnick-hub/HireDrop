@@ -31,7 +31,9 @@ import time
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
-COMPANY_CAP = 2
+# One application per employer per 60 days (Igor, 10-06; 09-30 said two). An open
+# hand-back holds the slot too — see app/routers/jobs.py::_prejudged_queue.
+COMPANY_CAP = 1
 COMPANY_WINDOW_DAYS = 60
 
 # Rows being judged right now in THIS process. The background pass after a sweep and the
@@ -227,8 +229,8 @@ def build_queue(
     morning's 65 that is likelier to still be open). Rows without a verdict for this profile
     (judge down, Indeed — not prejudged yet) take the same freshness order; the live judge
     decides them at apply time, as before. The company cap runs over that final order, so
-    the queue never sends a third application to an employer — whether the first two went
-    out last month or sit above it in this list.
+    the queue never sends a second application to an employer — whether the first went out
+    (or was handed back) last month or sits above it in this list.
     """
     kept_rows, below_bar = [], 0
     for row in rows:
