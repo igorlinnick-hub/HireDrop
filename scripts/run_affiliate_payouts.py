@@ -85,9 +85,18 @@ def _settle(sb, stripe, payout: dict, account_id: str, dry_run: bool) -> bool:
     return True
 
 
-def cmd_run(args) -> None:
+def cmd_run(args) -> int:
+    """Exit code: 0 when every attempted transfer went through, 1 otherwise.
+
+    It runs as a Railway cron service, where the exit code is the only thing
+    that turns a failed run red, and the closing summary line is the proof in
+    the log that it ran at all. Before 10-06 a run with nothing owed printed
+    nothing, and nothing scheduled it either, so a silent log meant nothing.
+    """
     sb = get_supabase()
     stripe = None if args.dry_run else _stripe()
+    paid = failed = 0
+    paid_cents = 0
 
     affiliates = {
         a["id"]: a
@@ -150,7 +159,11 @@ def cmd_run(args) -> None:
             payout["amount_cents"] = actual
 
         print(f"resuming payout {payout['id']} for {aff['code']} ({money(payout['amount_cents'])})")
-        _settle(sb, stripe, payout, aff["stripe_account_id"], args.dry_run)
+        if _settle(sb, stripe, payout, aff["stripe_account_id"], args.dry_run):
+            paid += 1
+            paid_cents += payout["amount_cents"]
+        else:
+            failed += 1
 
     # ---- 2. find new batches among accrued commissions no payout has claimed yet
     cutoff = (datetime.now(UTC) - timedelta(days=REFUND_WINDOW_DAYS)).isoformat()
@@ -232,7 +245,18 @@ def cmd_run(args) -> None:
             continue
 
         print(f"{aff['code']}: paying {money(actual_total)} ({len(claimed)} commission(s))")
-        _settle(sb, stripe, payout, aff["stripe_account_id"], args.dry_run)
+        if _settle(sb, stripe, payout, aff["stripe_account_id"], args.dry_run):
+            paid += 1
+            paid_cents += actual_total
+        else:
+            failed += 1
+
+    print(
+        f"payout run {'(dry-run) ' if args.dry_run else ''}done: {paid} paid ({money(paid_cents)}), "
+        f"{failed} failed, {len(pending)} resumed, {len(due)} commission(s) past the "
+        f"{REFUND_WINDOW_DAYS}-day window"
+    )
+    return 1 if failed else 0
 
 
 def main() -> None:
@@ -245,7 +269,7 @@ def main() -> None:
     p.set_defaults(func=cmd_run)
 
     args = parser.parse_args()
-    args.func(args)
+    sys.exit(args.func(args) or 0)
 
 
 if __name__ == "__main__":
