@@ -3725,7 +3725,7 @@
   // Smells of legal work status but is no wording we can answer from the two flags
   // ("work eligibility", "immigration status", "eligible … employment", OPT / CPT / EAD).
   // Such a question is "unclear" → blank, never left to a generic "Yes" default.
-  const WS_STATUS_LOOK_RE = /\bwork (?:eligibility|status|rights?)\b|\b(?:employment|immigration|visa|residency) status\b|\b(?:legal(?:ly)?|lawful(?:ly)?)\b[^?]{0,40}\b(?:work|employ)|\beligib\w*\b[^?]{0,40}\b(?:work|employ)/i;
+  const WS_STATUS_LOOK_RE = /\bwork (?:eligibility|status|rights?)\b|\b(?:employment|immigration|visa|residency) status\b|\b(?:legal(?:ly)?|lawful(?:ly)?)\b[^?]{0,40}\b(?:work|employ)|\beligib\w*\b[^?]{0,40}\b(?:work|employ|clearance)/i;
   // Student / visa-programme status (case-sensitive acronyms): the profile does not hold
   // it — "are you eligible for a 24-month OPT extension?" is not "authorized to work".
   const WS_VISA_PROGRAMME_RE = /optional practical training|curricular practical training|stem (?:opt )?extension/i;
@@ -3861,6 +3861,7 @@
   // Citizenship / permanent residence / a green card: facts the profile does not hold
   // (work_authorized_us is not citizenship) → always blank, never inferred.
   const WS_CITIZENSHIP_RE = /\bcitizen(?:s|ship)?\b|green card|permanent residen(?:t|ce|cy)|lawful permanent/i;
+  const WS_WHICH_STATE_RE = /\b(?:which|what)\s+(?:u\.?s\.?\s+)?states?\b/i;
   const WS_NEGATED_RE = /\b(?:not|n't)\s+(?:currently\s+|yet\s+|legally\s+)*(?:authori[sz]ed|eligible|permitted|able to work|require|need)\b/i;
   const WS_EITHER_OR_RE = /\bor\s+(?:will|would|do|does)\s+you\s+(?:require|need)|\bor\s+(?:require|need)\b|\bor\s+(?:will|would|do)\s+you\s+(?:now\s+or\s+in\s+the\s+future\s+)?require/i;
   const WS_OPEN_RE = /^\W*(?:how|what|which|when|why|where)\b|\bplease\s+(?:describe|explain|list|specify|provide)\b/i;
@@ -3874,6 +3875,9 @@
     // "Are you a U.S. citizen or green card holder?", "…did you become a permanent resident
     // in any other country?" (Twitch; its "visas / work permits" sit after the "?") — read
     // on the FULL label, so a trailing clause can't drop it back to a Yes default.
+    // "In which state do you hold permanent residency?" (Maven Clinic, a US state list) asks
+    // WHERE the person lives — stateListPick answers it from the profile, not this block.
+    if (!auth && WS_WHICH_STATE_RE.test(m)) return null;
     if (!auth && WS_CITIZENSHIP_RE.test(stripSkipClause(label))) return "unclear";
     // Looks like work status, but not a wording read below → blank, not a "Yes" default.
     const visaProgramme = WS_VISA_PROGRAMME_RE.test(m) || WS_VISA_ACRONYM_RE.test(m);

@@ -349,3 +349,13 @@ def test_work_status_matrix_is_true_for_the_person(question, profile, answer):
     """Every cell must be TRUE for the person, or blank. The same table drives
     chrome-extension/tests/work-status.test.js, so browser and server agree."""
     assert _status_from_profile(question, profile, ["Yes", "No"]) == answer
+
+
+def test_which_state_residency_is_where_the_person_lives_not_status():
+    """Maven Clinic: "In which state do you hold permanent residency?" over a US state list.
+    'permanent residency' must not make it a citizenship refusal (skeptic r4 of #378)."""
+    from modules.ai_question_answer import _status_class
+
+    assert _status_class("In which state do you hold permanent residency?") is None
+    assert _status_class("What state do you live in?") is None
+    assert _status_class("Are you a U.S. citizen or permanent resident?") == "unclear"

@@ -754,6 +754,18 @@
    ],
    "class": "auth",
    "why": "synthetic Indeed/ZR-style wording, same cause as the neo4j row"
+  },
+  {
+   "q": "Are you eligible to obtain a security clearance?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "clearance eligibility rests on citizenship, which the profile does not hold (skeptic r4: UNAUTH went No -> Yes)"
   }
  ]
 }

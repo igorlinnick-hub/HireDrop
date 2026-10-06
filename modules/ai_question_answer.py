@@ -62,7 +62,7 @@ _AUTHORIZATION_Q = re.compile(
 _STATUS_LOOK = re.compile(
     r"\bwork (?:eligibility|status|rights?)\b|\b(?:employment|immigration|visa|residency) status\b"
     r"|\b(?:legal(?:ly)?|lawful(?:ly)?)\b[^?]{0,40}\b(?:work|employ)"
-    r"|\beligib\w*\b[^?]{0,40}\b(?:work|employ)",
+    r"|\beligib\w*\b[^?]{0,40}\b(?:work|employ|clearance)",
     re.I,
 )
 # Student / visa-programme status: the profile does not hold it. "Are you eligible for a
@@ -111,6 +111,7 @@ _UNRESTRICTED = re.compile(
 _CITIZENSHIP = re.compile(
     r"\bcitizen(?:s|ship)?\b|green card|permanent residen(?:t|ce|cy)|lawful permanent", re.I
 )
+_WHICH_STATE = re.compile(r"\b(?:which|what)\s+(?:u\.?s\.?\s+)?states?\b", re.I)
 _NEGATED = re.compile(
     r"\b(?:not|n't)\s+(?:currently\s+|yet\s+|legally\s+)*"
     r"(?:authori[sz]ed|eligible|permitted|able to work|require|need)\b",
@@ -249,6 +250,10 @@ def _status_class(question: str) -> str | None:
     )
     sponsor_words = bool(_SPONSOR_WORDS.search(m))
     # Read on the FULL label: a trailing clause must not drop it back to the model's guess.
+    # "In which state do you hold permanent residency?" asks WHERE the person lives (a US
+    # state list) — the profile's state answers it, not this table.
+    if not auth and _WHICH_STATE.search(m):
+        return None
     if not auth and _CITIZENSHIP.search(_strip_skip_clause(question)):
         return "unclear"
     visa_programme = bool(_VISA_PROGRAMME.search(m) or _VISA_ACRONYM.search(m))

@@ -214,6 +214,18 @@ const DOMESTIC = [
       wrong.length === 0, wrong.slice(0, 6).join("\n        "));
   }
 
+  // "In which state do you hold permanent residency?" (Maven Clinic, 4/320 forms, required)
+  // is WHERE the person lives — the profile's state, never a blank "citizenship" refusal.
+  {
+    const states = ["Alabama", "Alaska", "Arizona", "California", "Colorado", "Florida", "Georgia",
+      "Hawaii", "Illinois", "New York", "Texas", "Washington"].map((text) => ({ text }));
+    const ctx = makeCtx();
+    vm.runInContext(`${CHOOSERS}\nglobalThis.choose = chooseOption;`, ctx);
+    const got = (await ctx.choose("In which state do you hold permanent residency?", states,
+      { ...US, state: "FL" }, {}))?.text || "";
+    check("“which state … permanent residency” picks the profile's state (was blank)", got === "Florida", got);
+  }
+
   // ---- 3. The SMS / opt-in rule (pickOptionDeterministic) ------------------------------
   {
     const ctx = makeCtx();
