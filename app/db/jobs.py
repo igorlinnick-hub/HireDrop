@@ -379,7 +379,7 @@ def update_tailored_resume(job_id: str, user_id: str, tailored_resume: str) -> N
         print(f"[jobs] update_tailored_resume skipped: {e}")
 
 
-def update_tailored_resume_pdf(job_id: str, pdf_path: str, user_id: str) -> None:
+def update_tailored_resume_pdf(job_id: str, pdf_path: str | None, user_id: str) -> None:
     try:
         get_supabase().table("jobs").update(
             {

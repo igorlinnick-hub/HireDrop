@@ -287,19 +287,91 @@ def best_signed_url(
     return signed_download_url(user_id)
 
 
-def _job_tailored_path(user_id: str, job_id: str) -> str:
-    return f"{user_id}/job_{job_id}_tailored.pdf"
+def _job_tailored_path(user_id: str, job_id: str, fingerprint: str | None = None) -> str:
+    # A tailoring made while the resume can't be identified is named "unknown" — not
+    # the pre-10-06 bare name, which is checked differently (tailoring_is_current).
+    return f"{user_id}/job_{job_id}_tailored-{fingerprint or _UNKNOWN}.pdf"
 
 
-def upload_job_tailored(user_id: str, job_id: str, content: bytes) -> str:
+_UNKNOWN = "unknown"
+_TAILORED_FINGERPRINT = re.compile(r"_tailored-([0-9a-f]{12}|unknown)\.pdf$")
+
+
+def tailor_fingerprint(profile: dict) -> str | None:
+    """Which resume a per-job tailoring is built from: the same identity that retires
+    cached screener answers (screener_cache.resume_identity — dial, ATS structure, the
+    uploaded file's eTag), with the dial reduced to the text tailoring actually reads
+    (modules.ai_cover_letter.resume_text_for): the ATS structure when the ATS resume is
+    the default and has one, the uploaded file otherwise — so switching between the
+    original and the skills resume, which read the same text, retires nothing.
+    None when it can't be told."""
+    import hashlib
+
+    from app.db.screener_cache import resume_identity
+
+    kind = profile.get("default_resume") or ("ats" if profile.get("ats_approved") else "original")
+    reads = "ats" if kind == "ats" and profile.get("ats_structure") else "original"
+    identity = resume_identity({**profile, "default_resume": reads})
+    return hashlib.sha256(identity.encode()).hexdigest()[:12] if identity else None
+
+
+def _updated_at(path: str) -> datetime | None:
+    folder, _, name = path.rpartition("/")
+    meta = next((i for i in _list(folder, name) if i.get("name") == name), None)
+    return _stamp(meta) if meta else None
+
+
+def tailoring_is_current(
+    user_id: str, path: str | None, profile: dict | None, fingerprint: str | None
+) -> bool:
+    """Was the tailored PDF at `path` built from the resume the user stands behind now?
+
+    A tailoring is kept forever on its job row, so without this a resume change (or a
+    switch of the default resume) never reached a job tailored before it — the employer
+    got the version built from the resume the user had replaced. Since 10-06 the
+    fingerprint is in the file name. When the current resume can't be identified
+    (fingerprint None) a named tailoring counts as current: can't tell ≠ stale, and a
+    re-tailor is a paid call. An "unknown" one is redone as soon as it can be told.
+
+    Pre-10-06 names carry no fingerprint: those are current unless the resume they'd
+    have read was uploaded (or, for the ATS one, re-rendered by an edit) after them.
+    A switch of the default resume can't be seen that way and is let through.
+    """
+    if not path:
+        return False
+    m = _TAILORED_FINGERPRINT.search(path)
+    if m:
+        if fingerprint is None:
+            return True
+        return m.group(1) == fingerprint
+    try:
+        prof = profile or {}
+        kind = prof.get("default_resume") or ("ats" if prof.get("ats_approved") else "original")
+        # Straight from the profile already in hand: an apply-path call, no extra reads.
+        if kind == "ats" and prof.get("ats_structure"):
+            base = _own(user_id, prof.get("ats_resume_url")) or _ats_path(user_id)
+        else:
+            base = _own(user_id, prof.get("resume_url")) or _path(user_id)
+        made, base_at = _updated_at(path), (_updated_at(base) if base else None)
+    except Exception as e:
+        print(f"[resume] legacy tailoring check failed (kept): {e}")
+        return True
+    return not (made and base_at) or made >= base_at
+
+
+def upload_job_tailored(
+    user_id: str, job_id: str, content: bytes, fingerprint: str | None = None
+) -> str:
     """Upload a per-job tailored ATS PDF. Returns the storage path."""
-    path = _job_tailored_path(user_id, job_id)
-    get_supabase().storage.from_(BUCKET).upload(
-        path=path,
-        file=content,
-        file_options={"content-type": "application/pdf", "upsert": "true"},
-    )
-    return path
+    return _upload(_job_tailored_path(user_id, job_id, fingerprint), content, _PDF)
+
+
+def remove_object(path: str) -> None:
+    """Delete one object; never fatal (an orphan costs storage, not correctness)."""
+    try:
+        get_supabase().storage.from_(BUCKET).remove([path])
+    except Exception as e:
+        print(f"[resume] remove {path} failed (non-fatal): {e}")
 
 
 def signed_url_from_path(path: str, user_id: str | None = None) -> str | None:

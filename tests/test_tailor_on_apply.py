@@ -65,6 +65,10 @@ def _run(user_id="u1", email="x@y.z", tier="pro", job=None, tailored="TAILORED R
         patch("app.db.jobs.update_tailored_resume", update),
         patch("app.db.subscriptions.get_tier", return_value=tier),
         patch("app.db.profile.get_profile", return_value={"resume_url": "r.pdf"}),
+        # Storage stays out of this file: which tailoring counts as current is
+        # tests/test_tailored_fingerprint.py.
+        patch("app.db.resume.tailor_fingerprint", return_value=None),
+        patch("app.db.resume.tailoring_is_current", return_value=True),
         patch("modules.ai_cover_letter.load_resume_text", return_value="base resume"),
         patch("modules.ai_resume_tailor.tailor_resume", tailor),
         patch.object(profile_router, "_store_tailored_pdf", MagicMock()),
@@ -105,6 +109,10 @@ def test_a_tailoring_failure_never_breaks_the_resume_fetch(job_row):
         patch("app.db.jobs.get_job_by_id", return_value=job_row),
         patch("app.db.subscriptions.get_tier", return_value="pro"),
         patch("app.db.profile.get_profile", return_value={"resume_url": "r.pdf"}),
+        # Storage stays out of this file: which tailoring counts as current is
+        # tests/test_tailored_fingerprint.py.
+        patch("app.db.resume.tailor_fingerprint", return_value=None),
+        patch("app.db.resume.tailoring_is_current", return_value=True),
         patch("modules.ai_cover_letter.load_resume_text", return_value="base resume"),
         patch("modules.ai_resume_tailor.tailor_resume", side_effect=RuntimeError("down")),
     ):
