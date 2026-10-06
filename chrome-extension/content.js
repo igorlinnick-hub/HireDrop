@@ -740,6 +740,16 @@
     return POSTAPPLY_URL_HINTS.some((h) => p.includes(h));
   }
 
+  // Strict form for the submit belt: a hint counts only as a WHOLE path segment (or one
+  // with a -/_ suffix: thank-you-for-applying). A substring match read company slugs as
+  // confirmations — job-boards.greenhouse.io/appliedintuition/jobs/4001 matched "/applied",
+  // and a stale pending entry turned a reload of that FORM into an applications row.
+  // Returns the index of the first post-apply segment, or -1.
+  function postApplySegmentIndex(segs) {
+    const cores = POSTAPPLY_URL_HINTS.map((h) => h.replace(/^\//, ""));
+    return segs.findIndex((s) => cores.some((c) => s === c || s.startsWith(c + "-") || s.startsWith(c + "_")));
+  }
+
   // ---- Submit belt: record a full-page ATS submit whichever page wakes up after it ----
   //
   // A Greenhouse Submit is a full page load to /jobs/<id>/confirmation. It kills the
@@ -765,13 +775,11 @@
   function postingIdentity(url) {
     let u;
     try { u = new URL(url, location.href); } catch { return ""; }
-    let p = u.pathname.toLowerCase().replace(/\/+$/, "");
-    for (const h of POSTAPPLY_URL_HINTS) {
-      const i = p.indexOf(h);
-      if (i > -1) { p = p.slice(0, Math.max(0, p.lastIndexOf("/", i))); break; }
-    }
-    p = p.replace(/\/(apply|application)$/, "").replace(/\/+$/, "");
-    return `${u.hostname.toLowerCase()}${p}`;
+    let segs = u.pathname.toLowerCase().split("/").filter(Boolean);
+    const i = postApplySegmentIndex(segs);
+    if (i > -1) segs = segs.slice(0, i);
+    if (segs.length && (segs[segs.length - 1] === "apply" || segs[segs.length - 1] === "application")) segs.pop();
+    return `${u.hostname.toLowerCase()}${segs.length ? "/" + segs.join("/") : ""}`;
   }
 
   async function markSubmitRecorded(url) {
@@ -786,7 +794,7 @@
   }
 
   async function _recordPendingSubmitOnce() {
-    if (!isPostApplyPath(location.pathname)) return false;
+    if (postApplySegmentIndex(location.pathname.toLowerCase().split("/").filter(Boolean)) < 0) return false;
     const pend = (await storageGet("pendingAtsSubmit")).pendingAtsSubmit;
     if (!pend || !pend.url) return false;
     if (!(Date.now() - (pend.ts || 0) < PENDING_SUBMIT_MAX_AGE_MS)) {
@@ -797,8 +805,12 @@
     // Claim first, then send: a second wake on this page must find nothing to record.
     await markSubmitRecorded(pend.url);
     logBackend(`⚠️ Applied (unconfirmed — recorded on the confirmation page): ${pend.title} @ ${pend.company || "?"}`, "warn");
+    // advance:false — this page may not be the campaign tab, and when it is, the walk
+    // branch (recordWokeOnPostApply) advances once. Two advances per submit popped the
+    // NEXT pick and PATCHed it "skipped" in pool mode.
     await sendMsg({
       type: "APPLICATION_SAVED",
+      advance: false,
       data: {
         job_title: pend.title, company: pend.company || "",
         platform: pend.platform || detectPlatform() || "",
@@ -844,7 +856,8 @@
     // the walk, never write a second one — the applications insert has no dedup.
     if ((await recordPendingSubmitOnConfirmation()) || (await submitAlreadyRecorded(location.href))) {
       logBackend(`Post-apply page reached (${location.hostname}${_path}) — already recorded, next job`, "info");
-      await sendMsg({ type: "ATS_JOB_DONE" });
+      // recorded:true — the head was SENT; ATS_JOB_DONE must not PATCH it "skipped".
+      await sendMsg({ type: "ATS_JOB_DONE", recorded: true });
       return true;
     }
     const _q = (await storageGet("atsQueue")).atsQueue || [];
@@ -877,10 +890,12 @@
         },
       });
       await markSubmitRecorded(location.href);
-    } else {
-      // Queue empty/mismatched — still not a skip: say what we saw.
-      logBackend(`Post-apply page reached (${location.hostname}${_path}) but no queue item to record`, "warn");
+      // APPLICATION_SAVED already advanced the queue in background (advanceAtsQueue).
+      // An ATS_JOB_DONE on top popped the next pick too and PATCHed it "skipped".
+      return true;
     }
+    // Queue empty/mismatched — still not a skip: say what we saw.
+    logBackend(`Post-apply page reached (${location.hostname}${_path}) but no queue item to record`, "warn");
     await sendMsg({ type: "ATS_JOB_DONE" });
     return true;
   }

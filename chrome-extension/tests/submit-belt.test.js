@@ -187,6 +187,24 @@ const NOT_CAMPAIGN = { known: true, isCampaignTab: false };
     check("form page (not post-apply) → no record", saved(ctx).length === 0, `got ${saved(ctx).length}`);
   }
 
+  {
+    // A company slug holding a hint is not a confirmation: "/applied" in appliedintuition.
+    // A stale pending on that board + a reload of the FORM wrote a fake row (skeptic, #366).
+    const AI_FORM = "https://job-boards.greenhouse.io/appliedintuition/jobs/4001";
+    const AI_OTHER = "https://job-boards.greenhouse.io/appliedintuition/jobs/4002";
+    const store = makeStore({ campaignRunning: false, pendingAtsSubmit: pending(AI_FORM, 20 * 1000) });
+    const ctx = makeContext(AI_FORM, store);
+    await run(ctx, "init()");
+    check("form whose slug holds a hint (appliedintuition) → no record", saved(ctx).length === 0, `got ${saved(ctx).length}`);
+    const ctx2 = makeContext(AI_OTHER, store);
+    await run(ctx2, "init()");
+    check("  …nor on another posting of that board", saved(ctx2).length === 0, `got ${saved(ctx2).length}`);
+    const id = (u) => vm.runInContext(`postingIdentity(${JSON.stringify(u)})`, ctx);
+    check("  two postings of that board keep distinct identities", id(AI_FORM) !== id(AI_OTHER), `${id(AI_FORM)}`);
+    check("  …and its real confirmation still matches its form",
+      id(AI_FORM + "/confirmation") === id(AI_FORM), `${id(AI_FORM + "/confirmation")} vs ${id(AI_FORM)}`);
+  }
+
   // ---- 4. walk branch after the belt → one record in total ---------------------------
   {
     // Campaign tab, pool run (#217) on the EU shape: init's belt records, then the walk
@@ -201,6 +219,10 @@ const NOT_CAMPAIGN = { known: true, isCampaignTab: false };
     const handled = await run(ctx, "recordWokeOnPostApply()");
     check("belt + walk branch (same page) → one APPLICATION_SAVED", saved(ctx).length === 1, `got ${saved(ctx).length}`);
     check("  the walk still advances once", handled === true && advanced(ctx).length === 1, `handled=${handled}, advanced=${advanced(ctx).length}`);
+    // Background advances on APPLICATION_SAVED unless it says advance:false — the mocked
+    // sendMsg can't see that, so the message flags ARE the advance count (skeptic, #366).
+    check("  the belt's record does not advance (advance:false)", saved(ctx)[0]?.advance === false, JSON.stringify(saved(ctx)[0]?.advance));
+    check("  the walk's advance marks the head SENT, not skipped (recorded:true)", advanced(ctx)[0]?.recorded === true);
     // A later context on the same confirmation (reload in the campaign tab, auto walk #277).
     const later = makeContext(CISION_CONF, store);
     await run(later, "recordWokeOnPostApply()");
@@ -215,6 +237,10 @@ const NOT_CAMPAIGN = { known: true, isCampaignTab: false };
     const ctx = makeContext(SNORKEL_CONF, store);
     await run(ctx, "recordWokeOnPostApply()");
     check("no pending → walk still records from the queue (#217)", saved(ctx).length === 1, `got ${saved(ctx).length}`);
+    // Its APPLICATION_SAVED advances in background; an ATS_JOB_DONE on top popped the next
+    // pick too and PATCHed it "skipped".
+    check("  …and advances once: through APPLICATION_SAVED, no ATS_JOB_DONE on top",
+      saved(ctx)[0]?.advance !== false && advanced(ctx).length === 0, `ATS_JOB_DONE x${advanced(ctx).length}`);
     const again = makeContext(SNORKEL_CONF, store);
     await run(again, "recordWokeOnPostApply()");
     check("  …and a second wake on that page does not record it again", saved(again).length === 0, `got ${saved(again).length}`);

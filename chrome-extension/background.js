@@ -2586,7 +2586,9 @@ async function handleMessage(msg, sender) {
       // ATS pool-driven ADVANCE (GLOBAL_PLAN P1b): after a zero-touch ATS submit, walk the
       // automation tab to the next apply URL in the queue. Native (Indeed/ZR) campaigns have
       // no atsQueue and are driven by in-page navigation, so this is a no-op for them.
-      await advanceAtsQueue();
+      // advance:false = a record-only sender (the submit belt on a confirmation page, maybe
+      // not the campaign tab); the walk that owns the queue advances it exactly once.
+      if (msg.advance !== false) await advanceAtsQueue();
 
       const cur = await chrome.storage.local.get("platformCounts");
       return { saved: true, platformCount: (cur.platformCounts || {})[platform] || 0, job_id: serverResult?.job_id };
@@ -2665,7 +2667,8 @@ async function handleMessage(msg, sender) {
       // in FUTURE runs either (the in-run guard is poolDoneUrls). Best-effort.
       try {
         const d = await chrome.storage.local.get(["atsPlatform", "atsQueue"]);
-        const head = d.atsPlatform === "pool" && Array.isArray(d.atsQueue) ? d.atsQueue[0] : null;
+        // recorded:true = the head was SENT (its applications row exists) — not a skip.
+        const head = !msg.recorded && d.atsPlatform === "pool" && Array.isArray(d.atsQueue) ? d.atsQueue[0] : null;
         if (head && head.id) apiPatch(`/jobs/${head.id}/status`, { status: "skipped" }).catch(() => {});
       } catch {}
       await advanceAtsQueue();
