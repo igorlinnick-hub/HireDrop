@@ -168,11 +168,21 @@ def test_a_retried_posting_passes_the_cap_and_goes_first():
     assert out["company_capped"] == 1
 
 
-def test_a_retried_posting_is_not_cut_by_the_bar():
-    rows = [_row("retried", score=40, age=2), _row("low", score=40, age=0)]
+def test_a_retried_posting_below_the_bar_stays_out():
+    # The live judge would skip it at apply time anyway (no new hand-back, so requeued_at
+    # stays set): letting it in only buys a judge call on every run and a false "fit".
+    rows = [_row("retried", score=40, age=2), _row("ok", score=70, age=0)]
     out = build_queue(rows, V, bar=55, applied_companies=[], limit=30, retried_ids={"retried"})
-    assert [r["id"] for r in out["jobs"]] == ["retried"]
+    assert [r["id"] for r in out["jobs"]] == ["ok"]
     assert out["below_bar"] == 1
+
+
+def test_every_retried_posting_at_one_company_goes():
+    rows = [_row(f"dd{i}", score=80, age=i, company="DoorDash") for i in range(3)]
+    out = build_queue(rows, V, bar=55, applied_companies=[], limit=30, retried_ids={"dd1", "dd2"})
+    # dd0 is fresher but not retried: the retried two take the slot first.
+    assert [r["id"] for r in out["jobs"]] == ["dd1", "dd2"]
+    assert out["company_capped"] == 1
 
 
 def test_without_retries_the_cap_is_unchanged():
@@ -431,10 +441,11 @@ def test_requeued_urls_reads_only_open_retried_rows(real_requeued_urls):
 
     from app.db import handbacks as hb_db
 
-    q = MagicMock()
+    q, negated = MagicMock(), MagicMock()
     for m in ("table", "select", "eq", "is_", "order", "range"):
         getattr(q, m).return_value = q
-    q.not_ = q
+    q.not_ = negated
+    negated.is_.return_value = q
     q.execute.return_value = MagicMock(data=[{"url": "https://x/1"}, {"url": None}])
     with patch.object(hb_db, "get_supabase", return_value=q):
         out = real_requeued_urls("u1")
@@ -442,4 +453,6 @@ def test_requeued_urls_reads_only_open_retried_rows(real_requeued_urls):
     q.table.assert_called_with("handbacks")
     q.eq.assert_any_call("user_id", "u1")
     q.is_.assert_any_call("resolved_at", "null")
-    q.is_.assert_any_call("requeued_at", "null")  # under not_: requeued rows only
+    # requeued rows only: requeued_at=not.is.null, never the plain is.null
+    negated.is_.assert_called_with("requeued_at", "null")
+    assert ("requeued_at", "null") not in [c.args for c in q.is_.call_args_list]

@@ -235,19 +235,17 @@ def build_queue(
     (or was handed back) last month or sits above it in this list.
 
     `retried_ids` are rows the person sent back with "Try again" on a hand-back. The UI
-    then says "back in the queue", so they skip the bar and the cap and go first — the
-    cap exists to stop US from hammering an employer, not to overrule the person. Without
-    this a company's OTHER open hand-backs held its slot and the retried posting was cut
-    (skeptic on #353). A retried row still takes the slot, so nothing else from that
-    company rides along.
+    then says "back in the queue", so they skip the cap and go first — the cap exists to
+    stop US from hammering an employer, not to overrule the person. Without this a
+    company's OTHER open hand-backs held its slot and the retried posting was cut (skeptic
+    on #353). A retried row still takes the slot, so nothing UNretried from that company
+    rides along; several retried postings at one company all go — each was the person's
+    own click. The bar still applies: below it the live judge skips the posting at apply
+    time anyway, so letting it in would only cost a judge call every run.
     """
     kept_rows, below_bar = [], 0
     for row in rows:
-        if (
-            row.get("id") not in retried_ids
-            and has_current_verdict(row, version)
-            and (row.get("fit_score") or 0) < bar
-        ):
+        if has_current_verdict(row, version) and (row.get("fit_score") or 0) < bar:
             below_bar += 1
         else:
             kept_rows.append(row)
