@@ -1,6 +1,6 @@
 # apply-losses — где теряются подачи: хендбэки, потерянные записи, вход в Indeed
 
-Обновлено: 2026-10-06 · ветка: main (ext 1.8.37 #357 синкнута на Рабочий стол, в Chrome — после OFF/ON; CWS: 1.8.37 отправлена на ревью поверх 1.8.35) · **открыто: #349** (кап на компанию #353 + #359 — в проде)
+Обновлено: 2026-10-06 (поздно) · ветка: main · ext main = **1.8.38** (#362), синкнута на Рабочий стол, в Chrome — после OFF/ON Игоря; CWS отдаёт 1.8.37 · **в полёте: 2 PR агентов (пустая компания Indeed/ZR; потерянные подачи GH) — НЕ смержены**, #349
 
 ## Состояние
 
@@ -218,14 +218,36 @@
 - Политика: web #280 смержен, ждёт деплоя Vercel (лимит сборок); **#349 смержить, когда
   `python scripts/check_privacy_hosts.py` → exit 0**.
 
+## Заход 10-06 (ночь): агентства, LinkedIn-фундамент, две разведки
+
+- **#361 (2a7bff9, в проде):** скрытые имена («Confidential», «Hiring Company», «Stealth»… — `_HIDDEN_EMPLOYER_KEYS`,
+  проверка и после board-tail) → `company_key` = "" → не капаются; агентства `AGENCY_CAP = 3` (список +
+  маркеры staffing/recruit/personnel/roberthalf). Замер (прод, 60 дн): нац. агентств в пуле 0, местных 3.3% Indeed,
+  «confidential» = 10 разных работодателей; новый кап не срезал бы ни одной прошлой заявки.
+  `scripts/measure_judge_calibration.py` теперь зовёт боевые `company_key`/`company_cap`.
+- **#362 (d30678e) — LinkedIn фундамент, живого поведения нет** → свой хендофф `docs/handoff/linkedin.md`.
+  Кап по платформам (`subscriptions.MAX_PER_PLATFORM`, linkedin=5, держит и админа).
+- **Пользователям про визу НЕ сообщаем** (Игорь 10-06).
+- **Разведка: пустая компания** — Indeed /viewjob берёт имя только из `a[href*="/cmp/"]`; у работодателей без
+  страницы её нет → "" (доля строк fit с пустой компанией 0% → 16%/нед к 09-28; 10 applications без company).
+  Карточка выдачи имя знает (`pendingJobs[].company`), страница его не берёт. ZR: `a[href*="/co/"]` даёт
+  «Learn more about Xexternal». **Агент-строитель открывает PR** (ext 1.8.39): фолбэк на компанию карточки
+  ТОЛЬКО при совпадении jk, скоуп селекторов в jobRoot, чистка ZR; пробует снять фикстуры встроенным Chromium.
+- **Разведка: 6 GH-подач без строки applications** — 5 из 6 = сборки < 1.8.22 (#277 уже чинит; стор 1.8.37 →
+  автообновление). Открытый баг (Snorkel, Dakota): MutationObserver зовёт runPhase без проверки вкладки
+  кампании (~6423), после submit-релоада init ушёл в «Staying idle». Последствие хуже учёта — **повторные
+  подачи** (masterclass/8174068 ×2, tia ×3). **Агент-строитель открывает PR**: гейт наблюдателя +
+  `pendingAtsSubmit` до клика → запись на /confirmation до любых гейтов, ровно одна. 6 строк задним числом
+  не вносили (данные юзеров — решение Игоря).
+
 ## Следующий шаг
 
-Модель: **Opus**. 0) Игорю: OFF/ON расширения (1.8.37); решить, сообщать ли Antonia/Dakota про
-Cision/Flexport/Chime/Snorkel. 1) Замерить кап в живом прогоне: `run_history.py` / `/tools/run-report` —
-строка потерь «company cap» есть, повторных компаний нет. 2) GH первый блок/телефон — перепроверка (выше).
-3) #349 после деплоя сайта. 4) `applied_unconfirmed` на черновиках Indeed и contact-info no-button — живой
-прогон в свежий день. 5) 6 GH-подач на /confirmation без строки в `applications` — дыра учёта. Хвосты капа:
-пул/by-link и тап кап не проверяют; одобренная строка колоды слот не держит. Каждую правку — через скептика.
+Модель: **Opus**. 1) Найти 2 открытых PR агентов (`gh pr list --author @me`: «company» Indeed/ZR и GH
+confirmation/pendingAtsSubmit) → скептик + blast-radius на каждый (стыки content.js/manifest) → ниты → мерж
+по одному, версии ext развести (1.8.39 / 1.8.40) → `sync-ext.sh` → Игорю OFF/ON. 2) Игорю: OFF/ON (1.8.38+);
+LinkedIn — чей аккаунт + ручная сессия снимков (см. linkedin.md). 3) Замер капа в живом прогоне
+(`run_history.py`: строка «company cap», «🏷️ company from card»). 4) GH первый блок/телефон; #349 после деплоя
+сайта; `applied_unconfirmed` на черновиках Indeed. Каждую правку — через скептика.
 
 Файлы лейна: `chrome-extension/content.js` (waitForFormButton перед waitForFormReady; isShownControl/buttonCensus после findFormButtonIn ~L3970; no-button ветка ~L4690, preferIndeedResume/structuredReviewSnapshot ~L3860, step loop ~L4325), `background.js` forgetHandedBackFromApplied ~L1059, `tests/indeed-resume-choice.test.js`, `tests/applied-rollback.test.js`, `chrome-extension/content.js` (formBlockers ~L3500, fillTextQuestions ~L2990,
 pay/school helpers перед isDemographicQuestion, fillComboboxes, fillCheckboxes),
