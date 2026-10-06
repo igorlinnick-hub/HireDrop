@@ -161,3 +161,28 @@ def test_a_read_that_found_nothing_is_remembered_and_a_failed_one_is_not():
         ok = _reply(json.dumps({"current_title": "Marketing Lead"}))
         with patch.object(facts, "get_anthropic_client", return_value=ok):
             assert facts.facts_for("u9", RESUME) == ({"current_title": "Marketing Lead"}, True)
+
+
+# ── the stored copy (profiles.resume_facts) ──────────────────────────────────
+
+
+def test_stored_facts_count_only_for_the_resume_they_were_read_from():
+    saved = facts.record("u1/resume-2.pdf", {"school": "University of Hawaii"})
+    assert facts.stored(saved, "u1/resume-2.pdf") == {"school": "University of Hawaii"}
+    # A new upload is a new file name: what the old resume said is not offered.
+    assert facts.stored(saved, "u1/resume-3.pdf") is None
+    assert facts.stored(saved, "") is None
+    # Nothing stored yet, or the column does not exist (get_profile gives None).
+    assert facts.stored(None, "u1/resume-2.pdf") is None
+    # A read that found nothing is still a read: reused, not repeated.
+    assert facts.stored(facts.record("u1/r.pdf", {}), "u1/r.pdf") == {}
+
+
+def test_stored_facts_are_taken_only_in_their_known_shape():
+    """The row is user-writable (RLS): unknown keys and non-strings are not offered."""
+    saved = {
+        "resume_url": "u1/r.pdf",
+        "facts": {"school": "  UH  ", "is_admin": "yes", "degree": 7, "city": "x" * 500},
+    }
+    assert facts.stored(saved, "u1/r.pdf") == {"school": "UH", "city": "x" * 200}
+    assert facts.stored({"resume_url": "u1/r.pdf", "facts": "BA"}, "u1/r.pdf") is None

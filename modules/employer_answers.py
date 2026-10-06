@@ -21,7 +21,8 @@ code removed since 2026-10-05). The salary answer is the user's own words; the
 `salary_min` search filter is only OFFERED as a starting point, never reused silently.
 
 Nothing here is guessed. Where the user's own resume already names the answer (latest
-job, school, LinkedIn), the form OFFERS it (`suggestion`) and the person confirms.
+job, school, LinkedIn), the form OFFERS it (`/profile/employer-answers/suggest`, read
+from the uploaded PDF) and the person confirms.
 
 HireDrop applies to US jobs only (Igor, 09-27: "мы только работаем с США"). So the
 country question is "do you live in the United States?", and a No closes Start with its
@@ -143,28 +144,15 @@ def _answered(profile: dict, key: str, kind: str) -> bool:
 
 
 def suggestions(profile: dict) -> dict[str, str]:
-    """What the user's OWN resume already says, for the text questions. Offered in the
-    form for the person to confirm — never written to the profile from here."""
-    s = profile.get("ats_structure")
-    if not isinstance(s, dict):
-        return own_suggestions(profile)
+    """What the question rows offer on their own — the user's settings, nothing else.
 
-    def first(rows) -> dict:
-        row = (rows or [None])[0] if isinstance(rows, list) else None
-        return row if isinstance(row, dict) else {}
-
-    job, edu = first(s.get("experience")), first(s.get("education"))
-    contact = s.get("contact") if isinstance(s.get("contact"), dict) else {}
-    found = {
-        "current_title": job.get("title"),
-        "current_employer": job.get("company"),
-        "linkedin_url": contact.get("linkedin"),
-        "school": edu.get("school"),
-        "degree": edu.get("degree"),
-    }
-    out = {k: str(v).strip()[:_MAX_TEXT] for k, v in found.items() if str(v or "").strip()}
-    out.update(own_suggestions(profile))
-    return out
+    What the RESUME says is offered by POST /profile/employer-answers/suggest, read from
+    the PDF the person uploaded (modules/ai_resume_facts.py) and named in `from_resume`.
+    It is not read here from `ats_structure` (10-06): that is the generated rewrite — its
+    title need not be the one they held, and it can belong to an earlier upload — and a
+    row that already carries a suggestion is one the form never asks /suggest about.
+    """
+    return own_suggestions(profile)
 
 
 def own_suggestions(profile: dict) -> dict[str, str]:
