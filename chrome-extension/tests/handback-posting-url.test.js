@@ -60,9 +60,11 @@ async function run(extra) {
   // stall guard (step refused) and the resume guard (blocked submit).
   const calls = SRC.split("await handBackJob(").slice(1).map((s) => s.slice(0, 600));
   const walker = calls.filter((c) => /title: jobInfo\.title, company: jobInfo\.company/.test(c));
-  check("the multi-step walker hands back from two places", walker.length === 2, String(walker.length));
-  check("…and both pass url: jobInfo.url",
-    walker.length === 2 && walker.every((c) => /url: jobInfo\.url/.test(c)),
+  // Two at #377 (stall guard, resume guard); #375 added a third (step budget ran out).
+  // What matters is that EVERY walker hand-back names the posting, however many there are.
+  check("the multi-step walker hands back from at least two places", walker.length >= 2, String(walker.length));
+  check("…and every one passes url: jobInfo.url",
+    walker.length >= 2 && walker.every((c) => /url: jobInfo\.url/.test(c)),
     walker.map((c) => c.slice(0, 160)).join(" | "));
 
   console.log(failures ? `\n${failures} failure(s)` : "\nall good");
