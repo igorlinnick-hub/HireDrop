@@ -1,6 +1,6 @@
 # apply-losses — где теряются подачи: хендбэки, потерянные записи, вход в Indeed
 
-Обновлено: 2026-10-06 (поздно) · ветка: main · ext main = **1.8.38** (#362), синкнута на Рабочий стол, в Chrome — после OFF/ON Игоря; CWS отдаёт 1.8.37 · **в полёте: 2 PR агентов (пустая компания Indeed/ZR; потерянные подачи GH) — НЕ смержены**, #349
+Обновлено: 2026-10-06 (ночь) · ветка: main · ext main = **1.8.40** (#365 + #366), синкнута на Рабочий стол (main@9aab0f0), в Chrome — после OFF/ON Игоря; **CWS: 1.8.40 отправлен на ревью 10-06** (стор отдаёт 1.8.37) · #349
 
 ## Состояние
 
@@ -231,23 +231,34 @@
 - **Разведка: пустая компания** — Indeed /viewjob берёт имя только из `a[href*="/cmp/"]`; у работодателей без
   страницы её нет → "" (доля строк fit с пустой компанией 0% → 16%/нед к 09-28; 10 applications без company).
   Карточка выдачи имя знает (`pendingJobs[].company`), страница его не берёт. ZR: `a[href*="/co/"]` даёт
-  «Learn more about Xexternal». **Агент-строитель открывает PR** (ext 1.8.39): фолбэк на компанию карточки
-  ТОЛЬКО при совпадении jk, скоуп селекторов в jobRoot, чистка ZR; пробует снять фикстуры встроенным Chromium.
+  «Learn more about Xexternal». ✅ **#365 (1.8.39)**: фолбэк на карточку ТОЛЬКО по jk, селекторы в jobRoot,
+  ZR = карточка по uuid → пул → aria-label/текст ссылки. Скептик: регрессии нет; починено до мержа — последний
+  ZR-фолбэк мог дать голое «Learn more about» (= один company_key на всех работодателей ZR → кап блокирует всех).
+  Хвост: старые ZR-строки с мусорным именем не совпадут с чистым для капа 60 дн (по одной лишней заявке).
 - **Разведка: 6 GH-подач без строки applications** — 5 из 6 = сборки < 1.8.22 (#277 уже чинит; стор 1.8.37 →
   автообновление). Открытый баг (Snorkel, Dakota): MutationObserver зовёт runPhase без проверки вкладки
   кампании (~6423), после submit-релоада init ушёл в «Staying idle». Последствие хуже учёта — **повторные
-  подачи** (masterclass/8174068 ×2, tia ×3). **Агент-строитель открывает PR**: гейт наблюдателя +
-  `pendingAtsSubmit` до клика → запись на /confirmation до любых гейтов, ровно одна. 6 строк задним числом
-  не вносили (данные юзеров — решение Игоря).
+  подачи** (masterclass/8174068 ×2, tia ×3). ✅ **#366 (1.8.40)**: гейт вкладки кампании в runPhase +
+  `pendingAtsSubmit` до клика → запись на /confirmation до любых гейтов, ровно одна. Скептик: ни один законный
+  путь не замолк. Починено до мержа: (а) «ремень» сдвигал очередь через APPLICATION_SAVED, а обход слал ещё
+  ATS_JOB_DONE → следующая вакансия выпадала и в пуле PATCH'илась `skipped`; теперь `advance:false` у ремня,
+  `recorded:true` у обхода; (б) подсказка подтверждения = целый сегмент пути (`/appliedintuition/` давал
+  фальшивую подачу). 6 строк задним числом не вносили (данные юзеров — решение Игоря).
+- **Находка, НЕ чинили (старое, с 07-06): ZR дедуп по пути URL.** `phase2_ziprecruiter` — `dedupeKey =
+  jobUrl.split("?")[0]` = `/jobs-search` (вакансия = `?lk=<uuid>` на той же странице) → в `processedJobKeys`
+  после первой вакансии стоит путь выдачи, и вероятно КАЖДАЯ следующая на этой странице = «already processed».
+  Улики: за всё время 1 ZR-строка в applications (09-06); 09-25 обход прошёл /jobs-search/2→4 и «exhausted»
+  с 0 подач. Не доказано: строка «already processed» локальная (`log`, не `logBackend`). Фикс — ключ = uuid
+  из `lk` (`jobIdFromUrl`), как у Indeed jk; сначала поднять строку в logBackend и замерить.
 
 ## Следующий шаг
 
-Модель: **Opus**. 1) Найти 2 открытых PR агентов (`gh pr list --author @me`: «company» Indeed/ZR и GH
-confirmation/pendingAtsSubmit) → скептик + blast-radius на каждый (стыки content.js/manifest) → ниты → мерж
-по одному, версии ext развести (1.8.39 / 1.8.40) → `sync-ext.sh` → Игорю OFF/ON. 2) Игорю: OFF/ON (1.8.38+);
-LinkedIn — чей аккаунт + ручная сессия снимков (см. linkedin.md). 3) Замер капа в живом прогоне
-(`run_history.py`: строка «company cap», «🏷️ company from card»). 4) GH первый блок/телефон; #349 после деплоя
-сайта; `applied_unconfirmed` на черновиках Indeed. Каждую правку — через скептика.
+Модель: **Opus**. 1) Игорю: OFF/ON на chrome://extensions (1.8.40) + перезагрузить дашборд. В логе прогона
+следить: строки «Staying idle» (гейт вкладки #366 — их быть не должно на вкладке кампании), «🏷️ company from
+card|pool row» (#365), «recorded on the confirmation page» (#366). 2) ZR дедуп по пути (находка выше): logBackend
+на «already processed» → замер → ключ = uuid. 3) LinkedIn — чей аккаунт + ручная сессия снимков (linkedin.md).
+4) Замер капа в живом прогоне (`run_history.py`: «company cap»). 5) GH первый блок/телефон; #349 после деплоя
+сайта; `applied_unconfirmed` на черновиках Indeed. `cws_publish.py status` — дошёл ли 1.8.40. Каждую правку — через скептика.
 
 Файлы лейна: `chrome-extension/content.js` (waitForFormButton перед waitForFormReady; isShownControl/buttonCensus после findFormButtonIn ~L3970; no-button ветка ~L4690, preferIndeedResume/structuredReviewSnapshot ~L3860, step loop ~L4325), `background.js` forgetHandedBackFromApplied ~L1059, `tests/indeed-resume-choice.test.js`, `tests/applied-rollback.test.js`, `chrome-extension/content.js` (formBlockers ~L3500, fillTextQuestions ~L2990,
 pay/school helpers перед isDemographicQuestion, fillComboboxes, fillCheckboxes),
