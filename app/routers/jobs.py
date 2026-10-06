@@ -277,8 +277,8 @@ def get_ats_queue(platform: str, limit: int = 20, user=Depends(get_current_user)
         # too old to still be open" is a different sentence than "40 don't match your
         # search", and a queue that silently shrank must never look like a broken one.
         "stale": len(on_search) - len(live),
-        # Same rule for the judge's cut: "below your bar" and "already two applications
-        # to this company" are reasons, not a shrinking queue.
+        # Same rule for the judge's cut: "below your bar" and "already applied to
+        # this company" are reasons, not a shrinking queue.
         "below_bar": queue["below_bar"],
         "company_capped": queue["company_capped"],
         "unjudged": queue["unjudged"],
@@ -385,7 +385,39 @@ def _prejudged_queue(
     except Exception as e:  # noqa: BLE001 — in-list cap still holds; history read is best-effort
         print(f"[ats-queue] company history unreadable: {e}", file=sys.stderr)
         applied = []
-    return build_queue(rows, version, mode_threshold(profile), applied, limit)
+    # A hand-back holds the company's slot like an application does (handbacks.py).
+    try:
+        from app.db import handbacks as hb_db
+
+        applied += hb_db.companies_handed_back_since(user_id, COMPANY_WINDOW_DAYS)
+    except Exception as e:  # noqa: BLE001 — same best-effort as the application history
+        print(f"[ats-queue] hand-back history unreadable: {e}", file=sys.stderr)
+    return build_queue(
+        rows, version, mode_threshold(profile), applied, limit, _retried_ids(user_id, rows)
+    )
+
+
+def _retried_ids(user_id: str, rows: list) -> set:
+    """Ids of the rows whose posting the person sent back with "Try again".
+
+    Hand-backs from the extension carry no job_id, so the match is by posting identity
+    (_job_key), the same key _waiting_on_person uses. A failed read exempts nothing: the
+    queue then behaves as before this rule.
+    """
+    from app.db import handbacks as hb_db
+
+    try:
+        keys = {_job_key(u) for u in hb_db.requeued_urls(user_id)}
+    except Exception as e:  # noqa: BLE001
+        print(f"[ats-queue] retried hand-backs unreadable: {e}", file=sys.stderr)
+        return set()
+    if not keys:
+        return set()
+    return {
+        r["id"]
+        for r in rows
+        if r.get("id") is not None and _job_key(r.get("link") or r.get("apply_url") or "") in keys
+    }
 
 
 def prejudge_pool(user_id: str) -> int:
@@ -466,7 +498,7 @@ def get_deck(user=Depends(get_current_user)):
 
     Since 09-30 (daily-30, step 2) this is the prejudged queue, not the pool: the ATS rows
     pass through the same build_queue() as /jobs/ats-queue (below the user's bar is out,
-    two applications per company per 60 days, freshest first — the score is a gate, not a
+    one application per company per 60 days, freshest first — the score is a gate, not a
     rank), so the card on top of the screen is the posting auto opens next. Indeed rides
     in the same list and the same order but is NOT prejudged yet (most Indeed rows carry
     no description server-side); its cards say so, and the live judge decides them at

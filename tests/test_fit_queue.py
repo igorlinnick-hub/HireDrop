@@ -129,20 +129,66 @@ def test_the_limit_cuts_the_oldest_not_the_lowest():
 # --- company cap ------------------------------------------------------------------------
 
 
-def test_two_per_company_counting_what_was_already_sent():
+def test_one_per_company_counting_what_was_already_sent():
     rows = [_row(f"dd{i}", score=80, age=i, company="DoorDash") for i in range(4)]
+    rows.append(_row("other", score=60, age=0))
     out = build_queue(rows, V, bar=55, applied_companies=["DoorDash, Inc."], limit=30)
-    assert [r["id"] for r in out["jobs"]] == ["dd0"]
-    assert out["company_capped"] == 3
+    assert [r["id"] for r in out["jobs"]] == ["other"]
+    assert out["company_capped"] == 4
 
 
-def test_two_per_company_inside_the_queue_itself():
+def test_one_per_company_inside_the_queue_itself():
+    # Live 10-05: two DoorDash postings ran back to back in one Greenhouse run.
     rows = [_row(f"dd{i}", score=80, age=i + 1, company="DoorDash") for i in range(4)]
     rows.append(_row("other", score=60, age=0))
     out = build_queue(rows, V, bar=55, applied_companies=[], limit=30)
-    # The two FRESHEST DoorDash postings take the company's slots.
-    assert [r["id"] for r in out["jobs"]] == ["other", "dd0", "dd1"]
-    assert out["company_capped"] == 2
+    # The FRESHEST DoorDash posting takes the company's slot.
+    assert [r["id"] for r in out["jobs"]] == ["other", "dd0"]
+    assert out["company_capped"] == 3
+
+
+def test_a_retried_posting_passes_the_cap_and_goes_first():
+    # Skeptic on #353: the company's OTHER open hand-backs held its one slot, so the
+    # posting the person pressed "Try again" on was cut while the UI said "back in the
+    # queue". A retried row skips the cap, goes first, and still takes the slot.
+    rows = [
+        _row("dd-new", score=80, age=0, company="DoorDash"),
+        _row("dd-retried", score=80, age=5, company="DoorDash"),
+        _row("other", score=60, age=1),
+    ]
+    out = build_queue(
+        rows,
+        V,
+        bar=55,
+        applied_companies=["Doordashusa"] * 3,
+        limit=30,
+        retried_ids={"dd-retried"},
+    )
+    assert [r["id"] for r in out["jobs"]] == ["dd-retried", "other"]
+    assert out["company_capped"] == 1
+
+
+def test_a_retried_posting_below_the_bar_stays_out():
+    # The live judge would skip it at apply time anyway (no new hand-back, so requeued_at
+    # stays set): letting it in only buys a judge call on every run and a false "fit".
+    rows = [_row("retried", score=40, age=2), _row("ok", score=70, age=0)]
+    out = build_queue(rows, V, bar=55, applied_companies=[], limit=30, retried_ids={"retried"})
+    assert [r["id"] for r in out["jobs"]] == ["ok"]
+    assert out["below_bar"] == 1
+
+
+def test_every_retried_posting_at_one_company_goes():
+    rows = [_row(f"dd{i}", score=80, age=i, company="DoorDash") for i in range(3)]
+    out = build_queue(rows, V, bar=55, applied_companies=[], limit=30, retried_ids={"dd1", "dd2"})
+    # dd0 is fresher but not retried: the retried two take the slot first.
+    assert [r["id"] for r in out["jobs"]] == ["dd1", "dd2"]
+    assert out["company_capped"] == 1
+
+
+def test_without_retries_the_cap_is_unchanged():
+    rows = [_row("dd", score=80, age=0, company="DoorDash")]
+    out = build_queue(rows, V, bar=55, applied_companies=["DoorDash"], limit=30)
+    assert out["jobs"] == [] and out["company_capped"] == 1
 
 
 # --- judging ------------------------------------------------------------------------------
@@ -276,10 +322,137 @@ def test_the_ats_queue_serves_the_prejudged_order():
         patch("modules.ai_cover_letter.resume_text_for", return_value="resume"),
         patch("modules.ai_fit_judge.assess_fit", side_effect=judge),
         patch("app.db.jobs.save_fit_verdict", return_value=True),
-        patch("app.db.applications.companies_applied_since", return_value=["DoorDash", "DoorDash"]),
+        patch("app.db.applications.companies_applied_since", return_value=["DoorDash"]),
     ):
         out = jobs_router.get_ats_queue(platform="greenhouse", user=_User())
     assert [j["link"].rsplit("/", 1)[-1] for j in out["jobs"]] == ["fresh-ok", "older-ideal"]
     assert out["below_bar"] == 1
     assert out["company_capped"] == 1
     assert out["unjudged"] == 0
+
+
+def test_a_hand_back_holds_the_company_slot():
+    # Live 10-01…10-05: DoorDash forms stalled 4 times in 5 days and, never counted as
+    # "applied", the company came back every run. A hand-back now holds the slot.
+    from app.routers import jobs as jobs_router
+
+    class _User:
+        id = "u1"
+
+    def gh(job_id, age, company=None):
+        return {
+            **_row(job_id, age=age, company=company),
+            "title": "Event Manager",
+            "location": "Remote",
+            "platform": "greenhouse",
+            "status": "new",
+            "link": f"https://job-boards.greenhouse.io/x/jobs/{job_id}",
+        }
+
+    pool = [
+        gh("fresh-ok", 0),
+        gh("older-ideal", 3),
+        gh("poor", 1),
+        gh("dup", 2, company="DoorDash"),
+    ]
+    scores = {"fresh-ok": 58, "older-ideal": 88, "poor": 20, "dup": 77}
+
+    def judge(job, profile, resume_text, **_kw):
+        jid = next(r["id"] for r in pool if r["company"] == job["company"])
+        return _verdict(scores[jid])
+
+    with (
+        patch.object(jobs_router.jobs_db, "get_jobs", return_value=pool),
+        patch("app.db.profile.get_profile", return_value={"keywords": ["event manager"]}),
+        patch("modules.ai_cover_letter.resume_text_for", return_value="resume"),
+        patch("modules.ai_fit_judge.assess_fit", side_effect=judge),
+        patch("app.db.jobs.save_fit_verdict", return_value=True),
+        patch("app.db.applications.companies_applied_since", return_value=[]),
+        patch("app.db.handbacks.companies_handed_back_since", return_value=["Doordashusa"]),
+    ):
+        out = jobs_router.get_ats_queue(platform="greenhouse", user=_User())
+    assert [j["link"].rsplit("/", 1)[-1] for j in out["jobs"]] == ["fresh-ok", "older-ideal"]
+    assert out["below_bar"] == 1
+    assert out["company_capped"] == 1
+    assert out["unjudged"] == 0
+
+
+def test_hand_back_history_leaves_out_what_the_person_sent_back(real_companies_handed_back_since):
+    # "Try again" / answered questions set requeued_at: that retry is the person's call
+    # and must reach the queue, so those rows must not hold the company slot.
+    from unittest.mock import MagicMock
+
+    from app.db import handbacks as hb_db
+
+    q = MagicMock()
+    for m in ("table", "select", "eq", "gte", "is_", "order", "range"):
+        getattr(q, m).return_value = q
+    q.execute.return_value = MagicMock(data=[{"company": "DoorDash"}])
+    with patch.object(hb_db, "get_supabase", return_value=q):
+        out = real_companies_handed_back_since("u1", 60)
+    assert out == ["DoorDash"]
+    q.table.assert_called_with("handbacks")
+    q.is_.assert_any_call("requeued_at", "null")
+    q.eq.assert_any_call("user_id", "u1")
+
+
+def test_try_again_reaches_the_queue_past_the_companys_other_hand_backs():
+    # The skeptic's case end to end: DoorDash has two open hand-backs, the person retried
+    # one. Its posting must be in the queue, first; the other DoorDash posting stays out.
+    from app.routers import jobs as jobs_router
+
+    class _User:
+        id = "u1"
+
+    def gh(job_id, age, company=None):
+        return {
+            **_row(job_id, score=80, age=age, company=company),
+            "title": "Event Manager",
+            "location": "Remote",
+            "platform": "greenhouse",
+            "status": "new",
+            "link": f"https://job-boards.greenhouse.io/doordashusa/jobs/{job_id}",
+        }
+
+    pool = [gh("7001", 0, "DoorDash"), gh("7002", 4, "DoorDash"), gh("7003", 1, "Acme")]
+    with (
+        patch.object(jobs_router.jobs_db, "get_jobs", return_value=pool),
+        patch("app.db.profile.get_profile", return_value={"keywords": ["event manager"]}),
+        patch("modules.ai_cover_letter.resume_text_for", return_value="resume"),
+        patch("modules.fit_queue.has_current_verdict", return_value=True),
+        patch("app.db.applications.companies_applied_since", return_value=[]),
+        patch(
+            "app.db.handbacks.companies_handed_back_since",
+            return_value=["Doordashusa", "Doordashusa"],
+        ),
+        patch(
+            "app.db.handbacks.requeued_urls",
+            # The hand-back URL is the form screen, not the saved posting link.
+            return_value=["https://job-boards.greenhouse.io/doordashusa/jobs/7002?gh_src=abc#app"],
+        ),
+    ):
+        out = jobs_router.get_ats_queue(platform="greenhouse", user=_User())
+    assert [j["link"].rsplit("/", 1)[-1] for j in out["jobs"]] == ["7002", "7003"]
+    assert out["company_capped"] == 1
+
+
+def test_requeued_urls_reads_only_open_retried_rows(real_requeued_urls):
+    from unittest.mock import MagicMock
+
+    from app.db import handbacks as hb_db
+
+    q, negated = MagicMock(), MagicMock()
+    for m in ("table", "select", "eq", "is_", "order", "range"):
+        getattr(q, m).return_value = q
+    q.not_ = negated
+    negated.is_.return_value = q
+    q.execute.return_value = MagicMock(data=[{"url": "https://x/1"}, {"url": None}])
+    with patch.object(hb_db, "get_supabase", return_value=q):
+        out = real_requeued_urls("u1")
+    assert out == ["https://x/1"]
+    q.table.assert_called_with("handbacks")
+    q.eq.assert_any_call("user_id", "u1")
+    q.is_.assert_any_call("resolved_at", "null")
+    # requeued rows only: requeued_at=not.is.null, never the plain is.null
+    negated.is_.assert_called_with("requeued_at", "null")
+    assert ("requeued_at", "null") not in [c.args for c in q.is_.call_args_list]

@@ -17,6 +17,8 @@ os.environ.setdefault("ANTHROPIC_API_KEY", "test-anthropic-key")
 # scan() directly instead.
 os.environ.setdefault("STALL_WATCH_ENABLED", "false")
 
+from app.db import handbacks as _handbacks_module  # noqa: E402 — after the env above
+
 
 class FakeUser:
     id = "00000000-0000-0000-0000-000000000001"
@@ -28,13 +30,32 @@ def fake_user():
     return FakeUser()
 
 
+# Captured before the autouse patch below replaces it, for the test that checks its query.
+_REAL_HANDED_BACK_SINCE = _handbacks_module.companies_handed_back_since
+_REAL_REQUEUED_URLS = _handbacks_module.requeued_urls
+
+
+@pytest.fixture
+def real_companies_handed_back_since():
+    return _REAL_HANDED_BACK_SINCE
+
+
+@pytest.fixture
+def real_requeued_urls():
+    return _REAL_REQUEUED_URLS
+
+
 @pytest.fixture(autouse=True)
 def _no_company_history_network():
     """The auto ATS queue reads application history for the per-company cap
     (modules/fit_queue.py). Many tests call that router directly without supabase_mock,
     and would reach for the network. A test that cares patches it itself — the inner
     patch wins."""
-    with patch("app.db.applications.companies_applied_since", return_value=[]):
+    with (
+        patch("app.db.applications.companies_applied_since", return_value=[]),
+        patch("app.db.handbacks.companies_handed_back_since", return_value=[]),
+        patch("app.db.handbacks.requeued_urls", return_value=[]),
+    ):
         yield
 
 

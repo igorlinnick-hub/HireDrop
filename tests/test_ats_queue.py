@@ -102,10 +102,23 @@ def test_only_applyable_rows_reach_the_queue():
 
 def test_cap_cuts_the_tail_freshest_first():
     # The pool scorer's 0-10 no longer orders the queue (Igor, 09-30) — freshness does.
+    # Three employers: one per company (fit_queue.COMPANY_CAP) is not what this pins.
     pool = [
-        {**_row("Event Manager A", score=3, link="https://x/a"), "date_found": _days_ago(0)},
-        {**_row("Event Manager B", score=9, link="https://x/b"), "date_found": _days_ago(3)},
-        {**_row("Event Manager C", score=7, link="https://x/c"), "date_found": _days_ago(1)},
+        {
+            **_row("Event Manager A", score=3, link="https://x/a"),
+            "company": "Co A",
+            "date_found": _days_ago(0),
+        },
+        {
+            **_row("Event Manager B", score=9, link="https://x/b"),
+            "company": "Co B",
+            "date_found": _days_ago(3),
+        },
+        {
+            **_row("Event Manager C", score=7, link="https://x/c"),
+            "company": "Co C",
+            "date_found": _days_ago(1),
+        },
     ]
     out = _queue(pool, ["event manager"], limit=2)
 
