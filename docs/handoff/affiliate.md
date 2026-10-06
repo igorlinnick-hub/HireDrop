@@ -38,7 +38,8 @@
 2. ~~Политика возвратов~~ ✅ #282. ~~Connect Repo~~ ✅.
 3. После сброса лимита Vercel (~03:40 UTC 10-07): убедиться, что на проде web #278 (баннер) и #282 (Terms «non-refundable»).
 4. ✅ Первый плановый cron 10-06 15:00:34 UTC (код из репо, деплой dd53183): `payout run done: 0 paid ($0.00), 0 failed, 0 resumed, 0 commission(s) past the 30-day window`. Пуш в main передеплоивает сервис, но запуска не вызывает, запуск только по cron.
-5. Боевой перевод: первая настоящая оплата по `?ref=igor` + 30 дней + сумма ≥ $25 → cron переводит сам. Проверить `payouts`/`commissions` и Stripe.
+5. ✅ **Сквозной прогон выплаты на песочных деньгах (10-06, #370):** `.venv/bin/python scripts/affiliate_payout_e2e.py`. Временные партнёр и покупатель + комиссия $30 от −31 дня → боевой `cmd_run` с тестовым ключом → 13/13 PASS: payout `completed` + `stripe_connect`, комиссия `paid_out` и привязана, Transfer `tr_1UNfFVF5J5iTc6biEyic4Gvp` → `acct_1ULvY5…`, повторный запуск ничего не платит. Пользователи удалены, строки ушли каскадом. Ключ `STRIPE_TEST_KEY` (песочница) в `jobflow/.env`. Боевой ключ скрипт отвергает; если в базе есть настоящие комиссии к выплате или висящие выплаты, не стартует. Баланс песочницы пополняется `stripe charges create --amount 5000 --currency usd --source tok_bypassPending`.
+6. Боевой перевод: первая настоящая оплата по `?ref=igor` + 30 дней + сумма ≥ $25 → cron переводит сам. Проверить `payouts`/`commissions` и Stripe.
 
 ## Файлы (10-06)
 
