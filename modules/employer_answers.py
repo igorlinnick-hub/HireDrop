@@ -53,14 +53,35 @@ QUESTIONS: tuple[tuple[str, str, str], ...] = (
     ("salary_expectation", "Salary expectation — what we tell employers who ask", "text"),
 )
 
+# WHEN each question is asked (Igor, 10-06: signup asks less). These five are asked at
+# signup — they decide whether and where a run may apply at all, and a resume cannot
+# vouch for any of them. Every other question is asked once the resume is uploaded,
+# pre-filled from it for the person to confirm. Every row carries its `stage`; it
+# changes WHEN a question is asked, never WHETHER — Start still requires all of them.
+SIGNUP_STAGE = frozenset({"country", "city", "state", "work_authorized_us", "needs_sponsorship"})
+
+# Not authorized to work in the US, yet no sponsorship needed: one of the two is wrong,
+# and either one would go on every application as given. Both count as unanswered until
+# the person looks again. (Not authorized on its own is a real answer — people who need
+# sponsorship are a legitimate audience.)
+_AUTH_PAIR = ("work_authorized_us", "needs_sponsorship")
+AUTH_CONTRADICTION_NOTE = (
+    "You said you're not authorized to work in the US but don't need sponsorship"
+    " — please check both answers."
+)
+
 # WHICH CLIENTS MAY BE ASKED WHICH QUESTIONS.
 # The three questions added on 2026-09-30 come with an "I don't have one" tickbox, and a
 # website tab loaded before that day cannot draw it: it would show three bare text boxes
 # and keep Start closed until the user typed SOMETHING — "N/A", "none", "negotiable" —
 # which the fillers would then put on real applications. So a question is only counted
 # as missing for a client that says it can ask it properly (`answers_ui`, sent by the
-# website on /campaign/readiness, /campaign/start and the save). A client that says
-# nothing is an old one and sees the list it has always seen.
+# website on /campaign/readiness, /campaign/start and the save).
+# A client that says nothing is held to the CURRENT list (10-06). The only one left is
+# the extension, and it never draws the form — it sends the person to the dashboard —
+# so the old default only let its own /campaign/start through on 8 of the 11 questions.
+# For the next bump: every dashboard since 09-30 sends its number, so SINCE still keeps
+# an older tab to the list it can draw.
 ANSWERS_UI = 2
 SINCE: dict[str, int] = {"school": 2, "degree": 2, "salary_expectation": 2}
 
@@ -100,10 +121,18 @@ def _opted_out(profile: dict, key: str) -> bool:
 
 def _row(key: str, label: str, kind: str) -> dict:
     row = {"key": key, "label": label, "kind": kind}
+    row["stage"] = "signup" if key in SIGNUP_STAGE else "resume"
     for flag, keys in OPT_OUT.items():
         if key in keys:
             row["opt_out"] = {"flag": flag, "label": OPT_OUT_LABEL[flag]}
     return row
+
+
+def notes(profile: dict) -> dict[str, str]:
+    """Problems with answers already on file, by question key — shown with the question."""
+    if all(profile.get(key) is False for key in _AUTH_PAIR):
+        return dict.fromkeys(_AUTH_PAIR, AUTH_CONTRADICTION_NOTE)
+    return {}
 
 
 def _answered(profile: dict, key: str, kind: str) -> bool:
@@ -154,16 +183,22 @@ def missing(profile: dict, ui: int = ANSWERS_UI) -> list[dict]:
     """The unanswered questions, in form order. Empty list = ready.
 
     `ui` is what the asking client can draw (see SINCE): questions newer than it are
-    left out — for that client they are not missing, they are not askable.
+    left out — for that client they are not missing, they are not askable. An answer with
+    a `note` (see notes) is on file but counts as missing until it is changed.
     """
     hints = suggestions(profile)
+    flagged = notes(profile)
     out: list[dict] = []
     for key, label, kind in QUESTIONS:
-        if SINCE.get(key, 1) > ui or _answered(profile, key, kind):
+        if SINCE.get(key, 1) > ui:
+            continue
+        if key not in flagged and _answered(profile, key, kind):
             continue
         row = _row(key, label, kind)
         if key in hints:
             row["suggestion"] = hints[key]
+        if key in flagged:
+            row["note"] = flagged[key]
         out.append(row)
     return out
 
@@ -172,6 +207,7 @@ def form(profile: dict) -> list[dict]:
     """EVERY question with the answer already on file — what signup draws. `value` is in
     the form's own terms (yes/no for the country question), None/"" = not answered."""
     hints = suggestions(profile)
+    flagged = notes(profile)
     out: list[dict] = []
     for key, label, kind in QUESTIONS:
         raw = profile.get(key)
@@ -184,6 +220,8 @@ def form(profile: dict) -> list[dict]:
         row = {**_row(key, label, kind), "value": value}
         if key in hints and not value:
             row["suggestion"] = hints[key]
+        if key in flagged:
+            row["note"] = flagged[key]
         out.append(row)
     return out
 

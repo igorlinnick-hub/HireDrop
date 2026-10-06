@@ -31,6 +31,8 @@ from app.disposable_email import is_disposable_email
 from app.schemas import CampaignStartRequest
 from modules.ai_cover_letter import resume_text_for
 from modules.ai_role_suggest import role_limit, suggest_roles
+from modules.employer_answers import ANSWERS_UI, outside_us
+from modules.employer_answers import missing as missing_answers
 from modules.keyword_rotation import clean_keywords, complete_keywords
 from modules.keyword_rotation import rotate as rotate_keywords
 
@@ -143,6 +145,35 @@ def campaign_queue(
     }
 
 
+def start_refusal(user, profile: dict, answers_ui: int = ANSWERS_UI) -> str | None:
+    """Why /campaign/start refuses this profile (its 403 detail), or None = it may start.
+
+    One function so /campaign/status can tell the extension the same thing (see there).
+    """
+    # Free-taste abuse guard: throwaway-email accounts never get to spend AI
+    # budget. Signup is Supabase-hosted, so the first backend chokepoint is here.
+    if is_disposable_email(getattr(user, "email", None)):
+        return "disposable_email"
+    # Fail-closed onboarding gate (defense-in-depth: the dashboard layout and
+    # the extension's START_CAMPAIGN both check too). An un-onboarded profile
+    # has no name/keywords/resume — a campaign would file applications with
+    # blanks under the user's identity.
+    if not profile.get("onboarding_completed"):
+        return "onboarding_incomplete"
+    # Same list /campaign/readiness shows. Enforced here too: a Start that skips the
+    # dashboard's form would file 99%-complete applications that all come back.
+    if outside_us(profile):
+        return "us_only"
+    # No Start without a resume, for every platform (Igor, 10-06) — readiness says the same.
+    if not profile.get("resume_url"):
+        return "resume_missing"
+    # `answers_ui`: which questions the caller can ask (see employer_answers.SINCE). Saying
+    # nothing means the current list — the extension sends nothing and never draws the form.
+    if missing_answers(profile, answers_ui):
+        return "employer_answers_missing"
+    return None
+
+
 @router.get("/campaign/status")
 def campaign_status(
     since: str | None = None, tz: str | None = None, user=Depends(get_current_user)
@@ -177,6 +208,13 @@ def campaign_status(
     known_mode = read_submit_mode(user.id)
     submit_mode = known_mode or "auto"
     free = tier == "free"
+    # The store extension swallows a 403 from /campaign/start and walks anyway, and the
+    # server then stops it through /extension/ping within a minute — mid-form, with no
+    # reason given. The one refusal every build since 1.7.9 honours BEFORE it opens
+    # anything is an unknown mode, so a profile /campaign/start would refuse reads as
+    # unknown here. Only while nothing is running: a run the dashboard started already
+    # passed this gate, and nothing reads the flag mid-run. `start_refusal` says why.
+    refusal = None if state["running"] else start_refusal(user, profile)
 
     return {
         "running": state["running"],
@@ -193,7 +231,8 @@ def campaign_status(
         "daily_limit": daily_limit(tier, submit_mode),
         "tier": tier,
         "submit_mode": submit_mode,
-        "submit_mode_known": known_mode is not None,
+        "submit_mode_known": known_mode is not None and refusal is None,
+        "start_refusal": refusal,
         "jobs_ready": jobs_ready,
         # How many roles this apply mode may carry (broad 7 / standard 5 / precise 3).
         # Served from the backend so the count lives in ONE place instead of being retyped
@@ -211,32 +250,13 @@ def campaign_status(
 
 
 @router.post("/campaign/start")
-def campaign_start(req: CampaignStartRequest, answers_ui: int = 1, user=Depends(get_current_user)):
-    # Free-taste abuse guard: throwaway-email accounts never get to spend AI
-    # budget. Signup is Supabase-hosted, so the first backend chokepoint is here.
-    if is_disposable_email(getattr(user, "email", None)):
-        raise HTTPException(
-            status_code=403,
-            detail="disposable_email",
-        )
-    # Fail-closed onboarding gate (defense-in-depth: the dashboard layout and
-    # the extension's START_CAMPAIGN both check too). An un-onboarded profile
-    # has no name/keywords/resume — a campaign would file applications with
-    # blanks under the user's identity.
+def campaign_start(
+    req: CampaignStartRequest, answers_ui: int = ANSWERS_UI, user=Depends(get_current_user)
+):
     profile = get_profile(user.id)
-    if not profile.get("onboarding_completed"):
-        raise HTTPException(status_code=403, detail="onboarding_incomplete")
-    # Same list /campaign/readiness shows. Enforced here too: a Start that skips the
-    # dashboard's form would file 99%-complete applications that all come back.
-    from modules.employer_answers import missing as missing_answers
-    from modules.employer_answers import outside_us
-
-    if outside_us(profile):
-        raise HTTPException(status_code=403, detail="us_only")
-    # `answers_ui`: which questions the caller can ask (see employer_answers.SINCE). An
-    # old dashboard tab and the extension say nothing and are held to the old list.
-    if missing_answers(profile, answers_ui):
-        raise HTTPException(status_code=403, detail="employer_answers_missing")
+    refusal = start_refusal(user, profile, answers_ui)
+    if refusal:
+        raise HTTPException(status_code=403, detail=refusal)
     # Round-robin the roles: the walk always starts at index 0 and every cap counts
     # applications, so with six or seven roles the tail of the list never gets searched.
     # The server decides who leads this run and remembers it in the row it is about to
@@ -325,7 +345,7 @@ def campaign_start(req: CampaignStartRequest, answers_ui: int = 1, user=Depends(
 
 
 @router.get("/campaign/readiness")
-def campaign_readiness(answers_ui: int = 1, user=Depends(get_current_user)):
+def campaign_readiness(answers_ui: int = ANSWERS_UI, user=Depends(get_current_user)):
     """What's left before a campaign can start meaningfully — the dashboard renders the
     failed checks as a checklist with deep-links instead of a Start that silently no-ops.
     (Extension installed/connected is checked client-side via the PING bridge.)"""

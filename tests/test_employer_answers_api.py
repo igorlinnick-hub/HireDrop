@@ -168,38 +168,99 @@ def test_saving_writes_only_known_keys_and_reports_what_is_left(auth_client):
     assert old.json() == {"saved": True, "missing": []}
 
 
-def test_start_and_readiness_hold_each_client_to_the_list_it_can_draw(auth_client):
-    """The deployed dashboard says nothing about itself and must behave exactly as before."""
-    profile = {
-        **ANSWERED,
-        "school": "",
-        "degree": "",
-        "salary_expectation": "",
-        "onboarding_completed": True,
-        "keywords": ["marketing"],
-        "platforms": ["indeed"],
-        "resume_url": "u/resume.pdf",
-    }
+READY = {
+    **ANSWERED,
+    "onboarding_completed": True,
+    "keywords": ["marketing"],
+    "platforms": ["indeed"],
+    "resume_url": "u/resume.pdf",
+}
+
+
+def _gate(client, profile, path="/api/v1/campaign/start"):
+    """POST /campaign/start (or GET readiness) against `profile`, never reaching the DB."""
     with (
         patch("app.routers.campaign.get_profile", return_value=profile),
         patch(
             "app.routers.campaign.campaign_db.get_effective_state", return_value={"running": False}
         ),
+        patch("app.routers.campaign.campaign_db.get_state", return_value={"filters": {}}),
+        patch(
+            "app.routers.campaign.campaign_db.start", side_effect=lambda _u, f: {"filters": f}
+        ) as start,
         patch("app.routers.campaign.get_tier", return_value="pro"),
         patch("app.routers.campaign.get_submit_mode", return_value="auto"),
+        patch("app.routers.campaign.resume_text_for", return_value=""),
     ):
-        old = auth_client.get("/api/v1/campaign/readiness").json()
-        new = auth_client.get("/api/v1/campaign/readiness?answers_ui=2").json()
-        refused = auth_client.post(
-            "/api/v1/campaign/start?answers_ui=2",
-            json={"keywords": ["marketing"], "platforms": ["indeed"]},
-        )
-    by_id = lambda r: {c["id"]: c for c in r["checks"]}  # noqa: E731
+        if "readiness" in path:
+            return client.get(path), start
+        return client.post(path, json={"keywords": ["marketing"], "platforms": ["indeed"]}), start
+
+
+def test_start_and_readiness_hold_each_client_to_the_list_it_can_draw(auth_client):
+    """A client that names an older list is held to it; saying nothing is the current list."""
+    profile = {**READY, "school": "", "degree": "", "salary_expectation": ""}
+    by_id = lambda r: {c["id"]: c for c in r.json()["checks"]}  # noqa: E731
+    old, _ = _gate(auth_client, profile, "/api/v1/campaign/readiness?answers_ui=1")
     assert by_id(old)["employer_answers"]["ok"] is True
-    assert by_id(new)["employer_answers"]["ok"] is False
-    assert [m["key"] for m in by_id(new)["employer_answers"]["missing"]] == [
-        "school",
-        "degree",
-        "salary_expectation",
+    for path in ("/api/v1/campaign/readiness?answers_ui=2", "/api/v1/campaign/readiness"):
+        new, _ = _gate(auth_client, profile, path)
+        assert by_id(new)["employer_answers"]["ok"] is False
+        assert [m["key"] for m in by_id(new)["employer_answers"]["missing"]] == [
+            "school",
+            "degree",
+            "salary_expectation",
+        ]
+    # The extension's own /campaign/start sends no answers_ui: it no longer gets through
+    # on the old 8 questions.
+    for path in ("/api/v1/campaign/start?answers_ui=2", "/api/v1/campaign/start"):
+        refused, start = _gate(auth_client, profile, path)
+        assert refused.status_code == 403
+        assert refused.json()["detail"] == "employer_answers_missing"
+        start.assert_not_called()
+    allowed, start = _gate(auth_client, profile, "/api/v1/campaign/start?answers_ui=1")
+    assert allowed.status_code == 200 and start.call_count == 1
+
+
+def test_start_refuses_without_a_resume_on_any_platform(auth_client):
+    """No Start without a resume (Igor, 10-06) — not only for Greenhouse/Lever."""
+    res, start = _gate(auth_client, {**READY, "resume_url": None})
+    assert res.status_code == 403 and res.json()["detail"] == "resume_missing"
+    start.assert_not_called()
+    ok, start = _gate(auth_client, READY)
+    assert ok.status_code == 200 and start.call_count == 1
+
+
+def test_start_gate_order(auth_client):
+    """Onboarding first, then the closed US door, then the resume, then the answers."""
+    nothing = {**READY, "resume_url": "", "city": ""}
+    cases = [
+        ({**nothing, "onboarding_completed": False}, "onboarding_incomplete"),
+        ({**nothing, "country": "Outside US"}, "us_only"),
+        (nothing, "resume_missing"),
+        ({**nothing, "resume_url": "u/resume.pdf"}, "employer_answers_missing"),
     ]
-    assert refused.status_code == 403 and refused.json()["detail"] == "employer_answers_missing"
+    for profile, detail in cases:
+        res, _ = _gate(auth_client, profile)
+        assert res.status_code == 403 and res.json()["detail"] == detail
+
+
+def test_start_refuses_contradictory_work_authorization(auth_client):
+    res, start = _gate(auth_client, {**READY, "work_authorized_us": False})
+    assert res.status_code == 403 and res.json()["detail"] == "employer_answers_missing"
+    start.assert_not_called()
+    # Not authorized but needing sponsorship is a real answer and starts.
+    ok, _ = _gate(auth_client, {**READY, "work_authorized_us": False, "needs_sponsorship": True})
+    assert ok.status_code == 200
+
+
+def test_signup_rows_carry_stage_and_note(auth_client):
+    profile = {**ANSWERED, "work_authorized_us": False, "needs_sponsorship": False}
+    with patch("app.routers.profile.profile_db.get_profile", return_value=profile):
+        body = auth_client.get("/api/v1/profile/employer-answers").json()
+    stage = {q["key"]: q["stage"] for q in body["questions"]}
+    assert stage["country"] == "signup" and stage["school"] == "resume"
+    noted = {q["key"] for q in body["questions"] if q.get("note")}
+    assert noted == {"work_authorized_us", "needs_sponsorship"}
+    assert [m["key"] for m in body["missing"]] == ["work_authorized_us", "needs_sponsorship"]
+    assert all(m["note"] and m["stage"] == "signup" for m in body["missing"])

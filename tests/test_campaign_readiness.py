@@ -60,13 +60,15 @@ def test_ats_platform_requires_resume():
     assert ready is False and checks["resume"] is False
 
 
-def test_board_platform_needs_no_resume():
-    ready, checks = _ready(
-        build_readiness(
-            _profile(platforms=["indeed"], resume_url=None), False, "pro", "auto", None, 40
-        )
+def test_board_platform_requires_a_resume_too():
+    """No Start without a resume, whatever the platforms (Igor, 10-06)."""
+    res = build_readiness(
+        _profile(platforms=["indeed"], resume_url=None), False, "pro", "auto", None, 40
     )
-    assert checks["resume"] is True and ready is True
+    ready, checks = _ready(res)
+    assert checks["resume"] is False and ready is False
+    row = next(c for c in res["checks"] if c["id"] == "resume")
+    assert "Greenhouse" not in row["reason"] and row["fix"] == "settings"
 
 
 def test_lever_no_longer_blocks_the_start():
@@ -124,18 +126,57 @@ def test_unanswered_employer_questions_block_and_name_what_is_missing():
 
 
 def test_false_is_an_answer_for_yes_no_questions():
-    """'No, I don't need sponsorship' must not read as 'never answered'."""
-    ready, _ = _ready(
-        build_readiness(
-            _profile(work_authorized_us=False, needs_sponsorship=False),
-            False,
-            "pro",
-            "auto",
-            None,
-            40,
-        )
-    )
-    assert ready
+    """'No, I don't need sponsorship' must not read as 'never answered' — and 'not
+    authorized' is a real answer too: people who need sponsorship can start."""
+    args = (False, "pro", "auto", None, 40)
+    assert _ready(build_readiness(_profile(needs_sponsorship=False), *args))[0]
+    assert _ready(
+        build_readiness(_profile(work_authorized_us=False, needs_sponsorship=True), *args)
+    )[0]
+
+
+def test_not_authorized_and_no_sponsorship_is_asked_again():
+    """One of the two is wrong, and either would go on every application as given."""
+    from modules.employer_answers import AUTH_CONTRADICTION_NOTE, form, missing
+
+    profile = _profile(work_authorized_us=False, needs_sponsorship=False)
+    res = build_readiness(profile, False, "pro", "auto", None, 40)
+    ready, by_id = _ready(res)
+    assert not ready and by_id["employer_answers"] is False
+    rows = next(c for c in res["checks"] if c["id"] == "employer_answers")["missing"]
+    assert [m["key"] for m in rows] == ["work_authorized_us", "needs_sponsorship"]
+    assert all(m["note"] == AUTH_CONTRADICTION_NOTE for m in rows)
+    # The form shows what is on file, with the note beside both answers.
+    by_key = {r["key"]: r for r in form(profile)}
+    assert by_key["work_authorized_us"]["value"] is False
+    assert by_key["needs_sponsorship"]["note"] == AUTH_CONTRADICTION_NOTE
+    assert "note" not in by_key["city"]
+    # Unanswered (None) is not a contradiction, just unanswered — no note.
+    blank = missing({**ANSWERED, "work_authorized_us": False, "needs_sponsorship": None})
+    assert [m["key"] for m in blank] == ["needs_sponsorship"] and "note" not in blank[0]
+
+
+def test_every_row_says_when_it_is_asked():
+    """Signup asks what no resume can answer; the rest waits for the resume."""
+    from modules.employer_answers import QUESTIONS, form, missing
+
+    stages = {r["key"]: r["stage"] for r in form({})}
+    assert stages == {
+        "country": "signup",
+        "city": "signup",
+        "state": "signup",
+        "work_authorized_us": "signup",
+        "needs_sponsorship": "signup",
+        "current_title": "resume",
+        "current_employer": "resume",
+        "linkedin_url": "resume",
+        "school": "resume",
+        "degree": "resume",
+        "salary_expectation": "resume",
+    }
+    assert [k for k, _, _ in QUESTIONS] == list(stages)
+    # Deferring a question never stops it counting: Start still needs every one.
+    assert {m["key"]: m["stage"] for m in missing({})} == stages
 
 
 def test_no_linkedin_is_an_answer():
@@ -237,6 +278,7 @@ def test_form_lists_every_question_with_the_answer_on_file():
         "key": "current_title",
         "label": "Most recent job title",
         "kind": "text",
+        "stage": "resume",
         "value": "",
         "suggestion": "Social Media Manager",
     }
@@ -301,9 +343,13 @@ def test_a_client_that_cannot_draw_a_question_is_not_asked_it():
     assert [m["key"] for m in missing({**old_account, "city": ""}, 1)] == ["city"]
 
     args = (False, "pro", "auto", None, 40)
-    assert _ready(build_readiness(_profile(**old_account), *args))[0]  # says nothing = old
     assert _ready(build_readiness(_profile(**old_account), *args, answers_ui=1))[0]
-    new = build_readiness(_profile(**old_account), *args, answers_ui=ANSWERS_UI)
-    assert not new["ready"]
-    check = next(c for c in new["checks"] if c["id"] == "employer_answers")
-    assert [m["key"] for m in check["missing"]] == ["school", "degree", "salary_expectation"]
+    for new in (
+        build_readiness(_profile(**old_account), *args, answers_ui=ANSWERS_UI),
+        # Saying nothing is the current list (10-06): the one client that sends nothing is
+        # the extension, and it never draws the form.
+        build_readiness(_profile(**old_account), *args),
+    ):
+        assert not new["ready"]
+        check = next(c for c in new["checks"] if c["id"] == "employer_answers")
+        assert [m["key"] for m in check["missing"]] == ["school", "degree", "salary_expectation"]

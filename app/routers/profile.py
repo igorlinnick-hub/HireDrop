@@ -130,15 +130,15 @@ def suggest_employer_answers(user=Depends(get_current_user)):
 
 
 @router.post("/profile/employer-answers")
-def update_employer_answers(body: dict, answers_ui: int = 1, user=Depends(get_current_user)):
+def update_employer_answers(body: dict, answers_ui: int | None = None, user=Depends(get_current_user)):
     """Save the employer answers (modules/employer_answers.py). Partial: only the keys
     sent are written, so answering one question never blanks another. `missing` answers
     for the client that asked (`answers_ui`) — an old form must not be handed questions
     it cannot draw the moment it saves the ones it can."""
-    from modules.employer_answers import clean, missing
+    from modules.employer_answers import ANSWERS_UI, clean, missing
 
     profile = profile_db.update_employer_answers(user.id, clean(body or {}))
-    return {"saved": True, "missing": missing(profile, answers_ui)}
+    return {"saved": True, "missing": missing(profile, answers_ui or ANSWERS_UI)}
 
 
 @router.post("/profile/apply-mode")
