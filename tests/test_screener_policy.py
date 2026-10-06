@@ -7,6 +7,9 @@ half is just as binding: employers, titles, certifications, licenses, degrees, c
 are never invented — a faked credential surfaces at the interview and burns the candidate.
 """
 
+import json
+from pathlib import Path
+
 import pytest
 
 from modules.ai_question_answer import _system_prompt
@@ -165,10 +168,12 @@ def test_work_status_somewhere_else_is_refused_not_answered_from_the_us_flag(que
         ("Are you authorized to work in the U.S.?", "Yes"),
         ("Do you have the right to work in the US?", "Yes"),
         ("Will you now or in the future require sponsorship for employment visa status?", "No"),
-        # Other countries named only as visa examples: still a US question.
+        # Other countries named only as visa examples: still a US question. And "without
+        # sponsorship" points Yes the other way: needs none → Yes (it used to say "No",
+        # i.e. "not authorized", to employers about a US citizen).
         (
             "Are you authorized to work in the US without sponsorship (e.g. TN for Canada/Mexico)?",
-            "No",
+            "Yes",
         ),
         # Names nowhere → the job's country, which for this product is the US.
         ("Are you legally authorized to work in the country in which this job is located?", "Yes"),
@@ -314,3 +319,43 @@ def test_unattended_mode_turns_unknown_into_no_answer_and_shows_the_facts():
     # The extension's path is untouched: same rules, same prompt as before.
     out, system, prompt = ask("Yes")
     assert out == "Yes" and "UNATTENDED MODE" not in system and "FACTS ON FILE" not in prompt
+
+
+_MATRIX = json.loads(
+    (
+        Path(__file__).resolve().parent.parent
+        / "chrome-extension/tests/fixtures/work-status-matrix.json"
+    ).read_text()
+)
+
+
+@pytest.mark.parametrize(
+    ("question", "profile", "answer"),
+    [
+        (
+            row["q"],
+            {
+                k: v
+                for k, v in zip(("work_authorized_us", "needs_sponsorship"), prof, strict=True)
+                if v is not None
+            },
+            want,
+        )
+        for row in _MATRIX["rows"]
+        for prof, want in zip(_MATRIX["profiles"], row["expect"], strict=True)
+    ],
+)
+def test_work_status_matrix_is_true_for_the_person(question, profile, answer):
+    """Every cell must be TRUE for the person, or blank. The same table drives
+    chrome-extension/tests/work-status.test.js, so browser and server agree."""
+    assert _status_from_profile(question, profile, ["Yes", "No"]) == answer
+
+
+def test_which_state_residency_is_where_the_person_lives_not_status():
+    """Maven Clinic: "In which state do you hold permanent residency?" over a US state list.
+    'permanent residency' must not make it a citizenship refusal (skeptic r4 of #378)."""
+    from modules.ai_question_answer import _status_class
+
+    assert _status_class("In which state do you hold permanent residency?") is None
+    assert _status_class("What state do you live in?") is None
+    assert _status_class("Are you a U.S. citizen or permanent resident?") == "unclear"

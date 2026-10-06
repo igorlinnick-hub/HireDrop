@@ -1,0 +1,771 @@
+{
+ "_comment": "Work-status answers that must be TRUE for the person. Profiles = [work_authorized_us, needs_sponsorship]; null = not on file. Expected: 'Yes' / 'No' / '' (blank -> hand back). Read by chrome-extension/tests/work-status.test.js AND tests/test_screener_policy.py: browser and server must agree.",
+ "profiles": [
+  [
+   true,
+   false
+  ],
+  [
+   true,
+   true
+  ],
+  [
+   false,
+   true
+  ],
+  [
+   false,
+   false
+  ],
+  [
+   null,
+   false
+  ]
+ ],
+ "rows": [
+  {
+   "q": "Are you legally authorized to work in the United States?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "plain authorization"
+  },
+  {
+   "q": "Are you legally authorized to work in the U.S.?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": ""
+  },
+  {
+   "q": "Are you legally authorized to work in the United States? Please note we are unable to sponsor visas for this role.",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "#2 a visa note after the question does not make it a sponsorship question"
+  },
+  {
+   "q": "Are you authorized to work in the US? (we can't sponsor visas)",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "#2"
+  },
+  {
+   "q": "Are you currently authorized to work in the country outlined for this job (e.g. H-1B status)?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "#2 real label"
+  },
+  {
+   "q": "Do you have a valid work permit for the United States?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": ""
+  },
+  {
+   "q": "Are you legally authorized to work in the United States without sponsorship?",
+   "expect": [
+    "Yes",
+    "No",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth_without",
+   "why": "#1"
+  },
+  {
+   "q": "Are you legally authorized to work in the United States for any employer without the need for sponsorship (now or in the future)?",
+   "expect": [
+    "Yes",
+    "No",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth_without",
+   "why": "#1 real label"
+  },
+  {
+   "q": "Are you able to work in the US without requiring visa sponsorship now or in the future?",
+   "expect": [
+    "Yes",
+    "No",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth_without",
+   "why": "#1"
+  },
+  {
+   "q": "Are you legally authorized to work in the country where this role is based, now and in the future, without requiring employer visa sponsorship?",
+   "expect": [
+    "Yes",
+    "No",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth_without",
+   "why": "#1 real label"
+  },
+  {
+   "q": "Do you have permanent work authorization to work in the U.S?",
+   "expect": [
+    "Yes",
+    "No",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth_without",
+   "why": "#3"
+  },
+  {
+   "q": "Do you have the unrestricted right to work in the US?",
+   "expect": [
+    "Yes",
+    "No",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth_without",
+   "why": "#3 real label"
+  },
+  {
+   "q": "Are you currently legally authorized to work in the United States for any employer?",
+   "expect": [
+    "Yes",
+    "No",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth_without",
+   "why": "#3 real label"
+  },
+  {
+   "q": "Are you authorized to work in the US without being sponsored?",
+   "expect": [
+    "Yes",
+    "No",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth_without",
+   "why": "#6 answered: same fact as 'without sponsorship'"
+  },
+  {
+   "q": "Are you authorized to work in the US and do not require visa sponsorship?",
+   "expect": [
+    "Yes",
+    "No",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth_without",
+   "why": "#6 answered: a conjunction, both facts"
+  },
+  {
+   "q": "Will you now or in the future require sponsorship for employment visa status (e.g., H-1B)?",
+   "expect": [
+    "No",
+    "Yes",
+    "Yes",
+    "No",
+    "No"
+   ],
+   "class": "sponsor",
+   "why": ""
+  },
+  {
+   "q": "Do you require visa sponsorship?",
+   "expect": [
+    "No",
+    "Yes",
+    "Yes",
+    "No",
+    "No"
+   ],
+   "class": "sponsor",
+   "why": ""
+  },
+  {
+   "q": "Will you now or in the future require visa sponsorship? (Answer No if you can work in the US without sponsorship.)",
+   "expect": [
+    "No",
+    "Yes",
+    "Yes",
+    "No",
+    "No"
+   ],
+   "class": "sponsor",
+   "why": "#2 a clarifying clause does not flip it"
+  },
+  {
+   "q": "Does your work authorization require Tanium to sponsor or renew an employment-based visa now or in the future?",
+   "expect": [
+    "No",
+    "Yes",
+    "Yes",
+    "No",
+    "No"
+   ],
+   "class": "sponsor",
+   "why": "real label"
+  },
+  {
+   "q": "Will you require U.S. work authorization (e.g., visa sponsorship) now or at any point in the future?",
+   "expect": [
+    "No",
+    "Yes",
+    "Yes",
+    "No",
+    "No"
+   ],
+   "class": "sponsor",
+   "why": "real label: requiring authorization = sponsorship"
+  },
+  {
+   "q": "In the country where you plan to work, will you now or in the future require employment visa or work authorization sponsorship?",
+   "expect": [
+    "No",
+    "Yes",
+    "Yes",
+    "No",
+    "No"
+   ],
+   "class": "sponsor",
+   "why": "real label"
+  },
+  {
+   "q": "(Skip this question if you are applying to work in Canada or the UK). Do you now or in the future require sponsorship?",
+   "expect": [
+    "No",
+    "Yes",
+    "Yes",
+    "No",
+    "No"
+   ],
+   "class": "sponsor",
+   "why": "real label, the skip clause is not the question"
+  },
+  {
+   "q": "Are you NOT legally authorized to work in the United States?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "#4 negated main verb: never inverted"
+  },
+  {
+   "q": "Do you not require sponsorship to work in the US?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "#6 'do you not': Yes is ambiguous"
+  },
+  {
+   "q": "Are you able to work without restriction, or will you require sponsorship?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "either/or"
+  },
+  {
+   "q": "What type of visa sponsorship will you require?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "not a yes/no"
+  },
+  {
+   "q": "Are you legally authorized to work in New Mexico?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "#5 US place"
+  },
+  {
+   "q": "Are you legally authorized to work in New England?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "#5"
+  },
+  {
+   "q": "Are you legally authorized to work in New Jersey?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "#5"
+  },
+  {
+   "q": "Are you legally authorized to work in Paris, Texas?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "#5"
+  },
+  {
+   "q": "Are you legally authorized to work in Dublin, Ohio?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "#5"
+  },
+  {
+   "q": "Are you legally authorized to work in Dublin, CA?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "#5"
+  },
+  {
+   "q": "Are you legally authorized to work in the United States or Canada?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "either country: the US fact is enough"
+  },
+  {
+   "q": "Are you legally authorized to work in both the United States and Canada?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "both: the US fact is not enough"
+  },
+  {
+   "q": "Are you legally authorized to work in the U.K.?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "#5 foreign"
+  },
+  {
+   "q": "Are you authorized to work in Great Britain?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "#5"
+  },
+  {
+   "q": "Are you authorized to work in Scotland?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "#5"
+  },
+  {
+   "q": "Are you authorized to work in Wales?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "#5"
+  },
+  {
+   "q": "Are you authorized to work in Northern Ireland?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "#5"
+  },
+  {
+   "q": "Are you authorized to work in England?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "#5"
+  },
+  {
+   "q": "Are you legally authorized to work in London, Ontario?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "#5"
+  },
+  {
+   "q": "Are you legally authorized to work in Canada for Marqeta?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "real label"
+  },
+  {
+   "q": "Will you require sponsorship to work within the UK now or in the future?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "real label"
+  },
+  {
+   "q": "Are you eligible to work in the EU without sponsorship?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "real label"
+  },
+  {
+   "q": "Since obtaining your most recent citizenship, did you afterwards become a permanent resident in any other country/region? This does not include temporary statuses such as student visas or time-limited work permits.",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "real label (Twitch): export-control claim, profile has no such fact; main said No, branch said Yes"
+  },
+  {
+   "q": "Are you authorized to work in the U.S. on a permanent basis?",
+   "expect": [
+    "Yes",
+    "No",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth_without",
+   "why": "permanent = no sponsorship needed; (T,T) → No"
+  },
+  {
+   "q": "Are you a U.S. citizen or green card holder?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "no citizenship field: never inferred from work_authorized_us"
+  },
+  {
+   "q": "Are you a permanent resident of the United States?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "same"
+  },
+  {
+   "q": "Are you able to legally work in the region you are applying for?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "neo4j/4662175006 (x4). 10-06 skeptic: main No -> #378 Yes for a not-authorized profile (fell to the generic 'legally -> Yes' rule)"
+  },
+  {
+   "q": "Are you legally allowed to work in the country you are applying for without restrictions?\n",
+   "expect": [
+    "Yes",
+    "No",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth_without",
+   "why": "cision/4845035101. 10-06 skeptic: main No -> #378 Yes for a not-authorized profile (fell to the generic 'legally -> Yes' rule)"
+  },
+  {
+   "q": "Are you legally entitled to work in Canada?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "instacart/7658241 (x2): another country, never the US flag (was Yes for everyone)"
+  },
+  {
+   "q": "If so, are you eligible or currently in a period of Optional Practical Training (OPT)?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "duolingo/8653419002: OPT is a visa programme, not the authorization flag (was Yes)"
+  },
+  {
+   "q": "After the OPT, are you eligible for a 24-month OPT extension or are currently in a 24-month OPT extension based upon a degree from a qualifying U.S. institution in Science, Technology, Engineering, or Mathematics after the Optional Practical Training (OPT)?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "duolingo/8653419002: same"
+  },
+  {
+   "q": "Can you legally work in the United States?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "synthetic Indeed/ZR-style wording, same cause as the neo4j row"
+  },
+  {
+   "q": "Are you legally allowed to work in the US?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "synthetic Indeed/ZR-style wording, same cause as the neo4j row"
+  },
+  {
+   "q": "Are you legally entitled to work in the US?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "synthetic Indeed/ZR-style wording, same cause as the neo4j row"
+  },
+  {
+   "q": "Are you legally entitled to work in the United States?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "synthetic Indeed/ZR-style wording, same cause as the neo4j row"
+  },
+  {
+   "q": "Are you able to legally work in the US?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "synthetic Indeed/ZR-style wording, same cause as the neo4j row"
+  },
+  {
+   "q": "Are you lawfully able to work in the U.S.?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "synthetic Indeed/ZR-style wording, same cause as the neo4j row"
+  },
+  {
+   "q": "Are you permitted to work in the United States?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "synthetic Indeed/ZR-style wording, same cause as the neo4j row"
+  },
+  {
+   "q": "Can you provide proof of eligibility to work in the US?",
+   "expect": [
+    "Yes",
+    "Yes",
+    "No",
+    "No",
+    ""
+   ],
+   "class": "auth",
+   "why": "synthetic Indeed/ZR-style wording, same cause as the neo4j row"
+  },
+  {
+   "q": "Are you eligible to obtain a security clearance?",
+   "expect": [
+    "",
+    "",
+    "",
+    "",
+    ""
+   ],
+   "class": "blank",
+   "why": "clearance eligibility rests on citizenship, which the profile does not hold (skeptic r4: UNAUTH went No -> Yes)"
+  }
+ ]
+}

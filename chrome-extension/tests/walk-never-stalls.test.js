@@ -40,6 +40,7 @@ function slice(startMarker, endMarker) {
 const CODE =
   slice("  // Best-effort human-readable label for any form field.", "  // Find a visible element matching") +
   slice("  // Demographic / EEO self-identification", "  // Pick a dropdown option deterministically") +
+  slice("  // Pick a dropdown option deterministically", "  // Fill required/empty <select> dropdowns.") +
   slice("  // Fill unanswered radio-button screener questions.", "  // Tick required attestation");
 
 function makeSandbox(html) {
@@ -63,6 +64,12 @@ function makeSandbox(html) {
     },
     humanDelay: () => 0,
     sleep: async () => {},
+    // Work status is answered from the profile (answerWorkStatus): this user is
+    // authorized to work in the US. The backend has no saved answer.
+    storageGet: async () => ({ profile: { work_authorized_us: true, needs_sponsorship: false } }),
+    sendMsg: async () => ({ answer: "" }),
+    log: () => {}, logBackend: () => {},
+    _aiAnswersUsed: 0, MAX_AI_ANSWERS_PER_FORM: 15,
     done: null,
   };
   vm.createContext(sandbox);

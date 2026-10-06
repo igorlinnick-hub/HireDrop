@@ -3089,6 +3089,9 @@
     const radios = formScope().querySelectorAll('input[type="radio"]');
     const seen = new Set();
     let filled = 0;
+    // Read once, and only when there is a group to answer (work status needs the profile).
+    let stored = null;
+    const loadStored = async () => stored || (stored = await storageGet(["profile", "currentJobInfo"]));
 
     for (const r of radios) {
       // Nameless radios (React-controlled groups) can't be keyed by name — key each
@@ -3137,20 +3140,37 @@
         if (!target) continue;
       }
 
-      // Visa / sponsorship questions: pick the option that does NOT require
-      // sponsorship. Default picking the first option chose "Yes, I require
-      // sponsorship" — a harmful default that also contradicts "I'm authorized to
-      // work". (If a user genuinely needs sponsorship they can edit before submit.)
-      if (!target && /(sponsor|visa|work permit|require .* immigration)/i.test(groupLabel)) {
-        target = (labels.find((l) =>
-          /\b(no|not|do not|don'?t)\b/i.test(l.lbl) && /(sponsor|require|need|visa)/i.test(l.lbl)) || {}).el;
-        if (!target) target = (labels.find((l) => /^no\b/i.test(l.lbl)) || {}).el;
+      // Work authorization / visa sponsorship: the same decision as every other widget
+      // (answerWorkStatus). This used to say "Yes" to any "authorized to work in …?" —
+      // Canada and the UK included — and "No, I don't need sponsorship" to any visa
+      // question without reading the profile. Unknown → blank, so a required group hands
+      // the form back to the person instead of filing a guess about their legal status.
+      if (!target) {
+        const { profile = {}, currentJobInfo = {} } = (await loadStored()) || {};
+        const status = await answerWorkStatus(groupLabel,
+          labels.map((l) => ({ el: l.el, text: l.lbl })), profile || {}, currentJobInfo || {});
+        if (status) {
+          if (!status.pick) continue;
+          target = status.pick.el;
+        }
       }
 
-      // Work-authorization / eligibility ("authorized to work", "right to work",
-      // "18 or older", background check, "legally permitted") → affirmative.
-      if (!target && /(authoriz|eligible|legally (permitted|authorized|able)|right to work|18 (years|or older)|over 18|able to (work|perform)|consent|agree|background check)/i.test(groupLabel)) {
+      // Other eligibility ("18 or older", background check, "able to perform") and consent
+      // to the employer's processing → affirmative. A bare "agree" no longer qualifies:
+      // "Are you subject to any employment agreements…?" is a claim, not a consent.
+      if (!target && (/(eligible|legally (permitted|able)|18 (years|or older)|over 18|able to (work|perform)|background check)/i.test(groupLabel) || isConsentToProcess(groupLabel))) {
         target = (labels.find((l) => /^yes\b/i.test(l.lbl)) || {}).el;
+      }
+
+      // The same knockouts the dropdown fallback refuses to guess ("Are you subject to a
+      // non-compete…?", "Have you worked at <company>?"): the dropdown's own rule where it
+      // has one ("previously worked at" → No on a cold application), else blank — never
+      // the "Yes"/first-option default below.
+      if (!target && isPersonalKnockout(groupLabel)) {
+        const { profile = {} } = (await loadStored()) || {};
+        const det = pickOptionDeterministic(groupLabel, labels.map((l) => ({ el: l.el, text: l.lbl })), profile || {});
+        if (!det) continue;
+        target = det.el;
       }
 
       if (!target) {
@@ -3208,17 +3228,54 @@
       filled++;
       await sleep(humanDelay(200, 500));
     }
+    // Work status needs the profile; read it only when such a box exists.
+    let stored = null;
+    const loadStored = async () => stored || (stored = await storageGet(["profile", "currentJobInfo"]));
+    const statusByQuestion = new Map();
     for (const c of boxes) {
       if (demoGroups.has(groupOf(c))) continue;
       const label = getFieldLabel(c) ||
         (c.closest("label, [class*='question' i], fieldset")?.textContent || "");
-      const required = c.required || c.getAttribute("aria-required") === "true" ||
-        c.getAttribute("aria-invalid") === "true";
-      const isAffirmation = /certif|attest|agree|acknowledge|consent|i have read|i understand|\bterms\b|authoriz|confirm/i.test(label);
-      // Never tick a NEGATIVE statement or an opt-in ("I do NOT consent…",
-      // "I disagree…", "unsubscribe", "opt out") even if required/affirmation-worded.
-      if (/\b(not|don'?t|do not|disagree|decline|unsubscribe|opt.?out|refuse)\b/i.test(label)) continue;
-      if (!required && !isAffirmation) continue;
+      const own = String(boxText(c) || "").trim();
+      const g = groupOf(c);
+      const question = (g && (g.querySelector(":scope > legend")?.textContent || g.getAttribute("aria-label"))) || label;
+      const mates = g ? Array.from(g.querySelectorAll('input[type="checkbox"]')).filter((b) => groupOf(b) === g) : [c];
+      // A box reading just "Yes"/"No" is an ANSWER to the question above it, not a consent.
+      const isYesNoBox = /^\W*(yes|no)\b/i.test(own);
+      // Only the person can say they are a human and not a bot.
+      if (PERSON_ONLY_RE.test(own) || PERSON_ONLY_RE.test(label)) continue;
+      if (isYesNoBox && workStatus(question, {})) {
+        // "Are you legally authorized to work in …?" drawn as Yes/No checkboxes (Greenhouse
+        // multi-selects): `label` was the question for BOTH boxes and "authoriz" ticked
+        // Yes and No alike. Same decision as every other widget, one box at most.
+        if (!statusByQuestion.has(question)) {
+          const { profile = {}, currentJobInfo = {} } = (await loadStored()) || {};
+          statusByQuestion.set(question, await answerWorkStatus(question,
+            mates.map((b) => ({ el: b, text: String(boxText(b) || "").trim() })), profile || {}, currentJobInfo || {}));
+        }
+        const status = statusByQuestion.get(question);
+        if (!status || !status.pick || status.pick.el !== c) continue;
+      } else if (workStatus(own, {}) || workStatus(label, {})) {
+        // A statement box ("I am legally authorized to work in the United States"): ticked
+        // only when the answer to it is Yes — never for another country on the US flag.
+        const stmt = workStatus(own, {}) ? own : label;
+        const { profile = {}, currentJobInfo = {} } = (await loadStored()) || {};
+        const status = await answerWorkStatus(stmt, null, profile || {}, currentJobInfo || {});
+        if (!status || !/^\W*yes\b/i.test(String(status.pick || ""))) continue;
+      } else {
+        const required = c.required || c.getAttribute("aria-required") === "true" ||
+          c.getAttribute("aria-invalid") === "true";
+        const isAffirmation = /certif|attest|agree|acknowledge|consent|i have read|i understand|\bterms\b|authoriz|confirm/i.test(label);
+        // Never tick a NEGATIVE statement or an opt-in ("I do NOT consent…",
+        // "I disagree…", "unsubscribe", "opt out") even if required/affirmation-worded.
+        if (/\b(not|don'?t|do not|disagree|decline|unsubscribe|opt.?out|refuse)\b/i.test(label)) continue;
+        if (isYesNoBox && mates.length > 1) {
+          // A Yes/No choice: "Yes" only to a consent ("Do you acknowledge and agree to our
+          // GDPR policy?"); a factual question ("Are you based in the NYC metro area?") is
+          // the person's to answer — `required` used to tick Yes AND No.
+          if (!(/^\W*yes\b/i.test(own) && isConsentToProcess(question))) continue;
+        } else if (!required && !isAffirmation) continue;
+      }
       const labelEl = c.id ? document.querySelector(`label[for="${CSS.escape(c.id)}"]`) : null;
       await humanClick(labelEl || c);
       filled++;
@@ -3415,9 +3472,23 @@
 
       let value;
       let typeahead = "";
+      const wsText = workStatus(rawLabel, profile);
+      if (wsText) {
+        // Legal work status FIRST, before any keyword rule: "Will you require sponsorship
+        // (within 2 years)?" read as a "years" field and got "2", and "authorized to work
+        // in any state?" as the state field. One decision for every widget
+        // (answerWorkStatus): the US profile flag, else the person's own saved answer,
+        // else blank. A yes/no-shaped label (or one about another country) only; an open
+        // "What is your current visa status?" goes to the AI branch below, where the
+        // backend applies the same rules.
+        if (wsText.foreign || /^\W*(are|do|does|did|have|has|is|will|would|can|could|should|may)\b/i.test(rawLabel)) {
+          const status = await answerWorkStatus(rawLabel, null, profile, jobInfo);
+          if (!status || !status.pick) continue;
+          value = status.pick;
+        }
       // Only the applicant's OWN name — not "reference name", "company name",
       // "supervisor/manager/contact name" (those must go to the AI branch).
-      if ((/\b(first|last|full|your|legal|preferred)\s+name\b|^name$/i.test(label) || NAME_I18N_RE.test(rawLabel)) &&
+      } else if ((/\b(first|last|full|your|legal|preferred)\s+name\b|^name$/i.test(label) || NAME_I18N_RE.test(rawLabel)) &&
           !/(reference|company|employer|supervisor|manager|contact|emergency|previous|prior)/i.test(label)) {
         value = NAME_I18N_LAST_RE.test(rawLabel)
           ? (profile.last_name || "")
@@ -3531,12 +3602,6 @@
         // a short screener reply instead of the letter written for this job.
         value = await ensureCoverLetter();
         if (!value) continue;
-      } else if (/(sponsor|visa\b|h-?1b|immigration case)/i.test(label)) {
-        // Knockout — never guess in free text either. Explicit profile only, else AI/hand-back.
-        const says = typeof profile.needs_sponsorship === "boolean"
-          ? sponsorshipSaysYes(label, profile.needs_sponsorship) : null;
-        if (says !== null) value = says ? "Yes" : "No";
-        // else: fall through to the AI branch (answers from the resume) or hand-back
       }
 
       // Open-ended screener question the keyword rules can't map → ask the AI.
@@ -3725,22 +3790,327 @@
     return demo.test(label) || (hasDecline && demo.test(optionTexts.join(" ")));
   }
 
-  // Pick a dropdown option deterministically (no AI) for the common cases.
-  // Returns the chosen option object, or null if it needs AI / a fallback.
-  // Which way a sponsorship question points. "Will you require sponsorship?" — Yes means
-  // the person needs it. "Are you authorized to work … without the need for sponsorship?"
-  // — Yes means they do NOT. Read the second like the first and someone who needs no
-  // visa answers "No", i.e. "not authorized": screened out (~4 of the 320 GH schemas;
-  // skeptic 10-06, reachable on dropdowns once their real labels were read).
-  function sponsorshipSaysYes(label, needsSponsorship) {
-    const flips = /without\s+(the\s+need\s+(for|of)\s+|needing\s+|requiring\s+)?(any\s+)?((employer|company|visa|immigration|employment)\s+)*sponsor/i;
-    if (flips.test(label)) return !needsSponsorship;
-    // Any other negation ("without being sponsored", "and do not require sponsorship") and
-    // which way Yes points is a guess — null: the model reads it, or the person does.
-    if (/\bwithout\b|\b(do not|don'?t|not) (need|require)/i.test(label)) return null;
-    return needsSponsorship;
+  // ── Legal work status: ONE reading for every widget ──────────────────────────────────
+  //
+  // Radio groups, <select>s, comboboxes, text boxes and checkboxes each had their own copy
+  // of "is this a work-authorization question, and what do we say". The radio copy said
+  // "Yes" to ANY authorization question and "No, I don't need sponsorship" to any visa
+  // question without reading the profile; the dropdown copy read `work_authorized_us`
+  // but never the country. So "Are you legally authorized to work in Canada?" went out as
+  // "Yes" under the user's name — a false statement about their legal status (28 of the
+  // 320 real Greenhouse schemas ask about a country other than the US).
+  //
+  // Both profile flags (`work_authorized_us`, `needs_sponsorship`) are facts about the
+  // UNITED STATES, and the product is US-only. So:
+  //   US or no country named  → the profile flag, read the way the question points;
+  //   another country/region  → never answered from the US flag. The person's own saved
+  //                             answer for this job (hand-back loop, via the backend) or
+  //                             nothing: blank, and a required field hands the form back.
+  //   profile silent          → same as another country: the person's answer or blank.
+  // Same rules as the backend's _status_from_profile (modules/ai_question_answer.py), which
+  // is what the model path reaches: the two must agree, or a question gets two answers
+  // depending on which widget it was drawn with.
+  // Detection is wider than what the profile may answer: anything that smells of status
+  // (a "work permit", "immigration support") must never fall to a "Yes"/first-option
+  // default — it is answered from the profile only when the wording is one we can read.
+  // "Can you legally work…", "Are you able to legally work…", "legally allowed / entitled
+  // to work…", "allowed to work in…", "proof of eligibility to work…": the same
+  // authorization question in other words. Until
+  // 10-06 these fell through to the generic "eligible|legally|able to → Yes" rule, so a
+  // profile that says "not authorized" told employers "Yes" (neo4j, cision, Indeed/ZR).
+  const WS_AUTH_RE = new RegExp(
+    "(authoriz|authoris|eligible|legally (permitted|authorized|able|allowed|entitled|eligible)|" +
+    "lawfully|right to work|permanent work|work authoriz).{0,40}(work|employ)|" +
+    "(work|employ).{0,40}(authoriz|authoris|eligible|legally|lawfully)|\\bright to work\\b|" +
+    "\\b(legally|lawfully)\\s+(work|be employed)\\b|" +
+    "\\b(entitled|eligibility)\\s+to\\s+(legally\\s+)?work\\b|\\b(allowed|permitted)\\s+to\\s+work\\s+(in|within|from)\\b", "i");
+  // Smells of legal work status but is no wording we can answer from the two flags
+  // ("work eligibility", "immigration status", "eligible … employment", OPT / CPT / EAD).
+  // Such a question is "unclear" → blank, never left to a generic "Yes" default.
+  const WS_STATUS_LOOK_RE = /\bwork (?:eligibility|status|rights?)\b|\b(?:employment|immigration|visa|residency) status\b|\b(?:legal(?:ly)?|lawful(?:ly)?)\b[^?]{0,40}\b(?:work|employ)|\beligib\w*\b[^?]{0,40}\b(?:work|employ|clearance)/i;
+  // Student / visa-programme status (case-sensitive acronyms): the profile does not hold
+  // it — "are you eligible for a 24-month OPT extension?" is not "authorized to work".
+  const WS_VISA_PROGRAMME_RE = /optional practical training|curricular practical training|stem (?:opt )?extension/i;
+  const WS_VISA_ACRONYM_RE = /\b(?:OPT|CPT|EAD)\b/;
+  // "…work IN <place>": the place the question is about, when it says so.
+  const WS_WORK_IN_RE = /\b(?:work|working|employment|employed)\b[^.?!]{0,60}?\b(?:in|within|from)\s+((?:the\s+)?[^.?!,;()]{2,60})/i;
+  // "US"/"USA" only in capitals: lower-case "us" is the pronoun ("work for us in London").
+  const WS_US_CAPS_RE = /\bU\.?S\.?A?(?![A-Za-z])/;
+  const WS_US_WORDS_RE = /\bunited states\b|\bu\.\s?s\.|\bamerica\b(?!s)/i;
+  // Mirrors modules/job_location.py (_NON_US_RE / _NON_US_CITY_RE / _NON_US_REGION_RE) —
+  // top offenders, not a gazetteer. Re-sync when that list grows.
+  const WS_NON_US_RE = new RegExp("\\b(" + [
+    "canada|mexico|argentina|colombia|brazil|bulgaria|ireland|united kingdom|uk|england|germany|france|spain|portugal",
+    "poland|romania|sweden|norway|denmark|finland|netherlands|belgium|switzerland|austria|italy|greece|turkey|israel",
+    "india|pakistan|china|japan|korea|singapore|philippines|vietnam|thailand|indonesia|malaysia|australia|new zealand",
+    "nigeria|kenya|egypt|south africa|ukraine|georgia \\(country\\)|armenia|kazakhstan",
+    "chile|peru|uruguay|paraguay|bolivia|ecuador|venezuela|guatemala|honduras|nicaragua|costa rica|panama|el salvador",
+    "dominican republic|czech republic|czechia|hungary|slovakia|slovenia|croatia|serbia|bosnia|lithuania|latvia|estonia",
+    "belarus|moldova|cyprus|malta|iceland|luxembourg|united arab emirates|uae|dubai|abu dhabi|saudi arabia|qatar|kuwait",
+    "bahrain|oman|taiwan|hong kong|bangladesh|sri lanka|nepal|myanmar|cambodia|laos|morocco|tunisia|algeria|ghana",
+    "tanzania|uganda|ethiopia|senegal|rwanda|zimbabwe",
+    // hub cities
+    "bengaluru|bangalore|hyderabad|pune|mumbai|delhi|chennai|noida|gurgaon|gurugram|kolkata|ahmedabad|toronto|vancouver",
+    "montreal|ottawa|london|manchester|edinburgh|berlin|munich|hamburg|paris|amsterdam|dublin|madrid|barcelona|lisbon",
+    "warsaw|krakow|kraków|prague|budapest|bucharest|sofia|athens|stockholm|oslo|copenhagen|helsinki|zurich|geneva|vienna",
+    "milan|rome|istanbul|tel aviv|tokyo|osaka|seoul|beijing|shanghai|shenzhen|taipei|manila|jakarta|kuala lumpur",
+    "bangkok|hanoi|ho chi minh|sydney|melbourne|brisbane|auckland|wellington|s[ãa]o paulo|rio de janeiro|buenos aires",
+    "santiago|bogot[áa]|lima|mexico city|monterrey|guadalajara|lagos|nairobi|cape town|johannesburg|kyiv|kiev|tbilisi",
+    "yerevan|almaty|tashkent",
+    // regions that are not the US and do not contain it
+    "emea|apac|latam|eu|e\\.u\\.|europe|european(?: union)?|asia(?:[- ]pacific)?|latin america|south america",
+    "central america|middle east|africa|oceania|nordics?|benelux|dach|anz|mena",
+  ].join("|") + ")\\b", "i");
+  // Wider than the US: "authorized to work in the Americas" is not answered by a US flag.
+  const WS_WIDER_RE = /\b(?:the americas|north america|worldwide|globally)\b/i;
+
+  // A sentence that tells the reader when NOT to answer ("(Skip this question if you are
+  // applying to work in Canada or the UK). Do you … require sponsorship?" — 4 of the 320
+  // schemas) names foreign places, but the question itself is the US one.
+  function stripSkipClause(label) {
+    return String(label || "")
+      .replace(/\(\s*(?:please\s+)?(?:skip|ignore|disregard)\b[^)]*\)/gi, " ")
+      .replace(/(?:^|[.!?]\s+)(?:please\s+)?(?:skip|ignore|disregard) this question if[^.?!]*[.!]/gi, " ");
   }
 
+  // Places spelled with dots or with foreign-looking words, rewritten before the country
+  // reading: "U.K." is the United Kingdom (its dots used to cut the place at "U", which
+  // then read as the US), while "New Mexico", "New England", "Paris, Texas" and "Dublin,
+  // Ohio/CA" are in the United States (they used to read as Mexico/England/France/Ireland).
+  const WS_US_STATE_NAMES = "alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new hampshire|new jersey|new mexico|new york|north carolina|north dakota|ohio|oklahoma|oregon|pennsylvania|rhode island|south carolina|south dakota|tennessee|texas|utah|vermont|virginia|washington|west virginia|wisconsin|wyoming";
+  const WS_US_STATE_CODES = "AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC";
+  const WS_US_CITY_STATE_RE = new RegExp(
+    "\\b[A-Z][A-Za-z.'-]*(?:\\s+[A-Z][A-Za-z.'-]*){0,2},\\s*(?:(?:" +
+    WS_US_STATE_NAMES.split("|").map((n) => n.replace(/\b[a-z]/g, (c) => `[${c.toUpperCase()}${c}]`)).join("|") +
+    ")\\b|(?:" + WS_US_STATE_CODES + ")\\b)", "g");
+  function normalisePlaces(text) {
+    return String(text || "")
+      .replace(/\bU\.\s?S\.?(?:\s?A\.?)?(?![a-z])/gi, " United States ")
+      .replace(/\bU\.\s?K\.?(?![a-z])/gi, " United Kingdom ")
+      .replace(/\bE\.\s?U\.?(?![a-z])/gi, " European Union ")
+      .replace(/\bnew\s+(?:mexico|england|jersey|york|hampshire)\b/gi, " United States ")
+      .replace(WS_US_CITY_STATE_RE, " United States ");
+  }
+  // Not in job_location's list, which is about board locations rather than questions.
+  const WS_UK_PARTS_RE = /\b(?:great britain|britain|scotland|wales|northern ireland)\b/i;
+  function namesForeign(text) {
+    return WS_NON_US_RE.test(text) || WS_UK_PARTS_RE.test(text) || WS_WIDER_RE.test(text);
+  }
+
+  function namesUS(text) {
+    // "North/Latin/South America" are regions, not the US (WS_WIDER_RE / WS_NON_US_RE).
+    const t = String(text || "").replace(/\b(north|latin|south|central)\s+america\b/gi, " ");
+    return WS_US_CAPS_RE.test(t) || WS_US_WORDS_RE.test(t);
+  }
+
+  // Is this work-status question about somewhere other than the United States? Where the
+  // question says "work in <place>", that place decides; a US mention elsewhere does not
+  // rescue it, and a foreign one elsewhere ("e.g. TN for Canada/Mexico") does not sink a
+  // US question. "the US or Canada" is answered by the US fact (either one is enough);
+  // "both the US and Canada" is not. With no "work in", any foreign place and no US at all
+  // is enough. A question that names nowhere is about the job's country — here, the US.
+  function asksAboutAnotherPlace(question) {
+    const q = normalisePlaces(question);
+    const anchored = WS_WORK_IN_RE.exec(q);
+    if (anchored) {
+      const place = anchored[1];
+      if (namesUS(place)) return namesForeign(place) && /\b(?:and|both)\b|&/i.test(place);
+      if (namesForeign(place)) return true;
+    }
+    return namesForeign(q) && !namesUS(q);
+  }
+
+  // The question itself, without what surrounds it: parentheticals ("(e.g. H-1B)", "(we
+  // can't sponsor visas)", "(Answer No if you can work without sponsorship)"), anything
+  // after the first "?", and a note in front of it ("We cannot sponsor. Are you …?").
+  // Which fact is asked, and which way Yes points, is read from this part only — a visa
+  // note used to turn "Are you authorized to work in the US? (we can't sponsor visas)"
+  // into a sponsorship question, and "…without sponsorship" in an explanatory clause
+  // flipped "Do you require sponsorship?".
+  function mainQuestion(label) {
+    let t = normalisePlaces(stripSkipClause(label)).replace(/\([^)]*\)|\[[^\]]*\]/g, " ");
+    const q = t.indexOf("?");
+    if (q >= 0) t = t.slice(0, q + 1);
+    const parts = t.split(/[.!;]\s+(?=[A-Z])/);
+    return (q >= 0 ? parts[parts.length - 1] : t).replace(/\s+/g, " ").trim();
+  }
+
+  // What a work-status question asks, read from the main question:
+  //   "auth"         — authorized / eligible / right to work / a valid work permit    → A
+  //   "auth_without" — authorized WITHOUT sponsorship, for any employer, permanent or
+  //                    unrestricted authorization ("…and do not require sponsorship")   → A && !N
+  //   "sponsor"      — will you require / need sponsorship (or a visa, a work permit)    → N
+  //   "unclear"      — a negated main verb ("Are you NOT authorized…?", "Do you not
+  //                    require…?"), an either/or ("…without restriction, or will you
+  //                    require sponsorship?"), or not a yes/no ("How long will you…")   → blank
+  //   null           — not a work-status question.
+  const WS_SPONSOR_WORDS_RE = /sponsor|visa\b|h-?1b|immigration|work permit/i;
+  // "…will you (now or in the future) require/need…", "Does your work authorization
+  // require <company> to sponsor…", "I will (not) require…" — anywhere in the question
+  // ("In the country where you plan to work, will you … require … sponsorship?").
+  const WS_REQ_START_RE = /\b(?:will|would|do|does|did)\s+(?:you|your\b[^?]{0,40}?)\b[^?]{0,80}?\b(?:require|need)s?\b|^\W*i\s+(?:will|would|do)\s+(?:not\s+)?(?:require|need)\b/i;
+  // "Are you …" / "Do you have …" up front: an authorization question. If it ALSO asks
+  // "will you require …", it is two questions in one → blank.
+  const WS_AUTH_START_RE = /^\W*(?:[^:?]{0,60}[:,]\s*)?(?:are|is)\s+you\b|^\W*(?:[^:?]{0,60}[:,]\s*)?(?:do|does)\s+you\s+(?:currently\s+)?(?:have|hold|possess)\b/i;
+  // Required: a work AUTHORIZATION one would need granted is sponsorship by another name
+  // ("Will you require U.S. work authorization (e.g., visa sponsorship)…?").
+  const WS_REQUIRED_THING_RE = /sponsor|visa\b|h-?1b|immigration|work permit|work authori[sz]ation/i;
+  const WS_HOLDS_PERMIT_RE = /\b(?:have|hold|possess)\b[^?]{0,30}\bwork (?:permit|authori[sz]ation)\b/i;
+  const WS_CAN_WORK_WITHOUT_RE = /\b(?:can|could|able to)\s+(?:legally\s+)?work\b[^?]{0,60}\bwithout\b/i;
+  const WS_WITHOUT_RE = /\bwithout\b[^?]{0,60}\b(?:sponsor|visa)/i;
+  const WS_AND_NO_SPONSOR_RE = /\band\s+(?:do not|don'?t|will not|won'?t|not)\s+(?:need|require)\b/i;
+  const WS_UNRESTRICTED_RE = /permanent (?:work|employment) authori[sz]ation|\bunrestricted\b|for any (?:united states )?employer|without (?:any )?restrictions?|on a permanent basis|permanently/i;
+  // Citizenship / permanent residence / a green card: facts the profile does not hold
+  // (work_authorized_us is not citizenship) → always blank, never inferred.
+  const WS_CITIZENSHIP_RE = /\bcitizen(?:s|ship)?\b|green card|permanent residen(?:t|ce|cy)|lawful permanent/i;
+  const WS_WHICH_STATE_RE = /\b(?:which|what)\s+(?:u\.?s\.?\s+)?states?\b/i;
+  const WS_NEGATED_RE = /\b(?:not|n't)\s+(?:currently\s+|yet\s+|legally\s+)*(?:authori[sz]ed|eligible|permitted|able to work|require|need)\b/i;
+  const WS_EITHER_OR_RE = /\bor\s+(?:will|would|do|does)\s+you\s+(?:require|need)|\bor\s+(?:require|need)\b|\bor\s+(?:will|would|do)\s+you\s+(?:now\s+or\s+in\s+the\s+future\s+)?require/i;
+  const WS_OPEN_RE = /^\W*(?:how|what|which|when|why|where)\b|\bplease\s+(?:describe|explain|list|specify|provide)\b/i;
+  function workStatusClass(label) {
+    const m = mainQuestion(label);
+    // A paragraph with no question in it (an E-Verify notice, an "I certify…" block) is
+    // not a work-status question, whatever words it uses; a statement box is short.
+    if (!m.includes("?") && m.length > 150) return null;
+    const auth = WS_AUTH_RE.test(m) || WS_HOLDS_PERMIT_RE.test(m) || WS_CAN_WORK_WITHOUT_RE.test(m);
+    const sponsorWords = WS_SPONSOR_WORDS_RE.test(m);
+    // "Are you a U.S. citizen or green card holder?", "…did you become a permanent resident
+    // in any other country?" (Twitch; its "visas / work permits" sit after the "?") — read
+    // on the FULL label, so a trailing clause can't drop it back to a Yes default.
+    // "In which state do you hold permanent residency?" (Maven Clinic, a US state list) asks
+    // WHERE the person lives — stateListPick answers it from the profile, not this block.
+    if (!auth && WS_WHICH_STATE_RE.test(m)) return null;
+    if (!auth && WS_CITIZENSHIP_RE.test(stripSkipClause(label))) return "unclear";
+    // Looks like work status, but not a wording read below → blank, not a "Yes" default.
+    const visaProgramme = WS_VISA_PROGRAMME_RE.test(m) || WS_VISA_ACRONYM_RE.test(m);
+    if (!auth && !sponsorWords) return WS_STATUS_LOOK_RE.test(m) || visaProgramme ? "unclear" : null;
+    if (WS_OPEN_RE.test(m)) return "unclear";
+    const asksRequire = WS_REQ_START_RE.test(m);
+    // On OPT / CPT / a STEM extension: a visa programme, not the authorization flag.
+    if (!asksRequire && visaProgramme) return "unclear";
+    if (asksRequire && WS_AUTH_START_RE.test(m)) return "unclear";
+    if (asksRequire && WS_REQUIRED_THING_RE.test(m)) {
+      // "Do you require sponsorship?" — unless the main verb is negated or "without".
+      if (WS_NEGATED_RE.test(m) || WS_WITHOUT_RE.test(m)) return "unclear";
+      return "sponsor";
+    }
+    if (auth) {
+      if (WS_EITHER_OR_RE.test(m)) return "unclear";
+      if (WS_WITHOUT_RE.test(m) || WS_AND_NO_SPONSOR_RE.test(m) || WS_UNRESTRICTED_RE.test(m)) {
+        // "authorized … and do not require sponsorship" is a conjunction, not a negation.
+        const rest = m.replace(WS_AND_NO_SPONSOR_RE, " ");
+        return WS_NEGATED_RE.test(rest) ? "unclear" : "auth_without";
+      }
+      return WS_NEGATED_RE.test(m) ? "unclear" : "auth";
+    }
+    // Sponsorship words with no clear verb ("Sponsorship required?", "Visa sponsorship
+    // needed now or in the future") → N; anything else ("Do you have an H-1B visa?") → blank.
+    if (/\b(?:require|need)s?\b|\brequired\b|\bneeded\b/i.test(m) && !WS_NEGATED_RE.test(m) && !WS_WITHOUT_RE.test(m)) return "sponsor";
+    return "unclear";
+  }
+
+  // null → not a work-status question (the caller's other rules apply).
+  // Otherwise { kind, foreign, says } where `says` is the Yes/No that is TRUE for the
+  // person (true = Yes), or null = we do not know it and must not guess. The two profile
+  // flags are independent selects (Settings), so every combination is real — including
+  // "not authorized" + "needs no sponsorship".
+  function workStatus(label, profile) {
+    const kind = workStatusClass(label);
+    if (!kind) return null;
+    if (asksAboutAnotherPlace(stripSkipClause(label))) return { kind, foreign: true, says: null };
+    const p = profile || {};
+    const A = typeof p.work_authorized_us === "boolean" ? p.work_authorized_us : null;
+    const N = typeof p.needs_sponsorship === "boolean" ? p.needs_sponsorship : null;
+    let says = null;
+    if (kind === "auth") says = A;
+    else if (kind === "sponsor") says = N;
+    else if (kind === "auth_without") {
+      if (A === false || N === true) says = false;
+      else if (A === true && N === false) says = true;
+    }
+    return { kind, foreign: false, says };
+  }
+
+  // The option that says Yes (or No). Exactly one, or none: GitLab's sponsorship list has
+  // seven "Yes, <visa type>" rows, and picking one would invent WHICH visa the person holds.
+  function workStatusOption(says, options) {
+    const want = says ? /^\W*yes\b/i : /^\W*no\b/i;
+    const hits = options.filter((o) => want.test(String(o.text || "")));
+    return hits.length === 1 ? hits[0] : null;
+  }
+
+  // The whole decision, for every widget. `options` = [{ text, ... }] or null for a text box.
+  //   null           → not a work-status question;
+  //   { pick: x }    → the option (or "Yes"/"No" text) to enter;
+  //   { pick: null } → leave it blank: nobody has told us, and we never guess this one.
+  // An unknown goes to the backend once: it returns the PERSON's own answer for this job
+  // when the hand-back loop has one, and otherwise refuses ("") by the same rules as here.
+  async function answerWorkStatus(label, options, profile, jobInfo) {
+    const ws = workStatus(label, profile);
+    if (!ws) return null;
+    if (ws.says !== null) {
+      if (!options) return { pick: ws.says ? "Yes" : "No" };
+      const opt = workStatusOption(ws.says, options);
+      if (opt) return { pick: opt };
+    }
+    if (_aiAnswersUsed >= MAX_AI_ANSWERS_PER_FORM) return { pick: null };
+    _aiAnswersUsed++;
+    const job = jobInfo || {};
+    const res = await sendMsg({
+      type: "ANSWER_QUESTION",
+      data: {
+        question: label,
+        ...(options ? { options: options.map((o) => o.text) } : {}),
+        job_title: job.title || "",
+        company: job.company || "",
+      },
+    });
+    const ans = res && res.answer ? String(res.answer).trim() : "";
+    if (!ans) {
+      logBackend(`Work-status question left for you${ws.foreign ? " (asks about a country other than the US)" : ""}: "${String(label).slice(0, 80)}"`, "warn");
+      return { pick: null };
+    }
+    if (!options) return { pick: ans };
+    const low = ans.toLowerCase();
+    return { pick: options.find((o) => String(o.text || "").trim().toLowerCase() === low) || null };
+  }
+
+  // Consent the applicant gives to the EMPLOYER'S handling of the application — privacy
+  // notices, data processing / retention, recording, a background check. Not a claim about
+  // the person. The old pattern was the bare substrings "consent|agree", so "Are you
+  // subject to any employment AGREEments with your current employer?" (5 of the 320
+  // schemas) and "Are you currently employed … by Deloitte? … you agree that…" were
+  // answered "Yes" — a non-compete and a past employer the person never had.
+  const CONSENT_VERB_RE = /\b(consent(s|ing)?|agree|acknowledge|accept)\b/i;
+  const CONSENT_OBJECT_RE = /privacy|personal (data|information)|\bdata\b|gdpr|ccpa|\bterms\b|conditions|polic(y|ies)|\bnotice\b|process(ing|es|ed)?\b|retain|retention|record|transcri|background (check|screen)|drug (test|screen)|e-?verify|reference check|use of (ai|artificial intelligence|automated)/i;
+  // Being texted / marketed to is the platform's ask, not consent to process the
+  // application: pickOptionDeterministic answers those "No".
+  const MARKETING_RE = /text message|\bsms\b|opt.?in|newsletter|marketing|talent (community|network|pool)/i;
+  // A question about the person ("Are you…", "Have you…", "Were you…") is a factual claim
+  // whatever consent words it carries; so is anything about being a human and not a bot.
+  const FACTUAL_CLAIM_RE = /^\W*(are|have|has|were|was|did|is)\s+you\b/i;
+  const PERSON_ONLY_RE = /(real|actual) (human|person)\b|human being|\bnot (a |an )?(automated |ai )?(ro)?bot\b|automated (bot|tool|system|program|agent)/i;
+  function isConsentToProcess(label) {
+    const q = String(label || "");
+    if (!CONSENT_VERB_RE.test(q) || !CONSENT_OBJECT_RE.test(q)) return false;
+    if (FACTUAL_CLAIM_RE.test(q) || PERSON_ONLY_RE.test(q) || MARKETING_RE.test(q)) return false;
+    return !workStatus(q, {});
+  }
+
+  // A yes/no about the person's own history that no position or default may answer:
+  // visa status, having worked for this company, a restrictive agreement with an employer.
+  // "How many years have you worked for a SaaS company" is about their experience, not
+  // this company — benign, so it is not one of these.
+  function isPersonalKnockout(label) {
+    const q = String(label || "");
+    return /sponsor|visas?\b|h-?1b|immigration|work permits?\b|green card|permanent residen|\bcitizen(?:s|ship)?\b/i.test(q) ||
+      /non-?compet|non-?solicit|(employment|restrictive|post-employment) (agreements?|covenants?|restrictions?)|bound by any agreements?|subject to (any|a) [^?]{0,40}agreements?/i.test(q) ||
+      (/(worked (at|for)|employed (by|at|with|for)|(former|previous|current) employee)/i.test(q) &&
+       !/how (many|long)/i.test(q));
+  }
+
+  // Pick a dropdown option deterministically (no AI) for the common cases.
+  // Returns the chosen option object, or null if it needs AI / a fallback.
   function pickOptionDeterministic(label, options, profile) {
     const texts = options.map(o => o.text);
     // Demographic → decline.
@@ -3751,22 +4121,20 @@
     }
     const yes = options.find(o => /^yes\b/i.test(o.text));
     const no = options.find(o => /^no\b/i.test(o.text));
-    // SPONSORSHIP is NOT the same knockout as work-authorization (2026-08-09 fix: the
-    // old blanket eligibility→Yes could answer "Yes I need sponsorship" wrongly, or
-    // vice versa). Answer ONLY from an explicit profile field; otherwise punt to
-    // AI-with-resume / hand-back — never guess a knockout under the user's name.
-    if (/(sponsor|visa\b|h-?1b|immigration case)/i.test(label)) {
-      if (typeof profile.needs_sponsorship !== "boolean") return null;
-      const says = sponsorshipSaysYes(label, profile.needs_sponsorship);
-      if (says === null) return null;
-      return (says ? yes : no) || null;
-    }
+    // Work authorization / sponsorship: the profile's answer, read the way the question
+    // points and only for the US (workStatus). Anything else — another country, a silent
+    // profile, an unclear wording — is null here; chooseOption's answerWorkStatus asks
+    // for the person's own answer and otherwise leaves it blank. Never a default.
+    const ws = workStatus(label, profile);
+    if (ws) return ws.says === null ? null : workStatusOption(ws.says, options);
     // Marketing/SMS opt-in → No. It is the platform asking to text the user, not the
     // employer asking anything about the candidate, and nothing about the application
     // depends on the answer — so the least intrusive choice is the honest default.
     // (ZipRecruiter makes this one REQUIRED on its one-tap apply: name=['sms_opt_in'],
     // and a blank answer blocks the whole submission.)
-    if (/(text message|sms|opt.?in|receive (calls|messages|texts)|talent (community|network|pool)|newsletter)/i.test(label) && no) return no;
+    // "\bsms\b": the bare substring matched "mechaniSMS" / "organiSMS" and answered a real
+    // question "No". ("opt.?in" never matched "option" — pinned in work-status.test.js.)
+    if (/(text message|\bsms\b|opt.?in|receive (calls|messages|texts)|talent (community|network|pool)|newsletter)/i.test(label) && no) return no;
     // Previously worked at THIS company / referral-conflict → No (honest default for a
     // cold application; a real former employee reviews in TAP and can fix it).
     // "(ever|previously) been employed" requires a following by/at/with/for on purpose:
@@ -3790,10 +4158,10 @@
       const us = options.find(o => /(united states|usa|u\.s\.)/i.test(o.text));
       if (us && /^\+?1|us|remote/i.test(String(profile.phone || profile.location || ""))) return us;
     }
-    // Yes/No eligibility (authorized to work, 18+, background check) → Yes.
-    // (profile.work_authorized_us === false overrides the Yes for authorization Qs.)
-    if (yes && /(authoriz|eligible|18|over 18|legally|background|consent|agree|able to)/i.test(label)) {
-      if (/(authoriz|legally|eligible)/i.test(label) && profile.work_authorized_us === false && no) return no;
+    // Yes/No eligibility that is not legal work status (18+, background check, "legally
+    // able to drive") and consent to the employer's processing → Yes. Work status was
+    // decided above; a bare "agree" is no longer enough (isConsentToProcess).
+    if (yes && (/(eligible|18|over 18|legally|background|able to)/i.test(label) || isConsentToProcess(label))) {
       return yes;
     }
     // Salary bracket → the one that HOLDS the user's stated figure (salaryAnswer), never the
@@ -3844,6 +4212,10 @@
   // reordered right-to-work question). Prefers a neutral option, then affirmative
   // for eligibility, and only falls to the first option for clearly-benign dropdowns.
   async function chooseOption(label, options, profile, jobInfo) {
+    // Legal work status is decided in one place for every widget — never by the model's
+    // guess or a fallback below (see answerWorkStatus).
+    const status = await answerWorkStatus(label, options, profile, jobInfo);
+    if (status) return status.pick;
     let chosen = pickOptionDeterministic(label, options, profile);
     // Pay is the user's figure or nothing: no model, and none of the fallbacks below (the
     // "first real option" one would put a bracket of ours on the application).
@@ -3885,13 +4257,13 @@
     //    "I am a previous employee" (live 10-06). Blank → hand-back, the person answers.
     //    "How many years have you worked for a SaaS company" is about the person's history,
     //    not this company — benign, so it keeps the fallbacks below.
-    if (/(sponsor|visa\b|h-?1b|immigration)/i.test(label) ||
-        (/(worked (at|for)|employed (by|at|with|for)|(former|previous|current) employee)/i.test(label) &&
-         !/how (many|long)/i.test(label))) {
-      return null;
-    }
-    // 3) eligibility / yes-no phrasing → affirmative, never a stray first option.
-    if (/(authoriz|eligible|legally|right to work|able to|18 (years|or older)|over 18|consent|agree|background)/i.test(label)) {
+    //    Restrictive agreements too: "Are you subject to any non-compete / employment
+    //    agreements with your current employer?" (5 of the 320 schemas; Scale AI's first
+    //    option is "Yes") — a "Yes" there tells the employer you are bound.
+    if (isPersonalKnockout(label)) return null;
+    // 3) eligibility / yes-no phrasing → affirmative, never a stray first option. Not
+    //    work status (answered above) and not a bare "agree": consent to processing only.
+    if (/(eligible|legally|able to|18 (years|or older)|over 18|background)/i.test(label) || isConsentToProcess(label)) {
       const yes = options.find(o => /^yes\b/i.test(o.text));
       if (yes) return yes;
     }
