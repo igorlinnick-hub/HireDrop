@@ -130,7 +130,28 @@ function load(html, url) {
     const { ctx, doc } = load(html, URL_);
     doc.querySelectorAll('article[id^="job-card-"]').forEach((el) => el.remove());
     const got = ctx.readZipRecruiterCompany(doc, UUID, [], null, null);
-    check("no card → link text without 'Learn more about' / 'external'", got === WANT, JSON.stringify(got));
+    check("no card → name without 'Learn more about' / 'external'", got === WANT, JSON.stringify(got));
+  }
+  {
+    // Same, without aria-label: the own text nodes alone still give the clean name.
+    const { ctx, doc } = load(html, URL_);
+    doc.querySelectorAll('article[id^="job-card-"]').forEach((el) => el.remove());
+    doc.querySelector('[data-testid="right-pane"] a[href*="/co/"]').removeAttribute("aria-label");
+    const got = ctx.readZipRecruiterCompany(doc, UUID, [], null, null);
+    check("no card, no aria-label → own text nodes", got === WANT, JSON.stringify(got));
+  }
+  {
+    // Synthetic (not a capture): if ZR ever wraps the name in an element, the own text
+    // nodes are just "Learn more about". That must be "", not a shared fake name —
+    // company_key would fold every ZR employer into one and the cap would block them all.
+    const { ctx, doc } = load('<div data-testid="right-pane"><a href="/co/x"><span>XPO</span></a></div>', URL_);
+    const a = doc.querySelector("a");
+    a.insertBefore(doc.createTextNode("Learn more about "), a.firstChild);
+    check("wrapped name, no aria-label → \"\" (never 'Learn more about')",
+      ctx.readZipRecruiterCompany(doc, UUID, [], null, null) === "");
+    a.setAttribute("aria-label", "Learn more about Acme External");
+    check("wrapped name → aria-label; a real word 'External' is kept",
+      ctx.readZipRecruiterCompany(doc, UUID, [], null, null) === "Acme External");
   }
   {
     const { ctx, doc } = load(html, URL_);

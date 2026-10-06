@@ -1976,14 +1976,19 @@
     if (pool) return pool;
     const a = doc.querySelector('[data-testid="right-pane"]')?.querySelector('a[href*="/co/"]');
     if (!a) return "";
+    // aria-label carries the full name even if ZR wraps it in a <span>; the own text
+    // nodes are the fallback (an <svg><title> icon is an element, so it never joins in).
     const own = Array.from(a.childNodes)
-      .filter((n) => n.nodeType === 3) // text nodes only — the icon's <title> is not the name
+      .filter((n) => n.nodeType === 3)
       .map((n) => n.textContent)
       .join(" ");
-    return own.replace(/\s+/g, " ").trim()
-      .replace(/^learn more about\s+/i, "")
-      .replace(/\s*external$/i, "")
-      .trim();
+    for (const raw of [a.getAttribute("aria-label") || "", own]) {
+      // A bare "Learn more about" must give "", or company_key collapses every ZR
+      // employer into one key and the company cap blocks them all after one apply.
+      const name = raw.replace(/\s+/g, " ").trim().replace(/^learn more about\b\s*/i, "").trim();
+      if (name) return name;
+    }
+    return "";
   }
 
   async function phase2_jobDetail() {
