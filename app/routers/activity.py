@@ -115,7 +115,8 @@ def list_handbacks(user=Depends(get_current_user), limit: int = 20):
 
 @router.post("/handbacks")
 def add_handback(body: HandbackBody, user=Depends(get_current_user)):
-    """The extension reports a job it could not finish. Idempotent per URL."""
+    """The extension reports a job it could not finish. Idempotent per posting
+    (handbacks_db.posting_url) — never per form screen."""
     row = handbacks_db.add(user.id, body.model_dump())
     return {"ok": True, "handback": row}
 

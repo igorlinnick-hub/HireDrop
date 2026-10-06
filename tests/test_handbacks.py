@@ -327,3 +327,131 @@ def test_retry_endpoint_requeues_an_ats_hand_back(auth_client):
     assert r.status_code == 200 and r.json()["requeued"] is True
     retry.assert_called_once()
     status.assert_not_called()  # no pool row to flip; the ATS queue serves it as `new`
+
+
+# --- Identity: one open row per JOB, never per form screen (10-06) ----------------------
+#
+# Every Indeed application runs through the same smartapply step URLs, and the open-row
+# key is the URL — so each new Indeed hand-back overwrote the person's previous one
+# (15 Indeed jobs handed back 09-28…10-05 left 5 rows). Captured step URLs from prod
+# activity_log: they carry no query at all.
+
+_STEP_REVIEW = (
+    "https://smartapply.indeed.com/beta/indeedapply/form/resume-module/structured-data-review"
+)
+_STEP_Q1 = "https://smartapply.indeed.com/beta/indeedapply/form/questions-module/questions/1"
+
+
+def _url_written(job: dict, pool_jk=None) -> str:
+    client, calls, _tbl = _fake_supabase()
+    with (
+        patch.object(hb, "get_supabase", return_value=client),
+        patch.object(hb, "_pool_jk", return_value=pool_jk),
+    ):
+        hb.add("u1", job)
+    return calls["payload"]["url"]
+
+
+def test_two_indeed_jobs_on_the_same_step_url_get_two_rows():
+    """The bug: same step URL, different jobs, one row. An old extension still sends the
+    step URL, so the backend must tell the jobs apart by themselves."""
+    a = _url_written(
+        {"url": _STEP_REVIEW, "job_title": "Event Coordinator", "company": "Bowtech Archery"}
+    )
+    b = _url_written(
+        {"url": _STEP_REVIEW, "job_title": "Marketing Coordinator", "company": "Onvera Health"}
+    )
+    assert a != b
+    assert "smartapply" not in a and "smartapply" not in b
+
+
+def test_the_same_indeed_job_on_two_step_urls_is_one_row():
+    """A re-run of one job that stops on a different screen is still that job."""
+    job = {"job_title": "Event Coordinator", "company": "Bowtech Archery"}
+    assert _url_written({**job, "url": _STEP_REVIEW}) == _url_written({**job, "url": _STEP_Q1})
+
+
+def test_a_new_extension_posting_url_is_the_identity_in_one_spelling():
+    """ext >= this fix sends the /viewjob URL the walk opened; query spellings collapse."""
+    a = _url_written({"url": "https://www.indeed.com/viewjob?jk=1a2b3c4d5e6f7a8b&from=serp&tk=x"})
+    b = _url_written({"url": "https://www.indeed.com/jobs?q=pm&vjk=1A2B3C4D5E6F7A8B"})
+    assert a == b == "https://www.indeed.com/viewjob?jk=1a2b3c4d5e6f7a8b"
+
+
+def test_an_old_step_url_resolves_to_the_pool_posting_when_unambiguous():
+    url = _url_written(
+        {"url": _STEP_REVIEW, "job_title": "Event Coordinator", "company": "Bowtech Archery"},
+        pool_jk="aaaaaaaaaaaaaaaa",
+    )
+    assert url == "https://www.indeed.com/viewjob?jk=aaaaaaaaaaaaaaaa"
+
+
+def test_an_old_step_url_without_a_pool_match_becomes_a_search_link():
+    url = _url_written(
+        {"url": _STEP_REVIEW, "job_title": "Event Coordinator", "company": "Bowtech Archery"}
+    )
+    assert url == "https://www.indeed.com/jobs?q=Event+Coordinator+Bowtech+Archery"
+
+
+def test_a_step_url_with_nothing_to_identify_the_job_stays_as_sent():
+    """No title, no company: nothing to key on, so the old behaviour — and those anonymous
+    rows can no longer swallow a named job's row."""
+    assert _url_written({"url": _STEP_REVIEW}) == _STEP_REVIEW
+
+
+def test_ats_urls_are_stored_as_sent():
+    for u in (
+        "https://job-boards.greenhouse.io/doordashusa/jobs/8237299",
+        "https://jobs.lever.co/acme/1234-abcd/apply",
+        "https://www.ziprecruiter.com/jobs-search?q=pm&lk=abc",
+    ):
+        assert _url_written({"url": u, "job_title": "PM", "company": "Acme"}) == u
+
+
+def test_the_pool_lookup_is_scoped_to_the_user_and_refuses_to_guess():
+    client, calls, tbl = _fake_supabase()
+    tbl.execute.return_value = MagicMock(
+        data=[
+            {"link": "https://www.indeed.com/viewjob?jk=aaaaaaaaaaaaaaaa"},
+            {"link": "https://www.indeed.com/viewjob?jk=AAAAAAAAAAAAAAAA&from=serp"},
+        ]
+    )
+    with patch.object(hb, "get_supabase", return_value=client):
+        assert hb._pool_jk("u1", "Event Coordinator", "Bowtech Archery") == "aaaaaaaaaaaaaaaa"
+    assert calls["table"] == "jobs"
+    assert ("eq", ("user_id", "u1")) in calls["filters"]
+
+    # Two postings with this title + company (two locations, a repost): no guess.
+    tbl.execute.return_value = MagicMock(
+        data=[
+            {"link": "https://www.indeed.com/viewjob?jk=aaaaaaaaaaaaaaaa"},
+            {"link": "https://www.indeed.com/viewjob?jk=bbbbbbbbbbbbbbbb"},
+        ]
+    )
+    with patch.object(hb, "get_supabase", return_value=client):
+        assert hb._pool_jk("u1", "Event Coordinator", "Bowtech Archery") is None
+
+
+def test_a_failed_pool_lookup_falls_back_instead_of_raising():
+    broken = MagicMock()
+    broken.table.side_effect = RuntimeError("pool down")
+    with patch.object(hb, "get_supabase", return_value=broken):
+        assert hb._pool_jk("u1", "PM", "Acme") is None
+
+
+def test_an_applied_indeed_posting_closes_its_hand_back_whatever_the_spelling():
+    """The hand-back holds /viewjob?jk=; the application may be saved under ?vjk=."""
+    client, calls, tbl = _fake_supabase()
+    open_rows = [
+        {"id": "h1", "url": "https://www.indeed.com/viewjob?jk=1a2b3c4d5e6f7a8b"},
+        {"id": "h2", "url": "https://www.indeed.com/viewjob?jk=9999999999999999"},
+        {"id": "h3", "url": _STEP_REVIEW},
+    ]
+    tbl.in_ = MagicMock(return_value=tbl)
+    with (
+        patch.object(hb, "get_supabase", return_value=client),
+        patch.object(hb, "fetch_paged", return_value=open_rows),
+    ):
+        n = hb.resolve_for_posting("u1", "https://www.indeed.com/jobs?q=pm&vjk=1a2b3c4d5e6f7a8b")
+    assert n == 1
+    tbl.in_.assert_called_once_with("id", ["h1"])

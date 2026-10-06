@@ -184,11 +184,13 @@ def _company_title(row: dict) -> tuple[str, str]:
 
 
 def job_key(row: dict) -> str:
-    """One key per POSTING. An Indeed hand-back URL is the form step
-    (smartapply…/structured-data-review), shared by every Indeed job — so Indeed is keyed
-    by company + title, ATS boards by the posting id in the URL."""
+    """One key per POSTING. Indeed is keyed by company + title, ATS boards by the posting
+    id in the URL. Older Indeed hand-backs carry the form step
+    (smartapply…/structured-data-review, shared by every Indeed job); since 10-06 the
+    extension sends /viewjob?jk= and the table may hold a search link for old builds —
+    one Indeed key for all three spellings keeps events and table rows matching."""
     url = _url(row)
-    if url and "smartapply.indeed.com" not in url:
+    if url and "indeed.com" not in url:
         k = job_identity(url) or normalized_link(url)
         if k:
             return k

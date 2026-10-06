@@ -1957,7 +1957,11 @@
         unfilled: collectUnfilledRequired(),
         // typeof guard: tests run this function alone in a vm sandbox.
         diag: typeof formBlockers === "function" ? formBlockers() : null,
-        url: window.location.href,
+        // The POSTING, not the screen we stopped on: every Indeed application runs through
+        // the same smartapply step URLs, so the step URL made each new Indeed hand-back
+        // overwrite the person's previous one (one open row per URL). Callers on a
+        // multi-step form pass the job's own URL; an ATS form page is its posting.
+        url: extra.url || window.location.href,
         title: extra.title || "", company: extra.company || "",
         platform: extra.platform || detectPlatform(),
         // How many form screens we DID complete. The user's list shows this as
@@ -4780,7 +4784,7 @@
             `the form step wouldn't accept our answers — "${classifyFormButton().label || "Continue"}" refused ${stallRounds + 1}× with nothing left to fill${
               profileGaps.length ? ` — your profile has nothing for: ${[...new Set(profileGaps)].join(", ")}` : ""
             }`,
-            { title: jobInfo.title, company: jobInfo.company, platform: detectPlatform(),
+            { title: jobInfo.title, company: jobInfo.company, platform: detectPlatform(), url: jobInfo.url,
               // The refusing screen is not a completed step — count the ones before it.
               steps: Math.max(0, formStepCount - 1) });
           await skipToNextJob();
@@ -4859,7 +4863,7 @@
             // return here dead-stopped a "running" campaign on the open form.
             await handBackJob(
               "resume didn't attach (required) — not submitting a resume-less application",
-              { title: jobInfo.title, company: jobInfo.company, platform: detectPlatform(),
+              { title: jobInfo.title, company: jobInfo.company, platform: detectPlatform(), url: jobInfo.url,
                 // The blocked submit screen is not a completed step.
                 steps: Math.max(0, formStepCount - 1) });
             await skipToNextJob();
