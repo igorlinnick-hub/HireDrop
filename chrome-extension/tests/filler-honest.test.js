@@ -167,6 +167,7 @@ const comboParts = [
   extract("  function visibleApplyDialogs() {"),
   extract("  function formScope() {"),
   extract("  function findComboMenu(combo) {"),
+  extract("  function explicitLabel(el) {"),
   extract("  function getComboLabel(combo) {"),
   extract("  async function fillComboboxes() {"),
 ];
