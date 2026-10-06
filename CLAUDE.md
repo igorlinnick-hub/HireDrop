@@ -94,6 +94,13 @@ Ashby/Workday 0% — колонки salary в `jobs` нет, плата парс
 Report-Only в `Content-Security-Policy`. Простой grep читает только последний деплой: 10-05 он
 сказал «чисто», а единственное настоящее нарушение лежало в предыдущем.
 
+**Названы ли в политике приватности все сайты расширения — `scripts/check_privacy_hosts.py`.**
+Сверяет хосты `manifest.json` (host/optional permissions + content_scripts) с живой
+https://hiredrop.io/privacy; exit 1 печатает, чего не хватает. Гоняется сам (workflow
+`privacy-hosts.yml`) на правку манифеста и раз в неделю. Порядок при новой платформе:
+сначала политика на сайте (`jobflow-website/app/privacy/page.tsx`) и её деплой, потом манифест.
+10-06 политика всё ещё писала «only on indeed.com» при пяти платформах в манифесте.
+
 **JS-тесты расширения в CI с 09-21.** `chrome-extension/tests/*.test.js` гоняются на каждом
 PR (`npm run test:ext` → `tests/run-all.js`, находит файлы сам — регистрировать новый не
 нужно). До этого сьюта жила ВНЕ CI: workflow гонял только Python, поэтому три рабочих теста

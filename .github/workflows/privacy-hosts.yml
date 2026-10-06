@@ -1,0 +1,33 @@
+name: Privacy policy names every manifest host
+
+# The privacy policy lives in the website repo; the manifest lives here. On 10-06 the
+# policy still said the extension runs "only on indeed.com" four platforms later, and a
+# Chrome Web Store reviewer compares exactly these two. Every host the manifest grants
+# must be named on the live https://hiredrop.io/privacy — fix the policy first, then the
+# manifest. Separate from CI so a website outage never reds unrelated PRs; the weekly run
+# catches the policy side drifting.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - chrome-extension/manifest.json
+      - scripts/check_privacy_hosts.py
+  push:
+    branches: [main]
+    paths:
+      - chrome-extension/manifest.json
+      - scripts/check_privacy_hosts.py
+  schedule:
+    - cron: "17 9 * * 1"
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python scripts/check_privacy_hosts.py
