@@ -23,9 +23,9 @@
 
 - 10-05: MCP авторизован; доказано, что `ads_create_ad` с инлайн-креативом = `scripts/meta_ads.py:creative_payload()`
   (asset_feed_spec 4:5/9:16 + `url_tags` с `{{ad.id}}`) проходит без dev-mode стены.
-- Грабли: на аккаунте НЕ раскатаны `ads_creative_upload_local_image` и чтение черновиков; загрузка по URL требует
-  публичной ссылки, а выкладку файлов в публичный репо режет классификатор — не повторять → PNG кладёт Игорь в
-  медиатеку. Щёки на сценах: `nano-banana` стирает лицо на desk-сцене, `flux-kontext-pro` справился; ручной
+- 10-05: **все 6 PNG R2-drop в медиатеке, загрузил сам**: приватный бакет Supabase `ad-creatives` → signed URL
+  на час → `ads_creative_upload_media` (URL). Хэши — `content-lab/ads/campaigns/meta-r1.state.json` (ключи `R2-drop/…`;
+  старые `R1/…` = M1 с лицами, не брать). `ads_creative_upload_local_image` всё ещё «gradually rolled out». Щёки на сценах: `nano-banana` стирает лицо на desk-сцене, `flux-kontext-pro` справился; ручной
   inpaint OpenCV мажет очки. Метку ИИ (`self_ai_disclosure`) Игорь решил не ставить.
 - Трогал: `content-lab/ads/campaigns/meta-r1.{json,state.json}`, `content-lab/ads/creatives/R2-drop/*`,
   `.claude/skills/ads-manager/SKILL.md`, память (`project_drop_vs_muse`, `feedback_ads_prep_not_creatives`,
@@ -49,7 +49,7 @@
 
 ## Следующий шаг
 
-Модель: **Opus**. Ждём от Игоря: 6 PNG `R2-drop` в Media library, IG → Connected assets, лимит $30→$300.
-Затем: `ads_get_ig_accounts` → `ads_get_ad_images` по имени → хэши в `meta-r1.state.json` → 3 × `ads_create_ad`
+Модель: **Opus**. Ждём от Игоря: IG → Connected assets, лимит $30→$300.
+Затем: `ads_get_ig_accounts` → 3 × `ads_create_ad` (хэши R2-drop из `meta-r1.state.json`)
 (payload сборщика, + `instagram_user_id` если IG виден), PAUSED → ссылка на Ads Manager, включает Игорь →
 установить launchd `ads-manager` (ручной `claude -p` прогон сначала) → `ADS_MONTHLY_BUDGET_USD=300` на Railway.
