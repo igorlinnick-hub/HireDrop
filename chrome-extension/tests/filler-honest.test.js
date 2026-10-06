@@ -245,6 +245,7 @@ function comboWorld(html, { want } = {}) {
   // ---- 4. A required race group gets its decline box ---------------------------------
   const cbParts = [extract("  function getFieldLabel(el) {"), extract("  function visibleApplyDialogs() {"),
     extract("  function formScope() {"), extract("  function isDemographicQuestion(label, optionTexts) {"),
+    extract("  function isDeclineOption(text) {"),
     SRC.slice(SRC.indexOf("  // ── Legal work status: ONE reading"), SRC.indexOf("  // Pick a dropdown option deterministically")),
     extract("  async function fillCheckboxes() {")];
   check("checkbox filler + helpers found", cbParts.every(Boolean));
@@ -319,7 +320,7 @@ function comboWorld(html, { want } = {}) {
       logBackend() {}, chrome: { runtime: { sendMessage() { throw new Error("model reached"); } } } };
     vm.createContext(ctx);
     const wsBlock = SRC.slice(SRC.indexOf("  // ── Legal work status: ONE reading"), SRC.indexOf("  // Pick a dropdown option deterministically"));
-    vm.runInContext(`${helpers}\n${extract("  function isDemographicQuestion(label, optionTexts) {")}\n${wsBlock}\n` +
+    vm.runInContext(`${helpers}\n${extract("  function isDemographicQuestion(label, optionTexts) {")}\n${extract("  function isDeclineOption(text) {")}\n${wsBlock}\n` +
       `${extract("  function pickOptionDeterministic(label, options, profile) {")}\n${choose}\n` +
       "globalThis.choose = chooseOption;", ctx);
     const opts = ["Alabama", "Alaska", "Arizona", "Arkansas", "California", "Colorado", "Connecticut", "Delaware",
