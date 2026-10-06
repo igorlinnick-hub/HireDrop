@@ -147,7 +147,9 @@ def suggest_employer_answers(user=Depends(get_current_user)):
 
 
 @router.post("/profile/employer-answers")
-def update_employer_answers(body: dict, answers_ui: int | None = None, user=Depends(get_current_user)):
+def update_employer_answers(
+    body: dict, answers_ui: int | None = None, user=Depends(get_current_user)
+):
     """Save the employer answers (modules/employer_answers.py). Partial: only the keys
     sent are written, so answering one question never blanks another. `missing` answers
     for the client that asked (`answers_ui`) — an old form must not be handed questions
@@ -771,7 +773,9 @@ def _seed_postal_from_resume(user_id: str, data: dict) -> None:
     """Zip only (see profile_db.fill_postal_if_blank). Best-effort — a profile write must
     never fail a resume build."""
     try:
-        city, _state, postal = _split_location(str((data.get("contact") or {}).get("location") or ""))
+        city, _state, postal = _split_location(
+            str((data.get("contact") or {}).get("location") or "")
+        )
         if profile_db.fill_postal_if_blank(user_id, postal, city):
             print("[profile] seeded postal_code from resume", file=sys.stderr)
     except Exception as e:

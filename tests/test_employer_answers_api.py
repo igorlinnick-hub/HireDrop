@@ -294,9 +294,10 @@ def test_saving_writes_only_known_keys_and_reports_what_is_left(auth_client):
         old = auth_client.post("/api/v1/profile/employer-answers", json={"city": "Austin"})
     # "No degree" clears the school it replaces; an unknown key is never written.
     assert written == {"no_degree": True, "school": "", "degree": "", "city": "Austin"}
-    # The new form is told what is left of the whole list; an old one only of its own.
+    # The form is told what is left of the whole list; a caller that names no version is
+    # held to the current list too, like /campaign/start and /campaign/readiness.
     assert [m["key"] for m in res.json()["missing"]] == ["salary_expectation"]
-    assert old.json() == {"saved": True, "missing": []}
+    assert [m["key"] for m in old.json()["missing"]] == ["school", "degree", "salary_expectation"]
 
 
 READY = {

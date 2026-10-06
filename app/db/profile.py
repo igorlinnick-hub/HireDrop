@@ -220,9 +220,16 @@ def fill_postal_if_blank(user_id: str, postal_code: str, resume_city: str) -> di
     postal = (postal_code or "").strip()
     current = get_profile(user_id)
     city = str(current.get("city") or "").strip().lower()
-    if not postal or current.get("postal_code") or not city or city != (resume_city or "").strip().lower():
+    if (
+        not postal
+        or current.get("postal_code")
+        or not city
+        or city != (resume_city or "").strip().lower()
+    ):
         return {}
-    get_supabase().table("profiles").update({"postal_code": postal[:100]}).eq("user_id", user_id).execute()
+    get_supabase().table("profiles").update({"postal_code": postal[:100]}).eq(
+        "user_id", user_id
+    ).execute()
     return {"postal_code": postal[:100]}
 
 
