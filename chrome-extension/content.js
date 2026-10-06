@@ -3782,6 +3782,13 @@
   // page-level form dialogSnapshot() is literally "dialogs=0". Field `.value` is never read
   // (Indeed's structured-data-review step renders the user's parsed resume); page messages
   // are kept, with emails and phone-like numbers masked in case a message echoes input.
+  // Diagnostics leave the page as text in the activity log. Labels and headings can echo the
+  // person (an account-menu "igor@…", a contact card's phone), so every diag string goes
+  // through this before it is kept.
+  function maskPii(s) {
+    return (s || "").replace(/\S+@\S+\.\S+/g, "<email>").replace(/\+?\d[\d\s().-]{5,}\d/g, "<num>");
+  }
+
   function formBlockers() {
     try {
       const { btn, label } = classifyFormButton();
@@ -3798,7 +3805,7 @@
       // By code point, not UTF-16 unit: half an emoji can fail the JSON insert.
       const clip = (s, n) => Array.from((s || "").replace(/\s+/g, " ").replace(/\*/g, "").trim()).slice(0, n).join("");
       const push = (arr, s, n, max) => { s = clip(s, n); if (s && arr.length < max && !arr.includes(s)) arr.push(s); };
-      const mask = (s) => (s || "").replace(/\S+@\S+\.\S+/g, "<email>").replace(/\+?\d[\d\s().-]{5,}\d/g, "<num>");
+      const mask = maskPii;
       const textOf = (id) => { const n = id && document.getElementById(id); return n ? n.textContent : ""; };
       // A radio/checkbox's own label is the OPTION ("Yes"); the question is the group's.
       const nameOf = (el) => {
@@ -3921,10 +3928,10 @@
       const BADGE = /^(missing|required|incomplete|add|needs?|error|invalid|fix|update|confirm)\b/i;
       const badges = [...new Set([...root.querySelectorAll("*")].filter((e) =>
         e.children.length === 0 && vis(e) && flat(e.textContent).length <= 30 && BADGE.test(flat(e.textContent)))
-        .map((e) => `${e.getAttribute("data-testid") || e.tagName.toLowerCase()}:${flat(e.textContent)}`))].slice(0, 15);
+        .map((e) => `${e.getAttribute("data-testid") || e.tagName.toLowerCase()}:${maskPii(flat(e.textContent))}`))].slice(0, 15);
       // Actions by their first two words: "Edit Senior Software Engineer at Kaiser" → "Edit Senior".
       const acts = [...root.querySelectorAll("button, a, [role='button'], [role='link']")].filter(vis)
-        .map((e) => flat(e.getAttribute("aria-label") || e.textContent).split(" ").slice(0, 2).join(" ") +
+        .map((e) => flat(maskPii(flat(e.getAttribute("aria-label") || e.textContent))).split(" ").slice(0, 2).join(" ") +
           (e.disabled || e.getAttribute("aria-disabled") === "true" ? "(off)" : ""))
         .filter(Boolean).slice(0, 25);
       let ids = JSON.stringify([...new Set([...root.querySelectorAll("[data-testid]")].filter(vis)
@@ -4020,7 +4027,7 @@
       const rows = [...document.querySelectorAll('button, a[href], [role="button"], input[type="submit"]')]
         .map((e) => {
           const r = e.getBoundingClientRect();
-          const label = flat(e.getAttribute("aria-label") || e.textContent || e.value).split(" ").slice(0, 3).join(" ");
+          const label = maskPii(flat(e.getAttribute("aria-label") || e.textContent || e.value)).split(" ").slice(0, 3).join(" ");
           const flags = [
             e.offsetParent === null ? "op" : "",
             fixedUp(e) ? `fx:${fixedUp(e)}` : "",
@@ -4035,7 +4042,7 @@
       // Headings say WHICH page this is when no button shows (an error / "already applied"
       // / still-loading shell) — page chrome only, never form values.
       const heads = [...document.querySelectorAll("h1, h2, [role='alert'], [role='status']")]
-        .map((e) => flat(e.textContent).slice(0, 60)).filter(Boolean).slice(0, 5);
+        .map((e) => maskPii(flat(e.textContent)).slice(0, 60)).filter(Boolean).slice(0, 5);
       return `iframes=${document.querySelectorAll("iframe").length} shadows=${shadows} heads=${JSON.stringify(heads)} btns=${JSON.stringify(rows)}`;
     } catch (e) {
       return `census=? (${String((e && e.message) || e).slice(0, 80)})`;

@@ -37,7 +37,7 @@ function extract(signature) {
 }
 
 const prefer = extract("  async function preferIndeedResume(filled) {");
-const snap = extract("  function structuredReviewSnapshot() {");
+const snap = extract("  function maskPii(s) {") + "\n" + extract("  function structuredReviewSnapshot() {");
 check("preferIndeedResume + structuredReviewSnapshot found", !!prefer && !!snap);
 
 function world(storage, html = FORM, pathname = "/beta/indeedapply/form/resume-selection-module/resume-selection") {
