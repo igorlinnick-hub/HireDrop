@@ -278,14 +278,15 @@
 
 ## Следующий шаг
 
-Модель: **Opus**. **План 10-06 (замер 14 дн: подано 61 = 4.4/день, 3 юзера; хендбэков 67 = 52%; 6 из 15 дней без
-заявок, до капа не дошёл ни один прогон; ZR 113 стартов → 0).** Сверху вниз, исполнители — агенты, мерж после скептика:
-1) хендбэки: инструмент `scripts/handback_reasons.py` (ветка `tools/handback-reasons`) → фиксы по топ-причинам;
-2) ежедневный автостарт в расширении (ветки `ext-auto-daily` + web `feat/auto-daily-toggle`; решения — память
-`project_auto_daily_start`) + Start перестаёт глотать 403 сервера; 3) второй судья: ATS из очереди берёт серверный
-fit (ветка `fit/reuse-server-verdict`); 4) «authorized in <страна>» → не Yes по умолчанию (ветка `ext-work-auth-country`).
-Волна 2: фильтр по названию на карточках (−26 открытий/прогон), Indeed CF-стена и ZR вживую («давай»), порог fit 35/32 (Игорь).
-Релиз: версию бампать при сборке (агенты не бампают); 1.8.42 ждёт одобрения 1.8.41 в CWS.
+Модель: **Opus**. **Волна 1 (10-06 ночь) смержена:** #373 `scripts/handback_reasons.py` · #374 ATS-очередь берёт
+серверный fit (11 ложных отсевов с 09-30) · #375 отказ «Review your resume details» → повтор с Indeed Resume, в лог
+текст ошибки Indeed · #376 + web #291 ежедневный автостарт (память `project_auto_daily_start`; Start больше не глотает
+403) · #377 хендбэк Indeed = вакансия, не шаг (терялось 10 из 15) · #379 починил main после #375+#377.
+**В полёте:** #378 ответы «authorized/sponsorship» (2-й ремонт: регрессия Twitch «permanent resident» → Yes) · ветка
+`ext-title-prefilter-cards` (фильтр названия на карточках). **Релиз:** когда CWS одобрит 1.8.41 → бамп 1.8.43 (всё
+выше + #378) → `sync-ext.sh` → zip → `cws_publish.py ship`. Web #291 до этого показывает «Update the extension».
+**Ждёт Игоря:** год окончания в профиле (причина отказа Indeed: education без даты — у Игоря и 2 юзеров) · порог fit
+35/32 · поле street address (3 хендбэка Indeed) · живые прогоны Indeed/ZR («давай»).
 
 Файлы лейна: `chrome-extension/content.js` (waitForFormButton перед waitForFormReady; isShownControl/buttonCensus после findFormButtonIn ~L3970; no-button ветка ~L4690, preferIndeedResume/structuredReviewSnapshot ~L3860, step loop ~L4325), `background.js` forgetHandedBackFromApplied ~L1059, `tests/indeed-resume-choice.test.js`, `tests/applied-rollback.test.js`, `chrome-extension/content.js` (formBlockers ~L3500, fillTextQuestions ~L2990,
 pay/school helpers перед isDemographicQuestion, fillComboboxes, fillCheckboxes),
