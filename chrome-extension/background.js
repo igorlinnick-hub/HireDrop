@@ -53,7 +53,7 @@ const USER_SCOPED_KEYS = [
   "campaignFilters", "campaignStartedAt", "currentJob",
   "platformConnections", "captchaWaiting", "reviewMode",
   // Indeed resume choice (content.js preferIndeedResume): learned on this user's runs.
-  "indeedSdrRefusedAt", "indeedLastResumeKind",
+  "indeedSdrRefusedAt", "indeedLastResumeKind", "indeedResumeOffered", "indeedSdrRetryJob", "indeedResumeJob",
   // content.js submit belt: a pending ATS submit must never be recorded on another account.
   "pendingAtsSubmit", "lastRecordedSubmit",
 ];
@@ -1146,8 +1146,42 @@ async function buildAtsQueue(platform, perPlatformCap) {
       const url = (j.link || j.apply_url).split("?")[0];
       return !appliedUrls.has(url) && !appliedKeys.has(`${norm(j.title)}|${norm(j.company)}`);
     })
-    .map((j) => ({ applyUrl: j.link || j.apply_url, title: j.title || "", company: j.company || "" }));
+    // `id` = the pool row. ASSESS_FIT sends it back so the server reuses the verdict this
+    // queue was built from instead of judging the posting a second time (queueJobIdFor).
+    .map((j) => ({ applyUrl: j.link || j.apply_url, title: j.title || "", company: j.company || "", id: j.id || null }));
   return { queue, pool: res.pool || 0, offSearch: res.off_search || 0 };
+}
+
+// Which pool row is the ATS walk judging right now? The head of the server-built queue —
+// but only when the page really is that posting, matched by its posting id (GH numeric id
+// or ?gh_jid=, Lever/Ashby uuid) or, failing that, by title. The id makes /tools/assess-fit
+// reuse the stored verdict the queue was built from (10-02: the queue held 38/42 on a bar
+// of 35, the live re-judge on page text said 22-30, and 3 of 5 opened postings were lost).
+// No match, a pool run, or a native board walk (no queue) -> null -> live judge, as before:
+// a wrong id would apply under another posting's verdict, a missing one only costs a call.
+const QUEUE_ATS_PLATFORMS = ["greenhouse", "lever", "ashby"];
+function postingIdOf(url) {
+  try {
+    const u = new URL(String(url || ""));
+    const gh = u.searchParams.get("gh_jid") || (/\/embed\/job_app/.test(u.pathname) && u.searchParams.get("token"));
+    if (gh) return gh.toLowerCase();
+    const segs = u.pathname.split("/").filter(Boolean).reverse();
+    const seg = segs.find((x) => /^\d{5,}$/.test(x) || /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(x));
+    return seg ? seg.toLowerCase() : null;
+  } catch { return null; }
+}
+function queueJobIdFor(atsPlatform, atsQueue, pageUrl, pageTitle) {
+  if (!QUEUE_ATS_PLATFORMS.includes(atsPlatform)) return null;
+  const head = Array.isArray(atsQueue) ? atsQueue[0] : null;
+  if (!head || !head.id || !pageUrl) return null;
+  const want = postingIdOf(head.applyUrl);
+  const got = postingIdOf(pageUrl);
+  if (want && got) return want === got ? head.id : null;
+  // Title alone only when the head has no posting id either: a head WITH an id and a page
+  // without one (employer-hosted copy) can be a same-titled posting elsewhere.
+  if (want) return null;
+  const norm = (s) => String(s || "").toLowerCase().replace(/\s+/g, " ").trim();
+  return norm(head.title) && norm(head.title) === norm(pageTitle) ? head.id : null;
 }
 
 // TAP-POOL queue (Igor 2026-07-16): the user's APPROVED swipe cards, platform-mixed
@@ -2821,6 +2855,14 @@ async function handleMessage(msg, sender) {
     // ----- Job-fit judge (Fit Engine M1) -----
     case "ASSESS_FIT": {
       const q = msg.data || {};
+      // Only the ATS walk passes job_url; the Indeed/ZipRecruiter walks never get a job_id.
+      let jobId = null;
+      if (q.job_url) {
+        try {
+          const st = await chrome.storage.local.get(["atsPlatform", "atsQueue"]);
+          jobId = queueJobIdFor(st.atsPlatform, st.atsQueue, q.job_url, q.job_title);
+        } catch {}
+      }
       try {
         const result = await Promise.race([
           apiPost("/tools/assess-fit", {
@@ -2828,6 +2870,7 @@ async function handleMessage(msg, sender) {
             company: q.company || "",
             description: String(q.description || "").slice(0, 4000),
             screener_questions: Array.isArray(q.screener_questions) ? q.screener_questions.slice(0, 20) : [],
+            ...(jobId ? { job_id: jobId } : {}),
           }),
           new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 25000)),
         ]);
