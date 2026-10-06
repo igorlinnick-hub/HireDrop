@@ -397,7 +397,7 @@ def get_by_link(user_id: str, link: str) -> dict | None:
     res = (
         get_supabase()
         .table("jobs")
-        .select("id, tailored_resume_pdf_url")
+        .select("id, tailored_resume_pdf_url, company, location")
         .eq("user_id", user_id)
         .eq("link", link)
         .limit(1)
@@ -412,7 +412,7 @@ def get_by_link(user_id: str, link: str) -> dict | None:
         res = (
             get_supabase()
             .table("jobs")
-            .select("id, tailored_resume_pdf_url")
+            .select("id, tailored_resume_pdf_url, company, location")
             .eq("user_id", user_id)
             .ilike("link", f"%jk={jk}%")
             .limit(1)
@@ -439,14 +439,26 @@ def save_description(user_id: str, link: str, description: str, **new_row) -> st
     apply). Matching mirrors get_by_link — exact URL, then the Indeed jk key, which is
     what actually identifies a posting across query-string spellings.
 
+    It also fills the posting's identity — company and location — when the row has
+    none. The search card is the row's only other source, and on Indeed it often comes
+    up empty: an employer with no Indeed company page has no name where the card
+    selectors look, and location was never harvested at all (0 of 344 Indeed rows,
+    09-22 → 10-06). The detail page has both. A blank-only fill, never an overwrite: the
+    page is the better source for text, not a reason to rewrite a name already stored.
+
     Returns the row id, or "" if nothing was written.
     """
     row = get_by_link(user_id, link)
     if row:
+        update = {"description": description}
+        for field in ("company", "location"):
+            value = " ".join((new_row.get(field) or "").split())[:200]
+            if value and not (row.get(field) or "").strip():
+                update[field] = value
         res = (
             get_supabase()
             .table("jobs")
-            .update({"description": description})
+            .update(update)
             .eq("id", row["id"])
             .eq("user_id", user_id)  # service_role bypasses RLS — this filter is the check
             .execute()
@@ -461,6 +473,7 @@ def save_description(user_id: str, link: str, description: str, **new_row) -> st
         "title": new_row.get("title", ""),
         "company": new_row.get("company", ""),
         "platform": new_row.get("platform", "unknown"),
+        "location": new_row.get("location", ""),
     }
     res = get_supabase().table("jobs").insert(payload).execute()
     return res.data[0]["id"] if res.data else ""

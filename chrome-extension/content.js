@@ -1546,6 +1546,13 @@
 
     const title = titleEl?.textContent?.trim() || "";
     const company = companyEl?.textContent?.trim() || "";
+    // The card's place line ("Remote in San Francisco, CA", captured 10-05,
+    // tests/fixtures/indeed-serp-decoy.html). Never harvested before: 0 of 344 Indeed pool
+    // rows had a location, so the deck's city filter passed every Indeed job as "unknown".
+    const location = (
+      card.querySelector('[data-testid="text-location"]') ||
+      card.querySelector(".companyLocation")
+    )?.textContent?.replace(/\s+/g, " ").trim() || "";
     const href = titleEl?.getAttribute("href") || "";
     const url = href.startsWith("http") ? href : "https://www.indeed.com" + href;
     let jk = card.getAttribute("data-jk") || titleEl?.getAttribute("data-jk") || "";
@@ -1566,7 +1573,7 @@
       card.querySelector("ul");
     const snippet = (snippetEl?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 1500);
 
-    return { title, company, url, jk, snippet, clickEl: titleEl };
+    return { title, company, location, url, jk, snippet, clickEl: titleEl };
   }
 
   // Indeed plants decoy cards in the SERP (captured live 2026-10-05, fixture
@@ -1678,6 +1685,7 @@
           company: j.company || "",
           link: j.jk ? `https://www.indeed.com/viewjob?jk=${j.jk}` : (j.url || ""),
           platform: _plat,
+          location: j.location || "",
           // Server scores rows that arrive with a description (>=120 chars) and leaves
           // title-only ones null — see /jobs/ingest. Sending "" is the same as sending
           // nothing, so a card without a snippet degrades to the old behaviour.
@@ -1694,6 +1702,7 @@
       pendingJobs: easyApplyCards.map((j) => ({
         title: j.title,
         company: j.company,
+        location: j.location || "",
         url: j.url,
         jk: j.jk,
       })),
@@ -2037,11 +2046,16 @@
   // /cmp/ link in the rebuilt header; the name is a bare text node under this testid
   // (captured 10-05, tests/fixtures/indeed-viewjob-no-cmp.html). Missing it took
   // empty-company fit lines from 0% to 16% of Indeed walk postings in three weeks.
-  function readIndeedJobCompany(doc) {
-    const root =
+  function indeedJobRoot(doc) {
+    return (
       doc.querySelector('[data-testid="viewjob-main-content"]') ||
       doc.querySelector('[data-testid="desktop-job-header"]') ||
-      doc.querySelector(".jobsearch-JobComponent");
+      doc.querySelector(".jobsearch-JobComponent")
+    );
+  }
+
+  function readIndeedJobCompany(doc) {
+    const root = indeedJobRoot(doc);
     if (!root) return "";
     const el =
       root.querySelector('a[href*="/cmp/"]') ||
@@ -2051,6 +2065,39 @@
       root.querySelector(".jobsearch-InlineCompanyRating-companyHeader") ||
       root.querySelector(".companyName");
     return (el?.textContent || "").replace(/\s+/g, " ").trim();
+  }
+
+  // ── location on the job page ────────────────────────────────────────────────
+  // Same root, same rule as the company: the open job's place or "". The rebuilt header
+  // has no testid on the city — it is the plain line right after the employer inside
+  // [data-testid="company-info-metadata"] ("Adventure Loom Htx" / "Houston, TX 77074",
+  // tests/fixtures/indeed-viewjob-no-cmp.html). So: the metadata's leaf lines, minus the
+  // employer's own, first one shaped like a place. Then <title> ("Events Associate -
+  // Houston, TX 77074 - Indeed.com"), which has outlived every rebuild — on /viewjob only,
+  // where it names the open job; a results page's <title> names the search.
+  const PLACE_SHAPE = /,\s*[A-Z]{2}\b|\b\d{5}\b|\bremote\b|\bhybrid\b|\bunited states\b/i;
+
+  function readIndeedJobLocation(doc) {
+    const clean = (t) => (t || "").replace(/\s+/g, " ").trim();
+    const root = indeedJobRoot(doc);
+    if (root) {
+      const named = clean(root.querySelector('[data-testid="inlineHeader-companyLocation"]')?.textContent);
+      if (named && PLACE_SHAPE.test(named)) return named;
+      const meta = root.querySelector('[data-testid="company-info-metadata"]');
+      if (meta) {
+        const employer = clean(readIndeedJobCompany(doc));
+        for (const el of meta.querySelectorAll("*")) {
+          if (el.children.length) continue;
+          const line = clean(el.textContent);
+          if (line && line !== employer && PLACE_SHAPE.test(line)) return line;
+        }
+      }
+    }
+    if (!(doc.location?.pathname || "").startsWith("/viewjob")) return "";
+    const parts = clean(doc.title).split(" - ");
+    if (parts.length < 3 || !/indeed\.com$/i.test(parts[parts.length - 1])) return "";
+    const fromTitle = parts[parts.length - 2];
+    return PLACE_SHAPE.test(fromTitle) ? fromTitle : "";
   }
 
   // The posting's identity in a URL: Indeed jk/vjk, ZipRecruiter lk (the card uuid).
@@ -2086,6 +2133,13 @@
       if (row) return { company: row.company.trim(), source: "pool row" };
     }
     return none;
+  }
+
+  // The place the search card showed for this exact posting — by jk, like the company.
+  function cardLocationFor(jobId, pendingJobs) {
+    if (!jobId) return "";
+    const card = (pendingJobs || []).find((j) => j && j.jk === jobId && (j.location || "").trim());
+    return card ? card.location.trim() : "";
   }
 
   // ZipRecruiter right pane. Its only a[href*="/co/"] reads "Learn more about <name>"
@@ -2182,6 +2236,7 @@
     // the walk — 84 postings were skipped on "no job title" before this line existed.
     const jobTitle = titleEl?.textContent?.trim() || titleFromDocumentTitle();
     let jobCompany = readIndeedJobCompany(document);
+    let jobLocation = readIndeedJobLocation(document);
     // 3000, matching the ATS path. 1000 was set when this text only fed a prompt the
     // server clipped anyway; it is now STORED (POST /jobs/describe) and read by three
     // consumers that clip at their own limits — fit judge 2500, resume tailor 1500,
@@ -2224,13 +2279,16 @@
     // The page had no employer we could read — but the card we opened it from did
     // ("Opening job: X @ Y" then "Good fit: X @ " in prod). Take it back ONLY for the
     // same jk; the line lets prod count how often the page alone falls short.
-    if (!jobCompany) {
+    if (!jobCompany || !jobLocation) {
       const st = await storageGet(["pendingJobs", "atsPlatform", "atsQueue"]);
-      const fb = cardCompanyFor(jobIdFromUrl(jobUrl), st.pendingJobs, st.atsPlatform, st.atsQueue);
-      if (fb.company) {
-        jobCompany = fb.company;
-        logBackend(`🏷️ company from ${fb.source}: ${fb.company}`, "info");
+      if (!jobCompany) {
+        const fb = cardCompanyFor(jobIdFromUrl(jobUrl), st.pendingJobs, st.atsPlatform, st.atsQueue);
+        if (fb.company) {
+          jobCompany = fb.company;
+          logBackend(`🏷️ company from ${fb.source}: ${fb.company}`, "info");
+        }
       }
+      if (!jobLocation) jobLocation = cardLocationFor(jobIdFromUrl(jobUrl), st.pendingJobs);
     }
 
     // Deduplicate by job key (jk= / vjk= in URL).
@@ -2318,7 +2376,7 @@
     await storageSet({
       currentJobInfo: { title: jobTitle, company: jobCompany, description: jobDesc, url: jobUrl },
     });
-    await recordJobDescription(jobTitle, jobCompany, jobDesc, jobUrl);
+    await recordJobDescription(jobTitle, jobCompany, jobDesc, jobUrl, jobLocation);
 
     // The cover letter is written later, and only if the apply form actually asks for
     // one (ensureCoverLetter, called from the form filler). Indeed's wizard has never
@@ -5130,13 +5188,16 @@
   // before the resume fetch, which is what tailors against the row.
   //
   // Best-effort and awaited briefly; a describe failure must never cost an application.
-  async function recordJobDescription(title, company, description, url) {
+  //
+  // Company and location ride along: the server fills them into the row only where it
+  // has none (save_description), so the page heals a card that came up empty.
+  async function recordJobDescription(title, company, description, url, location = "") {
     if (!url || (description || "").length < 300) return;
     try {
       await Promise.race([
         sendMsg({
           type: "SAVE_JOB_DESCRIPTION",
-          data: { title, company, description, url, platform: detectPlatform() },
+          data: { title, company, location, description, url, platform: detectPlatform() },
         }),
         sleep(8000),
       ]);
