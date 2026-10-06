@@ -283,7 +283,13 @@
 текст ошибки Indeed · #376 + web #291 ежедневный автостарт (память `project_auto_daily_start`; Start больше не глотает
 403) · #377 хендбэк Indeed = вакансия, не шаг (терялось 10 из 15) · #379 починил main после #375+#377.
 **В полёте:** #378 ответы «authorized/sponsorship» (2-й ремонт: регрессия Twitch «permanent resident» → Yes) · ветка
-`ext-title-prefilter-cards` (фильтр названия на карточках). **Релиз:** когда CWS одобрит 1.8.41 → бамп 1.8.43 (всё
+`ext-title-prefilter-cards` (фильтр названия на карточках). **Агенты, работавшие в момент /clear (их отчёт в новую сессию НЕ придёт — сверять по GitHub):** #378 после 2-го
+ремонта → нужен повторный скептик (скрипты скептика: scratchpad прошлой сессии `rv/radio_real.js` — пропадут, писать заново;
+критерий: на 320 реальных GH-схемах у гражданина нет ни одного «был прав → стал неправ») · фильтр названий — PR
+`ext-title-prefilter-cards` (если открыт → скептик → мерж). Перед каждым мержем `gh pr update-branch` + CI на свежем main.
+Worktree'ы удалить после мержей: `.wt-start-gate .wt-zr .wt-handback-reasons .wt-fit-reuse .wt-indeed-resume
+.wt-handback-identity .wt-auto-daily .wt-web-auto-daily .wt-walker-url .wt-work-auth .wt-title-prefilter` (классификатор режет удаление — Игорю).
+**Релиз:** когда CWS одобрит 1.8.41 → бамп 1.8.43 (всё
 выше + #378) → `sync-ext.sh` → zip → `cws_publish.py ship`. Web #291 до этого показывает «Update the extension».
 **Ждёт Игоря:** год окончания в профиле (причина отказа Indeed: education без даты — у Игоря и 2 юзеров) · порог fit
 35/32 · поле street address (3 хендбэка Indeed) · живые прогоны Indeed/ZR («давай»).
