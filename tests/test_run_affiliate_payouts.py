@@ -148,7 +148,7 @@ def test_resumes_a_pending_payout_and_marks_it_completed(fake_db, stripe_mock):
     ]
     stripe_mock.Transfer.create.return_value = SimpleNamespace(id="tr_1")
 
-    job.cmd_run(run_args())
+    assert job.cmd_run(run_args()) == 0
 
     kwargs = stripe_mock.Transfer.create.call_args.kwargs
     assert kwargs["destination"] == "acct_123"
@@ -180,7 +180,8 @@ def test_stripe_failure_leaves_the_payout_pending_for_retry(fake_db, stripe_mock
     ]
     stripe_mock.Transfer.create.side_effect = Exception("stripe is down")
 
-    job.cmd_run(run_args())
+    # Non-zero exit: on Railway cron that's what turns the run red.
+    assert job.cmd_run(run_args()) == 1
 
     assert payout_updates(fake_db.log) == []
     assert commission_updates(fake_db.log) == []
@@ -361,4 +362,15 @@ def test_dry_run_writes_nothing_and_calls_stripe_nothing(fake_db, stripe_mock):
     job.cmd_run(run_args(dry_run=True))
 
     assert fake_db.log == []
+    stripe_mock.Transfer.create.assert_not_called()
+
+
+def test_a_run_with_nothing_owed_still_says_it_ran(fake_db, stripe_mock, capsys):
+    # A cron job that prints nothing when idle can't be told apart from one
+    # that never ran — which is how the missing schedule hid (10-06).
+    fake_db.tables["affiliates"] = [AFFILIATE]
+
+    assert job.cmd_run(run_args()) == 0
+
+    assert "payout run done: 0 paid ($0.00), 0 failed" in capsys.readouterr().out
     stripe_mock.Transfer.create.assert_not_called()
