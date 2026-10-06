@@ -127,3 +127,23 @@ def test_the_handback_line_is_categorized_and_a_captcha_handback_stays_a_captcha
         )
         == "captcha"
     )
+
+
+def test_card_level_title_skips_are_counted_and_named():
+    """#381 drops off-title cards on the results page — they are never opened. The
+    per-page summary line must count as N title skips, and a run where nothing matched
+    must say the search is aimed wrong, not "Nothing opened yet"."""
+    line = "Skipped 7 of 15 cards: title doesn't match your roles (e.g. Nurse, Driver)"
+    assert activity_db._categorize(line) == "skipped_title"
+    assert activity_db._weight(line) == 7
+    assert activity_db._weight("Opening job: X @ Y") == 1
+    # The all-filtered page's own line is not a "no apply button" loss.
+    assert (
+        activity_db._categorize(
+            "None of this page's Easy Apply jobs match your roles — going to next"
+        )
+        != "skipped_no_button"
+    )
+    out = _report({"skipped_title": 30}, minutes=12)
+    assert out["opened"] == 0
+    assert "none matching your roles" in out["verdict"]

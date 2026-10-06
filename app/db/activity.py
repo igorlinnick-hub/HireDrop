@@ -6,6 +6,7 @@ chrome extension (background.js best-effort POST). Backend writers can
 be added incrementally without changing this module's contract.
 """
 
+import re
 from datetime import UTC, datetime, timedelta
 
 from app.db.client import fetch_paged, get_supabase
@@ -62,6 +63,15 @@ def list_recent(user_id: str, limit: int = 100) -> list[dict]:
 # on these lets the health summary categorize events without a schema change. Keep in sync
 # with the log strings — see ROADMAP_E2E.md P3. (A metadata `type` field is the future-proof
 # version; text-match is the cheap first cut.)
+_CARD_TITLE_SKIP = re.compile(r"skipped (\d+) of \d+ cards: title doesn't match")
+
+
+def _weight(msg: str) -> int:
+    """How many events one log line stands for — 1, except the per-page card summary."""
+    hit = _CARD_TITLE_SKIP.search((msg or "").lower())
+    return int(hit.group(1)) if hit else 1
+
+
 def _categorize(msg: str) -> str | None:
     m = (msg or "").lower()
     if "✅ applied" in m or m.startswith("applied"):
@@ -101,7 +111,10 @@ def _categorize(msg: str) -> str | None:
     # skipping 44 postings on fit (live 09-21, the un-nannied run).
     if "opening job:" in m or "applying your approved pick" in m or "reading job posting" in m:
         return "opened"
-    if "skip (title mismatch)" in m:
+    # Two shapes of one loss: the detail page's per-posting line, and (since #381) the
+    # list page's per-page summary "Skipped N of M cards: title doesn't match your roles"
+    # — counted N times by _weight, or card-level skips would vanish from run_report.
+    if "skip (title mismatch)" in m or _CARD_TITLE_SKIP.search(m):
         return "skipped_title"
     if "no quick apply" in m or "couldn't open" in m or "no easy apply jobs" in m:
         return "skipped_no_button"
@@ -166,7 +179,7 @@ def summary(
             last_error_msg = (r.get("message") or "")[:200]
         cat = _categorize(r.get("message", ""))
         if cat:
-            by_type[cat] = by_type.get(cat, 0) + 1
+            by_type[cat] = by_type.get(cat, 0) + _weight(r.get("message", ""))
     return {
         "window_hours": window_hours,
         "since": scoped_since,  # non-null when the counts are scoped to a single run
@@ -307,6 +320,10 @@ def _verdict(
         return f"Slow: {applied} applications in {minutes} min. Something is stalling between postings."
     if applied:
         return f"Healthy: {applied} applications in {minutes} min."
+    # Since #381 off-title cards are dropped on the results page and never opened, so a
+    # search aimed wrong shows up here (opened = 0), not in the "Opened N" sentence above.
+    if top_loss == "title mismatch" and top_n:
+        return f"Opened nothing: {top_n} result cards in {minutes} min, none matching your roles — the search is aimed wrong."
     return "Nothing opened yet in this window."
 
 
