@@ -5103,7 +5103,7 @@
       // A hand-back with a reason, not a silent skip — the same channel the stall guard in
       // this loop already uses on every phase3 board (Indeed and ZipRecruiter alike).
       await handBackJob(`the form ran past ${maxSteps} steps without reaching Submit`,
-        { title: jobInfo.title, company: jobInfo.company, platform: detectPlatform(), steps: formStepCount });
+        { title: jobInfo.title, company: jobInfo.company, url: jobInfo.url, platform: detectPlatform(), steps: formStepCount });
       await skipToNextJob();
       return;
     }
