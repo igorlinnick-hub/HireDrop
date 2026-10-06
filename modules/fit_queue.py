@@ -16,8 +16,9 @@ This module moves the verdict up front for the postings the server can read whol
   * build_queue() turns verdicts into the queue: below the user's bar is out, everything
     else in ONE order — the freshest posting first (Igor, 09-30: the score is a gate, not a
     rank; the list, auto and tap all go top to bottom in that order);
-  * the company cap (Igor, 09-30): at most 2 applications to one company per 60 days,
-    counting applications already sent AND what the queue itself would send.
+  * the company cap (Igor, 10-06; 09-30 said 2): one application to a company per 60 days,
+    counting applications already sent, open hand-backs, AND what the queue itself would
+    send. A posting the person sent back with "Try again" is exempt and goes first.
 
 Rows nobody could judge (judge down, budget spent) stay UNJUDGED, never "failed": they
 ride at the tail and the live judge at apply time still decides them, exactly as before.
@@ -220,6 +221,7 @@ def build_queue(
     bar: int,
     applied_companies: list[str],
     limit: int,
+    retried_ids: frozenset | set = frozenset(),
 ) -> dict:
     """Order already-judged rows into the queue the user sees and the run applies in.
 
@@ -231,20 +233,33 @@ def build_queue(
     decides them at apply time, as before. The company cap runs over that final order, so
     the queue never sends a second application to an employer — whether the first went out
     (or was handed back) last month or sits above it in this list.
+
+    `retried_ids` are rows the person sent back with "Try again" on a hand-back. The UI
+    then says "back in the queue", so they skip the bar and the cap and go first — the
+    cap exists to stop US from hammering an employer, not to overrule the person. Without
+    this a company's OTHER open hand-backs held its slot and the retried posting was cut
+    (skeptic on #353). A retried row still takes the slot, so nothing else from that
+    company rides along.
     """
     kept_rows, below_bar = [], 0
     for row in rows:
-        if has_current_verdict(row, version) and (row.get("fit_score") or 0) < bar:
+        if (
+            row.get("id") not in retried_ids
+            and has_current_verdict(row, version)
+            and (row.get("fit_score") or 0) < bar
+        ):
             below_bar += 1
         else:
             kept_rows.append(row)
     kept_rows.sort(key=_freshness, reverse=True)
+    # Stable sort: retried first, freshness order kept inside each group.
+    kept_rows.sort(key=lambda r: r.get("id") not in retried_ids)
 
     sent = Counter(company_key(c) for c in applied_companies if company_key(c))
     kept, company_capped = [], 0
     for row in kept_rows:
         key = company_key(row.get("company"))
-        if key and sent[key] >= COMPANY_CAP:
+        if key and sent[key] >= COMPANY_CAP and row.get("id") not in retried_ids:
             company_capped += 1
             continue
         if key:

@@ -246,6 +246,30 @@ def open_urls(user_id: str, cap: int = 5000, waiting_only: bool = False) -> list
     return [r["url"] for r in fetch_paged(build, cap) if r.get("url")]
 
 
+def requeued_urls(user_id: str, cap: int = 5000) -> list[str]:
+    """URL of every open hand-back the person sent back to the queue (`requeued_at` set:
+    "Try again" or answered questions). The queue puts these postings first and lets them
+    past the company cap (modules/fit_queue.py::build_queue) — otherwise the company's
+    other hand-backs hold its one slot and "back in the queue" is a lie. A new hand-back
+    on the retry clears `requeued_at`, which ends the exemption.
+    """
+
+    def build(start: int, end: int):
+        return (
+            get_supabase()
+            .table("handbacks")
+            .select("url")
+            .eq("user_id", user_id)
+            .is_("resolved_at", "null")
+            .not_.is_("requeued_at", "null")
+            .order("created_at", desc=True)
+            .order("id")
+            .range(start, end)
+        )
+
+    return [r["url"] for r in fetch_paged(build, cap) if r.get("url")]
+
+
 def _current_build(user_id: str) -> tuple[str | None, str | None]:
     """(version, first seen at) of the extension this user runs now — from the ping.
 

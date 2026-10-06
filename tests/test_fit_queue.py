@@ -147,6 +147,40 @@ def test_one_per_company_inside_the_queue_itself():
     assert out["company_capped"] == 3
 
 
+def test_a_retried_posting_passes_the_cap_and_goes_first():
+    # Skeptic on #353: the company's OTHER open hand-backs held its one slot, so the
+    # posting the person pressed "Try again" on was cut while the UI said "back in the
+    # queue". A retried row skips the cap, goes first, and still takes the slot.
+    rows = [
+        _row("dd-new", score=80, age=0, company="DoorDash"),
+        _row("dd-retried", score=80, age=5, company="DoorDash"),
+        _row("other", score=60, age=1),
+    ]
+    out = build_queue(
+        rows,
+        V,
+        bar=55,
+        applied_companies=["Doordashusa"] * 3,
+        limit=30,
+        retried_ids={"dd-retried"},
+    )
+    assert [r["id"] for r in out["jobs"]] == ["dd-retried", "other"]
+    assert out["company_capped"] == 1
+
+
+def test_a_retried_posting_is_not_cut_by_the_bar():
+    rows = [_row("retried", score=40, age=2), _row("low", score=40, age=0)]
+    out = build_queue(rows, V, bar=55, applied_companies=[], limit=30, retried_ids={"retried"})
+    assert [r["id"] for r in out["jobs"]] == ["retried"]
+    assert out["below_bar"] == 1
+
+
+def test_without_retries_the_cap_is_unchanged():
+    rows = [_row("dd", score=80, age=0, company="DoorDash")]
+    out = build_queue(rows, V, bar=55, applied_companies=["DoorDash"], limit=30)
+    assert out["jobs"] == [] and out["company_capped"] == 1
+
+
 # --- judging ------------------------------------------------------------------------------
 
 
@@ -350,3 +384,62 @@ def test_hand_back_history_leaves_out_what_the_person_sent_back(real_companies_h
     q.table.assert_called_with("handbacks")
     q.is_.assert_any_call("requeued_at", "null")
     q.eq.assert_any_call("user_id", "u1")
+
+
+def test_try_again_reaches_the_queue_past_the_companys_other_hand_backs():
+    # The skeptic's case end to end: DoorDash has two open hand-backs, the person retried
+    # one. Its posting must be in the queue, first; the other DoorDash posting stays out.
+    from app.routers import jobs as jobs_router
+
+    class _User:
+        id = "u1"
+
+    def gh(job_id, age, company=None):
+        return {
+            **_row(job_id, score=80, age=age, company=company),
+            "title": "Event Manager",
+            "location": "Remote",
+            "platform": "greenhouse",
+            "status": "new",
+            "link": f"https://job-boards.greenhouse.io/doordashusa/jobs/{job_id}",
+        }
+
+    pool = [gh("7001", 0, "DoorDash"), gh("7002", 4, "DoorDash"), gh("7003", 1, "Acme")]
+    with (
+        patch.object(jobs_router.jobs_db, "get_jobs", return_value=pool),
+        patch("app.db.profile.get_profile", return_value={"keywords": ["event manager"]}),
+        patch("modules.ai_cover_letter.resume_text_for", return_value="resume"),
+        patch("modules.fit_queue.has_current_verdict", return_value=True),
+        patch("app.db.applications.companies_applied_since", return_value=[]),
+        patch(
+            "app.db.handbacks.companies_handed_back_since",
+            return_value=["Doordashusa", "Doordashusa"],
+        ),
+        patch(
+            "app.db.handbacks.requeued_urls",
+            # The hand-back URL is the form screen, not the saved posting link.
+            return_value=["https://job-boards.greenhouse.io/doordashusa/jobs/7002?gh_src=abc#app"],
+        ),
+    ):
+        out = jobs_router.get_ats_queue(platform="greenhouse", user=_User())
+    assert [j["link"].rsplit("/", 1)[-1] for j in out["jobs"]] == ["7002", "7003"]
+    assert out["company_capped"] == 1
+
+
+def test_requeued_urls_reads_only_open_retried_rows(real_requeued_urls):
+    from unittest.mock import MagicMock
+
+    from app.db import handbacks as hb_db
+
+    q = MagicMock()
+    for m in ("table", "select", "eq", "is_", "order", "range"):
+        getattr(q, m).return_value = q
+    q.not_ = q
+    q.execute.return_value = MagicMock(data=[{"url": "https://x/1"}, {"url": None}])
+    with patch.object(hb_db, "get_supabase", return_value=q):
+        out = real_requeued_urls("u1")
+    assert out == ["https://x/1"]
+    q.table.assert_called_with("handbacks")
+    q.eq.assert_any_call("user_id", "u1")
+    q.is_.assert_any_call("resolved_at", "null")
+    q.is_.assert_any_call("requeued_at", "null")  # under not_: requeued rows only

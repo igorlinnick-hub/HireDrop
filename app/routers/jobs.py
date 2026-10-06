@@ -392,7 +392,32 @@ def _prejudged_queue(
         applied += hb_db.companies_handed_back_since(user_id, COMPANY_WINDOW_DAYS)
     except Exception as e:  # noqa: BLE001 — same best-effort as the application history
         print(f"[ats-queue] hand-back history unreadable: {e}", file=sys.stderr)
-    return build_queue(rows, version, mode_threshold(profile), applied, limit)
+    return build_queue(
+        rows, version, mode_threshold(profile), applied, limit, _retried_ids(user_id, rows)
+    )
+
+
+def _retried_ids(user_id: str, rows: list) -> set:
+    """Ids of the rows whose posting the person sent back with "Try again".
+
+    Hand-backs from the extension carry no job_id, so the match is by posting identity
+    (_job_key), the same key _waiting_on_person uses. A failed read exempts nothing: the
+    queue then behaves as before this rule.
+    """
+    from app.db import handbacks as hb_db
+
+    try:
+        keys = {_job_key(u) for u in hb_db.requeued_urls(user_id)}
+    except Exception as e:  # noqa: BLE001
+        print(f"[ats-queue] retried hand-backs unreadable: {e}", file=sys.stderr)
+        return set()
+    if not keys:
+        return set()
+    return {
+        r["id"]
+        for r in rows
+        if r.get("id") is not None and _job_key(r.get("link") or r.get("apply_url") or "") in keys
+    }
 
 
 def prejudge_pool(user_id: str) -> int:
