@@ -1443,6 +1443,23 @@
     return { title, company, url, jk, snippet, clickEl: titleEl };
   }
 
+  // Indeed plants decoy cards in the SERP (captured live 2026-10-05, fixture
+  // tests/fixtures/indeed-serp-decoy.html): a clone of the card above it with a made-up jk
+  // (a1b2c3d4e5f67890, fedcba9876543210, 0f1e2d3c4b5a6978, …), aria-hidden, tabindex -1,
+  // 0 px tall, linking /viewjob instead of /rc/clk. No person can see or tab to one; a script
+  // walking [data-jk] opens it. That cost 4 of 11 opens in the 10-06 run as "Dead link" — each
+  // a bot signal — and harvested every first-seen decoy into the pool under a real title.
+  // Recognised by what a person sees, never by the jk: the values rotate.
+  function isDecoyCard(info) {
+    const a = info.clickEl;
+    if (!a) return false;
+    if (a.closest('[aria-hidden="true"]')) return true;
+    // The clone keeps the original's title span id (jobTitle-<real jk>) under its fake jk.
+    const span = a.querySelector('[id^="jobTitle-"]');
+    const spanJk = span ? span.id.slice("jobTitle-".length) : "";
+    return !!(info.jk && spanJk && spanJk !== info.jk);
+  }
+
   async function phase1_jobList() {
     const platform = detectPlatform();
     if (platform === "ziprecruiter") return await phase1_ziprecruiter();
@@ -1500,14 +1517,17 @@
     const seenKeys = await storageGet("processedJobKeys");
     const processedKeys = new Set(seenKeys.processedJobKeys || []);
 
+    const decoys = [];
     for (const card of cards) {
       if (!isEasilyApplyCard(card)) continue;
       const info = extractCardInfo(card);
       if (!info.title || !info.clickEl) continue;
+      if (isDecoyCard(info)) { decoys.push(info.jk || "?"); continue; }
       if (alreadyApplied.has(info.url)) continue;
       if (info.jk && processedKeys.has(info.jk)) continue;
       easyApplyCards.push(info);
     }
+    if (decoys.length) logBackend(`🪤 skipped ${decoys.length} decoy card(s) jk=[${decoys.join(",")}]`, "info");
 
     if (!easyApplyCards.length) {
       log("No new Easy Apply jobs found. Checking next page...", "");
