@@ -222,6 +222,30 @@ def existing_links(user_id: str, links: list) -> set:
     return out
 
 
+def rows_by_links(user_id: str, links: list) -> dict:
+    """link -> pool row (id, text, status, stored fit verdict) for these exact links.
+
+    existing_links' sibling for callers that need the row, not just "is it saved":
+    the search-page judge (/tools/assess-fit-batch) reads the stored verdict and the
+    stored text of ~15 cards in one IN-query instead of 15 get_by_link round-trips."""
+    links = [link for link in links if link]
+    out: dict = {}
+    for i in range(0, len(links), 40):
+        res = (
+            get_supabase()
+            .table("jobs")
+            .select(
+                "id, link, title, company, location, platform, status, description, "
+                "date_found, fit_score, fit_reason, fit_model, fit_version"
+            )
+            .eq("user_id", user_id)
+            .in_("link", links[i : i + 40])
+            .execute()
+        )
+        out.update({r["link"]: r for r in (res.data or [])})
+    return out
+
+
 def update_job_status(user_id: str, job_id: str, status: str) -> int:
     """Set the row's status; returns how many rows changed (0 = nothing matched).
 

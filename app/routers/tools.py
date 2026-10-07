@@ -1,5 +1,9 @@
+import html
 import os
+import re
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -21,13 +25,14 @@ from app.db.user_day import user_day_start
 from app.deps import get_current_user
 from app.schemas import (
     AnswerQuestionRequest,
+    AssessFitBatchRequest,
     AssessFitRequest,
     CoverLetterRequest,
     LetterPreviewRequest,
 )
 from config import RATE_LIMIT_ENFORCE, RATE_LIMIT_LETTERS_PER_DAY
 from modules.ai_cover_letter import generate_cover_letter, resume_text_for
-from modules.ai_fit_judge import assess_fit
+from modules.ai_fit_judge import assess_fit, clears_bar
 from modules.ai_keyword_normalize import normalize_keywords
 from modules.ai_question_answer import answer_screener_question
 from modules.ai_role_suggest import ROLE_LIMITS, role_limit, suggest_roles
@@ -250,7 +255,9 @@ def suggest_roles_endpoint(mode: str | None = None, user=Depends(get_current_use
     }
 
 
-def _company_capped(user_id: str, company: str) -> bool:
+def _company_capped(
+    user_id: str, company: str, taken: list[str] | None = None, retried: set[str] | None = None
+) -> bool:
     """Is this company's one slot taken — unless the person retried a hand-back there?
 
     The judge gets a company name, no URL. A "Try again" posting already passed the cap in
@@ -259,14 +266,21 @@ def _company_capped(user_id: str, company: str) -> bool:
     ATS hand-back is not capped here while that retry is open (handbacks.requeued_companies
     bounds it).
     """
-    if not company_slot_taken(company, companies_holding_slots(user_id)):
+    if not company_slot_taken(
+        company, companies_holding_slots(user_id) if taken is None else taken
+    ):
         return False
+    if retried is None:
+        retried = _retried_company_keys(user_id)
+    return company_key(company) not in retried
+
+
+def _retried_company_keys(user_id: str) -> set[str]:
     try:
-        retried = {company_key(c) for c in handbacks_db.requeued_companies(user_id)}
+        return {company_key(c) for c in handbacks_db.requeued_companies(user_id)}
     except Exception as e:  # noqa: BLE001 — unreadable retries: the cap stands
         print(f"[assess-fit] retried hand-backs unreadable: {e}", file=sys.stderr)
-        retried = set()
-    return company_key(company) not in retried
+        return set()
 
 
 @router.post("/tools/assess-fit")
@@ -283,17 +297,9 @@ def assess_fit_endpoint(req: AssessFitRequest, user=Depends(get_current_user)):
     _assess_fit_gate(user)
     profile = get_profile(user.id)
 
-    if (profile.get("apply_mode") or "standard") == "broad":
-        today_count = apps_db.count_today(user.id, user_day_start(user.id))
-        if today_count >= _BROAD_DAILY_CAP:
-            return {
-                "fit_score": 0,
-                "decision": "skip",
-                "reason": f"Broad mode daily limit reached ({_BROAD_DAILY_CAP} applications). Resumes tomorrow.",
-                "concerns": ["Daily Broad cap hit — account health protection"],
-                "judged": True,
-                "apply_mode": "broad",
-            }
+    broad_capped = _broad_cap_verdict(user.id, profile)
+    if broad_capped:
+        return broad_capped
 
     # One application per company per 60 days, on the live walks too (Igor, 10-06). The
     # Indeed and ZipRecruiter walks never pass through the server queue, so before this they
@@ -332,6 +338,235 @@ def assess_fit_endpoint(req: AssessFitRequest, user=Depends(get_current_user)):
         if fresh_because:
             result["fresh_because"] = fresh_because
     return result
+
+
+def _broad_cap_verdict(user_id: str, profile: dict) -> dict | None:
+    """The skip every Broad-mode posting gets once today's Broad cap is spent, else None."""
+    if (profile.get("apply_mode") or "standard") != "broad":
+        return None
+    if apps_db.count_today(user_id, user_day_start(user_id)) < _BROAD_DAILY_CAP:
+        return None
+    return {
+        "fit_score": 0,
+        "decision": "skip",
+        "reason": f"Broad mode daily limit reached ({_BROAD_DAILY_CAP} applications). Resumes tomorrow.",
+        "concerns": ["Daily Broad cap hit — account health protection"],
+        "judged": True,
+        "apply_mode": "broad",
+    }
+
+
+def _assess_fit_budget(user, want: int) -> int:
+    """Claim up to `want` judge calls from today's per-user fit budget; returns how many."""
+    if want <= 0 or is_admin(getattr(user, "email", None)):
+        return max(0, want)
+    today = date.today().isoformat()
+    rec = _assess_fit_counts.get(user.id)
+    if not rec or rec.get("day") != today:
+        rec = {"day": today, "n": 0}
+        _assess_fit_counts[user.id] = rec
+    take = max(0, min(want, _ASSESS_FIT_DAILY_CAP - rec["n"]))
+    rec["n"] += take
+    return take
+
+
+# The search-page judge runs while the extension waits on the results page, so it has a
+# deadline: what is not judged by then goes back as "unjudged" and the job page judges it
+# live, exactly as before this endpoint existed. Haiku answers in ~2-4 s and a near-bar
+# score escalates to Sonnet (~5-10 s), so 10 workers clear a 15-card page in one or two
+# rounds; the extension's own timeout (background.js PREJUDGE_CARDS) sits above this.
+_BATCH_WORKERS = 10
+_BATCH_DEADLINE_S = 25.0
+_HARVEST_PLATFORMS = ("indeed", "ziprecruiter")
+_TAG = re.compile(r"<[^>]+>")
+# What jobs_db.update_job_description keeps; a longer text would read as "new" every run.
+_MAX_TEXT = 5000
+
+
+def _posting_text(raw: str) -> str:
+    """Posting text from what the card sent — the extension strips Indeed's HTML, this only
+    makes sure a tag that slipped through is not judged or stored as words. Line breaks
+    stay: tailoring and the interview kit read this text too."""
+    text = html.unescape(_TAG.sub(" ", raw or ""))
+    lines = (" ".join(line.split()) for line in text.splitlines())
+    return "\n".join(line for line in lines if line)[:_MAX_TEXT]
+
+
+@router.post("/tools/assess-fit-batch")
+def assess_fit_batch_endpoint(req: AssessFitBatchRequest, user=Depends(get_current_user)):
+    """Judge a whole search-results page AHEAD of opening any posting on it.
+
+    The Indeed walk used to open every card, read it, ask /tools/assess-fit, and usually
+    skip: ~18 s per rejected posting, one at a time (10-07: 18 rejections in a row, 0
+    applied, then the platform ran dry). It also threw every verdict away — 0 of 767
+    Indeed pool rows held one — so a third of all judge calls since 09-22 re-judged a
+    posting already rejected (INNIO six times).
+
+    The server still cannot read Indeed (403). The person's browser can, and Indeed's own
+    results page fetches every card's full posting in one call (/rpc/jobdescs, ~0.4 s for
+    30, live 10-07). So the extension sends the page's cards WITH their text, and this:
+
+      * saves the text on the pool row (inserting rows the harvest has not saved yet);
+      * reuses a verdict the row already holds for the CURRENT profile version — the same
+        fit_version rule as the ATS queue (fit_queue.has_current_verdict);
+      * judges the rest in parallel (fit_queue.judge_pending, which stores each verdict);
+      * applies the one-per-company cap and the Broad daily cap before any AI call.
+
+    -> one result per card: decision apply / skip / unjudged, with the pool row id. The
+    extension opens only "apply" (and "unjudged", which the job page judges live), and
+    sends the id back to /tools/assess-fit, which then answers from the stored verdict.
+    Anything that fails here degrades to "unjudged" — the old one-at-a-time path — never
+    to a skip the judge did not make.
+    """
+    from modules.ai_fit_judge import mode_threshold, verdict_version
+    from modules.fit_queue import has_current_verdict, judge_pending
+
+    started = time.monotonic()
+    cards, seen = [], set()
+    for c in req.jobs:
+        if c.platform in _HARVEST_PLATFORMS and c.link and c.title and c.link not in seen:
+            seen.add(c.link)
+            cards.append(c)
+    if not cards:
+        return {"results": [], "judged": 0, "reused": 0, "unjudged": 0}
+
+    profile = get_profile(user.id)
+
+    def result(card, decision: str, source: str, row: dict | None = None, **extra) -> dict:
+        return {
+            "link": card.link,
+            "job_id": (row or {}).get("id"),
+            "decision": decision,
+            "source": source,
+            **extra,
+        }
+
+    broad_capped = _broad_cap_verdict(user.id, profile)
+    if broad_capped:
+        return {
+            "results": [
+                result(c, "skip", "broad_cap", reason=broad_capped["reason"]) for c in cards
+            ],
+            "judged": 0,
+            "reused": 0,
+            "unjudged": 0,
+        }
+
+    texts = {c.link: _posting_text(c.description) for c in cards}
+    try:
+        rows = jobs_db.rows_by_links(user.id, [c.link for c in cards])
+        missing = [c for c in cards if c.link not in rows]
+        if missing:
+            jobs_db.save_jobs_bulk(
+                user.id,
+                [
+                    {
+                        "title": c.title,
+                        "company": c.company,
+                        "link": c.link,
+                        "status": "new",
+                        "platform": c.platform,
+                        "description": texts[c.link],
+                        "location": c.location,
+                    }
+                    for c in missing
+                ],
+            )
+            rows.update(jobs_db.rows_by_links(user.id, [c.link for c in missing]))
+    except Exception as e:  # noqa: BLE001 — no pool rows: the walk judges live, as before
+        print(f"[assess-fit-batch] pool unreadable: {e}", file=sys.stderr)
+        return {
+            "results": [result(c, "unjudged", "pool_unreadable") for c in cards],
+            "judged": 0,
+            "reused": 0,
+            "unjudged": len(cards),
+        }
+
+    taken = companies_holding_slots(user.id)
+    retried = None
+    out: dict = {}
+    to_judge: list[tuple] = []
+    for c in cards:
+        row = rows.get(c.link)
+        if not row:
+            out[c.link] = result(c, "unjudged", "not_saved")
+            continue
+        if row.get("status") == "applied":
+            out[c.link] = result(c, "skip", "applied", row, reason="Already applied")
+            continue
+        if company_slot_taken(c.company, taken):
+            if retried is None:
+                retried = _retried_company_keys(user.id)
+            if _company_capped(user.id, c.company, taken, retried):
+                out[c.link] = result(
+                    c,
+                    "skip",
+                    "company_cap",
+                    row,
+                    reason=f"Company cap — already tried {c.company} in the last "
+                    f"{COMPANY_WINDOW_DAYS} days, one application per company.",
+                )
+                continue
+        # Judge on the longer of the two texts: the card's fresh posting, or what the row
+        # already holds (an earlier detail-page read).
+        if len(texts[c.link]) > len(row.get("description") or ""):
+            row["_new_text"] = texts[c.link]
+            row["description"] = texts[c.link]
+        to_judge.append((c, row))
+
+    resume_text = resume_text_for(profile)
+    version = verdict_version(profile, resume_text)
+    threshold = mode_threshold(profile)
+    stored_before = {row["id"] for _, row in to_judge if has_current_verdict(row, version)}
+    pending = [row for _, row in to_judge if row["id"] not in stored_before]
+    judged = 0
+    if pending:
+        budget = _assess_fit_budget(user, len(pending))
+        judged = judge_pending(
+            user.id,
+            profile,
+            pending,
+            max_calls=budget,
+            deadline_s=_BATCH_DEADLINE_S,
+            workers=_BATCH_WORKERS,
+            resume_text=resume_text,
+            version=version,
+        )
+
+    for c, row in to_judge:
+        if not has_current_verdict(row, version):
+            out[c.link] = result(c, "unjudged", "judge_unavailable", row)
+            continue
+        score = int(row["fit_score"])
+        out[c.link] = result(
+            c,
+            "apply" if clears_bar(score, threshold) else "skip",
+            "stored" if row["id"] in stored_before else "judged",
+            row,
+            fit_score=score,
+            reason=row.get("fit_reason") or "",
+            threshold=threshold,
+        )
+
+    # The posting text, stored after the judge so the harvest's snippet insert (fired a
+    # moment earlier for the same cards) cannot land on top of it. Text only, never status.
+    texts_to_store = [(row["id"], row["_new_text"]) for _, row in to_judge if row.get("_new_text")]
+    if texts_to_store:
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            list(
+                pool.map(
+                    lambda t: jobs_db.update_job_description(t[0], user.id, t[1]), texts_to_store
+                )
+            )
+
+    results = [out[c.link] for c in cards]
+    return {
+        "results": results,
+        "judged": judged,
+        "reused": len(stored_before),
+        "unjudged": sum(1 for r in results if r["decision"] == "unjudged"),
+        "ms": int((time.monotonic() - started) * 1000),
+    }
 
 
 def _stored_verdict(

@@ -1690,7 +1690,7 @@
     } catch (_) { /* harvest is best-effort */ }
 
     // Title gate on the CARD, before anything is opened (same rule as the detail phase).
-    const { keep: easyApplyCards, skipped: offTitle } =
+    let { keep: easyApplyCards, skipped: offTitle } =
       splitCardsByTitle(candidates, await titleGateKeywords());
     if (offTitle.length) logBackend(titleSkipSummary(offTitle, candidates.length), "info");
 
@@ -1706,6 +1706,23 @@
       return;
     }
 
+    // Judge the whole page before opening anything (auto only: a pool run is the person's
+    // own pick, and tap mode makes the person the filter — neither runs the fit gate).
+    {
+      const st = await storageGet(["reviewMode", "atsPlatform"]);
+      if (st.reviewMode !== true && st.atsPlatform !== "pool") {
+        const judged = await prejudgeIndeedCards(easyApplyCards);
+        if (!(await isCampaignRunning())) return;
+        if (judged) easyApplyCards = judged;
+      }
+    }
+    if (!easyApplyCards.length) {
+      log("Nothing on this page fits you. Checking next page...", "");
+      logBackend("None of this page's postings fit you — going to next", "info");
+      await goToNextPage();
+      return;
+    }
+
     log(`Found ${easyApplyCards.length} Easy Apply jobs`, "ok");
     logBackend(`Found ${easyApplyCards.length} Easy Apply jobs on page`, "ok");
 
@@ -1717,6 +1734,8 @@
         location: j.location || "",
         url: j.url,
         jk: j.jk,
+        // The pool row the search-page judge stored this posting's verdict on.
+        ...(j.job_id ? { job_id: j.job_id } : {}),
       })),
       currentJobIndex: 0,
     });
@@ -1942,6 +1961,129 @@
     if (!skipped.length) return "";
     const eg = skipped.slice(0, 3).map((c) => `"${String(c.title || "").slice(0, 60)}"`).join(", ");
     return `Skipped ${skipped.length} of ${total} cards: title doesn't match your roles (e.g. ${eg})`;
+  }
+
+  // ── Search-page judge ──────────────────────────────────────────────────
+  // The walk used to open every card and judge it on its page, one at a time: ~18 s per
+  // rejected posting (10-07: 18 rejections in a row, 0 applied, then Indeed ran dry). The
+  // results page itself loads every card's FULL posting in one call — /rpc/jobdescs, the
+  // page's own same-origin request (captured live 10-07 in Igor's Chrome: 30 postings,
+  // 0.36 s, 0.8-10k chars each, fixture tests/fixtures/indeed-rpc-jobdescs.json). So the
+  // page's cards go to the server together (/tools/assess-fit-batch): judged in parallel,
+  // every verdict stored, a posting judged on an earlier run answered from memory. Only
+  // the ones that fit are opened. Any failure here returns null and the walk judges each
+  // posting on its page exactly as before — the speed-up may be lost, never an application.
+  function postingTextFromHtml(html) {
+    try {
+      const doc = new DOMParser().parseFromString(`<div>${html || ""}</div>`, "text/html");
+      doc.querySelectorAll("style,script").forEach((n) => n.remove());
+      doc.querySelectorAll("br").forEach((n) => n.replaceWith("\n"));
+      doc.querySelectorAll("p,li,div,h1,h2,h3,h4,h5,h6,tr").forEach((n) => n.append("\n"));
+      return (doc.body.textContent || "")
+        .replace(/[ \t\u00a0]+/g, " ")
+        .replace(/ *\n[\s]*/g, "\n")
+        .trim()
+        .slice(0, 8000);
+    } catch (_) {
+      return "";
+    }
+  }
+
+  async function fetchIndeedPostings(jks) {
+    const out = {};
+    if (!jks.length) return out;
+    let timer = null;
+    try {
+      const ctl = new AbortController();
+      timer = setTimeout(() => ctl.abort(), 8000);
+      const res = await fetch(`/rpc/jobdescs?jks=${jks.map(encodeURIComponent).join(",")}`, {
+        credentials: "include",
+        signal: ctl.signal,
+      });
+      if (!res.ok) return out;
+      const data = await res.json();
+      for (const jk of jks) {
+        const text = data && typeof data[jk] === "string" ? postingTextFromHtml(data[jk]) : "";
+        if (text) out[jk] = text;
+      }
+    } catch (_) {
+      /* no texts: every card is judged on its page */
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    return out;
+  }
+
+  // Below this it is a card snippet, not a posting (the server's MIN_STORABLE_DESC).
+  const PREJUDGE_MIN_TEXT = 300;
+
+  // -> the cards to open, in page order (a passed card carries the job_id its verdict is
+  // stored under), or null = judge every card on its page as before.
+  async function prejudgeIndeedCards(cards) {
+    const t0 = Date.now();
+    const link = (c) => `https://www.indeed.com/viewjob?jk=${c.jk}`;
+    const texts = await fetchIndeedPostings(cards.map((c) => c.jk).filter(Boolean));
+    const sendable = cards.filter((c) => c.jk && (texts[c.jk] || "").length >= PREJUDGE_MIN_TEXT);
+    if (!sendable.length) {
+      logBackend("Search-page judge: Indeed sent no posting text — checking each posting on its page", "warn");
+      return null;
+    }
+    const r = await sendMsg(
+      {
+        type: "PREJUDGE_CARDS",
+        data: {
+          jobs: sendable.map((c) => ({
+            title: c.title || "",
+            company: c.company || "",
+            location: c.location || "",
+            platform: "indeed",
+            link: link(c),
+            description: texts[c.jk],
+          })),
+        },
+      },
+      45000
+    );
+    if (!r || !Array.isArray(r.results)) {
+      logBackend("Search-page judge unavailable — checking each posting on its page", "warn");
+      return null;
+    }
+    const verdicts = new Map(r.results.map((v) => [v.link, v]));
+    const keep = [];
+    const skipped = [];
+    for (const c of cards) {
+      const v = c.jk ? verdicts.get(link(c)) : null;
+      if (v && v.decision === "skip") skipped.push({ c, v });
+      else if (v && v.decision === "apply" && v.job_id) keep.push({ ...c, job_id: v.job_id });
+      else keep.push(c); // unjudged or no text: the job page judges it live
+    }
+    // One line per skipped posting, worded exactly as the job page's gate words it, so
+    // run_report counts these losses the same way (fit gate / company cap).
+    for (const { c, v } of skipped) {
+      if (v.source === "applied") {
+        logBackend(`Skipping duplicate: ${c.title}`, "info");
+        continue;
+      }
+      const why = String(v.reason || "").slice(0, 160);
+      const score = v.fit_score != null ? v.fit_score : "?";
+      logBackend(`⏭️ Skipped (fit ${score}): ${c.title} @ ${c.company} — ${why}`, "info");
+    }
+    if (skipped.length) {
+      const seen = await storageGet("processedJobKeys");
+      const keys = new Set(seen.processedJobKeys || []);
+      for (const { c } of skipped) keys.add(c.jk);
+      await storageSet({ processedJobKeys: [...keys].slice(-500) });
+    }
+    const fits = keep.filter((c) => c.job_id).length;
+    const later = keep.length - fits;
+    const secs = ((Date.now() - t0) / 1000).toFixed(1);
+    logBackend(
+      `⚡ Judged this page ahead in ${secs} s: ${fits} fit you, ${skipped.length} don't` +
+        (later ? `, ${later} checked on their page` : "") +
+        (r.reused ? ` (${r.reused} remembered from earlier runs)` : ""),
+      "ok"
+    );
+    return keep;
   }
 
   // A react-select keeps its typing box `<input role=combobox>` at value "" even after a
@@ -2391,9 +2533,18 @@
       } else if (reviewMode) {
         logBackend(`${jobTitle} @ ${jobCompany} — ready for your tap`, "info");
       } else {
+        // Judged on the results page already: the server answers from the stored verdict
+        // (and still checks the company cap first), no second judge.
+        const pending = (await storageGet("pendingJobs")).pendingJobs || [];
+        const prejudgedId = (jobKey && pending.find((j) => j.jk === jobKey)?.job_id) || null;
         const fit = await sendMsg({
           type: "ASSESS_FIT",
-          data: { job_title: jobTitle, company: jobCompany, description: jobDesc },
+          data: {
+            job_title: jobTitle,
+            company: jobCompany,
+            description: jobDesc,
+            ...(prejudgedId ? { job_id: prejudgedId } : {}),
+          },
         });
         if (!fit || fit.decision !== "apply") {
           const why = (fit && fit.reason ? fit.reason : "fit check unavailable — skipped for safety").slice(0, 160);
