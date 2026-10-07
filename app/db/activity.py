@@ -324,6 +324,11 @@ def _verdict(
     # search aimed wrong shows up here (opened = 0), not in the "Opened N" sentence above.
     if top_loss == "title mismatch" and top_n:
         return f"Opened nothing: {top_n} result cards in {minutes} min, none matching your roles — the search is aimed wrong."
+    # Since the search-page judge (/tools/assess-fit-batch) an Indeed posting that does not
+    # fit is never opened either, so a run that judged everything away also reads opened = 0
+    # — the 09-08 shape above must not turn into "nothing yet".
+    if top_loss in ("fit gate", "company cap") and top_n:
+        return f"Opened nothing: {top_n} postings judged in {minutes} min, every one lost to {top_loss}."
     return "Nothing opened yet in this window."
 
 

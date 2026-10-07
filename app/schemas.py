@@ -66,6 +66,22 @@ class AssessFitRequest(BaseModel):
     job_id: str | None = Field(None, max_length=64)
 
 
+class AssessFitCard(BaseModel):
+    """One search-result card with the posting text the extension read off the results page."""
+
+    title: str = Field(..., max_length=300)
+    link: str = Field(..., max_length=1000)
+    company: str = Field("", max_length=300)
+    location: str = Field("", max_length=300)
+    platform: str = Field("indeed", max_length=40)
+    description: str = Field("", max_length=20000)
+
+
+class AssessFitBatchRequest(BaseModel):
+    # One Indeed results page is ~15 cards after the title gate; 30 bounds a page dump.
+    jobs: list[AssessFitCard] = Field(default_factory=list, max_length=30)
+
+
 class ApplicationSaveRequest(BaseModel):
     job_title: str
     company: str

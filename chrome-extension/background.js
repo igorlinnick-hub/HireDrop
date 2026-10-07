@@ -2868,6 +2868,23 @@ async function handleMessage(msg, sender) {
       }
     }
 
+    // A whole results page judged before any posting on it is opened (/tools/assess-fit-batch).
+    // null on any failure: the walk then judges each posting live on its page, as before.
+    case "PREJUDGE_CARDS": {
+      try {
+        const jobs = (msg.data && msg.data.jobs) || [];
+        if (!jobs.length) return null;
+        return await Promise.race([
+          apiPost("/tools/assess-fit-batch", { jobs: jobs.slice(0, 30) }),
+          // Under 30 s: Chrome terminates a service worker whose fetch() waits longer. The
+          // server's judge deadline is 16 s, so a slow page still answers inside this.
+          new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 28000)),
+        ]);
+      } catch {
+        return null;
+      }
+    }
+
     // Per-application RECEIPT (council #3, week-1 trust primitive): capture the
     // confirmation-page moment — screenshot (CDP, works on hidden windows) + text
     // snippet + verify signal — so "did it actually land?" is answerable per submit
@@ -3062,9 +3079,11 @@ async function handleMessage(msg, sender) {
     // ----- Job-fit judge (Fit Engine M1) -----
     case "ASSESS_FIT": {
       const q = msg.data || {};
-      // Only the ATS walk passes job_url; the Indeed/ZipRecruiter walks never get a job_id.
-      let jobId = null;
-      if (q.job_url) {
+      // The ATS walk passes job_url (its queue maps it to the pool row); the Indeed walk passes
+      // the job_id its results page was judged under (PREJUDGE_CARDS). Either way the server
+      // answers from the stored verdict instead of judging the posting a second time.
+      let jobId = typeof q.job_id === "string" && q.job_id ? q.job_id : null;
+      if (!jobId && q.job_url) {
         try {
           const st = await chrome.storage.local.get(["atsPlatform", "atsQueue"]);
           jobId = queueJobIdFor(st.atsPlatform, st.atsQueue, q.job_url, q.job_title);

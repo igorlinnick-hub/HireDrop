@@ -127,13 +127,18 @@ def _bulk_row(user_id: str, job: dict) -> dict:
     }
 
 
-def save_jobs_bulk(user_id: str, jobs: list) -> int:
+def save_jobs_bulk(user_id: str, jobs: list, *, insert_only: bool = False) -> int:
     """Upsert a whole discovery/harvest batch in ONE round-trip, score fields inline —
     instead of 2 sequential HTTP calls per row (save_job + update_job_score), which at
     a 160-job ATS pass meant ~320 calls. Dedupes by link inside the batch (Postgres
     can't touch the same row twice in one upsert). Degrades on failure: score-less
     rows (pre-migration DBs), then the old per-row path, so a bad batch slows down
-    instead of losing the harvest."""
+    instead of losing the harvest.
+
+    `insert_only`: a link already saved is left exactly as it is (ON CONFLICT DO NOTHING).
+    The browser harvest (/jobs/ingest) and the search-page judge (/tools/assess-fit-batch)
+    fire for the same cards a moment apart; a check-then-upsert lets the later one
+    overwrite the earlier row — a snippet over the full posting, or status back to new."""
     seen: set = set()
     rows = []
     for job in jobs:
@@ -147,11 +152,27 @@ def save_jobs_bulk(user_id: str, jobs: list) -> int:
 
     for attempt in ("scored", "core"):
         try:
-            get_supabase().table("jobs").upsert(rows, on_conflict="user_id,link").execute()
+            get_supabase().table("jobs").upsert(
+                rows, on_conflict="user_id,link", ignore_duplicates=insert_only
+            ).execute()
             return len(rows)
         except Exception as e:
             print(f"[jobs] bulk upsert ({attempt}) failed, downgrading: {e}")
             rows = [{k: v for k, v in r.items() if k not in _SCORE_COLUMNS} for r in rows]
+
+    if insert_only:
+        # save_job below is a plain upsert — it would overwrite what this mode promises
+        # to leave alone. Row by row, still conflict-ignoring.
+        saved = 0
+        for row in rows:
+            try:
+                get_supabase().table("jobs").upsert(
+                    row, on_conflict="user_id,link", ignore_duplicates=True
+                ).execute()
+                saved += 1
+            except Exception as e:
+                print(f"[jobs] insert-only row failed: {e}")
+        return saved
 
     saved = 0
     for job in jobs:
@@ -219,6 +240,30 @@ def existing_links(user_id: str, links: list) -> set:
             .execute()
         )
         out.update(r["link"] for r in (res.data or []))
+    return out
+
+
+def rows_by_links(user_id: str, links: list) -> dict:
+    """link -> pool row (id, text, status, stored fit verdict) for these exact links.
+
+    existing_links' sibling for callers that need the row, not just "is it saved":
+    the search-page judge (/tools/assess-fit-batch) reads the stored verdict and the
+    stored text of ~15 cards in one IN-query instead of 15 get_by_link round-trips."""
+    links = [link for link in links if link]
+    out: dict = {}
+    for i in range(0, len(links), 40):
+        res = (
+            get_supabase()
+            .table("jobs")
+            .select(
+                "id, link, title, company, location, platform, status, description, "
+                "date_found, fit_score, fit_reason, fit_model, fit_version"
+            )
+            .eq("user_id", user_id)
+            .in_("link", links[i : i + 40])
+            .execute()
+        )
+        out.update({r["link"]: r for r in (res.data or [])})
     return out
 
 

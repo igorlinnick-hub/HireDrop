@@ -208,8 +208,13 @@ def judge_pending(
     workers: int = 6,
     resume_text: str | None = None,
     version: str | None = None,
+    stats: dict | None = None,
 ) -> int:
     """Judge the rows that lack a verdict for this profile version, freshest first.
+
+    `stats`, when given, gets "submitted": how many judge calls were actually started — a
+    caller that reserved budget for every row refunds the rest (rows already in flight
+    elsewhere, a deadline that cut the batch, no resume).
 
     Each worker stores its own verdict (app.db.jobs.save_fit_verdict), so a call that
     finishes after the deadline is not wasted — the next queue read finds it. Rows judged
@@ -290,6 +295,8 @@ def judge_pending(
         row = next(queue, None)
         if row is not None:
             submitted.add(row["id"])
+            if stats is not None:
+                stats["submitted"] = len(submitted)
             in_flight.add(pool.submit(judge, row))
 
     in_flight: set = set()

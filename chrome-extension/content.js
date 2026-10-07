@@ -1690,7 +1690,7 @@
     } catch (_) { /* harvest is best-effort */ }
 
     // Title gate on the CARD, before anything is opened (same rule as the detail phase).
-    const { keep: easyApplyCards, skipped: offTitle } =
+    let { keep: easyApplyCards, skipped: offTitle } =
       splitCardsByTitle(candidates, await titleGateKeywords());
     if (offTitle.length) logBackend(titleSkipSummary(offTitle, candidates.length), "info");
 
@@ -1706,6 +1706,27 @@
       return;
     }
 
+    // Judge the whole page before opening anything (auto only: a pool run is the person's
+    // own pick, and tap mode makes the person the filter — neither runs the fit gate).
+    {
+      const st = await storageGet(["reviewMode", "atsPlatform"]);
+      if (st.reviewMode !== true && st.atsPlatform !== "pool") {
+        const judged = await prejudgeIndeedCards(easyApplyCards);
+        if (!(await isCampaignRunning())) return;
+        if (judged && judged.platformDone) {
+          await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: "indeed", reason: "broad mode daily cap" });
+          return;
+        }
+        if (judged) easyApplyCards = judged;
+      }
+    }
+    if (!easyApplyCards.length) {
+      log("Nothing on this page fits you. Checking next page...", "");
+      logBackend("None of this page's postings fit you — going to next", "info");
+      await goToNextPage();
+      return;
+    }
+
     log(`Found ${easyApplyCards.length} Easy Apply jobs`, "ok");
     logBackend(`Found ${easyApplyCards.length} Easy Apply jobs on page`, "ok");
 
@@ -1717,6 +1738,8 @@
         location: j.location || "",
         url: j.url,
         jk: j.jk,
+        // The pool row the search-page judge stored this posting's verdict on.
+        ...(j.job_id ? { job_id: j.job_id } : {}),
       })),
       currentJobIndex: 0,
     });
@@ -1942,6 +1965,304 @@
     if (!skipped.length) return "";
     const eg = skipped.slice(0, 3).map((c) => `"${String(c.title || "").slice(0, 60)}"`).join(", ");
     return `Skipped ${skipped.length} of ${total} cards: title doesn't match your roles (e.g. ${eg})`;
+  }
+
+  // ── Search-page judge ──────────────────────────────────────────────────
+  // The walk used to open every card and judge it on its page, one at a time: ~18 s per
+  // rejected posting (10-07: 18 rejections in a row, 0 applied, then Indeed ran dry). Now
+  // the cards are read where a person reads them — click a card, the results page shows
+  // the posting in its right-hand pane (Indeed's own request, no page load; live 10-07 in
+  // Igor's Chrome: 0.5-1.5 s per posting, 3-13k chars) — and sent to the server in chunks
+  // while the next ones are read (/tools/assess-fit-batch): judged in parallel, every
+  // verdict stored, a posting judged on an earlier run answered from memory. Only the ones
+  // that fit are opened.
+  //
+  // Not /rpc/jobdescs: it answers (30 postings in 0.36 s) but Indeed's own page never calls
+  // it (checked 10-07: the pane loads through apis.indeed.com/graphql), so every results
+  // page would carry a request no person's browser makes.
+  //
+  // Any failure returns null and the walk judges each posting on its page exactly as
+  // before — the speed-up may be lost, never an application.
+  //
+  // The pane, live 10-07 (1400 px window): #jobsearch-ViewjobPaneWrapper inside
+  // .jobsearch-RightPane; the posting's title is [data-testid="vj-job-title"], its text
+  // .simple-job-description-html. What a click does there, polled every 30-40 ms: vjk
+  // follows the card within 5 ms while the pane still shows the PREVIOUS posting, at
+  // ~60 ms the pane empties, at ~1.4 s the new title and text arrive together. So a
+  // posting is credited to a card only when the pane's own title names that card —
+  // vjk alone would hand posting A's text (and a stored skip) to card B.
+  const PANE_SELECTOR = "#jobsearch-ViewjobPaneWrapper, .jobsearch-RightPane";
+  const PANE_DESC_SELECTOR = ".simple-job-description-html, #jobDescriptionText";
+  const PANE_TITLE_SELECTOR = '[data-testid="vj-job-title"], [data-testid="jobsearch-JobInfoHeader-title"]';
+  // Below this it is a card snippet, not a posting (the server's floor is the same).
+  const PREJUDGE_MIN_TEXT = 300;
+  const PREJUDGE_CHUNK = 5;
+  // This many cards in a row the pane wouldn't show = it isn't working on this page.
+  const PREJUDGE_MAX_UNREAD_RUN = 3;
+
+  function resultsPane() {
+    return document.querySelector(PANE_SELECTOR);
+  }
+
+  // The pane is only there to read when it is drawn. In a narrow window (live 10-07:
+  // 628 px) Indeed keeps it in the DOM, posting and all, but at display:none — and a
+  // card click there navigates to /viewjob mid-walk.
+  function paneShown() {
+    const p = resultsPane();
+    if (!p) return false;
+    const r = p.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+
+  function paneTitle() {
+    const el = resultsPane()?.querySelector(PANE_TITLE_SELECTOR);
+    return el ? String(el.textContent || "").replace(/\s+/g, " ").trim() : "";
+  }
+
+  const normTitle = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  function paneNames(card) {
+    const t = normTitle(paneTitle());
+    return !!t && t === normTitle(card.title);
+  }
+
+  function paneVjk() {
+    return new URL(window.location.href).searchParams.get("vjk");
+  }
+
+  function paneText() {
+    const el = resultsPane()?.querySelector(PANE_DESC_SELECTOR);
+    if (!el) return "";
+    // innerText: the rendered text, line breaks kept, the pane's own <style> left out.
+    let raw = typeof el.innerText === "string" ? el.innerText : "";
+    if (!raw) {
+      const c = el.cloneNode(true);
+      c.querySelectorAll("style,script").forEach((n) => n.remove());
+      raw = c.textContent || "";
+    }
+    return String(raw)
+      .replace(/[ \t ]+/g, " ")
+      .replace(/ *\n\s*/g, "\n")
+      .trim()
+      .slice(0, 8000);
+  }
+
+  // The pane already shows this card: Indeed opens the page with its first card in the
+  // pane (vjk = that card, or no vjk yet while the page is still settling). Clicking it
+  // again redraws nothing, so waiting for a change would lose it every time.
+  function paneAlreadyShows(card, cards) {
+    if (!paneNames(card)) return false;
+    const vjk = paneVjk();
+    if (vjk) return vjk === card.jk;
+    // No vjk: the title is the only witness, so it must name no other card on the page.
+    return cards.filter((c) => normTitle(c.title) === normTitle(card.title)).length === 1;
+  }
+
+  // Click the card and wait for the pane to show THAT posting: vjk is its jk, the pane
+  // went through a redraw after the click (emptied or changed — not the previous posting
+  // still standing), its title names the card, and the text reads the same on two polls
+  // in a row (not half-drawn).
+  async function readCardInPane(card, cards, timeoutMs = 5000) {
+    if (paneAlreadyShows(card, cards)) {
+      const text = paneText();
+      if (text.length >= PREJUDGE_MIN_TEXT) return text;
+    }
+    const beforeText = paneText();
+    const beforeTitle = paneTitle();
+    try { card.clickEl.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (_) {}
+    await sleep(humanDelay(250, 700));
+    await humanClick(card.clickEl);
+    const until = Date.now() + timeoutMs;
+    let redrawn = false;
+    let last = "";
+    while (Date.now() < until) {
+      await sleep(120);
+      if (paneVjk() !== card.jk) continue;
+      const text = paneText();
+      if (!redrawn && (text !== beforeText || paneTitle() !== beforeTitle)) redrawn = true;
+      if (redrawn && paneNames(card) && text.length >= PREJUDGE_MIN_TEXT) {
+        if (text === last) return text;
+        last = text;
+      } else {
+        last = "";
+      }
+    }
+    return "";
+  }
+
+  // After a card the pane never showed, its posting may still be on the way. Let it land
+  // (nothing changes for 1.5 s, at most 6 s) before the next click, so it can't arrive
+  // while the next card is being read.
+  async function paneSettle(quietMs = 1500, maxMs = 6000) {
+    const until = Date.now() + maxMs;
+    let sig = `${paneTitle()}\n${paneText()}`;
+    let since = Date.now();
+    while (Date.now() < until) {
+      await sleep(150);
+      const now = `${paneTitle()}\n${paneText()}`;
+      if (now !== sig) {
+        sig = now;
+        since = Date.now();
+      } else if (Date.now() - since >= quietMs) {
+        return;
+      }
+    }
+  }
+
+  function sendCardsToJudge(cards, texts) {
+    return sendMsg(
+      {
+        type: "PREJUDGE_CARDS",
+        data: {
+          jobs: cards.map((c) => ({
+            title: c.title || "",
+            company: c.company || "",
+            location: c.location || "",
+            platform: "indeed",
+            link: `https://www.indeed.com/viewjob?jk=${c.jk}`,
+            description: texts[c.jk],
+          })),
+        },
+      },
+      35000
+    );
+  }
+
+  // -> the cards to open, in page order (a passed card carries the job_id its verdict is
+  // stored under), { platformDone } when Broad's daily cap is spent, or null = judge every
+  // card on its page as before.
+  async function prejudgeIndeedCards(pageCards) {
+    const t0 = Date.now();
+    // The same posting twice on one page is read and judged once (a second copy used to
+    // log a second "Skipped (fit" line and count twice as a fit loss).
+    const cards = pageCards.filter((c, i) => !c.jk || pageCards.findIndex((x) => x.jk === c.jk) === i);
+    // A hidden tab (window minimised or covered) answers no card click at all — live 10-07
+    // the pane stood still until the window was raised.
+    if (document.visibilityState === "hidden") {
+      logBackend("Search-page judge: the automation window is hidden — checking each posting on its page", "warn");
+      return null;
+    }
+    // The page may still be drawing its results; give the pane a moment to appear.
+    for (let i = 0; i < 12 && !paneShown(); i++) await sleep(250);
+    if (!paneShown()) {
+      logBackend("Search-page judge: no results pane (window too narrow?) — checking each posting on its page", "warn");
+      return null;
+    }
+    const texts = {};
+    const inFlight = [];
+    let chunk = [];
+    let unread = 0;
+    let unreadRun = 0;
+    let seen = 0;
+    // Titles of cards the pane never showed. Their posting may still land later, during
+    // another card's read — and the title check can't tell two postings with one title
+    // apart (common on a page). So a card sharing such a title goes to its own page.
+    const unreadTitles = new Set();
+    for (const c of cards) {
+      seen++;
+      if (!(await isCampaignRunning())) return null;
+      // Mid-walk the window can shrink or the page can move on: a click with no pane
+      // navigates, so stop clicking.
+      if (!paneShown() || /^\/(viewjob|rc\/clk|pagead\/)/.test(new URL(window.location.href).pathname)) {
+        logBackend("Search-page judge: the results pane went away — checking each posting on its page", "warn");
+        return null;
+      }
+      if (unreadTitles.has(normTitle(c.title))) {
+        unread++;
+        continue;
+      }
+      const text = c.jk && c.clickEl ? await readCardInPane(c, cards) : "";
+      if (text.length >= PREJUDGE_MIN_TEXT) {
+        texts[c.jk] = text;
+        chunk.push(c);
+        unreadRun = 0;
+      } else {
+        unread++;
+        unreadTitles.add(normTitle(c.title));
+        if (++unreadRun >= PREJUDGE_MAX_UNREAD_RUN) {
+          logBackend(`Search-page judge: the pane showed none of ${unreadRun} postings in a row — checking each posting on its page`, "warn");
+          return null;
+        }
+        await paneSettle();
+      }
+      if (chunk.length >= PREJUDGE_CHUNK) {
+        inFlight.push(sendCardsToJudge(chunk, texts));
+        chunk = [];
+        // A page takes a minute or more at a person's pace; a silent minute reads as a
+        // stall to the feed and to drive.py (180 s of silence = stuck).
+        logBackend(`Search-page judge: read ${seen} of ${cards.length} postings on this page…`, "info");
+      }
+      // A person's pace, not a scraper's: ~4 s a card (~1 min for a page of 15). The
+      // judge's answers come back while the next cards are read, so it costs no wait.
+      await sleep(humanDelay(2500, 7000));
+    }
+    if (chunk.length) inFlight.push(sendCardsToJudge(chunk, texts));
+    if (!inFlight.length) {
+      logBackend("Search-page judge: no posting text in the results pane — checking each posting on its page", "warn");
+      return null;
+    }
+    const answers = await Promise.all(inFlight);
+    const results = [];
+    let reused = 0;
+    let lost = 0;
+    for (const a of answers) {
+      if (a && Array.isArray(a.results)) {
+        results.push(...a.results);
+        reused += a.reused || 0;
+      } else {
+        lost++;
+      }
+    }
+    if (lost === answers.length) {
+      logBackend("Search-page judge unavailable — checking each posting on its page", "warn");
+      return null;
+    }
+    const verdicts = new Map(results.map((v) => [v.link, v]));
+    // Broad mode's daily cap is spent: every card on every page would come back skipped, so
+    // say so once and hand the walk on, instead of paging through the rest of the search.
+    if (results.length && results.every((v) => v.source === "broad_cap")) {
+      logBackend(`Broad mode daily limit reached — ${String(results[0].reason || "").slice(0, 120)}`, "ok");
+      return { platformDone: true };
+    }
+    const keep = [];
+    const skipped = [];
+    for (const c of cards) {
+      const v = c.jk ? verdicts.get(`https://www.indeed.com/viewjob?jk=${c.jk}`) : null;
+      if (v && v.decision === "skip") skipped.push({ c, v });
+      else if (v && v.decision === "apply" && v.job_id) keep.push({ ...c, job_id: v.job_id, fit: true });
+      // Unjudged (or a chunk that got no answer): the job page decides. Its job_id still
+      // rides along — a verdict that lands after the server's deadline is stored, and the
+      // job page then reuses it.
+      else keep.push(v && v.job_id ? { ...c, job_id: v.job_id } : c);
+    }
+    // One line per skipped posting, worded exactly as the job page's gate words it, so
+    // run_report counts these losses the same way (fit gate / company cap).
+    for (const { c, v } of skipped) {
+      // Not fit losses: already applied, or a posting the person passed on / a dead link.
+      if (v.source === "applied" || v.source === "dismissed") {
+        logBackend(`Skipping ${v.source === "applied" ? "duplicate" : "(passed on earlier)"}: ${c.title}`, "info");
+        continue;
+      }
+      const why = String(v.reason || "").slice(0, 160);
+      const score = v.fit_score != null ? v.fit_score : "?";
+      logBackend(`⏭️ Skipped (fit ${score}): ${c.title} @ ${c.company} — ${why}`, "info");
+    }
+    if (skipped.length) {
+      const seen = await storageGet("processedJobKeys");
+      const keys = new Set(seen.processedJobKeys || []);
+      for (const { c } of skipped) keys.add(c.jk);
+      await storageSet({ processedJobKeys: [...keys].slice(-500) });
+    }
+    const fits = keep.filter((c) => c.fit).length;
+    const later = keep.length - fits;
+    const secs = ((Date.now() - t0) / 1000).toFixed(1);
+    logBackend(
+      `⚡ Judged this page ahead in ${secs} s: ${fits} fit you, ${skipped.length} don't` +
+        (later ? `, ${later} checked on their page` : "") +
+        (reused ? ` (${reused} remembered from earlier runs)` : "") +
+        (unread ? ` · ${unread} unreadable in the pane` : ""),
+      "ok"
+    );
+    return keep;
   }
 
   // A react-select keeps its typing box `<input role=combobox>` at value "" even after a
@@ -2391,9 +2712,18 @@
       } else if (reviewMode) {
         logBackend(`${jobTitle} @ ${jobCompany} — ready for your tap`, "info");
       } else {
+        // Judged on the results page already: the server answers from the stored verdict
+        // (and still checks the company cap first), no second judge.
+        const pending = (await storageGet("pendingJobs")).pendingJobs || [];
+        const prejudgedId = (jobKey && pending.find((j) => j.jk === jobKey)?.job_id) || null;
         const fit = await sendMsg({
           type: "ASSESS_FIT",
-          data: { job_title: jobTitle, company: jobCompany, description: jobDesc },
+          data: {
+            job_title: jobTitle,
+            company: jobCompany,
+            description: jobDesc,
+            ...(prejudgedId ? { job_id: prejudgedId } : {}),
+          },
         });
         if (!fit || fit.decision !== "apply") {
           const why = (fit && fit.reason ? fit.reason : "fit check unavailable — skipped for safety").slice(0, 160);
