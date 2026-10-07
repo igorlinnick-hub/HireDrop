@@ -147,3 +147,21 @@ def test_card_level_title_skips_are_counted_and_named():
     out = _report({"skipped_title": 30}, minutes=12)
     assert out["opened"] == 0
     assert "none matching your roles" in out["verdict"]
+
+
+def test_a_run_judged_away_on_the_results_page_is_named_not_nothing_yet():
+    """The search-page judge skips unfit Indeed postings without opening them, so a run
+    that lost everything to the fit gate reads opened = 0. That is the 09-08 shape (busy,
+    produced nothing) and must say so, and the new lines must count as the same losses."""
+    skip = "⏭️ Skipped (fit 12): PM @ Burnett — construction role, resume is marketing."
+    assert activity_db._categorize(skip) == "skipped_fit"
+    cap = "⏭️ Skipped (fit ?): PM @ Acme — Company cap — already tried Acme in the last 60 days"
+    assert activity_db._categorize(cap) == "company_capped"
+    summary = (
+        "⚡ Judged this page ahead in 4.2 s: 0 fit you, 14 don't (3 remembered from earlier runs)"
+    )
+    assert activity_db._categorize(summary) is None
+    assert activity_db._weight(summary) == 1
+    out = _report({"skipped_fit": 20}, minutes=9)
+    assert out["opened"] == 0
+    assert "every one lost to fit gate" in out["verdict"]

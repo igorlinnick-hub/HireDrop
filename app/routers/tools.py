@@ -2,6 +2,7 @@ import html
 import os
 import re
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
@@ -294,7 +295,6 @@ def assess_fit_endpoint(req: AssessFitRequest, user=Depends(get_current_user)):
     Broad mode is additionally capped at BROAD_DAILY_CAP applications/day to prevent
     spam patterns that trigger Indeed's anti-bot detection at the platform level.
     """
-    _assess_fit_gate(user)
     profile = get_profile(user.id)
 
     broad_capped = _broad_cap_verdict(user.id, profile)
@@ -327,6 +327,10 @@ def assess_fit_endpoint(req: AssessFitRequest, user=Depends(get_current_user)):
         if reused is not None:
             return reused
 
+    # The daily budget guards Anthropic spend, so it is charged here — at the model call —
+    # and not for a cap or a stored verdict, which cost none (a search-page-judged Indeed
+    # card used to pay twice: once in the batch, once again on its job page).
+    _assess_fit_gate(user)
     result = assess_fit(
         job={"title": req.job_title, "company": req.company, "description": req.description},
         profile=profile,
@@ -370,14 +374,35 @@ def _assess_fit_budget(user, want: int) -> int:
     return take
 
 
+def _refund_assess_fit(user, n: int) -> None:
+    """Hand back budget claimed by _assess_fit_budget for calls that never started."""
+    rec = _assess_fit_counts.get(user.id)
+    if n > 0 and rec and rec.get("day") == date.today().isoformat():
+        rec["n"] = max(0, rec["n"] - n)
+
+
 # The search-page judge runs while the extension waits on the results page, so it has a
 # deadline: what is not judged by then goes back as "unjudged" and the job page judges it
 # live, exactly as before this endpoint existed. Haiku answers in ~2-4 s and a near-bar
 # score escalates to Sonnet (~5-10 s), so 10 workers clear a 15-card page in one or two
-# rounds; the extension's own timeout (background.js PREJUDGE_CARDS) sits above this.
+# rounds. The whole request must answer inside 30 s: Chrome terminates an extension service
+# worker whose fetch() waits longer (background.js PREJUDGE_CARDS races 28 s), and the DB
+# reads/writes around the judge take a few seconds of their own.
 _BATCH_WORKERS = 10
-_BATCH_DEADLINE_S = 25.0
+_BATCH_DEADLINE_S = 16.0
 _HARVEST_PLATFORMS = ("indeed", "ziprecruiter")
+# Below this it is a card snippet, not a posting (/jobs/describe's MIN_STORABLE_DESC). A
+# verdict on a snippet would be stored and reused for every later run (#192: thin text
+# scores high), so such a card goes back unjudged and its job page judges it on the text.
+_MIN_JUDGE_TEXT = 300
+# Each batch holds a request thread up to the judge deadline plus its own 10 judge
+# threads. Past this many at once per process, a page goes back unjudged — the old live
+# path — instead of queueing behind the others.
+_BATCH_SLOTS = threading.BoundedSemaphore(8)
+# Pool statuses the person (or a dead-link report) already closed: never judged, never opened.
+_CLOSED_STATUSES = {"skipped", "rejected", "dismissed", "dead"}
+# The person said yes in Tap: no judge here; the job page decides as it always has.
+_PICKED_STATUSES = {"approved", "queued"}
 _TAG = re.compile(r"<[^>]+>")
 # What jobs_db.update_job_description keeps; a longer text would read as "new" every run.
 _MAX_TEXT = 5000
@@ -418,6 +443,24 @@ def assess_fit_batch_endpoint(req: AssessFitBatchRequest, user=Depends(get_curre
     Anything that fails here degrades to "unjudged" — the old one-at-a-time path — never
     to a skip the judge did not make.
     """
+    if not _BATCH_SLOTS.acquire(blocking=False):
+        return {
+            "results": [
+                {"link": c.link, "job_id": None, "decision": "unjudged", "source": "busy"}
+                for c in req.jobs
+            ],
+            "judged": 0,
+            "reused": 0,
+            "unjudged": len(req.jobs),
+        }
+    try:
+        return _assess_fit_batch(req, user)
+    finally:
+        _BATCH_SLOTS.release()
+
+
+def _assess_fit_batch(req: AssessFitBatchRequest, user) -> dict:
+    from app.routers.jobs import _deck_resume_text
     from modules.ai_fit_judge import mode_threshold, verdict_version
     from modules.fit_queue import has_current_verdict, judge_pending
 
@@ -456,6 +499,7 @@ def assess_fit_batch_endpoint(req: AssessFitBatchRequest, user=Depends(get_curre
     try:
         rows = jobs_db.rows_by_links(user.id, [c.link for c in cards])
         missing = [c for c in cards if c.link not in rows]
+        inserted = {c.link for c in missing}
         if missing:
             jobs_db.save_jobs_bulk(
                 user.id,
@@ -471,6 +515,7 @@ def assess_fit_batch_endpoint(req: AssessFitBatchRequest, user=Depends(get_curre
                     }
                     for c in missing
                 ],
+                insert_only=True,
             )
             rows.update(jobs_db.rows_by_links(user.id, [c.link for c in missing]))
     except Exception as e:  # noqa: BLE001 — no pool rows: the walk judges live, as before
@@ -491,8 +536,15 @@ def assess_fit_batch_endpoint(req: AssessFitBatchRequest, user=Depends(get_curre
         if not row:
             out[c.link] = result(c, "unjudged", "not_saved")
             continue
-        if row.get("status") == "applied":
+        status = row.get("status") or "new"
+        if status == "applied":
             out[c.link] = result(c, "skip", "applied", row, reason="Already applied")
+            continue
+        if status in _CLOSED_STATUSES:
+            out[c.link] = result(c, "skip", "dismissed", row, reason="Passed on earlier")
+            continue
+        if status in _PICKED_STATUSES:
+            out[c.link] = result(c, "unjudged", "picked", row)
             continue
         if company_slot_taken(c.company, taken):
             if retried is None:
@@ -509,12 +561,15 @@ def assess_fit_batch_endpoint(req: AssessFitBatchRequest, user=Depends(get_curre
                 continue
         # Judge on the longer of the two texts: the card's fresh posting, or what the row
         # already holds (an earlier detail-page read).
-        if len(texts[c.link]) > len(row.get("description") or ""):
+        if len(texts[c.link]) > len(row.get("description") or "") or c.link in inserted:
             row["_new_text"] = texts[c.link]
             row["description"] = texts[c.link]
+        if len((row.get("description") or "").strip()) < _MIN_JUDGE_TEXT:
+            out[c.link] = result(c, "unjudged", "thin_text", row)
+            continue
         to_judge.append((c, row))
 
-    resume_text = resume_text_for(profile)
+    resume_text = _deck_resume_text(user.id, profile)
     version = verdict_version(profile, resume_text)
     threshold = mode_threshold(profile)
     stored_before = {row["id"] for _, row in to_judge if has_current_verdict(row, version)}
@@ -522,6 +577,7 @@ def assess_fit_batch_endpoint(req: AssessFitBatchRequest, user=Depends(get_curre
     judged = 0
     if pending:
         budget = _assess_fit_budget(user, len(pending))
+        stats: dict = {}
         judged = judge_pending(
             user.id,
             profile,
@@ -531,7 +587,9 @@ def assess_fit_batch_endpoint(req: AssessFitBatchRequest, user=Depends(get_curre
             workers=_BATCH_WORKERS,
             resume_text=resume_text,
             version=version,
+            stats=stats,
         )
+        _refund_assess_fit(user, budget - stats.get("submitted", 0))
 
     for c, row in to_judge:
         if not has_current_verdict(row, version):

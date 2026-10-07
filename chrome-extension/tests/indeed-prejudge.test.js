@@ -169,9 +169,11 @@ const pending = (store) => (store.pendingJobs || []).map((j) => j.jk);
       },
     });
     await box.phase1_indeed();
-    check("unjudged card pending without a job_id",
-      JSON.stringify(pending(store)) === JSON.stringify([JK_FIT]) && !store.pendingJobs[0].job_id,
+    check("unjudged card pending, its job_id kept for a verdict that lands late",
+      JSON.stringify(pending(store)) === JSON.stringify([JK_FIT]) && store.pendingJobs[0].job_id === "row-fit",
       JSON.stringify(store.pendingJobs));
+    check("summary does not count the unjudged card as a fit",
+      rec.backend.some((t) => /: 0 fit you, 1 don't, 1 checked on their page/.test(t)), JSON.stringify(rec.backend));
     check("company cap line keeps the '— Company cap —' marker run_report counts",
       rec.backend.some((t) => /^⏭️ Skipped \(fit \?\): .* — Company cap — /.test(t)), JSON.stringify(rec.backend));
     check("summary names the card left for its page", rec.backend.some((t) => /1 checked on their page/.test(t)));
@@ -191,6 +193,42 @@ const pending = (store) => (store.pendingJobs || []).map((j) => j.jk);
     await box.phase1_indeed();
     check("all skipped: next page once", rec.nextPage === 1, `nextPage=${rec.nextPage}`);
     check("all skipped: nothing opened, pendingJobs untouched", rec.navTo === null && store.pendingJobs === undefined);
+  }
+
+  // --- Broad cap spent: hand the walk on, don't page through the search --------------------
+  {
+    const { rec, store, box } = world({
+      store: { ...KW }, rpc: BOTH,
+      verdicts: {
+        results: [JK_FIT, JK_OFF].map((jk) => ({
+          link: LINK(jk), job_id: null, decision: "skip", source: "broad_cap",
+          reason: "Broad mode daily limit reached (40 applications). Resumes tomorrow.",
+        })),
+      },
+    });
+    const sent = [];
+    const orig = box.sendMsg;
+    box.sendMsg = async (m) => { sent.push(m.type); return orig(m); };
+    await box.phase1_indeed();
+    check("broad cap: platform handed on once", sent.filter((t) => t === "PLATFORM_EXHAUSTED").length === 1, JSON.stringify(sent));
+    check("broad cap: no next page, nothing opened", rec.nextPage === 0 && rec.navTo === null && store.pendingJobs === undefined);
+  }
+
+  // --- passed-on / applied rows are not fit losses -------------------------------------------
+  {
+    const { rec, box } = world({
+      store: { ...KW }, rpc: BOTH,
+      verdicts: {
+        results: [
+          { link: LINK(JK_FIT), job_id: "a", decision: "skip", source: "dismissed", reason: "Passed on earlier" },
+          { link: LINK(JK_OFF), job_id: "b", decision: "skip", source: "applied", reason: "Already applied" },
+        ],
+      },
+    });
+    await box.phase1_indeed();
+    check("dismissed/applied: no '⏭️ Skipped (fit' line", !rec.backend.some((t) => /Skipped \(fit/.test(t)), JSON.stringify(rec.backend));
+    check("dismissed/applied: says why", rec.backend.some((t) => /^Skipping \(passed on earlier\): /.test(t)) &&
+      rec.backend.some((t) => /^Skipping duplicate: /.test(t)));
   }
 
   // --- 4. failures fall back to the old path -------------------------------------------------

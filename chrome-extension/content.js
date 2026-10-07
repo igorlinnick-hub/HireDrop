@@ -1713,6 +1713,10 @@
       if (st.reviewMode !== true && st.atsPlatform !== "pool") {
         const judged = await prejudgeIndeedCards(easyApplyCards);
         if (!(await isCampaignRunning())) return;
+        if (judged && judged.platformDone) {
+          await sendMsg({ type: "PLATFORM_EXHAUSTED", platform: "indeed", reason: "broad mode daily cap" });
+          return;
+        }
         if (judged) easyApplyCards = judged;
       }
     }
@@ -2042,26 +2046,35 @@
           })),
         },
       },
-      45000
+      35000
     );
     if (!r || !Array.isArray(r.results)) {
       logBackend("Search-page judge unavailable — checking each posting on its page", "warn");
       return null;
     }
     const verdicts = new Map(r.results.map((v) => [v.link, v]));
+    // Broad mode's daily cap is spent: every card on every page would come back skipped, so
+    // say so once and hand the walk on, instead of paging through the rest of the search.
+    if (r.results.length && r.results.every((v) => v.source === "broad_cap")) {
+      logBackend(`Broad mode daily limit reached — ${String(r.results[0].reason || "").slice(0, 120)}`, "ok");
+      return { platformDone: true };
+    }
     const keep = [];
     const skipped = [];
     for (const c of cards) {
       const v = c.jk ? verdicts.get(link(c)) : null;
       if (v && v.decision === "skip") skipped.push({ c, v });
-      else if (v && v.decision === "apply" && v.job_id) keep.push({ ...c, job_id: v.job_id });
-      else keep.push(c); // unjudged or no text: the job page judges it live
+      else if (v && v.decision === "apply" && v.job_id) keep.push({ ...c, job_id: v.job_id, fit: true });
+      // Unjudged: the job page decides. Its job_id still rides along — a verdict that lands
+      // after the server's deadline is stored, and the job page then reuses it.
+      else keep.push(v && v.job_id ? { ...c, job_id: v.job_id } : c);
     }
     // One line per skipped posting, worded exactly as the job page's gate words it, so
     // run_report counts these losses the same way (fit gate / company cap).
     for (const { c, v } of skipped) {
-      if (v.source === "applied") {
-        logBackend(`Skipping duplicate: ${c.title}`, "info");
+      // Not fit losses: already applied, or a posting the person passed on / a dead link.
+      if (v.source === "applied" || v.source === "dismissed") {
+        logBackend(`Skipping ${v.source === "applied" ? "duplicate" : "(passed on earlier)"}: ${c.title}`, "info");
         continue;
       }
       const why = String(v.reason || "").slice(0, 160);
@@ -2074,7 +2087,7 @@
       for (const { c } of skipped) keys.add(c.jk);
       await storageSet({ processedJobKeys: [...keys].slice(-500) });
     }
-    const fits = keep.filter((c) => c.job_id).length;
+    const fits = keep.filter((c) => c.fit).length;
     const later = keep.length - fits;
     const secs = ((Date.now() - t0) / 1000).toFixed(1);
     logBackend(

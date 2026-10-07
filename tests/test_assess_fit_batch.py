@@ -65,6 +65,7 @@ def _run(
     resume=RESUME,
     pool_error=False,
     budget_left=None,
+    in_flight=(),
 ):
     """Call the endpoint with the pool, the judge and the writes faked."""
     from app.routers import tools
@@ -80,7 +81,8 @@ def _run(
             raise RuntimeError("PostgREST down")
         return {link: pool[link] for link in links if link in pool}
 
-    def save_jobs_bulk(user_id, jobs):
+    def save_jobs_bulk(user_id, jobs, insert_only=False):
+        assert insert_only, "the batch must never overwrite a row another request saved"
         for j in jobs:
             inserted.append(j)
             n = j["link"].rsplit("jk", 1)[1]
@@ -103,10 +105,14 @@ def _run(
             "n": tools._ASSESS_FIT_DAILY_CAP - budget_left,
         }
     req = AssessFitBatchRequest(jobs=cards)
+    from modules import fit_queue
+
+    fit_queue._IN_FLIGHT.clear()
+    fit_queue._IN_FLIGHT.update(in_flight)
     with (
         patch.object(tools, "is_admin", return_value=False),
         patch.object(tools, "get_profile", return_value=dict(profile)),
-        patch.object(tools, "resume_text_for", return_value=resume),
+        patch("app.routers.jobs._deck_resume_text", return_value=resume),
         patch.object(tools.apps_db, "count_today", return_value=applied_today),
         patch.object(tools, "user_day_start", return_value="2026-10-07T00:00:00+00:00"),
         patch("app.db.applications.companies_applied_since", return_value=list(history)),
@@ -119,6 +125,8 @@ def _run(
         patch("modules.ai_fit_judge.assess_fit", side_effect=judge) as model,
     ):
         out = tools.assess_fit_batch_endpoint(req, user=_User())
+    fit_queue._IN_FLIGHT.clear()
+    out["_charged"] = tools._assess_fit_counts.get("u1", {}).get("n", 0)
     return out, model, store_verdict, store_text, inserted
 
 
@@ -244,3 +252,86 @@ def test_only_harvest_platforms_and_one_result_per_link():
     cards = [_card(1), _card(1), {**_card(2), "platform": "greenhouse"}]
     out, _, _, _, _ = _run(cards, [_row(1)], scores={"1": 50})
     assert [r["link"] for r in out["results"]] == ["https://www.indeed.com/viewjob?jk=jk1"]
+
+
+def test_rows_the_person_closed_or_picked_are_never_judged():
+    rows = [_row(1, status="skipped"), _row(2, status="rejected"), _row(3, status="approved")]
+    out, model, _, _, _ = _run(
+        [_card(1), _card(2), _card(3)], rows, scores={"1": 90, "2": 90, "3": 90}
+    )
+    r = _by_link(out)
+    assert r["1"]["decision"] == "skip" and r["1"]["source"] == "dismissed"
+    assert r["2"]["decision"] == "skip" and r["2"]["source"] == "dismissed"
+    # A Tap "yes" is opened and decided on its page, as before — never vetoed here.
+    assert r["3"]["decision"] == "unjudged" and r["3"]["source"] == "picked"
+    assert r["3"]["job_id"] == "row-3"
+    model.assert_not_called()
+
+
+def test_a_snippet_is_never_judged_or_stored():
+    out, model, store_verdict, _, _ = _run(
+        [_card(1, text="short card")], [_row(1)], scores={"1": 80}
+    )
+    assert out["results"][0]["decision"] == "unjudged"
+    assert out["results"][0]["source"] == "thin_text"
+    model.assert_not_called()
+    store_verdict.assert_not_called()
+
+
+def test_budget_is_charged_only_for_calls_that_started():
+    # No resume: judge_pending makes no call -> nothing charged.
+    out, _, _, _, _ = _run([_card(1), _card(2)], [_row(1), _row(2)], scores={"1": 50}, resume="")
+    assert out["_charged"] == 0
+    # A row another request is judging right now: no call here, no charge for it.
+    out, model, _, _, _ = _run(
+        [_card(1), _card(2)], [_row(1), _row(2)], scores={"1": 50, "2": 50}, in_flight={"row-2"}
+    )
+    assert model.call_count == 1 and out["_charged"] == 1
+    assert _by_link(out)["2"]["decision"] == "unjudged"
+
+
+def test_a_row_this_request_inserted_gets_its_text_written_again_after_the_judge():
+    # The harvest's snippet insert can land between our insert and our judge; the full
+    # text is re-asserted after the judge for rows this request created.
+    _, _, _, store_text, inserted = _run([_card(9)], [], scores={"9": 50})
+    assert len(inserted) == 1
+    assert [c.args[0] for c in store_text.call_args_list] == ["row-9"]
+
+
+def test_a_full_house_sends_the_page_back_unjudged():
+    from app.routers import tools
+
+    taken = 0
+    while tools._BATCH_SLOTS.acquire(blocking=False):
+        taken += 1
+    try:
+        out, model, _, _, _ = _run([_card(1)], [_row(1)], scores={"1": 50})
+    finally:
+        for _ in range(taken):
+            tools._BATCH_SLOTS.release()
+    assert out["results"][0]["decision"] == "unjudged" and out["results"][0]["source"] == "busy"
+    model.assert_not_called()
+
+
+def test_a_stored_verdict_on_the_job_page_costs_no_budget():
+    from app.routers import tools
+    from app.schemas import AssessFitRequest
+
+    row = _row(1, fit_score=50, fit_version=CURRENT, fit_reason="fits", user_id="u1")
+    tools._assess_fit_counts.clear()
+    req = AssessFitRequest(job_title="Marketing Manager 1", company="Co1", job_id="row-1")
+    with (
+        patch.object(tools, "get_profile", return_value=dict(PROFILE)),
+        patch.object(tools, "resume_text_for", return_value=RESUME),
+        patch.object(tools.apps_db, "count_today", return_value=0),
+        patch.object(tools, "user_day_start", return_value="2026-10-07T00:00:00+00:00"),
+        patch("app.db.applications.companies_applied_since", return_value=[]),
+        patch("app.db.handbacks.companies_handed_back_since", return_value=[]),
+        patch.object(tools.jobs_db, "get_job_by_id", return_value=row),
+        patch.object(tools, "assess_fit") as model,
+        patch.object(tools, "is_admin", return_value=False),
+    ):
+        out = tools.assess_fit_endpoint(req, user=_User())
+    assert out["decision"] == "apply" and out["verdict_source"] == "queue"
+    model.assert_not_called()
+    assert tools._assess_fit_counts.get("u1", {}).get("n", 0) == 0

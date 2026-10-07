@@ -988,7 +988,9 @@ def ingest_jobs(req: IngestJobsRequest, user=Depends(get_current_user)):
         except Exception as e:
             print(f"[ingest] scoring skipped (rows still saved): {e}", file=sys.stderr)
 
-    saved = jobs_db.save_jobs_bulk(user.id, rows)
+    # Insert-only for real: the search-page judge may have saved these links with the full
+    # posting while this request was scoring snippets — an upsert would put the snippet back.
+    saved = jobs_db.save_jobs_bulk(user.id, rows, insert_only=True)
     return {
         "saved": saved,
         "skipped_existing": len(candidates) - len(fresh),

@@ -2876,8 +2876,9 @@ async function handleMessage(msg, sender) {
         if (!jobs.length) return null;
         return await Promise.race([
           apiPost("/tools/assess-fit-batch", { jobs: jobs.slice(0, 30) }),
-          // Above the server's own 25 s judge deadline, so a slow page still comes back.
-          new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 40000)),
+          // Under 30 s: Chrome terminates a service worker whose fetch() waits longer. The
+          // server's judge deadline is 16 s, so a slow page still answers inside this.
+          new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 28000)),
         ]);
       } catch {
         return null;
