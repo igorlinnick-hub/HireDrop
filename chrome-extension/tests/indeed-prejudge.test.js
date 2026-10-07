@@ -66,13 +66,18 @@ const titleRow = (t) => TITLE_ROW.replace(/(data-testid="vj-job-title"[^>]*>)[^<
 // The decoy fixture's three cards again under new jks: a page with four real cards.
 const MORE_CARDS = FIX("indeed-serp-decoy.html")
   .replaceAll(JK_FIT, "1111aaaa2222bbbb").replaceAll(JK_OFF, "3333cccc4444dddd").replaceAll("a1b2c3d4e5f67890", "5555eeee6666ffff");
+const EVEN_MORE = FIX("indeed-serp-decoy.html")
+  .replaceAll(JK_FIT, "7777aaaa8888bbbb").replaceAll(JK_OFF, "9999cccc0000dddd").replaceAll("a1b2c3d4e5f67890", "1212eeee3434ffff")
+  .replaceAll("Marketing Coordinator", "Marketing Analyst").replaceAll("Events Marketing Specialist", "Growth Marketing Specialist");
 
 // The results page as a card click meets it, timed the way it behaved live 10-07: vjk
 // follows the card at once, the pane empties, and the posting (title + text) lands
 // `delayFor(jk)` ms later — or never, when `paneFor(jk)` gives "". Time is a fake clock
 // that `sleep` advances, so a 5 s timeout costs nothing here.
-function world({ store, verdicts, paneFor, delayFor, titleFor, preselect, more, narrow, hidden, running, sameText }) {
-  const pageHtml = FIX("indeed-serp-decoy.html") + (more ? MORE_CARDS : "");
+function world({ store, verdicts, paneFor, delayFor, titleFor, preselect, more, narrow, hidden, running, sameText, dupe }) {
+  const pageHtml = FIX("indeed-serp-decoy.html") + (more === true || more === 2 ? MORE_CARDS : "") +
+    (more === 2 || more === "distinct" ? EVEN_MORE : "") +
+    (dupe ? FIX("indeed-serp-decoy.html") : "");
   const html = `<body>${pageHtml}<div class="jobsearch-RightPane"><div id="jobsearch-ViewjobPaneWrapper"></div></div></body>`;
   let url = "https://www.indeed.com/jobs?q=marketing&l=remote" + (preselect ? `&vjk=${preselect}` : "");
   const { window } = new JSDOM(html, { url, pretendToBeVisual: true, virtualConsole: new VirtualConsole() });
@@ -211,7 +216,7 @@ const pending = (store) => (store.pendingJobs || []).map((j) => j.jk);
 
   // --- chunks: judged while the rest is read -------------------------------------------------
   {
-    const chunkSrc = slice("  async function prejudgeIndeedCards(cards) {", "    const answers = await Promise.all(inFlight);");
+    const chunkSrc = slice("  async function prejudgeIndeedCards(pageCards) {", "    const answers = await Promise.all(inFlight);");
     check("a chunk is sent without waiting for its answer (judging overlaps reading)",
       /inFlight\.push\(sendCardsToJudge\(chunk, texts\)\)/.test(chunkSrc) && !/await sendCardsToJudge/.test(chunkSrc));
   }
@@ -353,6 +358,37 @@ const pending = (store) => (store.pendingJobs || []).map((j) => j.jk);
     check("pane titled for another posting: the card still goes to its page", pending(o.store).includes(JK_OFF));
   }
 
+  {
+    // Skeptic of the blast-radius pass: card 1's posting lands 9.5 s late, while a LATER card
+    // with the same title ("Marketing Coordinator", jk 1111…) is being read. The title check
+    // can't tell them apart, so that card must not be read in the pane at all.
+    const o = world({ store: { ...KW }, verdicts: answer({}), more: true, delayFor: (jk) => (jk === JK_FIT ? 9500 : 0) });
+    await o.box.phase1_indeed();
+    check("same title as an unread card: not clicked, not judged",
+      !o.rec.clicks.includes("1111aaaa2222bbbb") && !o.rec.judged.some((j) => j.link === LINK("1111aaaa2222bbbb")),
+      JSON.stringify({ clicks: o.rec.clicks, judged: o.rec.judged.map((x) => x.link.slice(-16)) }));
+    check("same title as an unread card: it still goes to its page", pending(o.store).includes("1111aaaa2222bbbb"));
+    check("no card judged on another card's posting",
+      o.rec.judged.every((j) => j.description.includes(`posting ${j.link.slice(-16)}`)),
+      JSON.stringify(o.rec.judged.map((x) => [x.link.slice(-16), x.description.slice(-30)])));
+  }
+
+  // --- the same posting twice on a page is judged and logged once ---------------------------
+  {
+    const o = world({ store: { ...KW }, dupe: true, verdicts: answer({ [JK_OFF]: { job_id: "b", decision: "skip", fit_score: 12, reason: "no" } }) });
+    await o.box.phase1_indeed();
+    check("duplicate jk: one skip line", o.rec.backend.filter((t) => t.startsWith("⏭️ Skipped (fit 12)")).length === 1, JSON.stringify(o.rec.backend));
+    check("duplicate jk: judged once", o.rec.judged.filter((j) => j.link === LINK(JK_OFF)).length === 1);
+  }
+
+  // --- a long read is not silence (drive.py calls 180 s without a line a stall) --------------
+  {
+    const o = world({ store: { ...KW }, verdicts: answer({}), more: 2 });
+    await o.box.phase1_indeed();
+    check("a progress line per chunk sent", o.rec.backend.some((t) => /^Search-page judge: read 5 of 6 postings on this page…$/.test(t)),
+      JSON.stringify(o.rec.backend));
+  }
+
   // --- 3. no pane = no clicks (a click there navigates) ---------------------------------------
   {
     const o = world({ store: { ...KW }, verdicts: answer({}), narrow: true });
@@ -380,8 +416,8 @@ const pending = (store) => (store.pendingJobs || []).map((j) => j.jk);
       o.rec.backend.some((t) => /results pane went away/.test(t)), JSON.stringify(o.rec.backend));
   }
   {
-    // Four real cards, a pane that never shows any: give up after three, not four.
-    const o = world({ store: { ...KW }, verdicts: answer({}), paneFor: () => "", more: true });
+    // Four real cards, four titles, a pane that never shows any: give up after three, not four.
+    const o = world({ store: { ...KW }, verdicts: answer({}), paneFor: () => "", more: "distinct" });
     await o.box.phase1_indeed();
     check("3 unreadable in a row: stops clicking", o.rec.clicks.length === 3, JSON.stringify(o.rec.clicks));
     check("3 unreadable in a row: old path, says why", !o.rec.sent.includes("PREJUDGE_CARDS") &&
@@ -401,7 +437,7 @@ const pending = (store) => (store.pendingJobs || []).map((j) => j.jk);
   // --- 4. a person's pace and a person's click ------------------------------------------------
   {
     const reader = slice("  async function readCardInPane(card, cards, timeoutMs = 5000) {", "  // After a card the pane never showed");
-    const loop = slice("  async function prejudgeIndeedCards(cards) {", "    const answers = await Promise.all(inFlight);");
+    const loop = slice("  async function prejudgeIndeedCards(pageCards) {", "    const answers = await Promise.all(inFlight);");
     check("cards are clicked with humanClick, not a bare .click()",
       /await humanClick\(card\.clickEl\)/.test(reader) && !/clickEl\.click\(\)/.test(reader));
     check("~4 s between cards (humanDelay(2500, 7000))", /await sleep\(humanDelay\(2500, 7000\)\)/.test(loop));

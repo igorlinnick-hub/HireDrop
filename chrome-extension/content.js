@@ -2130,8 +2130,11 @@
   // -> the cards to open, in page order (a passed card carries the job_id its verdict is
   // stored under), { platformDone } when Broad's daily cap is spent, or null = judge every
   // card on its page as before.
-  async function prejudgeIndeedCards(cards) {
+  async function prejudgeIndeedCards(pageCards) {
     const t0 = Date.now();
+    // The same posting twice on one page is read and judged once (a second copy used to
+    // log a second "Skipped (fit" line and count twice as a fit loss).
+    const cards = pageCards.filter((c, i) => !c.jk || pageCards.findIndex((x) => x.jk === c.jk) === i);
     // A hidden tab (window minimised or covered) answers no card click at all — live 10-07
     // the pane stood still until the window was raised.
     if (document.visibilityState === "hidden") {
@@ -2149,13 +2152,23 @@
     let chunk = [];
     let unread = 0;
     let unreadRun = 0;
+    let seen = 0;
+    // Titles of cards the pane never showed. Their posting may still land later, during
+    // another card's read — and the title check can't tell two postings with one title
+    // apart (common on a page). So a card sharing such a title goes to its own page.
+    const unreadTitles = new Set();
     for (const c of cards) {
+      seen++;
       if (!(await isCampaignRunning())) return null;
       // Mid-walk the window can shrink or the page can move on: a click with no pane
       // navigates, so stop clicking.
       if (!paneShown() || /^\/(viewjob|rc\/clk|pagead\/)/.test(new URL(window.location.href).pathname)) {
         logBackend("Search-page judge: the results pane went away — checking each posting on its page", "warn");
         return null;
+      }
+      if (unreadTitles.has(normTitle(c.title))) {
+        unread++;
+        continue;
       }
       const text = c.jk && c.clickEl ? await readCardInPane(c, cards) : "";
       if (text.length >= PREJUDGE_MIN_TEXT) {
@@ -2164,6 +2177,7 @@
         unreadRun = 0;
       } else {
         unread++;
+        unreadTitles.add(normTitle(c.title));
         if (++unreadRun >= PREJUDGE_MAX_UNREAD_RUN) {
           logBackend(`Search-page judge: the pane showed none of ${unreadRun} postings in a row — checking each posting on its page`, "warn");
           return null;
@@ -2173,6 +2187,9 @@
       if (chunk.length >= PREJUDGE_CHUNK) {
         inFlight.push(sendCardsToJudge(chunk, texts));
         chunk = [];
+        // A page takes a minute or more at a person's pace; a silent minute reads as a
+        // stall to the feed and to drive.py (180 s of silence = stuck).
+        logBackend(`Search-page judge: read ${seen} of ${cards.length} postings on this page…`, "info");
       }
       // A person's pace, not a scraper's: ~4 s a card (~1 min for a page of 15). The
       // judge's answers come back while the next cards are read, so it costs no wait.
