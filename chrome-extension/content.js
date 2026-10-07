@@ -1969,104 +1969,137 @@
 
   // ── Search-page judge ──────────────────────────────────────────────────
   // The walk used to open every card and judge it on its page, one at a time: ~18 s per
-  // rejected posting (10-07: 18 rejections in a row, 0 applied, then Indeed ran dry). The
-  // results page itself loads every card's FULL posting in one call — /rpc/jobdescs, the
-  // page's own same-origin request (captured live 10-07 in Igor's Chrome: 30 postings,
-  // 0.36 s, 0.8-10k chars each, fixture tests/fixtures/indeed-rpc-jobdescs.json). So the
-  // page's cards go to the server together (/tools/assess-fit-batch): judged in parallel,
-  // every verdict stored, a posting judged on an earlier run answered from memory. Only
-  // the ones that fit are opened. Any failure here returns null and the walk judges each
-  // posting on its page exactly as before — the speed-up may be lost, never an application.
-  function postingTextFromHtml(html) {
-    try {
-      const doc = new DOMParser().parseFromString(`<div>${html || ""}</div>`, "text/html");
-      doc.querySelectorAll("style,script").forEach((n) => n.remove());
-      doc.querySelectorAll("br").forEach((n) => n.replaceWith("\n"));
-      doc.querySelectorAll("p,li,div,h1,h2,h3,h4,h5,h6,tr").forEach((n) => n.append("\n"));
-      return (doc.body.textContent || "")
-        .replace(/[ \t\u00a0]+/g, " ")
-        .replace(/ *\n[\s]*/g, "\n")
-        .trim()
-        .slice(0, 8000);
-    } catch (_) {
-      return "";
-    }
-  }
-
-  async function fetchIndeedPostings(jks) {
-    const out = {};
-    if (!jks.length) return out;
-    let timer = null;
-    try {
-      const ctl = new AbortController();
-      timer = setTimeout(() => ctl.abort(), 8000);
-      const res = await fetch(`/rpc/jobdescs?jks=${jks.map(encodeURIComponent).join(",")}`, {
-        credentials: "include",
-        signal: ctl.signal,
-      });
-      if (!res.ok) return out;
-      const data = await res.json();
-      for (const jk of jks) {
-        const text = data && typeof data[jk] === "string" ? postingTextFromHtml(data[jk]) : "";
-        if (text) out[jk] = text;
-      }
-    } catch (_) {
-      /* no texts: every card is judged on its page */
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-    return out;
-  }
-
-  // Below this it is a card snippet, not a posting (the server's MIN_STORABLE_DESC).
+  // rejected posting (10-07: 18 rejections in a row, 0 applied, then Indeed ran dry). Now
+  // the cards are read where a person reads them — click a card, the results page shows
+  // the posting in its right-hand pane (Indeed's own request, no page load; live 10-07 in
+  // Igor's Chrome: ~0.45 s per posting, 3-13k chars) — and sent to the server in chunks
+  // while the next ones are read (/tools/assess-fit-batch): judged in parallel, every
+  // verdict stored, a posting judged on an earlier run answered from memory. Only the ones
+  // that fit are opened.
+  //
+  // Not /rpc/jobdescs: it answers (30 postings in 0.36 s) but Indeed's own page never calls
+  // it (checked 10-07: the pane loads through apis.indeed.com/graphql), so every results
+  // page would carry a request no person's browser makes.
+  //
+  // Any failure returns null and the walk judges each posting on its page exactly as
+  // before — the speed-up may be lost, never an application.
+  const PANE_DESC_SELECTOR = ".simple-job-description-html, #jobDescriptionText";
+  // Below this it is a card snippet, not a posting (the server's floor is the same).
   const PREJUDGE_MIN_TEXT = 300;
+  const PREJUDGE_CHUNK = 5;
 
-  // -> the cards to open, in page order (a passed card carries the job_id its verdict is
-  // stored under), or null = judge every card on its page as before.
-  async function prejudgeIndeedCards(cards) {
-    const t0 = Date.now();
-    const link = (c) => `https://www.indeed.com/viewjob?jk=${c.jk}`;
-    const texts = await fetchIndeedPostings(cards.map((c) => c.jk).filter(Boolean));
-    const sendable = cards.filter((c) => c.jk && (texts[c.jk] || "").length >= PREJUDGE_MIN_TEXT);
-    if (!sendable.length) {
-      logBackend("Search-page judge: Indeed sent no posting text — checking each posting on its page", "warn");
-      return null;
+  function paneText() {
+    const el = document.querySelector(PANE_DESC_SELECTOR);
+    if (!el) return "";
+    // innerText: the rendered text, line breaks kept, the pane's own <style> left out.
+    let raw = typeof el.innerText === "string" ? el.innerText : "";
+    if (!raw) {
+      const c = el.cloneNode(true);
+      c.querySelectorAll("style,script").forEach((n) => n.remove());
+      raw = c.textContent || "";
     }
-    const r = await sendMsg(
+    return String(raw)
+      .replace(/[ \t ]+/g, " ")
+      .replace(/ *\n\s*/g, "\n")
+      .trim()
+      .slice(0, 8000);
+  }
+
+  // Click the card, wait for the pane to show THAT posting (vjk = its jk, text changed).
+  async function readCardInPane(card, timeoutMs = 5000) {
+    const before = paneText();
+    try { card.clickEl.scrollIntoView({ block: "center" }); } catch (_) {}
+    card.clickEl.click();
+    const until = Date.now() + timeoutMs;
+    while (Date.now() < until) {
+      await sleep(120);
+      const vjk = new URL(window.location.href).searchParams.get("vjk");
+      const text = paneText();
+      if (vjk === card.jk && text && text !== before) return text;
+    }
+    return "";
+  }
+
+  function sendCardsToJudge(cards, texts) {
+    return sendMsg(
       {
         type: "PREJUDGE_CARDS",
         data: {
-          jobs: sendable.map((c) => ({
+          jobs: cards.map((c) => ({
             title: c.title || "",
             company: c.company || "",
             location: c.location || "",
             platform: "indeed",
-            link: link(c),
+            link: `https://www.indeed.com/viewjob?jk=${c.jk}`,
             description: texts[c.jk],
           })),
         },
       },
       35000
     );
-    if (!r || !Array.isArray(r.results)) {
+  }
+
+  // -> the cards to open, in page order (a passed card carries the job_id its verdict is
+  // stored under), { platformDone } when Broad's daily cap is spent, or null = judge every
+  // card on its page as before.
+  async function prejudgeIndeedCards(cards) {
+    const t0 = Date.now();
+    const texts = {};
+    const inFlight = [];
+    let chunk = [];
+    let unread = 0;
+    for (const c of cards) {
+      if (!(await isCampaignRunning())) return null;
+      const text = c.jk && c.clickEl ? await readCardInPane(c) : "";
+      if (text.length >= PREJUDGE_MIN_TEXT) {
+        texts[c.jk] = text;
+        chunk.push(c);
+      } else {
+        unread++;
+      }
+      if (chunk.length >= PREJUDGE_CHUNK) {
+        inFlight.push(sendCardsToJudge(chunk, texts));
+        chunk = [];
+      }
+      await sleep(humanDelay(600, 1500));
+    }
+    if (chunk.length) inFlight.push(sendCardsToJudge(chunk, texts));
+    if (!inFlight.length) {
+      logBackend("Search-page judge: no posting text in the results pane — checking each posting on its page", "warn");
+      return null;
+    }
+    const answers = await Promise.all(inFlight);
+    const results = [];
+    let reused = 0;
+    let lost = 0;
+    for (const a of answers) {
+      if (a && Array.isArray(a.results)) {
+        results.push(...a.results);
+        reused += a.reused || 0;
+      } else {
+        lost++;
+      }
+    }
+    if (lost === answers.length) {
       logBackend("Search-page judge unavailable — checking each posting on its page", "warn");
       return null;
     }
-    const verdicts = new Map(r.results.map((v) => [v.link, v]));
+    const verdicts = new Map(results.map((v) => [v.link, v]));
     // Broad mode's daily cap is spent: every card on every page would come back skipped, so
     // say so once and hand the walk on, instead of paging through the rest of the search.
-    if (r.results.length && r.results.every((v) => v.source === "broad_cap")) {
-      logBackend(`Broad mode daily limit reached — ${String(r.results[0].reason || "").slice(0, 120)}`, "ok");
+    if (results.length && results.every((v) => v.source === "broad_cap")) {
+      logBackend(`Broad mode daily limit reached — ${String(results[0].reason || "").slice(0, 120)}`, "ok");
       return { platformDone: true };
     }
     const keep = [];
     const skipped = [];
     for (const c of cards) {
-      const v = c.jk ? verdicts.get(link(c)) : null;
+      const v = c.jk ? verdicts.get(`https://www.indeed.com/viewjob?jk=${c.jk}`) : null;
       if (v && v.decision === "skip") skipped.push({ c, v });
       else if (v && v.decision === "apply" && v.job_id) keep.push({ ...c, job_id: v.job_id, fit: true });
-      // Unjudged: the job page decides. Its job_id still rides along — a verdict that lands
-      // after the server's deadline is stored, and the job page then reuses it.
+      // Unjudged (or a chunk that got no answer): the job page decides. Its job_id still
+      // rides along — a verdict that lands after the server's deadline is stored, and the
+      // job page then reuses it.
       else keep.push(v && v.job_id ? { ...c, job_id: v.job_id } : c);
     }
     // One line per skipped posting, worded exactly as the job page's gate words it, so
@@ -2093,7 +2126,8 @@
     logBackend(
       `⚡ Judged this page ahead in ${secs} s: ${fits} fit you, ${skipped.length} don't` +
         (later ? `, ${later} checked on their page` : "") +
-        (r.reused ? ` (${r.reused} remembered from earlier runs)` : ""),
+        (reused ? ` (${reused} remembered from earlier runs)` : "") +
+        (unread ? ` · ${unread} unreadable in the pane` : ""),
       "ok"
     );
     return keep;
