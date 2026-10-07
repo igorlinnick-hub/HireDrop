@@ -20,6 +20,14 @@
 //   5. Tap mode and pool runs never pre-judge (the person is the filter there).
 //   6. The job page sends the stored job_id back to ASSESS_FIT.
 //   7. The pane's text is the posting, not its CSS; /rpc/jobdescs is never called.
+//   8. The card Indeed put in the pane itself on load is read, not lost (skeptic 3, 10-07).
+//   9. A posting is credited to a card only when the pane's title names it: a late pane
+//      (posting A landing while card B is read) never becomes B's verdict.
+//  10. No drawn pane (narrow window: a click navigates) or a hidden window = no clicks;
+//      three unreadable cards in a row = give up; Stop mid-read stops clicking.
+//  11. humanClick and ~4 s between cards, not .click() every 1.4 s.
+// Pane timing (live 10-07): vjk follows a click in 5 ms, the old posting stays ~60 ms, the
+// new title + text land together at ~1.4 s. The fake clock below replays that.
 
 const fs = require("fs");
 const path = require("path");
@@ -52,30 +60,67 @@ const JK_FIT = "9a46b4b76cdc3d37"; // "Marketing Coordinator"
 const JK_OFF = "689d5e3af5fd2ec8"; // "Events Marketing Specialist"
 const LINK = (jk) => `https://www.indeed.com/viewjob?jk=${jk}`;
 
-function world({ store, verdicts, paneFor }) {
-  const html = `<body>${FIX("indeed-serp-decoy.html")}<div id="vjs-pane"></div></body>`;
-  let url = "https://www.indeed.com/jobs?q=marketing&l=remote";
-  const { window } = new JSDOM(html, { url, virtualConsole: new VirtualConsole() });
+// The pane's title row as captured live (tests/fixtures/indeed-serp-pane-title.html), retitled.
+const TITLE_ROW = FIX("indeed-serp-pane-title.html").replace(/^<!--[\s\S]*?-->\s*/, "");
+const titleRow = (t) => TITLE_ROW.replace(/(data-testid="vj-job-title"[^>]*>)[^<]*/, (_, open) => open + (t || ""));
+// The decoy fixture's three cards again under new jks: a page with four real cards.
+const MORE_CARDS = FIX("indeed-serp-decoy.html")
+  .replaceAll(JK_FIT, "1111aaaa2222bbbb").replaceAll(JK_OFF, "3333cccc4444dddd").replaceAll("a1b2c3d4e5f67890", "5555eeee6666ffff");
+
+// The results page as a card click meets it, timed the way it behaved live 10-07: vjk
+// follows the card at once, the pane empties, and the posting (title + text) lands
+// `delayFor(jk)` ms later — or never, when `paneFor(jk)` gives "". Time is a fake clock
+// that `sleep` advances, so a 5 s timeout costs nothing here.
+function world({ store, verdicts, paneFor, delayFor, titleFor, preselect, more, narrow, hidden, running, sameText }) {
+  const pageHtml = FIX("indeed-serp-decoy.html") + (more ? MORE_CARDS : "");
+  const html = `<body>${pageHtml}<div class="jobsearch-RightPane"><div id="jobsearch-ViewjobPaneWrapper"></div></div></body>`;
+  let url = "https://www.indeed.com/jobs?q=marketing&l=remote" + (preselect ? `&vjk=${preselect}` : "");
+  const { window } = new JSDOM(html, { url, pretendToBeVisual: true, virtualConsole: new VirtualConsole() });
   const doc = window.document;
+  const pane = doc.getElementById("jobsearch-ViewjobPaneWrapper");
   const rec = { backend: [], judged: [], clicks: [], fetched: [], nextPage: 0, navTo: null, sent: [] };
-  // The results page's answer to a card click: vjk follows the card, the pane redraws.
+  const view = { narrow: !!narrow };
+  // jsdom lays nothing out; the pane is drawn unless the window is "narrow" (display:none, 0 px).
+  window.HTMLElement.prototype.getBoundingClientRect = function () {
+    const w = view.narrow ? 0 : 578;
+    return { width: w, height: w ? 743 : 0, left: 0, top: 0, right: w, bottom: w ? 743 : 0 };
+  };
+  if (hidden) Object.defineProperty(doc, "visibilityState", { get: () => "hidden" });
+  let clock = 1e12;
+  const due = [];
+  const deliver = () => {
+    due.sort((a, b) => a.at - b.at);
+    while (due.length && due[0].at <= clock) due.shift().draw();
+  };
+  const titles = {};
+  const posting = (jk) => {
+    const body = (paneFor || (() => PANE))(jk);
+    if (!body) return "";
+    const t = titleFor ? titleFor(jk, titles[jk]) : titles[jk];
+    return titleRow(t) + (sameText ? body : body.replace("</div>", ` <p>posting ${jk}</p></div>`));
+  };
   for (const a of doc.querySelectorAll("a")) {
+    const jk = a.getAttribute("data-jk") || (a.getAttribute("href") || "").match(/jk=([0-9a-z]+)/)?.[1];
+    if (a.hasAttribute("data-jk")) titles[jk] = a.textContent.trim(); // the card's title link
     a.addEventListener("click", (e) => {
       e.preventDefault();
-      const jk = a.getAttribute("data-jk") || (a.getAttribute("href") || "").match(/jk=([0-9a-z]+)/)?.[1];
       rec.clicks.push(jk);
-      const pane = (paneFor || (() => PANE))(jk);
       url = `https://www.indeed.com/jobs?q=marketing&l=remote&vjk=${jk}`;
-      doc.getElementById("vjs-pane").innerHTML = pane ? pane.replace("</div>", ` <p>posting ${jk}</p></div>`) : "";
+      pane.innerHTML = "";
+      const html = posting(jk);
+      if (html) due.push({ at: clock + (delayFor ? delayFor(jk) : 0), draw: () => { pane.innerHTML = html; } });
     });
   }
+  if (preselect) pane.innerHTML = posting(preselect);
+  let checks = 0;
   const box = {
     document: doc,
     window: { location: { get href() { return url; }, set href(v) { rec.navTo = v; } } },
-    URL, URLSearchParams, Promise, Set, Map, Date, String,
+    URL, URLSearchParams, Promise, Set, Map, String,
+    Date: { now: () => clock },
     fetch: async (u) => { rec.fetched.push(u); throw new Error("no network in tests"); },
     MAX_APPLICATIONS_PER_PLATFORM: 15,
-    isCampaignRunning: async () => true,
+    isCampaignRunning: async () => (running ? running(++checks, rec) : true),
     getPlatformCount: async () => 0,
     detectPlatform: () => "indeed",
     isEasilyApplyCard: () => true,
@@ -83,8 +128,9 @@ function world({ store, verdicts, paneFor }) {
     getAppliedUrls: async () => new Set(),
     log: () => {},
     logBackend: (t) => rec.backend.push(t),
-    sleep: () => new Promise((r) => setImmediate(r)),
+    sleep: (ms) => { clock += ms || 0; deliver(); return new Promise((r) => setImmediate(r)); },
     humanDelay: () => 0,
+    humanClick: async (el) => el.click(),
     sendMsg: async (m) => {
       rec.sent.push(m.type);
       if (m && m.type === "PREJUDGE_CARDS") {
@@ -108,7 +154,7 @@ function world({ store, verdicts, paneFor }) {
   vm.createContext(box);
   vm.runInContext(`${TITLE_BLOCK}\n${INDEED_LIST}\n` +
     "this.phase1_indeed = phase1_indeed; this.paneText = paneText;", box);
-  return { box, rec, store, doc };
+  return { box, rec, store, doc, pane, view };
 }
 
 // The judge answers per card from a {jk: verdict} table.
@@ -122,8 +168,8 @@ const pending = (store) => (store.pendingJobs || []).map((j) => j.jk);
 (async () => {
   // --- 7. the pane's text ------------------------------------------------------------------
   {
-    const { box, doc } = world({ store: {}, verdicts: null });
-    doc.getElementById("vjs-pane").innerHTML = PANE;
+    const { box, pane } = world({ store: {}, verdicts: null });
+    pane.innerHTML = PANE;
     const t = box.paneText();
     check("pane: the captured posting reads as long text (>= 300)", t.length >= 300, `${t.length}`);
     check("pane: no CSS from the pane's <style> in the text", !/[{}]|css-[a-z0-9]+/.test(t), t.slice(0, 120));
@@ -234,8 +280,7 @@ const pending = (store) => (store.pendingJobs || []).map((j) => j.jk);
     check("judge unavailable: says so in the log", rec.backend.some((t) => /Search-page judge unavailable/.test(t)), JSON.stringify(rec.backend));
   }
   {
-    // A pane that never shows the posting (layout change): no judge call, old path. The
-    // reader waits its 5 s per card here, so this case takes ~10 s.
+    // A pane that never shows the posting (layout change): no judge call, old path.
     const { rec, store, box } = world({ store: { ...KW }, verdicts: answer({}), paneFor: () => "" });
     await box.phase1_indeed();
     check("pane unreadable: no judge call", !rec.sent.includes("PREJUDGE_CARDS"), JSON.stringify(rec.sent));
@@ -249,6 +294,117 @@ const pending = (store) => (store.pendingJobs || []).map((j) => j.jk);
     await box.phase1_indeed();
     check(`${JSON.stringify(extra)}: no card clicked, no judge call`, rec.clicks.length === 0 && !rec.sent.includes("PREJUDGE_CARDS"));
     check(`${JSON.stringify(extra)}: cards pending as before`, pending(store).length === 2);
+  }
+
+  // --- 8. the card Indeed put in the pane itself is read, not lost --------------------------
+  // Live 10-07: the page opens with its first card already in the pane (vjk = that card).
+  // Clicking it redraws nothing, so waiting for a change dropped it on every page.
+  for (const [label, withVjk] of [["vjk set", true], ["no vjk yet", false]]) {
+    const w = world({ store: { ...KW }, verdicts: answer({}), preselect: JK_FIT });
+    // Without vjk: the same pane, before the page has written vjk into the URL.
+    if (!withVjk) w.box.window = { location: { href: "https://www.indeed.com/jobs?q=marketing&l=remote" } };
+    await w.box.phase1_indeed();
+    check(`preselected (${label}): the card in the pane is not clicked again`, !w.rec.clicks.includes(JK_FIT), JSON.stringify(w.rec.clicks));
+    const j = w.rec.judged.find((x) => x.link === LINK(JK_FIT));
+    check(`preselected (${label}): it is judged with its own posting`, j && j.description.includes(`posting ${JK_FIT}`),
+      JSON.stringify(w.rec.judged.map((x) => x.link.slice(-16))));
+  }
+
+  // --- identical descriptions (one employer, two postings) are both read ---------------------
+  {
+    const same = PANE.replace("</div>", " <p>same text for both</p></div>");
+    const o = world({ store: { ...KW }, verdicts: answer({}), paneFor: () => same, sameText: true });
+    await o.box.phase1_indeed();
+    check("identical descriptions: both cards judged", o.rec.judged.length === 2 &&
+      o.rec.judged[0].description === o.rec.judged[1].description, JSON.stringify(o.rec.judged.map((x) => x.link.slice(-16))));
+  }
+
+  // --- 2. a late pane is never credited to the next card -----------------------------------
+  {
+    // Card 1's posting is slow (lands 8 s after its click, past the 5 s wait and the settle);
+    // card 2's never comes. Card 1's text then lands while card 2 is being read — vjk says
+    // card 2, the pane says card 1. Crediting it would store card 1's skip under card 2.
+    const o = world({
+      store: { ...KW },
+      verdicts: answer({}),
+      paneFor: (jk) => (jk === JK_OFF ? "" : PANE),
+      delayFor: (jk) => (jk === JK_FIT ? 8000 : 0),
+    });
+    await o.box.phase1_indeed();
+    check("late pane: both cards were clicked", o.rec.clicks.length === 2, JSON.stringify(o.rec.clicks));
+    check("late pane: card 1's posting is not judged as card 2", !o.rec.judged.some((j) => j.link === LINK(JK_OFF)),
+      JSON.stringify(o.rec.judged.map((x) => [x.link.slice(-16), x.description.slice(-30)])));
+    check("late pane: nothing read = old path, every card opened", pending(o.store).length === 2, JSON.stringify(pending(o.store)));
+  }
+  {
+    // Slow but inside the wait (3 s): still read, and with its own text.
+    const o = world({ store: { ...KW }, verdicts: answer({}), delayFor: () => 3000 });
+    await o.box.phase1_indeed();
+    check("slow pane (3 s): both cards judged with their own text",
+      o.rec.judged.length === 2 && o.rec.judged.every((j) => j.description.includes(`posting ${j.link.slice(-16)}`)),
+      JSON.stringify(o.rec.judged.map((x) => x.link.slice(-16))));
+  }
+  {
+    // The pane shows another posting under vjk = this card (a title that names someone else).
+    const o = world({ store: { ...KW }, verdicts: answer({}), titleFor: (jk, t) => (jk === JK_OFF ? "Some Other Job" : t) });
+    await o.box.phase1_indeed();
+    check("pane titled for another posting: that card is not judged",
+      o.rec.judged.length === 1 && o.rec.judged[0].link === LINK(JK_FIT), JSON.stringify(o.rec.judged.map((x) => x.link.slice(-16))));
+    check("pane titled for another posting: the card still goes to its page", pending(o.store).includes(JK_OFF));
+  }
+
+  // --- 3. no pane = no clicks (a click there navigates) ---------------------------------------
+  {
+    const o = world({ store: { ...KW }, verdicts: answer({}), narrow: true });
+    await o.box.phase1_indeed();
+    check("narrow window: no card clicked", o.rec.clicks.length === 0, JSON.stringify(o.rec.clicks));
+    check("narrow window: old path, says why", pending(o.store).length === 2 &&
+      o.rec.backend.some((t) => /no results pane \(window too narrow\?\)/.test(t)), JSON.stringify(o.rec.backend));
+  }
+  {
+    const o = world({ store: { ...KW }, verdicts: answer({}), hidden: true });
+    await o.box.phase1_indeed();
+    check("hidden window: no card clicked", o.rec.clicks.length === 0, JSON.stringify(o.rec.clicks));
+    check("hidden window: old path, says why", pending(o.store).length === 2 &&
+      o.rec.backend.some((t) => /automation window is hidden/.test(t)), JSON.stringify(o.rec.backend));
+  }
+  {
+    // The window shrinks after the first card: stop clicking before the next one.
+    const o = world({ store: { ...KW }, verdicts: answer({}) });
+    const firstLink = o.box.document.querySelector(`a[data-jk="${JK_FIT}"]`);
+    firstLink.addEventListener("click", () => { o.view.narrow = true; });
+    await o.box.phase1_indeed();
+    check("pane gone mid-walk: the next card is not clicked", JSON.stringify(o.rec.clicks) === JSON.stringify([JK_FIT]),
+      JSON.stringify(o.rec.clicks));
+    check("pane gone mid-walk: old path, says why", pending(o.store).length === 2 &&
+      o.rec.backend.some((t) => /results pane went away/.test(t)), JSON.stringify(o.rec.backend));
+  }
+  {
+    // Four real cards, a pane that never shows any: give up after three, not four.
+    const o = world({ store: { ...KW }, verdicts: answer({}), paneFor: () => "", more: true });
+    await o.box.phase1_indeed();
+    check("3 unreadable in a row: stops clicking", o.rec.clicks.length === 3, JSON.stringify(o.rec.clicks));
+    check("3 unreadable in a row: old path, says why", !o.rec.sent.includes("PREJUDGE_CARDS") &&
+      o.rec.backend.some((t) => /showed none of 3 postings in a row/.test(t)), JSON.stringify(o.rec.backend));
+  }
+
+  // --- Stop in the middle of reading ---------------------------------------------------------
+  {
+    // Running for the walk's own first checks, then the person presses Stop after card 1.
+    const o = world({ store: { ...KW }, verdicts: answer({}), running: (_n, rec) => rec.clicks.length < 1 });
+    await o.box.phase1_indeed();
+    check("Stop mid-read: no further card clicked", o.rec.clicks.length === 1, JSON.stringify(o.rec.clicks));
+    check("Stop mid-read: nothing opened, nothing pending", o.rec.navTo === null && o.store.pendingJobs === undefined,
+      `${o.rec.navTo} ${JSON.stringify(o.store.pendingJobs)}`);
+  }
+
+  // --- 4. a person's pace and a person's click ------------------------------------------------
+  {
+    const reader = slice("  async function readCardInPane(card, cards, timeoutMs = 5000) {", "  // After a card the pane never showed");
+    const loop = slice("  async function prejudgeIndeedCards(cards) {", "    const answers = await Promise.all(inFlight);");
+    check("cards are clicked with humanClick, not a bare .click()",
+      /await humanClick\(card\.clickEl\)/.test(reader) && !/clickEl\.click\(\)/.test(reader));
+    check("~4 s between cards (humanDelay(2500, 7000))", /await sleep\(humanDelay\(2500, 7000\)\)/.test(loop));
   }
 
   // --- 6. the job page hands the stored verdict's id back -------------------------------

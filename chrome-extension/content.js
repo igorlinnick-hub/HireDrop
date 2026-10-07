@@ -1972,7 +1972,7 @@
   // rejected posting (10-07: 18 rejections in a row, 0 applied, then Indeed ran dry). Now
   // the cards are read where a person reads them — click a card, the results page shows
   // the posting in its right-hand pane (Indeed's own request, no page load; live 10-07 in
-  // Igor's Chrome: ~0.45 s per posting, 3-13k chars) — and sent to the server in chunks
+  // Igor's Chrome: 0.5-1.5 s per posting, 3-13k chars) — and sent to the server in chunks
   // while the next ones are read (/tools/assess-fit-batch): judged in parallel, every
   // verdict stored, a posting judged on an earlier run answered from memory. Only the ones
   // that fit are opened.
@@ -1983,13 +1983,54 @@
   //
   // Any failure returns null and the walk judges each posting on its page exactly as
   // before — the speed-up may be lost, never an application.
+  //
+  // The pane, live 10-07 (1400 px window): #jobsearch-ViewjobPaneWrapper inside
+  // .jobsearch-RightPane; the posting's title is [data-testid="vj-job-title"], its text
+  // .simple-job-description-html. What a click does there, polled every 30-40 ms: vjk
+  // follows the card within 5 ms while the pane still shows the PREVIOUS posting, at
+  // ~60 ms the pane empties, at ~1.4 s the new title and text arrive together. So a
+  // posting is credited to a card only when the pane's own title names that card —
+  // vjk alone would hand posting A's text (and a stored skip) to card B.
+  const PANE_SELECTOR = "#jobsearch-ViewjobPaneWrapper, .jobsearch-RightPane";
   const PANE_DESC_SELECTOR = ".simple-job-description-html, #jobDescriptionText";
+  const PANE_TITLE_SELECTOR = '[data-testid="vj-job-title"], [data-testid="jobsearch-JobInfoHeader-title"]';
   // Below this it is a card snippet, not a posting (the server's floor is the same).
   const PREJUDGE_MIN_TEXT = 300;
   const PREJUDGE_CHUNK = 5;
+  // This many cards in a row the pane wouldn't show = it isn't working on this page.
+  const PREJUDGE_MAX_UNREAD_RUN = 3;
+
+  function resultsPane() {
+    return document.querySelector(PANE_SELECTOR);
+  }
+
+  // The pane is only there to read when it is drawn. In a narrow window (live 10-07:
+  // 628 px) Indeed keeps it in the DOM, posting and all, but at display:none — and a
+  // card click there navigates to /viewjob mid-walk.
+  function paneShown() {
+    const p = resultsPane();
+    if (!p) return false;
+    const r = p.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }
+
+  function paneTitle() {
+    const el = resultsPane()?.querySelector(PANE_TITLE_SELECTOR);
+    return el ? String(el.textContent || "").replace(/\s+/g, " ").trim() : "";
+  }
+
+  const normTitle = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  function paneNames(card) {
+    const t = normTitle(paneTitle());
+    return !!t && t === normTitle(card.title);
+  }
+
+  function paneVjk() {
+    return new URL(window.location.href).searchParams.get("vjk");
+  }
 
   function paneText() {
-    const el = document.querySelector(PANE_DESC_SELECTOR);
+    const el = resultsPane()?.querySelector(PANE_DESC_SELECTOR);
     if (!el) return "";
     // innerText: the rendered text, line breaks kept, the pane's own <style> left out.
     let raw = typeof el.innerText === "string" ? el.innerText : "";
@@ -2005,19 +2046,66 @@
       .slice(0, 8000);
   }
 
-  // Click the card, wait for the pane to show THAT posting (vjk = its jk, text changed).
-  async function readCardInPane(card, timeoutMs = 5000) {
-    const before = paneText();
-    try { card.clickEl.scrollIntoView({ block: "center" }); } catch (_) {}
-    card.clickEl.click();
+  // The pane already shows this card: Indeed opens the page with its first card in the
+  // pane (vjk = that card, or no vjk yet while the page is still settling). Clicking it
+  // again redraws nothing, so waiting for a change would lose it every time.
+  function paneAlreadyShows(card, cards) {
+    if (!paneNames(card)) return false;
+    const vjk = paneVjk();
+    if (vjk) return vjk === card.jk;
+    // No vjk: the title is the only witness, so it must name no other card on the page.
+    return cards.filter((c) => normTitle(c.title) === normTitle(card.title)).length === 1;
+  }
+
+  // Click the card and wait for the pane to show THAT posting: vjk is its jk, the pane
+  // went through a redraw after the click (emptied or changed — not the previous posting
+  // still standing), its title names the card, and the text reads the same on two polls
+  // in a row (not half-drawn).
+  async function readCardInPane(card, cards, timeoutMs = 5000) {
+    if (paneAlreadyShows(card, cards)) {
+      const text = paneText();
+      if (text.length >= PREJUDGE_MIN_TEXT) return text;
+    }
+    const beforeText = paneText();
+    const beforeTitle = paneTitle();
+    try { card.clickEl.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (_) {}
+    await sleep(humanDelay(250, 700));
+    await humanClick(card.clickEl);
     const until = Date.now() + timeoutMs;
+    let redrawn = false;
+    let last = "";
     while (Date.now() < until) {
       await sleep(120);
-      const vjk = new URL(window.location.href).searchParams.get("vjk");
+      if (paneVjk() !== card.jk) continue;
       const text = paneText();
-      if (vjk === card.jk && text && text !== before) return text;
+      if (!redrawn && (text !== beforeText || paneTitle() !== beforeTitle)) redrawn = true;
+      if (redrawn && paneNames(card) && text.length >= PREJUDGE_MIN_TEXT) {
+        if (text === last) return text;
+        last = text;
+      } else {
+        last = "";
+      }
     }
     return "";
+  }
+
+  // After a card the pane never showed, its posting may still be on the way. Let it land
+  // (nothing changes for 1.5 s, at most 6 s) before the next click, so it can't arrive
+  // while the next card is being read.
+  async function paneSettle(quietMs = 1500, maxMs = 6000) {
+    const until = Date.now() + maxMs;
+    let sig = `${paneTitle()}\n${paneText()}`;
+    let since = Date.now();
+    while (Date.now() < until) {
+      await sleep(150);
+      const now = `${paneTitle()}\n${paneText()}`;
+      if (now !== sig) {
+        sig = now;
+        since = Date.now();
+      } else if (Date.now() - since >= quietMs) {
+        return;
+      }
+    }
   }
 
   function sendCardsToJudge(cards, texts) {
@@ -2044,24 +2132,51 @@
   // card on its page as before.
   async function prejudgeIndeedCards(cards) {
     const t0 = Date.now();
+    // A hidden tab (window minimised or covered) answers no card click at all — live 10-07
+    // the pane stood still until the window was raised.
+    if (document.visibilityState === "hidden") {
+      logBackend("Search-page judge: the automation window is hidden — checking each posting on its page", "warn");
+      return null;
+    }
+    // The page may still be drawing its results; give the pane a moment to appear.
+    for (let i = 0; i < 12 && !paneShown(); i++) await sleep(250);
+    if (!paneShown()) {
+      logBackend("Search-page judge: no results pane (window too narrow?) — checking each posting on its page", "warn");
+      return null;
+    }
     const texts = {};
     const inFlight = [];
     let chunk = [];
     let unread = 0;
+    let unreadRun = 0;
     for (const c of cards) {
       if (!(await isCampaignRunning())) return null;
-      const text = c.jk && c.clickEl ? await readCardInPane(c) : "";
+      // Mid-walk the window can shrink or the page can move on: a click with no pane
+      // navigates, so stop clicking.
+      if (!paneShown() || /^\/(viewjob|rc\/clk|pagead\/)/.test(new URL(window.location.href).pathname)) {
+        logBackend("Search-page judge: the results pane went away — checking each posting on its page", "warn");
+        return null;
+      }
+      const text = c.jk && c.clickEl ? await readCardInPane(c, cards) : "";
       if (text.length >= PREJUDGE_MIN_TEXT) {
         texts[c.jk] = text;
         chunk.push(c);
+        unreadRun = 0;
       } else {
         unread++;
+        if (++unreadRun >= PREJUDGE_MAX_UNREAD_RUN) {
+          logBackend(`Search-page judge: the pane showed none of ${unreadRun} postings in a row — checking each posting on its page`, "warn");
+          return null;
+        }
+        await paneSettle();
       }
       if (chunk.length >= PREJUDGE_CHUNK) {
         inFlight.push(sendCardsToJudge(chunk, texts));
         chunk = [];
       }
-      await sleep(humanDelay(600, 1500));
+      // A person's pace, not a scraper's: ~4 s a card (~1 min for a page of 15). The
+      // judge's answers come back while the next cards are read, so it costs no wait.
+      await sleep(humanDelay(2500, 7000));
     }
     if (chunk.length) inFlight.push(sendCardsToJudge(chunk, texts));
     if (!inFlight.length) {
