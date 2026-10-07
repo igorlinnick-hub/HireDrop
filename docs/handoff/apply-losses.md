@@ -37,7 +37,8 @@
 ## Следующий шаг
 
 Модель: **Opus**. Скептики заново на #384, #385 (blast-radius: background.js адопция) и PR ветки `ext-zr-submit-truth`
-(если не открыт — допилить из worktree `.wt-zr-truth`) → мерж (`gh pr update-branch` + CI) → бамп 1.8.44 →
+(PR не открыт: агент умер на лимите; в `.wt-zr-truth` НЕзакоммиченные правки content.js + 2 снятых
+с живого ZR фикстуры `ziprecruiter-serp-1click-pane.html` / `-applied-pane.html` — дописать оттуда, не терять) → мерж (`gh pr update-branch` + CI) → бамп 1.8.44 →
 `scripts/sync-ext.sh` → живой ZR и Indeed (`drive.py run auto --platform …`; «давай» есть; окна автоматизации закрыть
 по id до старта) → zip (файлы `chrome-extension/` без tests, см. состав 1.8.43) → `cws_publish.py ship` после одобрения
 1.8.43. **Ждёт Игоря:** внести 3 ZR-заявки задним числом? · год окончания · порог fit 35/32 · street address.
