@@ -1,32 +1,29 @@
-"""No long dashes in text an employer reads (Igor's rule, 2026-10-08)."""
+"""No long dashes in text an employer reads (Igor's rule, 2026-10-08).
+
+The dash cases live in chrome-extension/tests/fixtures/no-long-dashes-cases.json, shared
+with the extension's belt copy (no-long-dashes.test.js) so the two cannot drift apart.
+"""
+
+import json
+from pathlib import Path
 
 import pytest
 
 from modules.ai_cover_letter import to_plain_letter
 from modules.text_style import has_long_dash, no_long_dashes
 
-
-@pytest.mark.parametrize(
-    ("raw", "clean"),
-    [
-        (
-            "I ran paid social — Meta and TikTok — for two years.",
-            "I ran paid social, Meta and TikTok, for two years.",
-        ),
-        ("Growth work—mostly lifecycle.", "Growth work, mostly lifecycle."),
-        ("Built it -- then scaled it.", "Built it, then scaled it."),
-        ("Launched in 2019–2021 at 10 – 20 stores.", "Launched in 2019-2021 at 10-20 stores."),
-        ("That was the goal. — Next, I hired.", "That was the goal. Next, I hired."),
-        ("Here is the short answer —", "Here is the short answer"),
-        ("— Owned the funnel\n— Ran tests", "Owned the funnel\nRan tests"),
-        (
-            "Plain text, nothing to change - a hyphen stays.",
-            "Plain text, nothing to change - a hyphen stays.",
-        ),
-        ("well-known e-commerce brand", "well-known e-commerce brand"),
-        ("", ""),
-    ],
+_CASES = json.loads(
+    (
+        Path(__file__).parents[1]
+        / "chrome-extension"
+        / "tests"
+        / "fixtures"
+        / "no-long-dashes-cases.json"
+    ).read_text()
 )
+
+
+@pytest.mark.parametrize(("raw", "clean"), _CASES)
 def test_no_long_dashes(raw, clean):
     assert no_long_dashes(raw) == clean
     assert not has_long_dash(no_long_dashes(raw))

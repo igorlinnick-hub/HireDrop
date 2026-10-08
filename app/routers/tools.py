@@ -761,10 +761,15 @@ def answer_question(req: AnswerQuestionRequest, user=Depends(get_current_user)):
         cached = screener_cache.get(user.id, cache_key)
         if cached:
             screener_cache.touch(user.id, cache_key)
-            # Cached before the no-long-dash rule (text_style) — clean on the way out.
+            # Cached before the no-long-dash rule (text_style) — clean on the way out,
+            # and write the clean text back so the legacy row is migrated once instead
+            # of being re-cleaned on every hit (touch() keeps it alive indefinitely).
             # An option is returned verbatim: it must still match the form's wording.
             if not req.options:
-                cached = no_long_dashes(cached)
+                cleaned = no_long_dashes(cached)
+                if cleaned != cached:
+                    screener_cache.put(user.id, cache_key, req.question, cleaned)
+                cached = cleaned
             return {"answer": cached, "cached": True}
 
     _claim_ai_slot(user)

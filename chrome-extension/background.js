@@ -277,16 +277,26 @@ async function apiGet(path, { retry = true } = {}) {
 }
 
 // Igor's rule (10-08): text an employer reads carries no long dashes — they read as
-// machine-written. Mirrors modules/text_style.no_long_dashes (backend cleans at
-// generation; this is the belt on the last hop). Number ranges keep a plain hyphen,
-// a leading dash is dropped, everything else becomes a comma.
+// machine-written. Hand-ported from modules/text_style.no_long_dashes (backend cleans at
+// generation; this is the belt on the last hop). Both run the shared table in
+// tests/fixtures/no-long-dashes-cases.json — extend the table, not one copy. Ranges keep
+// a plain hyphen, a line-edge dash is dropped, everything else becomes a comma without
+// touching punctuation the text already had ("e.g.," stays).
 function noLongDashes(text) {
   if (!text) return text;
-  let t = String(text).replace(/(\d)[ \t]*[\u2013\u2014][ \t]*(\d)/g, "$1-$2");
-  t = t.replace(/^([ \t]*)(?:\u2014|\u2013|(?<!-)--(?!-))[ \t]*/gm, "$1");
-  t = t.replace(/[ \t]*(?:\u2014|\u2013|(?<!-)--(?!-))[ \t]*$/gm, "");
-  t = t.replace(/[ \t]*(?:\u2014|\u2013|(?<!-)--(?!-))[ \t]*/g, ", ");
-  return t.replace(/([.,;:!?])[ \t]*,/g, "$1");
+  const PUNCT = ".,;:!?";
+  let t = String(text)
+    .replace(/(\d)[ \t]*(?:[\u2013\u2014]|--)[ \t]*(\d)/g, "$1-$2")
+    .replace(/(\w)\u2013(\w)/g, "$1-$2")
+    .replace(/^([ \t]*)(?:\u2014|\u2013|(?<!-)--(?!-))[ \t]*/gm, "$1")
+    .replace(/[ \t]*(?:\u2014|\u2013|(?<!-)--(?!-))[ \t]*$/gm, "");
+  return t.replace(/[ \t]*(?:\u2014|\u2013|(?<!-)--(?!-))[ \t]*/g, (m, off, str) => {
+    const nxt = str[off + m.length] || "";
+    if (PUNCT.includes(nxt)) return "";
+    const prev = off ? str[off - 1] : "";
+    if (PUNCT.includes(prev)) return " ";
+    return ", ";
+  });
 }
 
 async function apiPost(path, body, { retry = true } = {}) {
