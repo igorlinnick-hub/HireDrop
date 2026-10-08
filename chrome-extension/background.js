@@ -941,9 +941,43 @@ async function sendScreenshot(tabId) {
   } catch { /* capture failed — skip frame */ }
 }
 
-// Capture the ACTIVE automation tab of the campaign window (follows the apply flow as it
-// navigates: Indeed→smartapply, ZR quick-apply, or a board→Greenhouse/Lever hop). Shared
-// by the message handler and the service-worker capture loop.
+// The pages the campaign may FOLLOW into a new tab: Indeed's apply wizard, which "Apply now"
+// sometimes opens in a tab of its own (smartapply …/applybyapplyablejobid — live 09-03,
+// 09-25, 09-28), and the sign-in it can bounce through on the way. Nothing else. Every other
+// hop the walk makes is a same-tab navigation (skipToNextJob, the P4 board→ATS route,
+// navigatePoolNext / tabs.update), which never changes the tab id and needs no following.
+//
+// This used to be "any capturable job-site page", and that is how a walk killed itself
+// (live 10-06, ext 1.8.43): Apply opened a tab on www.indeed.com/job/… that was NOT an
+// application, the capture tick moved campaignTabId onto it, its content script had
+// already gone idle ("not the campaign tab"), and the walking tab — after "Skip (no form
+// after Apply)" — woke on the next /viewjob as "not the campaign tab" too. Two idle tabs,
+// zero automating ones, until the e2e driver called the run stalled.
+const ADOPTABLE_APPLY_HOSTS = ["smartapply.indeed.com"];
+function isApplyFlowUrl(url) {
+  try {
+    const u = new URL(url);
+    const h = u.hostname;
+    if (ADOPTABLE_APPLY_HOSTS.some((d) => h === d || h.endsWith("." + d))) return true;
+    // The wizard redirects a lapsed session through secure.indeed.com/auth?continue=… —
+    // still the apply flow, and the walk must own it to raise the sign-in pause.
+    return h === "secure.indeed.com" && u.pathname.startsWith("/auth");
+  } catch {
+    return false;
+  }
+}
+
+// May the campaign move from `campaignTabId` to the window's active tab `tab`? Only into the
+// apply flow, and only one the walk itself opened: a tab whose opener is some OTHER tab is
+// not ours. (No opener at all is allowed — Chrome drops openerTabId once the opener closes.)
+function mayAdoptAsCampaignTab(tab, campaignTabId) {
+  if (!tab || tab.id == null || tab.id === campaignTabId) return false;
+  if (!isApplyFlowUrl(tab.url)) return false;
+  return tab.openerTabId == null || tab.openerTabId === campaignTabId;
+}
+
+// Capture the campaign tab, following the apply flow into the tab it opened (see
+// isApplyFlowUrl). Shared by the message handler and the service-worker capture loop.
 async function captureActiveAutomationTab() {
   const { campaignRunning, campaignTabId, campaignWindowId, reviewMode } = await chrome.storage.local.get([
     "campaignRunning",
@@ -952,25 +986,78 @@ async function captureActiveAutomationTab() {
     "reviewMode",
   ]);
   if (!campaignRunning) return false;
-  // TAP mode shows swipe CARDS, not a live browser preview — so never attach the CDP
-  // debugger here. Attaching triggers Chrome's intrusive "HireDrop started debugging
-  // this browser" banner for zero benefit in tap. Keeps tap clean and unintrusive.
-  if (reviewMode) return false;
 
+  // Ownership first, in every mode: a tab the walk opened must be adopted in tap as well,
+  // because the walk now CLOSES the tabs it opened when it gives up on an apply
+  // (RECLAIM_CAMPAIGN_TAB) — an un-adopted wizard would be closed under its own form.
   let tabId = campaignTabId;
   if (campaignWindowId != null) {
     try {
       const [active] = await chrome.tabs.query({ windowId: campaignWindowId, active: true });
-      if (active && active.id != null && isCapturableAutomationUrl(active.url)) {
+      if (mayAdoptAsCampaignTab(active, campaignTabId)) {
         tabId = active.id;
-        if (tabId !== campaignTabId) {
-          chrome.storage.local.set({ campaignTabId: tabId }).catch(() => {});
-        }
+        await chrome.storage.local.set({ campaignTabId: tabId });
+        // Same Memory Saver opt-out the original automation tab gets at start.
+        chrome.tabs.update(tabId, { autoDiscardable: false }).catch(() => {});
       }
     } catch { /* window gone — fall through to campaignTabId */ }
   }
+  // TAP mode shows swipe CARDS, not a live browser preview — so never attach the CDP
+  // debugger here. Attaching triggers Chrome's intrusive "HireDrop started debugging
+  // this browser" banner for zero benefit in tap. Keeps tap clean and unintrusive.
+  if (reviewMode) return false;
   if (tabId != null) await sendScreenshot(tabId);
   return campaignRunning;
+}
+
+// The walk gave up on an apply attempt in its own tab ("no form after Apply"): the click may
+// have left a tab behind that is not an application (an Indeed /job/ page, an employer site).
+// Close what this tab opened, bring it back to the front, and let it walk on. If the campaign
+// has instead MOVED to another live tab of the window, that is the apply wizard working in a
+// tab of its own — answer `moved` and touch nothing; the caller steps aside instead of
+// skipping (skipping there advanced the queue under a form in progress and left this tab on a
+// /viewjob page it may not drive — the 104 "Staying idle on www.indeed.com/viewjob" lines).
+// host + path only, for log lines: no query strings (tracking ids, emails in continue=).
+function tabWhere(url) {
+  try { const u = new URL(url); return (u.hostname + u.pathname).slice(0, 60); } catch { return "?"; }
+}
+
+async function reclaimCampaignTab(senderTab) {
+  const d = await chrome.storage.local.get(["campaignRunning", "campaignTabId", "campaignWindowId"]);
+  const me = senderTab && senderTab.id;
+  if (!d.campaignRunning || me == null) return { ok: false, reason: "not running" };
+  // Only the campaign window. A tab anywhere else is the human's (08-15).
+  if (d.campaignWindowId != null && senderTab.windowId !== d.campaignWindowId) {
+    return { ok: false, reason: "not the campaign window" };
+  }
+  const prev = d.campaignTabId;
+  if (prev != null && prev !== me) {
+    let cur = null;
+    try { cur = await chrome.tabs.get(prev); } catch { cur = null; }
+    if (cur && cur.windowId === senderTab.windowId) {
+      return { ok: true, moved: true, url: tabWhere(cur.url) };
+    }
+    // The recorded tab is gone or elsewhere: nobody is walking. This tab takes it back.
+    await chrome.storage.local.set({ campaignTabId: me });
+  }
+  // Front first: the window's active tab is what the capture tick looks at.
+  chrome.tabs.update(me, { active: true }).catch(() => {});
+  const closed = [];
+  try {
+    const tabs = await chrome.tabs.query({ windowId: senderTab.windowId });
+    for (const t of tabs) {
+      if (t.id === me || t.openerTabId !== me) continue;
+      // A capture tick may have adopted it a moment ago (the wizard showed up at the
+      // deadline). Closing the campaign tab stops the run (tabs.onRemoved) — step aside.
+      const now = (await chrome.storage.local.get("campaignTabId")).campaignTabId;
+      if (now === t.id) return { ok: true, moved: true, url: tabWhere(t.url), closed };
+      try {
+        await chrome.tabs.remove(t.id);
+        closed.push(tabWhere(t.url));
+      } catch { /* already gone */ }
+    }
+  } catch { /* window gone */ }
+  return { ok: true, reclaimed: prev !== me, closed };
 }
 
 // ---------------------------------------------------------------------------
@@ -2625,6 +2712,11 @@ async function handleMessage(msg, sender) {
       const { campaignTabId } = await chrome.storage.local.get("campaignTabId");
       if (!tabId || !campaignTabId) return { known: false };
       return { known: true, isCampaignTab: tabId === campaignTabId };
+    }
+
+    // The walk abandoned an apply attempt in the sender tab — see reclaimCampaignTab().
+    case "RECLAIM_CAMPAIGN_TAB": {
+      return await reclaimCampaignTab(sender && sender.tab);
     }
 
     case "PLATFORM_EXHAUSTED": {

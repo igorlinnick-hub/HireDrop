@@ -2945,6 +2945,9 @@
     const formShowed = await waitForFormVisible(18000);
     if (!(await isCampaignRunning())) return;
     if (!formShowed) {
+      // The click may have opened a tab: the wizard working on its own (step aside — it
+      // owns the walk now), or a page that is not an application (close it, walk on HERE).
+      if (await reclaimAfterAbandonedApply(jobTitle, jobCompany)) return;
       log(`${jobTitle} — no Indeed form after Apply (external/unsupported), skipping`, "");
       logBackend(`Skip (no form after Apply): ${jobTitle} @ ${jobCompany}`, "info");
       await skipToNextJob();
@@ -2961,6 +2964,27 @@
       lastPhase = "form";
       await phase3_fillForm();
     }
+  }
+
+  // ---- Abandoned apply: who owns the walk now? ----
+  // An Apply click that produced no form in THIS tab may still have opened one. Background
+  // (reclaimCampaignTab) decides: if the campaign moved to a tab of its own (Indeed's wizard
+  // in a new tab, adopted by the capture tick), answer true — the caller must step aside,
+  // because that tab is filling the form and will walk on from there. Otherwise it closes the
+  // tabs this one opened, brings this one to the front, and the caller skips as before.
+  // Live 10-06 (ext 1.8.43): the stray www.indeed.com/job/… tab took the campaign, this tab
+  // skipped onto the next /viewjob as "not the campaign tab", and the run sat dead for 3 min.
+  async function reclaimAfterAbandonedApply(jobTitle, jobCompany) {
+    let r = null;
+    try { r = await sendMsg({ type: "RECLAIM_CAMPAIGN_TAB" }); } catch { r = null; }
+    if (r && r.moved) {
+      logBackend(`↪️ Apply for ${jobTitle} @ ${jobCompany} went on in its own tab (${r.url || "?"}) — the walk continues there`, "info");
+      return true;
+    }
+    if (r && Array.isArray(r.closed) && r.closed.length) {
+      logBackend(`🧹 Closed ${r.closed.length} tab(s) the Apply click left open (${r.closed.join(", ")}) — the walk stays here`, "info");
+    }
+    return false;
   }
 
   async function waitForFormVisible(timeoutMs = 18000) {
@@ -3358,6 +3382,7 @@
     const formReady = await waitForZipRecruiterForm(40000);
     if (!(await isCampaignRunning())) return;
     if (!formReady) {
+      if (await reclaimAfterAbandonedApply(jobTitle, jobCompany)) return;
       log(`${jobTitle} — no Quick Apply form appeared (external ATS), skipping`, "");
       logBackend(`Skip (no ZR form after 40s): ${jobTitle} @ ${jobCompany} — ${dialogSnapshot()}`, "info");
       await skipToNextJob();
@@ -7386,7 +7411,10 @@
     // `known:false` = background has no campaign tab recorded. NOT permission to take over:
     // a tab the user opened themselves would start walking the board (live 08-15).
     const ok = !(who.isCampaignTab === false || who.known === false);
-    _tabVerdict = { tabId: campaignTabId, ok, who, logged: false };
+    // Still idle after a re-ask (the campaign moved between two OTHER tabs): one durable
+    // line per page is the signal, a line per move is noise.
+    const logged = !ok && !!_tabVerdict && !_tabVerdict.ok && _tabVerdict.logged;
+    _tabVerdict = { tabId: campaignTabId, ok, who, logged };
     return _tabVerdict;
   }
 
@@ -7407,6 +7435,20 @@
     return false;
   }
 
+  // …and an idle tab must notice when the campaign moves ONTO it. The verdict above is only
+  // re-asked when something calls runPhase, and in an idle tab nothing does: init already
+  // ran, and the observer fires only on a phase CHANGE — a wizard tab that answered "not the
+  // campaign tab" a second before the capture tick adopted it sat on its form forever (live
+  // 09-28, smartapply …/applybyapply, 13 min of silence). So a tab whose cached answer is
+  // "not me" re-runs the gate when campaignTabId changes. It still runs ONLY if background
+  // names this exact tab (AM_I_CAMPAIGN_TAB) — a tab the human opened stays idle (08-15).
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !changes.campaignTabId) return;
+    if (!_tabVerdict || _tabVerdict.ok) return;
+    lastPhase = "";
+    runPhase();
+  });
+
   async function runPhase() {
     if (_runPhaseActive) return;
     if (!LINKEDIN_APPLY_ENABLED && detectPlatform() === "linkedin") {
@@ -7422,6 +7464,9 @@
       await waitForOnline();
       if (!(await isCampaignRunning())) return; // Stop may have landed while parked
     }
+    // Two callers can pass the check at the top during the awaits above (the observer and
+    // the campaignTabId listener both fire as a wizard tab is adopted) — one form, one driver.
+    if (_runPhaseActive) return;
     _runPhaseActive = true;
     try {
       await _runPhaseInner();

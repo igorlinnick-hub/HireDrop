@@ -91,7 +91,10 @@ function makeContext(url, store, opts = {}) {
     sleep: async () => {}, humanDelay: () => 0,
     reportPlatformAuth: () => {}, watchPlatformAuth: () => {},
     loadSelectors: async () => {}, settleIndeedAuthTransit: async () => {}, sessionWarmup: async () => {},
-    chrome: { runtime: { getManifest: () => ({ version: "test" }) } },
+    chrome: {
+      runtime: { getManifest: () => ({ version: "test" }) },
+      storage: { onChanged: { addListener: () => {} } },
+    },
     __inner: inner, __sent: sent, done: null,
   };
   vm.createContext(sandbox);
