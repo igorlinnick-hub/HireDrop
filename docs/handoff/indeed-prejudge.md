@@ -56,7 +56,7 @@
   `storage.onChanged`; `watchPlatformAuth` + MutationObserver (0.5 с). Тест `tests/indeed-auth-instant.test.js` (14). Живьём «мгновенно
   после входа» НЕ проверено (Игорь уже был залогинен). В CWS не выпущено.
 - **Прогон №2 запущен 03:04:46Z** (`drive.py run auto --minutes 25 --platform indeed`, лог `scratchpad/run2.log` сессии da91d230 —
-  может пропасть; источник правды = activity_log). Итог ещё не снят.
+  может пропасть; источник правды = activity_log). **Не пошёл:** 03:05:09 «Start received by the extension», дальше в activity_log НИ строки; drive.py через 31 с: «no campaign-state on /dashboard for 30s», `btn-stop` не нашёлся. Похоже, старт сразу после релоада расширения (sync #388) не открыл окно — разобрать первым (`scripts/e2e/last_run_auto.json`, состояние кампании в дашборде), убедиться, что кампания не висит «running», и перезапустить.
 
 ## Следующий шаг
 Модель: **Opus**. 1) Снять итог прогона №2 (с 03:04:46Z): `.venv/bin/python scripts/run_history.py --email igor.linnick@gmail.com --days 1`
