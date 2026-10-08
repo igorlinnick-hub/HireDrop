@@ -3,7 +3,7 @@
 # PyPI name `jobspy` is an unrelated Redis package — pinning the wrong name
 # silently broke every JobSpy-backed scraper in prod (import failed inside
 # try/except and returned []). Do not "simplify" this back to `jobspy`.
-fastapi==0.136.3
+fastapi==0.141.1
 uvicorn==0.48.0
 requests==2.34.2
 httpx==0.28.1
