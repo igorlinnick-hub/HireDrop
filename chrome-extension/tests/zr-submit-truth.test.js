@@ -21,6 +21,7 @@ const SRC = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
 const fixture = (f) => fs.readFileSync(path.join(__dirname, "fixtures", f), "utf8");
 
 let failures = 0;
+const pending = [];
 function check(name, cond, detail) {
   if (!cond) failures++;
   console.log(`${cond ? "  ok" : "FAIL"}  ${name}${cond ? "" : `  (${detail || ""})`}`);
@@ -160,6 +161,89 @@ for (const f of ["ziprecruiter-serp-1click-pane.html", "ziprecruiter-serp-applie
   check("1-Click pane, pane:true → null", c2.zrPostApplySignal({ pane: true }) === null);
 }
 {
+  // Skeptic 10-08: ZR's empty Close-only shell between steps can stay up ~30 s. A pane read
+  // then would record the job and the dismiss would click the shell's Close (form dropped).
+  const { ctx, doc } = load(fixture("ziprecruiter-serp-applied-pane.html"), POST_CODE, POST_EXPORTS);
+  doc.body.insertAdjacentHTML("beforeend", postApplyDialog('<button aria-label="Close">Close</button>'));
+  check("Applied pane + an open Close-only shell, pane:true → null", ctx.zrPostApplySignal({ pane: true }) === null,
+    ctx.zrPostApplySignal({ pane: true }));
+}
+{
+  // Only what a person can see is ZR's word.
+  const hiddenCases = {
+    "bsf testID under display:none": '<div style="display:none"><div data-testid="bsf-not-eligible">Your application has been submitted!</div></div><button>Continue</button>',
+    "submitted text under [hidden]": "<p hidden>Your application has been submitted!</p><button>Continue</button>",
+    "submitted text under visibility:hidden": '<p style="visibility:hidden">Your application has been submitted!</p><button>Continue</button>',
+    "Send a Message | Skip for Now under display:none": '<div style="display:none"><button>Send a Message</button><button>Skip for Now</button></div><input name="q">',
+  };
+  for (const [name, inner] of Object.entries(hiddenCases)) {
+    const { ctx, doc } = load(fixture("ziprecruiter-serp-1click-pane.html"), POST_CODE, POST_EXPORTS);
+    doc.body.insertAdjacentHTML("beforeend", postApplyDialog(inner));
+    check(`hidden markup in a shown dialog → null: ${name}`, ctx.zrPostApplySignal() === null, ctx.zrPostApplySignal());
+  }
+  const { ctx, doc } = load(fixture("ziprecruiter-serp-1click-pane.html"), POST_CODE, POST_EXPORTS);
+  doc.body.insertAdjacentHTML("beforeend",
+    '<div id="react-apply-flow-root" style="visibility:hidden"><p>Your application has been submitted!</p></div>');
+  check("hidden apply root → null", ctx.zrPostApplySignal() === null);
+  doc.getElementById("react-apply-flow-root").style.visibility = "visible";
+  check("…the same root shown → zr-post-apply", ctx.zrPostApplySignal() === "zr-post-apply");
+}
+{
+  // The dismiss clicks only on the post-apply screen, never a form shell's Close.
+  const DISMISS = slice("  async function dismissZipRecruiterPostApply", "  // Record a ZR application ZR itself confirmed");
+  const run = async (inner) => {
+    const { ctx, doc } = load(fixture("ziprecruiter-serp-1click-pane.html"), POST_CODE + DISMISS,
+      [...POST_EXPORTS, "dismissZipRecruiterPostApply"]);
+    const clicked = [];
+    ctx.humanClick = async (b) => clicked.push(b.textContent.trim() || b.getAttribute("aria-label"));
+    ctx.sleep = async () => {};
+    ctx.humanDelay = () => 0;
+    doc.body.insertAdjacentHTML("beforeend", postApplyDialog(inner));
+    await ctx.dismissZipRecruiterPostApply();
+    return clicked;
+  };
+  pending.push((async () => {
+    const shell = await run('<button aria-label="Close">Close</button>');
+    check("dismiss leaves a Close-only form shell alone", shell.length === 0, JSON.stringify(shell));
+    const post = await run("<p>Send a message to this employer</p><button>Send a Message</button><button>Skip for Now</button><button aria-label=\"Close\">Close</button>");
+    check("dismiss on the post-apply screen → Skip for Now only", JSON.stringify(post) === '["Skip for Now"]', JSON.stringify(post));
+  })());
+}
+{
+  // A Stop that lands after the 1-click click must not lose the application ZR filed.
+  const FORMS = slice("  // A ZipRecruiter dialog is a REAL Quick Apply form only if", "  // =========================================================================\n  // PHASE 3");
+  const run = async (inner, running) => {
+    const { ctx, doc } = load(fixture("ziprecruiter-serp-1click-pane.html"), POST_CODE + FORMS,
+      [...POST_EXPORTS, "waitForZipRecruiterForm"]);
+    ctx.isCampaignRunning = async () => running;
+    ctx.sleep = async () => {};
+    if (inner) doc.body.insertAdjacentHTML("beforeend", postApplyDialog(inner));
+    return ctx.waitForZipRecruiterForm(50);
+  };
+  pending.push((async () => {
+    const stopped = await run("<button>Send a Message</button><button>Skip for Now</button>", false);
+    check("Stop + post-apply screen → still { applied }", stopped && stopped.applied === "zr-post-apply", JSON.stringify(stopped));
+    check("Stop + nothing → false", (await run("", false)) === false);
+  })());
+  const p2 = slice("  async function phase2_ziprecruiter() {", "  // A job whose application was already STARTED");
+  const after = p2.slice(p2.indexOf("await waitForZipRecruiterForm(40000)"));
+  check("phase2 records a filed 1-click before its Stop check",
+    after.indexOf("formReady.applied") >= 0 && after.indexOf("formReady.applied") < after.indexOf("isCampaignRunning()"));
+}
+{
+  // phase3 asks ZR again at the top of every step and before every give-up exit.
+  const p3 = slice("  async function _phase3_fillForm() {", "  // Hand the backend the posting text we just read");
+  const at = (needle) => p3.indexOf(needle);
+  const loopTop = p3.slice(at("while (formStepCount < maxSteps) {"), at('log("Campaign stopped — aborting form fill"'));
+  check("top of each step: ZR filed? before the Stop check", loopTop.includes("zrFiledDuringForm(jobInfo, coverLetter)"));
+  const stall = p3.slice(at("if (stallRounds >= 2) {"), at("wouldn't accept our answers"));
+  check("before the stall hand-back", stall.includes("zrFiledDuringForm(jobInfo, coverLetter)"));
+  const tail = p3.slice(at("if (formStepCount >= maxSteps && !stoppedEarly)") - 200, at("if (formStepCount >= maxSteps && !stoppedEarly)"));
+  check("before the step-budget / no-button / abandoned exits", tail.includes("zrFiledDuringForm(jobInfo, coverLetter)"));
+  const helper = slice("  async function zrFiledDuringForm", "  async function phase3_fillForm() {");
+  check("…on ZipRecruiter only", helper.includes('detectPlatform() !== "ziprecruiter"'));
+}
+{
   const ds = slice("  async function detectSilentSubmission", "  // Record a submission that the platform accepted");
   const zrAt = ds.indexOf("zrPostApplySignal()");
   const fieldsAt = ds.indexOf('d.querySelector("input, textarea, select")');
@@ -196,6 +280,11 @@ for (const f of ["ziprecruiter-serp-1click-pane.html", "ziprecruiter-serp-applie
   check("a form's Submit under .form-pagination is allowed", ctx.isDeniedFormButton(submit) === false);
   check("a form's Next titled \"Next page\" is allowed", ctx.isDeniedFormButton(stepNext) === false);
   check("…while the results page's arrow outside any form stays denied", ctx.isDeniedFormButton(next) === true);
+  const sendMsg = doc.createElement("button");
+  sendMsg.type = "submit";
+  sendMsg.textContent = "Send a Message";
+  doc.getElementById("apply").appendChild(sendMsg);
+  check("\"Send a Message\" is never a form button (it writes to the employer)", ctx.isDeniedFormButton(sendMsg) === true);
 }
 {
   const p3 = slice("  async function phase3_fillForm() {", "  async function _phase3_fillForm() {");
@@ -203,5 +292,7 @@ for (const f of ["ziprecruiter-serp-1click-pane.html", "ziprecruiter-serp-applie
   check("…and lets go when the form is done", /finally \{\s*formLivesInDialog = false;/.test(p3));
 }
 
-console.log(failures ? `\n${failures} FAILED` : "\nall ok");
-process.exit(failures ? 1 : 0);
+Promise.all(pending).then(() => {
+  console.log(failures ? `\n${failures} FAILED` : "\nall ok");
+  process.exit(failures ? 1 : 0);
+});

@@ -3382,13 +3382,14 @@
     // background-throttled (measured ~30s on 08-21). A short wait doesn't fail fast, it
     // just abandons applications that were about to become fillable.
     const formReady = await waitForZipRecruiterForm(40000);
-    if (!(await isCampaignRunning())) return;
     if (formReady && formReady.applied) {
-      // 1-click apply: the click WAS the submit. Before any skip/reclaim: it is a success.
+      // 1-click apply: the click WAS the submit. Before any skip/reclaim, and before the Stop
+      // check: it is a success either way.
       const { currentJobInfo } = await storageGet("currentJobInfo");
       await finishZipRecruiterApplied(currentJobInfo || { title: jobTitle, company: jobCompany, url: jobUrl }, "", formReady.applied);
       return;
     }
+    if (!(await isCampaignRunning())) return;
     if (!formReady) {
       log(`${jobTitle} — no Quick Apply form appeared (external ATS), skipping`, "");
       logBackend(`Skip (no ZR form after 40s): ${jobTitle} @ ${jobCompany} — ${dialogSnapshot()}`, "info");
@@ -3533,38 +3534,75 @@
   //   - "Your application has been submitted!" (data-testid bsf-not-eligible);
   //   - "Your application has been boosted!" (the photo prompt that follows a message).
   // NOT "Be Seen First" alone: result cards carry that badge before anyone applies.
-  // pane:true also accepts the job's own right pane flipping to "Applied" — only for callers
-  // that saw it NOT applied before their click (phase2 checks jobLooksApplied() first).
+  // Only what a person can SEE counts: a marker under [hidden] / display:none /
+  // visibility:hidden, or inside a hidden apply root, is not ZR's word.
+  // pane:true also accepts the job's own right pane flipping to "Applied", but only once no
+  // dialog is open — ZR's form, or its empty Close-only shell between steps (up to ~30 s),
+  // means the flow is not over whatever the pane says — and only for callers that saw the
+  // pane NOT applied before their click (phase2 checks jobLooksApplied() first).
   // Positive evidence only: a form that merely went away is never a success here.
   const ZR_POST_APPLY_TEXT_RE =
     /send a message to this employer|your application has been (submitted|boosted)|you'?ve successfully applied/i;
   const ZR_POST_APPLY_TESTIDS =
     '[data-testid^="bsf-main-entrypoint"], [data-testid="bsf-not-eligible"], [data-testid^="bsf-confirmation"], [data-testid^="bsf-main-confirmation"], [data-testid="bsf-photo-success"]';
-  function zrPostApplySignal(opts = {}) {
-    const flat = (t) => String(t || "").replace(/\s+/g, " ").trim().toLowerCase();
-    const scopes = Array.from(document.querySelectorAll('[role="dialog"]')).filter(isShownDialog);
-    const root = document.getElementById("react-apply-flow-root");
-    if (root && !scopes.some((d) => d.contains(root) || root.contains(d))) scopes.push(root);
-    for (const d of scopes) {
-      if (d.querySelector(ZR_POST_APPLY_TESTIDS)) return "zr-post-apply";
-      const labels = Array.from(d.querySelectorAll('button, a, [role="button"]'))
-        .map((b) => flat(b.textContent || b.getAttribute("aria-label")));
-      if (labels.includes("send a message") && labels.includes("skip for now")) return "zr-post-apply";
-      if (ZR_POST_APPLY_TEXT_RE.test(flat(d.textContent).slice(0, 4000))) return "zr-post-apply";
+  const zrFlat = (t) => String(t || "").replace(/\s+/g, " ").trim().toLowerCase();
+
+  function zrShownWithin(el, scope) {
+    const view = el.ownerDocument && el.ownerDocument.defaultView;
+    for (let e = el; e && e !== scope.parentElement; e = e.parentElement) {
+      if (e.hidden) return false;
+      try {
+        const cs = view && view.getComputedStyle(e);
+        if (cs && (cs.display === "none" || cs.visibility === "hidden")) return false;
+      } catch { /* unreadable style: treat as shown */ }
     }
-    if (opts.pane && jobLooksApplied()) return "applied-badge";
+    return true;
+  }
+
+  function zrVisibleText(scope) {
+    const walker = scope.ownerDocument.createTreeWalker(scope, 4 /* NodeFilter.SHOW_TEXT */);
+    const shown = new Map();
+    let out = "";
+    for (let n = walker.nextNode(); n && out.length < 4000; n = walker.nextNode()) {
+      const p = n.parentElement;
+      if (!p) continue;
+      if (!shown.has(p)) shown.set(p, zrShownWithin(p, scope));
+      if (shown.get(p)) out += " " + n.nodeValue;
+    }
+    return zrFlat(out);
+  }
+
+  function isZrPostApplyScreen(d) {
+    if (Array.from(d.querySelectorAll(ZR_POST_APPLY_TESTIDS)).some((el) => zrShownWithin(el, d))) return true;
+    const labels = Array.from(d.querySelectorAll('button, a, [role="button"]'))
+      .filter((b) => zrShownWithin(b, d))
+      .map((b) => zrFlat(b.textContent || b.getAttribute("aria-label")));
+    if (labels.includes("send a message") && labels.includes("skip for now")) return true;
+    return ZR_POST_APPLY_TEXT_RE.test(zrVisibleText(d));
+  }
+
+  function zrPostApplySignal(opts = {}) {
+    const dialogs = Array.from(document.querySelectorAll('[role="dialog"]')).filter(isShownDialog);
+    const scopes = dialogs.slice();
+    const root = document.getElementById("react-apply-flow-root");
+    if (root && isShownDialog(root) && !scopes.some((d) => d.contains(root) || root.contains(d))) scopes.push(root);
+    for (const d of scopes) {
+      if (isZrPostApplyScreen(d)) return "zr-post-apply";
+    }
+    if (opts.pane && !dialogs.length && jobLooksApplied()) return "applied-badge";
     return null;
   }
 
-  // Leave ZR's post-apply screen the way a person does: "Skip for Now", else its Close.
+  // Leave ZR's post-apply screen the way a person does: "Skip for Now", else its Close —
+  // only on the screen that IS the post-apply one (a form shell's Close would drop a form).
   // Never "Send a Message" — that starts a second flow that writes to the employer.
   async function dismissZipRecruiterPostApply() {
     try {
-      const flat = (t) => String(t || "").replace(/\s+/g, " ").trim().toLowerCase();
       for (const d of Array.from(document.querySelectorAll('[role="dialog"]')).filter(isShownDialog)) {
+        if (!isZrPostApplyScreen(d)) continue;
         const btns = Array.from(d.querySelectorAll('button, [role="button"]')).filter((b) => !b.disabled);
-        const btn = btns.find((b) => /^skip for now$/.test(flat(b.textContent))) ||
-          btns.find((b) => /^close$/.test(flat(b.getAttribute("aria-label") || b.textContent)));
+        const btn = btns.find((b) => /^skip for now$/.test(zrFlat(b.textContent))) ||
+          btns.find((b) => /^close$/.test(zrFlat(b.getAttribute("aria-label") || b.textContent)));
         if (btn) { await humanClick(btn); await sleep(humanDelay(600, 1200)); return true; }
       }
     } catch { /* best effort — the next navigation closes it anyway */ }
@@ -3573,12 +3611,15 @@
 
   // Record a ZR application ZR itself confirmed, close its post-apply screen, take the next
   // job. Same bookkeeping as every verified submit (recordSubmittedApplication: dedup keys,
-  // local + per-keyword count, APPLICATION_SAVED → the applications row). A pool walk is
-  // advanced by APPLICATION_SAVED in background, so it must not ALSO be skipped here.
+  // local + per-keyword count, APPLICATION_SAVED → the applications row). Recorded even if
+  // Stop landed meanwhile — the click was the submit — but a stopped run does not move on.
+  // A pool walk is advanced by APPLICATION_SAVED in background, so it must not ALSO be
+  // skipped here.
   async function finishZipRecruiterApplied(jobInfo, coverLetter, signal) {
     log(`Applied (verified ${signal}): ${jobInfo.title} @ ${jobInfo.company}`, "ok");
     await recordSubmittedApplication(jobInfo, coverLetter || "", signal);
     await dismissZipRecruiterPostApply();
+    if (!(await isCampaignRunning())) return;
     await sleep(humanDelay(1500, 3000));
     if ((await storageGet("atsPlatform")).atsPlatform === "pool") return;
     await skipToNextJob();
@@ -3624,14 +3665,17 @@
   async function waitForZipRecruiterForm(timeoutMs) {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
-      if (!(await isCampaignRunning())) return false;
+      // ZR's word that it filed comes before Stop: the click was the submit, and a Stop that
+      // landed meanwhile must not lose a real application.
       const applied = zrPostApplySignal();
       if (applied) return { applied };
-      if (findZipRecruiterApplyForm()) return true;
+      const form = findZipRecruiterApplyForm();
       // The pane's "Applied" only once no form is open: a form still on screen is filled
       // first (phase3 reads the pane again when it closes).
-      const flipped = zrPostApplySignal({ pane: true });
+      const flipped = form ? null : zrPostApplySignal({ pane: true });
       if (flipped) return { applied: flipped };
+      if (!(await isCampaignRunning())) return false;
+      if (form) return true;
       // A dialog that stays EMPTY is an external-apply job — but "empty" needs patience.
       // ZipRecruiter mounts the modal shell first and fills it in later, and in a
       // throttled background window that took ~30s twice on 08-21: we bailed at 2.5s
@@ -5524,7 +5568,9 @@
   //   mystery of 08-12/08-14 (live-confirmed 08-15 via STEP diag: btn="Search" (page)).
   // - "Save & Exit" / "Close" / "Cancel": ZR's own escape hatches, sitting right next to
   //   the real advance button ("Save & Exit | Continue Application").
-  const DENY_BTN_RE = /^(search|close|cancel|back|previous|save (&|and) exit|save for later|sign in|log in|skip)\b/;
+  // - "Send a Message": ZR's post-apply screen — the application is already filed, and this
+  //   one writes to the employer. It can be a form submit button, so the label must deny it.
+  const DENY_BTN_RE = /^(search|close|cancel|back|previous|save (&|and) exit|save for later|sign in|log in|skip|send a message)\b/;
   function isDeniedFormButton(b) {
     if (b.closest('form[role="search"]')) return true;
     if (isPageNavControl(b)) return true;
@@ -5814,6 +5860,23 @@
     });
   }
 
+  // ZipRecruiter can file the application on any Continue and show only its post-apply
+  // screen, or close the modal and flip the pane to "Applied". detectSilentSubmission looks
+  // for that right after each click, but only for 2.5–9 s, and a throttled window renders
+  // later. So phase3 asks again at the top of every step and before every give-up exit: a
+  // job ZR filed is never logged abandoned or handed back as "needs your hands".
+  async function zrFiledDuringForm(jobInfo, coverLetter) {
+    if (detectPlatform() !== "ziprecruiter") return false;
+    const signal = zrPostApplySignal({ pane: true });
+    if (!signal) return false;
+    log(`Applied (verified ${signal}): ${jobInfo.title} @ ${jobInfo.company}`, "ok");
+    await recordSubmittedApplication(jobInfo, coverLetter || "", signal);
+    await dismissZipRecruiterPostApply();
+    await sleep(humanDelay(2000, 4000));
+    await goBackToJobList(); // no-op on Stop and in a pool walk (APPLICATION_SAVED advances it)
+    return true;
+  }
+
   async function phase3_fillForm() {
     // Any throw in here used to vanish: phase2 calls this on-stack, nothing above catches,
     // and an unhandled rejection leaves NO log line at all. From the outside that is
@@ -5883,6 +5946,7 @@
     };
 
     while (formStepCount < maxSteps) {
+      if (await zrFiledDuringForm(jobInfo, coverLetter)) return;
       if (!(await isCampaignRunning())) {
         log("Campaign stopped — aborting form fill", "");
         // Durable: a run that dies mid-application is the single most confusing failure
@@ -6020,6 +6084,7 @@
               logBackend(`↩️ Couldn't get back to the resume step (@${location.pathname.slice(-70)}) — handing the job back`, "warn");
             }
           }
+          if (await zrFiledDuringForm(jobInfo, coverLetter)) return;
           // The invariant: submitted-complete-and-honest OR handed back with a reason.
           // handBackJob is the right channel (records the reason + unfilled labels and
           // advances the walk) — NOT DETECTION_TRIPPED, which means "a human check is
@@ -6251,6 +6316,9 @@
         break;
       }
     }
+
+    // Every way out below gives the job up — ask ZipRecruiter first whether it filed it.
+    if (await zrFiledDuringForm(jobInfo, coverLetter)) return;
 
     if (formStepCount >= maxSteps && !stoppedEarly) {
       log("Too many form steps — skipping job", "err");
