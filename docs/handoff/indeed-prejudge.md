@@ -46,8 +46,22 @@
   дубль jk читается раз. Тест: 65 проверок на фейковых часах, новые падают на старом коде. Живой прогон функции: 5/5, предвыбор 0 мс.
 - Известные хвосты (в PR, не блок): гонка batch-до-ingest → `score` NULL у строки; срезанная дедлайном карточка может списаться дважды.
 
+## 10-08 (UTC): прогон по San Diego + фикс «Signed out» (#388)
+- **Город в профиле Игоря сменён по его просьбе: Houston → `San Diego, California, US`** (радиус 25, part-time, остальное как было;
+  записано тем же `update_search_prefs`, что дашборд). Вернуть Houston — только по слову Игоря.
+- Прогон №1 (02:52Z) остановлен drive.py через 21 с: `indeed: logged_out` — Игорь был реально разлогинен на secure-хосте.
+- Игорь вошёл через Connect, карточка >1 мин держала «Signed out». Корень (живьём): вход приземляет на
+  `secure.indeed.com/settings/account` (AccountMenu+SignOut), а `detectPlatformAuth` считал весь хост стеной → `logged_out`.
+  **#388 смержен (`82e0977`)**: позитив первым, стена = только `/auth`, `/account/login`; ping.js пушит `platformConnections` по
+  `storage.onChanged`; `watchPlatformAuth` + MutationObserver (0.5 с). Тест `tests/indeed-auth-instant.test.js` (14). Живьём «мгновенно
+  после входа» НЕ проверено (Игорь уже был залогинен). В CWS не выпущено.
+- **Прогон №2 запущен 03:04:46Z** (`drive.py run auto --minutes 25 --platform indeed`, лог `scratchpad/run2.log` сессии da91d230 —
+  может пропасть; источник правды = activity_log). Итог ещё не снят.
+
 ## Следующий шаг
-Модель: **Opus**. 1) **Живой Indeed-прогон — ждёт «давай» Игоря**: сначала `sync-ext.sh` + релоад (OFF/ON) локального расширения,
-окно автоматизации ВИДИМОЕ (иначе предоценка уходит в старый путь — строка «window is hidden»), `drive.py run auto --platform indeed`,
-окна закрыть по id; мерить `run_history.py` против 05:17Z (5.5 мин/заявку) + строки «⚡ Judged this page ahead in N s». 2) Бамп версии +
-CWS-релиз — после #384/#385 (тоже content.js). 3) Хвосты: score при гонке, двойное списание по дедлайну; докстринг `/jobs/deck` («Indeed NOT prejudged») устарел.
+Модель: **Opus**. 1) Снять итог прогона №2 (с 03:04:46Z): `.venv/bin/python scripts/run_history.py --email igor.linnick@gmail.com --days 1`
+— сравнить с 05:17Z 10-07 (5.5 мин/заявку), посчитать строки «⚡ Judged this page ahead in N s», «Search-page judge: …» (warn = ушло в
+старый путь — почему), и ГЛАЗАМИ 10–20 строк «⏭️ Skipped (fit» на ошибочные отказы (они теперь хранятся навсегда). Если drive.py
+остановил рано — причину из `scripts/e2e/last_run_auto.json`. 2) Хорошо → бамп версии + CWS-релиз (после/вместе с #384/#385, тоже
+content.js; в релиз едут #387 + #388). 3) Хвосты: score NULL при гонке batch-до-ingest; двойное списание по дедлайну; докстринг
+`/jobs/deck` устарел. Worktree `.wt-indeed-prejudge` и `.wt-auth-instant` смержены — можно удалить.
