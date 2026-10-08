@@ -1,11 +1,11 @@
-"""Judge what the person's list needs, and refill only what they used.
+"""Judge what the person will see or the run will open next, and refill only for use.
 
 prejudge_pool used to judge every unjudged row in the pool (up to 60 a pass) after every
 sweep, including the nightly one for accounts that were not applying: an account that
 opened nothing all week was judged 60 postings a night. These tests pin the rule that
-replaced it — the background judge works on the list (DAILY_LIST_SIZE rows) and nothing
-past it, a judged list costs nothing, and the nightly sweep refills only as many fits as
-the person used since the last sweep, skipping an idle account entirely.
+replaced it — the background judge works on the dashboard's list and each platform's run
+queue and nothing past them, judged lists cost nothing, and the nightly sweep runs only
+for an account that applied since its last one.
 """
 
 from datetime import UTC, datetime, timedelta
@@ -18,18 +18,18 @@ from modules.fit_queue import has_current_verdict
 PROFILE = {"id": "u1", "apply_mode": "standard", "keywords": []}
 
 
-def _rows(n: int) -> list[dict]:
+def _rows(n: int, platform: str = "lever", start: int = 0, prefix: str = "r") -> list[dict]:
     """n postings, the freshest first, each at its own company (no cap in play)."""
     now = datetime.now(UTC)
     return [
         {
-            "id": f"r{i}",
+            "id": f"{prefix}{i}",
             "title": f"Role {i}",
-            "company": f"Company{i}",
-            "platform": "lever",
-            "link": f"https://jobs.lever.co/c{i}/{i}",
+            "company": f"Company{prefix}{i}",
+            "platform": platform,
+            "link": f"https://{platform}.example/{prefix}{i}",
             "status": "new",
-            "date_found": (now - timedelta(minutes=i)).isoformat(),
+            "date_found": (now - timedelta(minutes=start + i)).isoformat(),
         }
         for i in range(n)
     ]
@@ -53,14 +53,15 @@ def _judge(rejected: set[str] = frozenset(), undecided: bool = False):
     return judge_pending, judged
 
 
-def _prejudge(rows, judge, fits_wanted=None):
+def _prejudge(rows, judge, retried=frozenset()):
     with (
         patch("app.db.profile.get_profile", return_value=PROFILE),
-        patch.object(jobs_router, "_ats_candidates", return_value=(rows, rows, rows)),
+        patch.object(jobs_router.jobs_db, "get_jobs", return_value=rows),
+        patch.object(jobs_router, "_retried_ids", return_value=set(retried)),
         patch("modules.ai_cover_letter.resume_text_for", return_value="resume " * 50),
         patch("modules.fit_queue.judge_pending", judge),
     ):
-        return jobs_router.prejudge_pool("u1", fits_wanted=fits_wanted)
+        return jobs_router.prejudge_pool("u1")
 
 
 def _version():
@@ -93,18 +94,27 @@ def test_a_rejected_row_drops_out_and_the_next_one_is_judged():
     assert judged[30:] == [f"r{i}" for i in range(30, 35)]
 
 
-def test_the_nightly_refill_stops_at_what_the_person_used():
+def test_each_platform_queue_the_run_opens_is_judged_even_off_the_list():
+    # The list is full of fresher Indeed cards, but a campaign opens 15 Lever postings
+    # (max_per_platform) — those must not wait for a judge while the run waits.
+    rows = _rows(30, platform="indeed", prefix="i") + _rows(40, start=100)
+    judge, judged = _judge()
+    _prejudge(rows, judge)
+    assert sorted(judged) == sorted(f"r{i}" for i in range(15))
+
+
+def test_a_posting_sent_back_with_try_again_is_judged_where_the_list_shows_it():
     rows = _rows(40)
     judge, judged = _judge()
-    assert _prejudge(rows, judge, fits_wanted=3) == 3
-    assert judged == ["r0", "r1", "r2"]
+    _prejudge(rows, judge, retried={"r39"})
+    assert "r39" in judged
 
 
-def test_the_nightly_refill_keeps_looking_until_it_finds_that_many_fits():
-    rows = _rows(40)
-    judge, judged = _judge(rejected={"r0", "r1"})
-    _prejudge(rows, judge, fits_wanted=3)
-    assert judged == ["r0", "r1", "r2", "r3", "r4"]
+def test_a_pass_out_of_time_starts_no_call():
+    judge, judged = _judge()
+    with patch.object(jobs_router, "PREJUDGE_SECS", 0):
+        assert _prejudge(_rows(40), judge) == 0
+    assert judged == []
 
 
 def test_a_judge_outage_asks_each_row_once_per_pass():
@@ -119,7 +129,7 @@ def test_discovery_charges_its_ai_calls_to_the_account_it_sweeps(ai_meter_rows):
 
     from modules import ai_meter
 
-    def discover(user_id, fits_wanted):
+    def discover(user_id):
         msg = SimpleNamespace(model="claude-haiku-4-5", usage=SimpleNamespace(input_tokens=10))
         ai_meter.record(msg, "job_score")
 
@@ -133,15 +143,10 @@ def test_discovery_charges_its_ai_calls_to_the_account_it_sweeps(ai_meter_rows):
 
 def _scan(last_sweep: dict, used: dict):
     now = datetime.now(UTC)
+    stamps = {uid: (now - timedelta(hours=h)).isoformat() for uid, h in last_sweep.items()}
     with (
         patch.object(pool_sweep.apps_db, "active_user_ids", return_value=list(used)),
-        patch.object(
-            pool_sweep.activity_db,
-            "last_at",
-            side_effect=lambda uid, _phase: (
-                (now - timedelta(hours=last_sweep[uid])).isoformat() if uid in last_sweep else None
-            ),
-        ),
+        patch.object(pool_sweep.activity_db, "last_at", side_effect=lambda u, _p: stamps.get(u)),
         patch.object(
             pool_sweep.apps_db, "count_today", side_effect=lambda uid, _s: used[uid]
         ) as counted,
@@ -161,10 +166,14 @@ def test_an_account_that_applied_to_nothing_since_its_last_sweep_is_not_swept():
     claimed.assert_not_called()
 
 
-def test_the_sweep_refills_as_many_fits_as_were_used():
-    started, swept, _, _ = _scan(last_sweep={"busy": 30}, used={"busy": 4})
+def test_an_account_that_applied_since_its_last_sweep_is_swept():
+    started, swept, _, counted = _scan(last_sweep={"busy": 30}, used={"busy": 4})
     assert started == 1
-    swept.assert_called_once_with("busy", fits_wanted=4)
+    swept.assert_called_once_with("busy")
+    # Counted from the last sweep, not from some fixed window.
+    since = datetime.fromisoformat(counted.call_args.args[1])
+    now = datetime.now(UTC)
+    assert now - timedelta(hours=31) < since < now - timedelta(hours=29)
 
 
 def test_a_recent_sweep_is_not_repeated_whatever_was_used():
@@ -175,9 +184,11 @@ def test_a_recent_sweep_is_not_repeated_whatever_was_used():
 
 
 def test_an_account_never_swept_counts_its_whole_activity_window():
-    started, swept, _, _ = _scan(last_sweep={}, used={"new": 2})
+    started, swept, _, counted = _scan(last_sweep={}, used={"new": 2})
     assert started == 1
-    swept.assert_called_once_with("new", fits_wanted=2)
+    swept.assert_called_once_with("new")
+    since = datetime.fromisoformat(counted.call_args.args[1])
+    assert since < datetime.now(UTC) - timedelta(days=pool_sweep.POOL_SWEEP_ACTIVE_DAYS - 1)
 
 
 # --------------------------------------------------------------------------- dashboard read
@@ -206,3 +217,12 @@ def test_an_unjudged_row_on_the_list_starts_the_background_judge():
     for r in rows[1 : jobs_router.DAILY_LIST_SIZE]:
         r["fit_version"], r["fit_score"] = _version(), 90
     assert _deck_kicks(rows)
+
+
+def test_an_unjudged_indeed_card_on_the_list_does_not_wake_the_ats_judge():
+    # The background judge only judges ATS rows; an Indeed card is decided by the
+    # search-page judge or at apply time, so waking it would be a no-op every minute.
+    rows = _rows(1, platform="indeed", prefix="i") + _rows(40, start=10)
+    for r in rows[1 : jobs_router.DAILY_LIST_SIZE + 1]:
+        r["fit_version"], r["fit_score"] = _version(), 90
+    assert not _deck_kicks(rows)

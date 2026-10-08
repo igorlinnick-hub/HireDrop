@@ -292,7 +292,8 @@ def get_ats_queue(platform: str, limit: int = 20, user=Depends(get_current_user)
 QUEUE_SYNC_JUDGE_CALLS = 30
 QUEUE_SYNC_JUDGE_SECS = 20.0
 # The most one background pass (after a sweep, nightly or on a search change) may spend.
-# It usually spends far less: only the unjudged rows of the person's list are judged.
+# It usually spends far less: only the unjudged rows of the lists the person sees or the
+# run opens next are judged.
 PREJUDGE_CALLS = 60
 PREJUDGE_SECS = 150.0
 ATS_QUEUE_PLATFORMS = ("greenhouse", "lever", "ashby")
@@ -413,55 +414,50 @@ def _retried_ids(user_id: str, rows: list) -> set:
     }
 
 
-def prejudge_pool(user_id: str, *, fits_wanted: int | None = None) -> int:
-    """Background pass: judge the unjudged rows of the person's list, and nothing past it.
+def prejudge_pool(user_id: str) -> int:
+    """Background pass: judge what the person will see or the run will open next, and
+    nothing past it.
 
-    The list is the first DAILY_LIST_SIZE rows of build_queue's order (freshest first,
-    below-bar rows out). A row in it without a verdict would be shown unchecked, or judged
-    while the run waits; a row past it is on nobody's screen. So the pass judges the list's
-    unjudged rows, rebuilds the list (a rejected row drops out, the next one moves up) and
-    repeats until the list holds no unjudged row. A list that is already judged costs
-    nothing — judging the whole pool ahead paid for postings nobody would ever open.
+    That is the dashboard's list (DAILY_LIST_SIZE rows, built exactly as get_deck builds
+    it) and each ATS platform's queue as the extension reads it (max_per_platform rows).
+    A row there without a verdict would be shown unchecked, or judged while the run waits;
+    a row past them is on nobody's screen and in no run. So the pass judges their unjudged
+    ATS rows, rebuilds them (a rejected row drops out, the next one moves up) and repeats
+    until none is left. Lists that are already judged cost nothing — judging the whole pool
+    ahead paid for postings nobody would ever open.
 
-    `fits_wanted` caps a pass nobody is waiting on: the nightly sweep refills what the
-    person used since the last sweep (app/pool_sweep.py) and stops after that many new
-    fits. Called after every sweep (nightly, search change, campaign start) and from a
-    dashboard read. Never raises — a failed pass only means the queue read judges a little
-    more itself. Returns how many judge calls were started.
+    Called after every sweep (nightly, search change, campaign start) and from a dashboard
+    read. Never raises — a failed pass only means the queue read judges a little more
+    itself. Returns how many judge calls were started.
     """
     from app.db.profile import get_profile
     from modules.ai_cover_letter import resume_text_for
-    from modules.ai_fit_judge import clears_bar, mode_threshold, verdict_version
-    from modules.fit_queue import (
-        build_queue,
-        companies_holding_slots,
-        has_current_verdict,
-        judge_pending,
-    )
+    from modules.ai_fit_judge import mode_threshold, verdict_version
+    from modules.fit_queue import companies_holding_slots, has_current_verdict, judge_pending
 
     try:
         profile = get_profile(user_id)
-        _pool, _on_search, live = _ats_candidates(user_id, profile)
+        _swipeable, _on_search, live_ats, live_indeed = _deck_rows(
+            user_id, profile, jobs_db.get_jobs(user_id)
+        )
         resume_text = resume_text_for(profile)
         version = verdict_version(profile, resume_text)
         bar = mode_threshold(profile)
         taken = companies_holding_slots(user_id)
+        retried = _retried_ids(user_id, live_ats + live_indeed)
         started = time.monotonic()
-        calls = fits = 0
+        calls = 0
         tried: set = set()
-        while calls < PREJUDGE_CALLS and (fits_wanted is None or fits < fits_wanted):
+        while calls < PREJUDGE_CALLS:
             left_s = PREJUDGE_SECS - (time.monotonic() - started)
-            listed = build_queue(live, version, bar, taken, DAILY_LIST_SIZE)["jobs"]
-            # A row the judge could not decide stays in the list unjudged; asking again in
-            # the same pass would only repeat the failure.
+            # A row the judge could not decide stays unjudged; asking again in the same
+            # pass would only repeat the failure.
             unjudged = [
                 r
-                for r in listed
-                if r.get("id") and r["id"] not in tried and not has_current_verdict(r, version)
+                for r in _opened_next(live_ats, live_indeed, version, bar, taken, retried)
+                if r["id"] not in tried and not has_current_verdict(r, version)
             ]
             want = min(len(unjudged), PREJUDGE_CALLS - calls)
-            if fits_wanted is not None:
-                want = min(want, fits_wanted - fits)
             if want <= 0 or left_s <= 0:
                 break
             batch = unjudged[:want]
@@ -480,15 +476,31 @@ def prejudge_pool(user_id: str, *, fits_wanted: int | None = None) -> int:
             if not stats.get("submitted"):
                 break
             calls += stats["submitted"]
-            fits += sum(
-                1
-                for r in batch
-                if has_current_verdict(r, version) and clears_bar(r.get("fit_score"), bar)
-            )
         return calls
     except Exception as e:  # noqa: BLE001
         print(f"[prejudge] {user_id}: {type(e).__name__}: {e}", file=sys.stderr)
         return 0
+
+
+def _opened_next(
+    live_ats: list, live_indeed: list, version: str, bar: int, taken: list, retried: set
+) -> list[dict]:
+    """The ATS rows a person sees or a run opens next: the dashboard's list (ATS and Indeed
+    together, as get_deck orders it) and each ATS platform's queue as /jobs/ats-queue cuts
+    it for the extension. Same build_queue, same inputs as those reads."""
+    from app.db.subscriptions import max_per_platform
+    from modules.fit_queue import build_queue
+
+    ats_ids = {r["id"] for r in live_ats if r.get("id")}
+    shown = build_queue(live_ats + live_indeed, version, bar, taken, DAILY_LIST_SIZE, retried)
+    out = {r["id"]: r for r in shown["jobs"] if r.get("id") in ats_ids}
+    for platform in ATS_QUEUE_PLATFORMS:
+        mine = [r for r in live_ats if r.get("platform") == platform]
+        queue = build_queue(mine, version, bar, taken, max_per_platform(platform), retried)
+        for r in queue["jobs"]:
+            if r.get("id"):
+                out.setdefault(r["id"], r)
+    return list(out.values())
 
 
 # A dashboard load after a resume edit finds every ATS row unjudged — judge them in the
@@ -539,6 +551,27 @@ def _deck_resume_text(user_id: str, profile: dict) -> str:
     return text
 
 
+def _deck_rows(user_id: str, profile: dict, rows: list) -> tuple[list, list, list, list]:
+    """(swipeable, on_search, live_ats, live_indeed): what the dashboard's list is built
+    from. Shared with prejudge_pool, so the background judge works on the same list the
+    person sees."""
+    swipeable = [
+        j
+        for j in rows
+        if (j.get("status") or "new") == "new"
+        and (j.get("link") or j.get("apply_url"))
+        and j.get("platform") in TAP_APPLY_PLATFORMS
+    ]
+    on_search = on_search_filter(swipeable, profile)
+    # ATS by the auto queue's own rule (zero-touch boards only), so the list never shows
+    # a Greenhouse card auto would refuse to open. Indeed by the deck's rule as before.
+    _ats_pool, _ats_on, live_ats = _ats_candidates(user_id, profile, rows=rows)
+    live_indeed = [
+        j for j in on_search if j.get("platform") == "indeed" and fresh_enough(j, DECK_MAX_AGE_DAYS)
+    ]
+    return swipeable, on_search, live_ats, live_indeed
+
+
 # The list the user sees: "N fit today" (daily-30, Igor 09-30). A ceiling, not a promise —
 # a welder's search may honestly hold 15, and the screen says 15 without "of 30".
 DAILY_LIST_SIZE = 30
@@ -574,21 +607,9 @@ def get_deck(user=Depends(get_current_user)):
     keywords = [k for k in (profile.get("keywords") or []) if (k or "").strip()]
     wanted_type = (profile.get("job_type") or "").strip() or None
 
-    rows = jobs_db.get_jobs(user.id)
-    swipeable = [
-        j
-        for j in rows
-        if (j.get("status") or "new") == "new"
-        and (j.get("link") or j.get("apply_url"))
-        and j.get("platform") in TAP_APPLY_PLATFORMS
-    ]
-    on_search = on_search_filter(swipeable, profile)
-    # ATS by the auto queue's own rule (zero-touch boards only), so the list never shows
-    # a Greenhouse card auto would refuse to open. Indeed by the deck's rule as before.
-    _ats_pool, _ats_on, live_ats = _ats_candidates(user.id, profile, rows=rows)
-    live_indeed = [
-        j for j in on_search if j.get("platform") == "indeed" and fresh_enough(j, DECK_MAX_AGE_DAYS)
-    ]
+    swipeable, on_search, live_ats, live_indeed = _deck_rows(
+        user.id, profile, jobs_db.get_jobs(user.id)
+    )
 
     version = verdict_version(profile, _deck_resume_text(user.id, profile))
     queue = _prejudged_queue(
@@ -722,19 +743,18 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
     }
 
 
-def _run_ats_discovery(user_id: str, *, fits_wanted: int | None = None) -> None:
+def _run_ats_discovery(user_id: str) -> None:
     """Heavy ATS discovery — runs in a BACKGROUND thread, OFF the request worker. Fetches
     ~46 boards (now in parallel with a hard deadline in discover_ats), scores, saves into
     the pool, and self-heals thin descriptions. Never raises; always clears the in-progress
-    flag. P0: nothing here ever holds an API worker → no more worker-starvation / API 000.
-    `fits_wanted` caps the judge pass at the end (prejudge_pool)."""
+    flag. P0: nothing here ever holds an API worker → no more worker-starvation / API 000."""
     # A thread starts with an empty context: bind the user so the scoring and judging
     # calls below are charged to them.
     with ai_meter.attributed(user_id):
-        _discover_ats(user_id, fits_wanted)
+        _discover_ats(user_id)
 
 
-def _discover_ats(user_id: str, fits_wanted: int | None) -> None:
+def _discover_ats(user_id: str) -> None:
     from app.db.profile import get_profile
     from data.ats_watchlist import SEED_WATCHLIST
     from modules.ai_cover_letter import resume_text_for
@@ -807,7 +827,7 @@ def _discover_ats(user_id: str, fits_wanted: int | None) -> None:
 
         # Judge what this sweep brought in while nobody is waiting on it — the next
         # queue read (the campaign, the list) then finds verdicts instead of judging.
-        prejudge_pool(user_id, fits_wanted=fits_wanted)
+        prejudge_pool(user_id)
     except Exception as e:
         print(f"[find-ats bg] worker error: {e}", file=sys.stderr)
     finally:
