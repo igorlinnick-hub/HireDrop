@@ -185,6 +185,13 @@
     await sleep(INDEED_RENEW_GRACE_MS);
   }
 
+  // Which build read a login state. background.js logoutIsTrustworthy drops a logged_out
+  // written by any other build (10-08: a pre-#388 record outlived its detector and refused
+  // Start for a signed-in user). null once this context is orphaned — it can't write then.
+  function extVersion() {
+    try { return chrome.runtime.getManifest().version; } catch { return null; }
+  }
+
   async function reportPlatformAuth() {
     const platform = detectPlatform();
     if (platform === "indeed") await settleIndeedAuthTransit();
@@ -199,7 +206,7 @@
       const conns = store.platformConnections || {};
       // `host` is the record's provenance: background.js drops a logged_out that wasn't
       // read where applying happens, so a search-page guess can never gate a launch.
-      conns[platform] = { status, checkedAt: new Date().toISOString(), host: window.location.hostname };
+      conns[platform] = { status, checkedAt: new Date().toISOString(), host: window.location.hostname, extVersion: extVersion() };
       await storageSet({ platformConnections: conns });
       safeSend({ type: "PLATFORM_AUTH", platform, status, host: window.location.hostname });
     } catch { /* storage/runtime unavailable — ignore */ }
@@ -651,6 +658,10 @@
       await moveCursorTo(tx, ty);
       await sleep(humanDelay(2000, 5000));
     }
+    // The passes take 4-20 s. A Stop inside them used to be followed by "Warmup complete —
+    // navigating to job search" and the navigation (live 10-08: stopped 02:53:54, navigated
+    // 02:53:58). Every await in the walk is a place Stop can land; re-check before acting.
+    if (!(await isCampaignRunning())) return;
     const elapsed = Date.now() - startedAt;
     await storageSet({ campaignWarmedUp: true });
 
@@ -739,6 +750,7 @@
               logBackend(`Indeed search form has no location box — the results will be checked against "${targetL}"`, "warn");
             }
           }
+          if (!(await isCampaignRunning())) return;
           const submitBtn = document.querySelector(
             'button[type="submit"], .yosemite_serp_tbl button, [data-testid*="search-button" i]'
           );
@@ -1868,6 +1880,7 @@
     log(`Opening: ${firstJob.title} @ ${firstJob.company}`, "");
     logBackend(`Opening job: ${firstJob.title} @ ${firstJob.company}`, "info");
     await sleep(humanDelay(3000, 7000));
+    if (!(await isCampaignRunning())) return;
     const viewjobUrl = firstJob.jk
       ? `https://www.indeed.com/viewjob?jk=${firstJob.jk}`
       : firstJob.url;
@@ -2317,6 +2330,9 @@
       return null;
     }
     const answers = await Promise.all(inFlight);
+    // The judge answers seconds later; a Stop in between must not log verdicts for a run
+    // that is over (the caller re-checks too, but only after this function has logged).
+    if (!(await isCampaignRunning())) return null;
     const results = [];
     let reused = 0;
     let lost = 0;
@@ -2682,6 +2698,7 @@
 
     log("On job detail page — extracting info...", "");
     await sleep(humanDelay(1500, 2500));
+    if (!(await isCampaignRunning())) return; // no judge call for a stopped run
 
     // Extract job info.
     //
@@ -2841,6 +2858,9 @@
             ...(prejudgedId ? { job_id: prejudgedId } : {}),
           },
         });
+        // The judge takes seconds. Live 10-08: stopped 05:43:15, then "✓ Good fit (42)" at
+        // :23 — the answer to a call made before Stop, acted on after it.
+        if (!(await isCampaignRunning())) return;
         if (!fit || fit.decision !== "apply") {
           const why = (fit && fit.reason ? fit.reason : "fit check unavailable — skipped for safety").slice(0, 160);
           log(`Skipping ${jobTitle} — ${why}`, "");
@@ -2869,6 +2889,9 @@
     await sleep(humanDelay(1000, 2000));
 
     const applyBtn = await waitForApplyButton(8000);
+    // waitForApplyButton answers null on Stop too — that is not "no Apply button" (live 10-08:
+    // "Skip (no Apply button)" two seconds after a Stop, then a skip to the next job).
+    if (!(await isCampaignRunning())) return;
     if (!applyBtn) {
       // After 8s of polling, decide why: external-only or genuinely no button
       const isExternal = !!document.querySelector('button[aria-label*="company site" i], a[aria-label*="company site" i]');
@@ -3099,6 +3122,7 @@
     log(`Opening: ${first.title} @ ${first.company}`, "");
     logBackend(`Opening ZipRecruiter job: ${first.title} @ ${first.company}`, "info");
     await sleep(humanDelay(2000, 4000));
+    if (!(await isCampaignRunning())) return;
     window.location.href = first.url;
   }
 
@@ -3208,6 +3232,7 @@
     // live 08-15 several badged cards opened panes with no apply button at all.
     await sleep(humanDelay(800, 1500));
     const applyBtn = await waitForZipRecruiterApplyButton(8000);
+    if (!(await isCampaignRunning())) return; // null on Stop is not "no Quick Apply button"
     if (!applyBtn) {
       // Diagnose WHY: is this a genuine external-apply job, or a selector miss?
       // Report the panel's actual buttons/apply-links so we learn from our own logs.
@@ -3264,6 +3289,7 @@
           type: "ASSESS_FIT",
           data: { job_title: jobTitle, company: jobCompany, description: jobDesc },
         });
+        if (!(await isCampaignRunning())) return; // Stop landed while the judge answered
         if (!fit || fit.decision !== "apply") {
           const why = (fit && fit.reason ? fit.reason : "fit check unavailable — skipped for safety").slice(0, 160);
           log(`Skipping ${jobTitle} — ${why}`, "");
@@ -3288,6 +3314,7 @@
     // Re-find the button: the pane can re-render while the fit judge and the cover
     // letter are being generated, which detaches the node we matched earlier.
     const applyBtn2 = findZipRecruiterApplyButton() || (await waitForZipRecruiterApplyButton(8000));
+    if (!(await isCampaignRunning())) return; // never click Quick Apply for a stopped run
     if (!applyBtn2) {
       logBackend(`Skip (apply button vanished mid-flow): ${jobTitle} @ ${jobCompany}`, "warn");
       await skipToNextJob();
@@ -3400,6 +3427,7 @@
     await storageSet({ atsReturnUrl: window.location.href });
     logBackend(`↗️ External→ATS: ${jobTitle} @ ${jobCompany} — routing to ${url.slice(0, 90)}`, "info");
     await sleep(humanDelay(800, 1500));
+    if (!(await isCampaignRunning())) return true; // stopped: the caller must not act either
     window.location.href = url;
     return true;
   }
@@ -3413,6 +3441,7 @@
     if (!(await isCampaignRunning())) return;
     logBackend("↩️ Returning to board search after ATS apply", "info");
     await sleep(humanDelay(1500, 3000));
+    if (!(await isCampaignRunning())) return;
     window.location.href = atsReturnUrl;
   }
 
@@ -6128,6 +6157,7 @@
     log(`Next job (${idx + 1}/${jobs.length}): ${nextJob.title}`, "");
 
     await sleep(humanDelay(3000, 5000));
+    if (!(await isCampaignRunning())) return; // the check above is 3-5 s old by now
 
     const platform = detectPlatform();
     let targetUrl;
@@ -6364,6 +6394,7 @@
     log("Returning to job list...", "");
     // 15-30 s between pages — rapid page-flipping triggers Cloudflare rate limiting
     await sleep(humanDelay(15000, 30000));
+    if (!(await isCampaignRunning())) return;
     window.location.href = url;
   }
 
@@ -6405,6 +6436,7 @@
     const url = `https://www.ziprecruiter.com/jobs-search?${params.toString()}`;
     log("Returning to ZipRecruiter job list...", "");
     await sleep(humanDelay(10000, 20000));
+    if (!(await isCampaignRunning())) return;
     window.location.href = url;
   }
 
@@ -6440,6 +6472,7 @@
     const url = `https://www.ziprecruiter.com/jobs-search?${params.toString()}`;
     log(`Off-track on ZipRecruiter (${window.location.pathname}) — recovering to search (attempt ${n})...`, "");
     await sleep(humanDelay(3000, 6000));
+    if (!(await isCampaignRunning())) return;
     window.location.href = url;
   }
 
@@ -6529,6 +6562,7 @@
       // opened postings lost to that second verdict). The full href: jobUrl drops the
       // query, and an employer-hosted Greenhouse page carries its posting id in ?gh_jid=.
       const fit = await sendMsg({ type: "ASSESS_FIT", data: { job_title: jobTitle, company: jobCompany, description: jobDesc, job_url: window.location.href } });
+      if (!(await isCampaignRunning())) return; // Stop landed while the judge answered
       const src = fitSourceNote(fit);
       // FAIL CLOSED: only proceed on an explicit "apply" (null/missing verdict → skip).
       if (!fit || fit.decision !== "apply") {

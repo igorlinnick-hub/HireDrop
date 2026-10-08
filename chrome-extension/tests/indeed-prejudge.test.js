@@ -435,6 +435,34 @@ const pending = (store) => (store.pendingJobs || []).map((j) => j.jk);
     check("Stop mid-read: nothing opened, nothing pending", o.rec.navTo === null && o.store.pendingJobs === undefined,
       `${o.rec.navTo} ${JSON.stringify(o.store.pendingJobs)}`);
   }
+  {
+    // Stop lands while the judge's answers are in flight (10-08: verdicts kept arriving and
+    // being acted on after a Stop). Nothing about this page may be logged as judged.
+    const o = world({
+      store: { ...KW },
+      verdicts: answer({
+        [JK_FIT]: { job_id: "row-fit", decision: "apply", fit_score: 61 },
+        [JK_OFF]: { job_id: "row-off", decision: "skip", fit_score: 12, reason: "no" },
+      }),
+      running: (_n, rec) => !rec.sent.includes("PREJUDGE_CARDS"),
+    });
+    await o.box.phase1_indeed();
+    check("Stop while the judge answers: no verdict or summary line for the page",
+      !o.rec.backend.some((t) => /^⏭️ Skipped|^⚡ Judged/.test(t)), JSON.stringify(o.rec.backend));
+    check("…nothing opened, nothing pending", o.rec.navTo === null && o.store.pendingJobs === undefined,
+      `${o.rec.navTo} ${JSON.stringify(o.store.pendingJobs)}`);
+  }
+  {
+    // Stop lands in the 3-7 s pause between "Opening job" and the navigation.
+    const o = world({
+      store: { ...KW },
+      verdicts: answer({ [JK_FIT]: { job_id: "row-fit", decision: "apply", fit_score: 61 } }),
+      running: (_n, rec) => !rec.backend.some((t) => t.startsWith("Opening job:")),
+    });
+    await o.box.phase1_indeed();
+    check("Stop in the pause before opening the first job: no navigation",
+      o.rec.backend.some((t) => t.startsWith("Opening job:")) && o.rec.navTo === null, `${o.rec.navTo}`);
+  }
 
   // --- 4. a person's pace and a person's click ------------------------------------------------
   {

@@ -1804,10 +1804,25 @@ async function tapPoolIdleRefill() {
 // this rule carry no host at all — those are guesses too, and get dropped on first read,
 // which is what un-sticks a browser that's already poisoned.
 // (INDEED_APPLY_HOSTS is mirrored in content.js — content scripts don't see config.js.)
+//
+// A logged_out also must not outlive the CODE that wrote it. Every writer stamps the
+// extension version it ran (`extVersion`); one written by another build — or by a build
+// from before the stamp — is dropped. Live 10-08 03:05Z: indeed = {logged_out,
+// host: secure.indeed.com}, written by a detector that read secure.indeed.com/settings/
+// account as the sign-in wall (fixed in #388). The host rule above trusts that host, an
+// update keeps chrome.storage.local, and open Indeed tabs keep their orphaned old scripts,
+// so nothing re-read it: Start refused "Sign into Indeed first" for a signed-in user, and
+// every Web Store update would do the same once. Dropping it is safe — a user who really is
+// signed out meets content.js's login-wall check on the first page, which pauses the run
+// and writes a fresh, stamped record.
 const INDEED_APPLY_HOSTS = ["smartapply.indeed.com", "secure.indeed.com"];
 
 function logoutIsTrustworthy(platform, rec) {
   if (!rec || rec.status !== "logged_out") return true;
+  // Inline, not a helper: the watchdog test runs this function on its own.
+  let running = null;
+  try { running = chrome.runtime.getManifest().version; } catch { /* no runtime — host rule alone */ }
+  if (running && rec.extVersion !== running) return false;
   if (platform !== "indeed") return true; // ZR's login link is server-rendered on every host
   const host = rec.host;
   if (!host) return false;
@@ -1857,6 +1872,21 @@ async function refuseStart(reason, source) {
     "warn");
   if (source !== "auto") notifyOpenHireDrop("HireDrop didn't start", `${r.text} — open HireDrop to fix.`, r.path);
   return { started: false, error: reason, message: `${r.text} — open HireDrop to fix it.`, logged: true, notified: source !== "auto" };
+}
+
+// A start the extension's OWN pre-flight refused (no keywords, signed out, Tap with nothing
+// approved…), surfaced the same way. These answered the dashboard and nobody else: it shows
+// the message for a moment, rolls back with POST /campaign/stop, and the feed was left with
+// "▶ Start received" and then nothing. Live 10-08 03:05Z the reason (a stale not_connected)
+// had to be deduced by elimination. One warn line, with the code, so the feed says why.
+// The result is passed through untouched plus `logged`, which tells the daily auto-start
+// (auto-daily.js) the line is already written.
+async function refuseStartLocally(res, source) {
+  const why = res.message || hdStartRefusal(res.error).text;
+  await addToActivityLog(
+    `${source === "auto" ? "⏰ Daily auto-start didn't start" : "Didn't start"}: ${why} (${res.error})`,
+    "warn");
+  return { ...res, logged: true };
 }
 
 // A notification whose click opens hiredrop.io<path>. The path rides in the id, so a click
@@ -1913,8 +1943,7 @@ async function startCampaign(rawFilters, { source = "manual" } = {}) {
   // can't help here). An un-onboarded profile is empty — the campaign
   // would fill applications with blanks under the user's identity.
   if (!profile || profile.onboarding_completed !== true) {
-    await addToActivityLog("Can't start — finish your profile setup first.", "error");
-    return { started: false, error: "onboarding_incomplete" };
+    return await refuseStartLocally({ started: false, error: "onboarding_incomplete" }, source);
   }
   // Resume is optional at onboarding — Indeed native applies use the resume
   // stored on Indeed itself, but external-ATS forms (Greenhouse/Lever)
@@ -1946,11 +1975,11 @@ async function startCampaign(rawFilters, { source = "manual" } = {}) {
   // for. Refuse with a clear reason instead of "starting" an empty run (the popup
   // Start path has no dashboard-side keyword check). Mirrors /campaign/readiness.
   if (!filters.keywords.length) {
-    return {
+    return await refuseStartLocally({
       started: false,
       error: "no_keywords",
       message: "Add at least one keyword first — the campaign needs something to search for.",
-    };
+    }, source);
   }
 
   // Pick the auto-apply platform this campaign targets (first in the filter list)
@@ -1969,11 +1998,11 @@ async function startCampaign(rawFilters, { source = "manual" } = {}) {
   // an unreadable case too, and it no longer hides that behind a default "auto".
   // Older backends don't send the field; undefined means "no reason to doubt it".)
   if (!preSt || preSt.submit_mode_known === false) {
-    return {
+    return await refuseStartLocally({
       started: false,
       error: "mode_unknown",
       message: "Couldn't reach HireDrop to check whether you're on Auto or Tap — starting now could apply to jobs you never approved. Check your connection and press Start again.",
-    };
+    }, source);
   }
   const tapMode = preSt.submit_mode === "tap";
 
@@ -2001,11 +2030,11 @@ async function startCampaign(rawFilters, { source = "manual" } = {}) {
   // would submit applications the backend then refuses to save (they reach the
   // employer, invisibly). Server unreachable → fail-open, like the caps.
   if (preSt && preSt.free_limit != null && preSt.free_used >= preSt.free_limit) {
-    return {
+    return await refuseStartLocally({
       started: false,
       error: "free_limit_reached",
       message: `You've used all ${preSt.free_limit} free applications — subscribe to keep applying.`,
-    };
+    }, source);
   }
 
   // APPROVED SWIPES LEAD THE RUN — in BOTH modes (Igor 09-19).
@@ -2039,14 +2068,14 @@ async function startCampaign(rawFilters, { source = "manual" } = {}) {
     // auto walk (native Indeed search / GH auto-sweep) — that would apply jobs the
     // user never swiped. Auto has no such guard to trip: an empty approved list there
     // just means the run starts the way it always did.
-    return {
+    return await refuseStartLocally({
       started: false,
       error: "no_approved_jobs",
       // Covers both truths honestly: nothing approved yet, OR everything approved
       // was already applied/dead (dedup excluded it) — live-test 2026-07-27 found
       // the old "swipe first" wording gaslighting a user whose swipes WERE consumed.
       message: "Nothing new to apply — jobs you approved before are already applied or closed. Swipe Approve on new cards, then Start.",
-    };
+    }, source);
   }
 
   // Pool-driven ATS target (GLOBAL_PLAN P1+P2):
@@ -2065,11 +2094,11 @@ async function startCampaign(rawFilters, { source = "manual" } = {}) {
     if (tapMode) {
       atsTarget = "lever";
     } else {
-      return {
+      return await refuseStartLocally({
         started: false,
         error: "lever_needs_tap",
         message: "Lever applications need Tap mode (their captcha requires a human). Switch to Tap and start again.",
-      };
+      }, source);
     }
   }
 
@@ -2079,11 +2108,11 @@ async function startCampaign(rawFilters, { source = "manual" } = {}) {
   // does not change this: it only lets the capture kit run on a LinkedIn tab.
   if (!tapPoolQueue.length && !atsTarget && !hasBoard &&
       hdLinkedInOnlySelection(filters.platforms, CAMPAIGN_START_PLATFORMS, ATS_PLATFORMS)) {
-    return {
+    return await refuseStartLocally({
       started: false,
       error: "linkedin_not_ready",
       message: "LinkedIn isn't available for campaigns yet. Pick Indeed, ZipRecruiter or a company-site platform and start again.",
-    };
+    }, source);
   }
 
   // Pre-flight login check applies only to native board platforms (Indeed/ZR). ATS apply
@@ -2094,20 +2123,20 @@ async function startCampaign(rawFilters, { source = "manual" } = {}) {
       // A human who just pressed Start gets the login page. The 9 AM schedule must not
       // throw a tab in front of whoever is at the computer — it says so instead.
       if (source === "auto") {
-        return {
+        return await refuseStartLocally({
           started: false,
           error: "not_connected",
           platform: primaryPlatform,
           message: `You're signed out of ${platformLabel(primaryPlatform)}`,
-        };
+        }, source);
       }
       chrome.tabs.create({ url: platformLoginUrl(primaryPlatform) }).catch(() => {});
-      return {
+      return await refuseStartLocally({
         started: false,
         error: "not_connected",
         platform: primaryPlatform,
         message: `Sign into ${platformLabel(primaryPlatform)} first — we opened the login page. Create an account or log in, then start the campaign.`,
-      };
+      }, source);
     }
   }
 
@@ -2163,7 +2192,7 @@ async function startCampaign(rawFilters, { source = "manual" } = {}) {
       // longer match your search" need different actions from the user, and the old
       // single message sent everyone to "broaden your keywords" — the wrong advice
       // for the case where the keywords are right and the pool is stale.
-      return {
+      return await refuseStartLocally({
         started: false,
         error: "no_ats_jobs",
         message: built.error
@@ -2173,7 +2202,7 @@ async function startCampaign(rawFilters, { source = "manual" } = {}) {
           : built.offSearch > 0
           ? `None of the ${built.pool} ${atsTarget} jobs in your pool match your current search — ${built.offSearch} are leftovers from earlier keywords. They'll refresh as new jobs are found.`
           : `No zero-touch ${atsTarget} jobs to apply to yet — try again shortly or broaden your keywords.`,
-      };
+      }, source);
     }
     await chrome.storage.local.set({ atsQueue, atsPlatform: atsTarget, atsNavAt: Date.now(), atsNavTries: 0 });
     await addToActivityLog(
@@ -2503,7 +2532,12 @@ async function handleMessage(msg, sender) {
     case "PLATFORM_AUTH": {
       if (msg.platform && msg.status && msg.status !== "unknown") {
         const conns = await getPlatformConnections();
-        conns[msg.platform] = { status: msg.status, checkedAt: new Date().toISOString(), host: msg.host || null };
+        // extVersion: THIS build read it (see logoutIsTrustworthy) — stamped here, not taken
+        // from the message, so the record speaks for the code that will act on it.
+        conns[msg.platform] = {
+          status: msg.status, checkedAt: new Date().toISOString(), host: msg.host || null,
+          extVersion: chrome.runtime.getManifest().version,
+        };
         await chrome.storage.local.set({ platformConnections: conns });
       }
       return { ok: true };
@@ -2529,7 +2563,10 @@ async function handleMessage(msg, sender) {
         const conns = await getPlatformConnections();
         // The wall was hit on a real page — carry its host so the record survives the
         // provenance check above (a hostless logged_out is treated as a guess).
-        conns[msg.platform] = { status: "logged_out", checkedAt: new Date().toISOString(), host: msg.host || null };
+        conns[msg.platform] = {
+          status: "logged_out", checkedAt: new Date().toISOString(), host: msg.host || null,
+          extVersion: chrome.runtime.getManifest().version,
+        };
         await chrome.storage.local.set({ platformConnections: conns });
         try {
           chrome.notifications.create({

@@ -276,6 +276,7 @@ function harness(opts = {}) {
     sliceFn("async function apiError(res) {", "\n}\n"),
     sliceFn("async function apiPost(path, body, { retry = true } = {}) {", "\n}\n"),
     sliceFn("async function refuseStart(reason, source) {", "\n}\n"),
+    sliceFn("async function refuseStartLocally(res, source) {", "\n}\n"),
     sliceFn("const HD_OPEN_NOTIF_PREFIX", "\n}\n"),
     sliceFn("async function startCampaign(rawFilters, { source = \"manual\" } = {}) {",
       "  return { started: true, tabId: tab.id, windowId: tabInfo.windowId };\n}\n"),
