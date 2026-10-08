@@ -48,6 +48,9 @@ class AskBody(BaseModel):
     # Something the chat did besides the text — a fixed key, mapped to a fixed note
     # (buddy.ATTACHMENT_NOTES). "resume_pdf" = a new resume was just uploaded in the chat.
     attachment: Literal["resume_pdf"] | None = None
+    # The chat can draw proposal cards (website sends true once it renders them). Without
+    # it Drop gets no propose_action tool and says where to click instead.
+    cards: bool = False
 
 
 def _today() -> str:
@@ -82,7 +85,9 @@ def ask(body: AskBody, user=Depends(get_current_user)):
         failed = False
         started = time.monotonic()
         try:
-            for ev in buddy.ask(user, body.question, body.history, body.tz, body.attachment):
+            for ev in buddy.ask(
+                user, body.question, body.history, body.tz, body.attachment, body.cards
+            ):
                 if ev["type"] == "done":
                     record = ev
                     ev = {"type": "done", "turn_id": turn_id}  # token counts stay server-side

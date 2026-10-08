@@ -207,7 +207,7 @@ def test_ask_emits_the_card_and_reports_answer_and_cards_on_done():
         patch.object(buddy, "get_profile", return_value={}),
     ):
         events = list(
-            buddy.ask(USER, "I'm moving to San Diego in December", [], None, "resume_pdf")
+            buddy.ask(USER, "I'm moving to San Diego in December", [], None, "resume_pdf", True)
         )
     kinds = [e["type"] for e in events]
     assert "proposal" in kinds
@@ -313,7 +313,7 @@ async def _collect(resp):
 def test_router_logs_the_whole_turn_and_hands_out_the_turn_id():
     from app.routers import buddy as router
 
-    def fake_ask(user, q, history, tz, attachment):
+    def fake_ask(user, q, history, tz, attachment, cards):
         yield {"type": "state", "state": "thinking"}
         yield {"type": "proposal", "proposal": {"id": "p_00000001", "kind": "use_resume"}}
         yield {
@@ -406,3 +406,21 @@ def test_resume_city_edit_changes_only_that_line():
 
     with patch.object(profile.profile_db, "get_profile", return_value={}):
         assert profile.ats_contact_location({"location": "San Diego, CA"}, USER).status_code == 400
+
+
+def test_a_chat_that_cant_draw_cards_never_gets_the_tool():
+    client = MagicMock()
+    tools_seen = []
+
+    def capture(**kw):
+        tools_seen.append([t["name"] for t in kw["tools"]])
+        return _Stream(
+            ["Go to Settings."], _msg("end_turn", [SimpleNamespace(type="text", text="x")])
+        )
+
+    client.messages.stream.side_effect = capture
+    with patch.object(buddy, "get_anthropic_client", return_value=client):
+        list(buddy.ask(USER, "use my ATS resume", [], None, None))
+        list(buddy.ask(USER, "use my ATS resume", [], None, None, True))
+    assert "propose_action" not in tools_seen[0]
+    assert "propose_action" in tools_seen[1]

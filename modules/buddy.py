@@ -64,10 +64,10 @@ How you work:
   If you don't know, say so honestly and point them to support@hiredrop.io. Never promise
   features, dates, refunds or exceptions.
 - You never change anything in their account yourself. When they ask you to remember,
-  change, open or rebuild something you can offer, use propose_action: it shows them a card
-  with one button, and only their click does it. Say in one sentence what the button does.
-  Never claim something was saved or changed — it happens only if they press it. For
-  anything propose_action can't do, tell them where to click.
+  change, open or rebuild something and the propose_action tool is available, use it: it
+  shows them a card with one button, and only their click does it. Say in one sentence what
+  the button does. Never claim something was saved or changed — it happens only if they
+  press it. Without that tool, or for anything it can't do, tell them where to click.
 - Facts about their own life (moving to another city, can't work weekends, start date) are
   what employers ask about and no resume says. When they tell you one, offer to remember it
   (remember_answer; in_letters=true when it belongs in cover letters, like a move). When
@@ -343,7 +343,11 @@ _RUN = {
 }
 
 # Reads above; the one non-read tool is a PROPOSAL, which changes nothing (buddy_actions).
-TOOLS = TOOLS + [buddy_actions.TOOL]
+# Offered only to a chat that can draw the card (AskBody.cards): an older dashboard drops
+# unknown events, and Drop saying "press Save" with no button in sight is worse than
+# telling them where to click.
+READ_TOOLS = TOOLS
+TOOLS = READ_TOOLS + [buddy_actions.TOOL]
 
 
 def run_proposal(user, args: dict) -> tuple[str, dict | None]:
@@ -456,6 +460,7 @@ def ask(
     history: list | None = None,
     tz: str | None = None,
     attachment: str | None = None,
+    cards: bool = False,
 ) -> Iterator[dict]:
     """Yield events: state(thinking|checking|speaking), text(delta), proposal(card),
     done(usage, answer, proposals) | error."""
@@ -483,13 +488,18 @@ def ask(
         "tool_errors": 0,
     }
     answer: list[str] = []
+    cards_on = cards
     cards: list[dict] = []
 
     yield {"type": "state", "state": "thinking"}
     speaking = False
     for _ in range(MAX_TOOL_ROUNDS + 1):
         with client.messages.stream(
-            model=MODEL, max_tokens=MAX_TOKENS, system=system, tools=TOOLS, messages=messages
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            system=system,
+            tools=TOOLS if cards_on else READ_TOOLS,
+            messages=messages,
         ) as stream:
             for text in stream.text_stream:
                 if not speaking:
@@ -525,7 +535,7 @@ def ask(
         for c in calls:
             usage["tools"].append(c.name)
             if c.name == buddy_actions.TOOL["name"]:
-                if len(cards) >= MAX_CARDS_PER_ANSWER:
+                if not cards_on or len(cards) >= MAX_CARDS_PER_ANSWER:
                     content, card = (
                         json.dumps({"shown": False, "why": "enough cards for one answer"}),
                         None,
