@@ -3,6 +3,7 @@
 from datetime import UTC, date, datetime, timedelta
 
 from app.db.client import fetch_paged, get_supabase
+from modules.job_location import place_label, posting_work_setting
 
 
 def save_application(
@@ -55,7 +56,8 @@ def get_history(user_id: str, limit: int = 5000) -> list:
             get_supabase()
             .table("applications")
             .select(
-                "*, jobs(title, company, platform, link, tailored_resume, tailored_resume_pdf_url)"
+                "*, jobs(title, company, platform, link, location, tailored_resume,"
+                " tailored_resume_pdf_url)"
             )
             .eq("user_id", user_id)
             .order("date_applied", desc=True)
@@ -76,10 +78,15 @@ def get_history(user_id: str, limit: int = 5000) -> list:
         # to download. Sign it here (TTL 1h, ample for a page-load→click); user_id
         # scoping in signed_url_from_path refuses cross-tenant paths (defense-in-depth).
         pdf_path = job.get("tailored_resume_pdf_url")
+        title = row.get("job_title") or job.get("title", "")
+        # Where the job is, for History's place filter. Only the jobs row knows it (the
+        # extension heals it through /jobs/describe since ext 1.8.43); empty = we never
+        # saw a location, and the page says so rather than guessing one.
+        location = (job.get("location") or "").strip()
         rows.append(
             {
                 "id": row["id"],
-                "title": row.get("job_title") or job.get("title", ""),
+                "title": title,
                 "company": row.get("company") or job.get("company", ""),
                 "platform": row.get("platform") or job.get("platform", ""),
                 "link": row.get("job_url") or job.get("link", ""),
@@ -90,6 +97,9 @@ def get_history(user_id: str, limit: int = 5000) -> list:
                 "resume_pdf_url": resume_storage.signed_url_from_path(pdf_path, user_id)
                 if pdf_path
                 else "",
+                "location": location,
+                "work_setting": posting_work_setting(location, title),
+                "place": place_label(location),
             }
         )
     return rows

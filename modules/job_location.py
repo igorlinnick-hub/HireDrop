@@ -290,6 +290,83 @@ def posting_work_setting(row_location: str, title: str = "") -> str | None:
     return "onsite"
 
 
+# ── Place label ────────────────────────────────────────────────────────────────────
+# History groups what was sent by where the job is, and board text is noisy: "6399
+# Highway 6 South, Houston, TX 77083", "Hybrid work in Houston, TX 77056" and "Houston,
+# TX (West Oaks area)" are one place to a person scanning their record. This reduces a
+# row to "City, ST" — the one shape every US board shares — and returns None when the
+# text has no such shape: a guessed city is worse than an honest blank.
+#
+# Codes must be upper-case ("Remote, in office" must not read as Indiana). A full state
+# name must END its segment, or "San Francisco, New York or Remote" reads as a city in NY.
+# Letters are any script's: an ASCII class cut "Cañon City, CO" to "on City, CO" — an
+# invented town, the one thing this function must never return.
+_STATE_NAMES_ALT = "|".join(re.escape(n) for n in sorted(_NAME_TO_CODE, key=len, reverse=True))
+_LETTER = r"[^\W\d_]"
+_CITY_STATE_RE = re.compile(
+    r"(" + _LETTER + r"(?:" + _LETTER + r"|[.'’\- ])*?)\s*,\s*(?:"
+    r"(" + "|".join(c.upper() for c in _STATE_CODES) + r")\b"
+    r"|((?i:" + _STATE_NAMES_ALT + r"))(?=\s*(?:$|[,;|/()\-–—\d]))"
+    r")"
+)
+# Board words in front of the city: "Hybrid work in", "Full-time in", "Near", "Temporarily
+# Remote in". `\b` keeps real names whole (Independence, Atlanta, Tempe, Anderson).
+_PLACE_LEAD_RE = re.compile(
+    r"^(?:(?:hybrid|remote|on-?site|in[- ]office|office|work|based|located|in|at|near|or|and|"
+    r"full[- ]time|part[- ]time|temporarily|contract|temp|hq|headquarters)\b[\s\-–—:]*)+",
+    re.I,
+)
+# "Hybrid or Onsite - Austin": the city is what follows the last spaced dash.
+_PLACE_SPLIT_RE = re.compile(r"\s[-–—]\s")
+# A foreign city written with its COUNTRY code, which is also a state code: "Pune, IN"
+# (India), "Tel Aviv, IL", "Berlin, DE", "Toronto, CA", "Perth, WA" (Australia). Keyed by
+# code so the US twins keep their place — Dublin, CA and Athens, GA are real US towns,
+# and Ireland/Greece are not spelled IE→CA or GR→GA.
+_FOREIGN_BY_CODE = {
+    code: re.compile(rf"\b(?:{alts})\b", re.I)
+    for code, alts in {
+        "IN": r"india|bengaluru|bangalore|hyderabad|pune|mumbai|delhi|chennai|noida|gurgaon"
+        r"|gurugram|kolkata|ahmedabad|telangana|karnataka|maharashtra",
+        "IL": r"israel|tel aviv|jerusalem|haifa",
+        "DE": r"germany|berlin|munich|hamburg|frankfurt|cologne|stuttgart",
+        "CA": r"canada|toronto|vancouver|montreal|ottawa|calgary|edmonton|ontario|quebec"
+        r"|british columbia|alberta",
+        "AR": r"argentina|buenos aires",
+        "CO": r"colombia|bogot[áa]|medell[íi]n",
+        "ID": r"indonesia|jakarta",
+        "MA": r"morocco|casablanca",
+        "GA": r"tbilisi|batumi",
+        "WA": r"perth|western australia",
+    }.items()
+}
+# Board locations are a line; a pasted posting is not. Capping the text keeps a pathological
+# string from costing the request quadratic regex time.
+_MAX_PLACE_TEXT = 300
+
+
+def place_label(row_location: str) -> str | None:
+    """ "Houston, TX" for any US "City, ST" / "City, State" in the text, else None.
+
+    The first US place wins — a multi-city posting ("Addison, TX (Hybrid); Bellevue, WA")
+    lists its main office first.
+    """
+    text = (row_location or "")[:_MAX_PLACE_TEXT]
+    for m in _CITY_STATE_RE.finditer(text):
+        city = _PLACE_SPLIT_RE.split(m.group(1))[-1]
+        city = re.sub(r"\s+", " ", _PLACE_LEAD_RE.sub("", city)).strip(" .-")
+        if not city:
+            continue
+        code = m.group(2) or _NAME_TO_CODE[m.group(3).lower()].upper()
+        foreign = _FOREIGN_BY_CODE.get(code)
+        if foreign and foreign.search(text[: m.end()]):
+            continue
+        # One spelling per city, or "CHICAGO, IL" and "Chicago, IL" become two chips.
+        if city.isupper() or city.islower():
+            city = city.title()
+        return f"{city}, {code}"
+    return None
+
+
 def matches_work_setting(row_location: str, title: str, wanted: str | None) -> bool:
     """Does this posting's arrangement fit what the user asked for? Unknown passes —
     the same silence-is-not-a-mismatch rule as location and job type."""
