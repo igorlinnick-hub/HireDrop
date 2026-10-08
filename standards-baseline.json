@@ -91,11 +91,11 @@
  },
  "chrome-extension/background.js": {
   "empty_catch": 32,
-  "history": 66
+  "history": 67
  },
  "chrome-extension/content.js": {
   "empty_catch": 10,
-  "history": 151
+  "history": 153
  },
  "chrome-extension/pill.js": {
   "empty_catch": 1
@@ -112,6 +112,9 @@
  },
  "chrome-extension/tests/approved-first.test.js": {
   "history": 3
+ },
+ "chrome-extension/tests/ashby-location-required.test.js": {
+  "history": 1
  },
  "chrome-extension/tests/auto-daily.test.js": {
   "empty_catch": 1,
@@ -315,6 +318,9 @@
  "modules/skills_resume.py": {
   "history": 1
  },
+ "modules/text_style.py": {
+  "history": 1
+ },
  "scripts/ads_spend.py": {
   "history": 3
  },
@@ -362,6 +368,9 @@
  },
  "scripts/run_history.py": {
   "history": 3
+ },
+ "scripts/sessions.py": {
+  "history": 1
  },
  "tests/test_admin_affiliates.py": {
   "history": 2
@@ -527,6 +536,9 @@
  },
  "tests/test_tap_deck.py": {
   "history": 6
+ },
+ "tests/test_text_style.py": {
+  "history": 1
  },
  "tests/test_user_day.py": {
   "history": 5
