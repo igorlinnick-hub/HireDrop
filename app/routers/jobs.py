@@ -19,6 +19,7 @@ from app.schemas import (
     JobDescriptionRequest,
     JobStatusUpdate,
 )
+from modules import ai_meter
 from modules.captcha_profile import TOUCH_RANK, captcha_touch, is_zero_touch
 
 router = APIRouter(tags=["jobs"])
@@ -290,8 +291,8 @@ def get_ats_queue(platform: str, limit: int = 20, user=Depends(get_current_user)
 # what it has not reached yet — a brand-new account, or the first read after a resume edit.
 QUEUE_SYNC_JUDGE_CALLS = 30
 QUEUE_SYNC_JUDGE_SECS = 20.0
-# What one background pass (after a sweep, nightly or on a search change) may spend.
-# Cost follows novelty: only rows without a verdict for the current profile are judged.
+# The most one background pass (after a sweep, nightly or on a search change) may spend.
+# It usually spends far less: only the unjudged rows of the person's list are judged.
 PREJUDGE_CALLS = 60
 PREJUDGE_SECS = 150.0
 ATS_QUEUE_PLATFORMS = ("greenhouse", "lever", "ashby")
@@ -412,20 +413,79 @@ def _retried_ids(user_id: str, rows: list) -> set:
     }
 
 
-def prejudge_pool(user_id: str) -> int:
-    """Background pass: judge the ATS candidates that lack a verdict for the current
-    profile, so the next queue read is instant. Called after every sweep (nightly, search
-    change, campaign start). Never raises — a failed pass only means the queue read
-    judges a little more itself."""
+def prejudge_pool(user_id: str, *, fits_wanted: int | None = None) -> int:
+    """Background pass: judge the unjudged rows of the person's list, and nothing past it.
+
+    The list is the first DAILY_LIST_SIZE rows of build_queue's order (freshest first,
+    below-bar rows out). A row in it without a verdict would be shown unchecked, or judged
+    while the run waits; a row past it is on nobody's screen. So the pass judges the list's
+    unjudged rows, rebuilds the list (a rejected row drops out, the next one moves up) and
+    repeats until the list holds no unjudged row. A list that is already judged costs
+    nothing — judging the whole pool ahead paid for postings nobody would ever open.
+
+    `fits_wanted` caps a pass nobody is waiting on: the nightly sweep refills what the
+    person used since the last sweep (app/pool_sweep.py) and stops after that many new
+    fits. Called after every sweep (nightly, search change, campaign start) and from a
+    dashboard read. Never raises — a failed pass only means the queue read judges a little
+    more itself. Returns how many judge calls were started.
+    """
     from app.db.profile import get_profile
-    from modules.fit_queue import judge_pending
+    from modules.ai_cover_letter import resume_text_for
+    from modules.ai_fit_judge import clears_bar, mode_threshold, verdict_version
+    from modules.fit_queue import (
+        build_queue,
+        companies_holding_slots,
+        has_current_verdict,
+        judge_pending,
+    )
 
     try:
         profile = get_profile(user_id)
         _pool, _on_search, live = _ats_candidates(user_id, profile)
-        return judge_pending(
-            user_id, profile, live, max_calls=PREJUDGE_CALLS, deadline_s=PREJUDGE_SECS
-        )
+        resume_text = resume_text_for(profile)
+        version = verdict_version(profile, resume_text)
+        bar = mode_threshold(profile)
+        taken = companies_holding_slots(user_id)
+        started = time.monotonic()
+        calls = fits = 0
+        tried: set = set()
+        while calls < PREJUDGE_CALLS and (fits_wanted is None or fits < fits_wanted):
+            left_s = PREJUDGE_SECS - (time.monotonic() - started)
+            listed = build_queue(live, version, bar, taken, DAILY_LIST_SIZE)["jobs"]
+            # A row the judge could not decide stays in the list unjudged; asking again in
+            # the same pass would only repeat the failure.
+            unjudged = [
+                r
+                for r in listed
+                if r.get("id") and r["id"] not in tried and not has_current_verdict(r, version)
+            ]
+            want = min(len(unjudged), PREJUDGE_CALLS - calls)
+            if fits_wanted is not None:
+                want = min(want, fits_wanted - fits)
+            if want <= 0 or left_s <= 0:
+                break
+            batch = unjudged[:want]
+            tried.update(r["id"] for r in batch)
+            stats: dict = {}
+            judge_pending(
+                user_id,
+                profile,
+                batch,
+                max_calls=want,
+                deadline_s=left_s,
+                resume_text=resume_text,
+                version=version,
+                stats=stats,
+            )
+            if not stats.get("submitted"):
+                break
+            calls += stats["submitted"]
+            fits += sum(
+                1
+                for r in batch
+                if has_current_verdict(r, version) and clears_bar(r.get("fit_score"), bar)
+            )
+        return calls
     except Exception as e:  # noqa: BLE001
         print(f"[prejudge] {user_id}: {type(e).__name__}: {e}", file=sys.stderr)
         return 0
@@ -531,9 +591,6 @@ def get_deck(user=Depends(get_current_user)):
     ]
 
     version = verdict_version(profile, _deck_resume_text(user.id, profile))
-    if any(not has_current_verdict(j, version) for j in live_ats):
-        _prejudge_in_background(user.id)
-
     queue = _prejudged_queue(
         user.id,
         profile,
@@ -543,6 +600,11 @@ def get_deck(user=Depends(get_current_user)):
         deadline_s=0,
         version=version,
     )
+    # Only the list is judged ahead (prejudge_pool). An unjudged ATS row past it is normal
+    # and must not keep restarting the background pass on every poll.
+    ats_ids = {j.get("id") for j in live_ats}
+    if any(j.get("id") in ats_ids and not has_current_verdict(j, version) for j in queue["jobs"]):
+        _prejudge_in_background(user.id)
     cards = []
     for j in queue["jobs"]:
         current = has_current_verdict(j, version)
@@ -660,11 +722,19 @@ def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
     }
 
 
-def _run_ats_discovery(user_id: str) -> None:
+def _run_ats_discovery(user_id: str, *, fits_wanted: int | None = None) -> None:
     """Heavy ATS discovery — runs in a BACKGROUND thread, OFF the request worker. Fetches
     ~46 boards (now in parallel with a hard deadline in discover_ats), scores, saves into
     the pool, and self-heals thin descriptions. Never raises; always clears the in-progress
-    flag. P0: nothing here ever holds an API worker → no more worker-starvation / API 000."""
+    flag. P0: nothing here ever holds an API worker → no more worker-starvation / API 000.
+    `fits_wanted` caps the judge pass at the end (prejudge_pool)."""
+    # A thread starts with an empty context: bind the user so the scoring and judging
+    # calls below are charged to them.
+    with ai_meter.attributed(user_id):
+        _discover_ats(user_id, fits_wanted)
+
+
+def _discover_ats(user_id: str, fits_wanted: int | None) -> None:
     from app.db.profile import get_profile
     from data.ats_watchlist import SEED_WATCHLIST
     from modules.ai_cover_letter import resume_text_for
@@ -737,7 +807,7 @@ def _run_ats_discovery(user_id: str) -> None:
 
         # Judge what this sweep brought in while nobody is waiting on it — the next
         # queue read (the campaign, the list) then finds verdicts instead of judging.
-        prejudge_pool(user_id)
+        prejudge_pool(user_id, fits_wanted=fits_wanted)
     except Exception as e:
         print(f"[find-ats bg] worker error: {e}", file=sys.stderr)
     finally:

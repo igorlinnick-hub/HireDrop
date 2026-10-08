@@ -536,3 +536,14 @@ def test_live_schema_new_person_columns_are_classified():
     defs = {t: {"properties": {c: {} for c in cols}} for t, cols in live.items()}
     assert da.unclassified_columns(defs) == []
     assert da.unclassified_columns({"x": {"properties": {"owner_id": {}}}}) == ["x.owner_id"]
+
+
+def test_the_ai_call_ledger_is_erased_with_the_account(db):
+    db.tables["ai_calls"] = [
+        {"id": "c1", "user_id": ME, "cost_usd": "0.004"},
+        {"id": "c2", "user_id": OTHER, "cost_usd": "0.002"},
+    ]
+    defs = schema(ai_calls_daily={"properties": {"day": {}, "user_id": {}}})
+    assert da.unclassified_columns(defs) == []
+    assert run(db, "--email", EMAIL, "--execute", "--confirm", ME) == 0
+    assert db.tables["ai_calls"] == [{"id": "c2", "user_id": OTHER, "cost_usd": "0.002"}]
