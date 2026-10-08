@@ -250,23 +250,27 @@ def send_desktop_link(user=Depends(get_current_user)):
     return {"sent": True, "to": email}
 
 
+# update_profile writes these columns on every call and fills a default for any
+# that `data` lacks, so each one carries its saved value unless the request sets it.
+_ALWAYS_WRITTEN = (
+    "name",
+    "last_name",
+    "phone",
+    "writing_style",
+    "keywords",
+    "location",
+    "job_type",
+    "platforms",
+)
+
+
 @router.post("/profile/prefs")
 def update_search_prefs(prefs: SearchPrefsUpdate, user=Depends(get_current_user)):
-    """Partial update — only search preferences, does not touch name/phone/etc."""
+    """Partial update of the search preferences: a field the request leaves out keeps
+    its saved value."""
     current = profile_db.get_profile(user.id)
-    payload = {
-        **{
-            k: current.get(k, "")
-            for k in ("name", "last_name", "phone", "writing_style", "resume_url")
-        },
-        "keywords": prefs.keywords,
-        "location": prefs.location,
-        "job_type": prefs.job_type,
-        "platforms": prefs.platforms,
-    }
-    # Only when the caller said something about it — see SearchPrefsUpdate.
-    if prefs.work_setting is not None:
-        payload["work_setting"] = prefs.work_setting
+    payload = {k: current[k] for k in _ALWAYS_WRITTEN if current.get(k) is not None}
+    payload.update(prefs.model_dump(exclude_none=True))
     updated = profile_db.update_profile(user.id, payload)
     return {"saved": True, "profile": updated}
 
