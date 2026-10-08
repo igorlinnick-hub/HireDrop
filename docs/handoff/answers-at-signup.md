@@ -60,7 +60,12 @@ signup/resume, `OPT_OUT`, `SINCE`, `ANSWERS_UI`). Start-гейт требует 
 
 ## Следующий шаг
 
-Модель: **Opus**. 1) Вердикт двух агентов blast-radius → починить найденное → мерж web #314, потом HireDrop #397
+Модель: **Opus**. 1) Вердикт двух агентов blast-radius в прошлую сессию не дошёл (сессия очищена по лимиту) —
+перезапустить два `general-purpose`-агента-опровергателя по скилу `blast-radius`: (а) расширение/бэкенд-стыки —
+как ext читает `start_refusal`/`review_missing`, `ANSWERS_UI` 2→3, IDOR новых запросов, может ли запускавший
+выглядеть «не запускавшим» (`started_at`); (б) сайт — порядок деплоя, все пути Start (QuickActions, TapView,
+tap-run, auto-daily), логика `onRecheck`/`failed.length` в StartReadiness, ReviewSheet против EmployerAnswersForm
+→ починить найденное → мерж web #314, потом HireDrop #397
 (старый бэкенд `answers_ui=3` игнорирует — этот порядок безопасен) → после деплоя Railway обнулить
 `answers_confirmed_at` у `+buyer1`, пройти окно на hiredrop.io живьём → `sessions.py done`.
 2) Передать ext-лейну задание из «Сломано».
