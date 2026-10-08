@@ -134,8 +134,9 @@ def _remember_reusable(user_id: str, questions: list, answers: dict[str, str]) -
         facts = facts_db.get(user_id)
         changed = False
         for label, answer in (answers or {}).items():
-            opts = options.get(pf.normalise(label))
-            if not str(answer or "").strip() or (not opts and not pf.topic_of(label)):
+            if not str(answer or "").strip() or not pf.reusable(
+                label, options.get(pf.normalise(label))
+            ):
                 continue
             facts, _ = pf.upsert(facts, {"question": label, "answer": answer, "source": "history"})
             changed = True

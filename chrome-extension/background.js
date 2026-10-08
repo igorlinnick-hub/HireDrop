@@ -3277,7 +3277,10 @@ async function handleMessage(msg, sender) {
         if (!answer && result && result.ask_person) notifyPersonalQuestion(result.ask_person).catch(() => {});
         // Free text only: an option must stay verbatim or content.js can no longer
         // match it against the form's own choices.
-        return { answer: Array.isArray(q.options) && q.options.length ? answer : noLongDashes(answer) };
+        // ask_person: a retry would ask the same model the same thing — the caller stops.
+        const out = { answer: Array.isArray(q.options) && q.options.length ? answer : noLongDashes(answer) };
+        if (!answer && result && result.ask_person) out.ask_person = true;
+        return out;
       } catch {
         return { answer: "" };
       }

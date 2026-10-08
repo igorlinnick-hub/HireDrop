@@ -35,7 +35,7 @@ check("output never keeps a long dash",
 
 // The relays actually call it (free text + letter), and an options answer stays verbatim.
 check("ANSWER_QUESTION relay cleans only when no options were sent",
-  /return \{ answer: Array\.isArray\(q\.options\) && q\.options\.length \? answer : noLongDashes\(answer\) \}/.test(BG));
+  /\{ answer: Array\.isArray\(q\.options\) && q\.options\.length \? answer : noLongDashes\(answer\) \}/.test(BG));
 check("GENERATE_COVER_LETTER relay cleans the letter", /letter = noLongDashes\(result\.letter\)/.test(BG));
 
 process.exitCode = failures ? 1 : 0;

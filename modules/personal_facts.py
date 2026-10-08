@@ -92,6 +92,16 @@ _EXPERIENCE = re.compile(
     re.I,
 )
 
+# About THIS employer, not the person's life: "Have you applied to this company before?",
+# "Are you willing to work in our Austin office?". The same words at the next employer
+# ask something else, so an answer to one is never reused for another.
+_THIS_EMPLOYER = re.compile(
+    r"\b(?:this|our)\s+(?:[\w-]+\s+){0,2}"
+    r"(?:company|organi[sz]ation|employer|role|position|team|job|opportunity|office|location)s?\b"
+    r"|\b(?:with|for|join|joining) us\b",
+    re.I,
+)
+
 _TRIM = re.compile(r"[\s*:：]+$|\(\s*required\s*\)\s*$", re.I)
 
 
@@ -112,6 +122,19 @@ def topic_of(question: str) -> str | None:
         if pattern.search(q):
             return topic
     return None
+
+
+def about_this_employer(question: str) -> bool:
+    return bool(_THIS_EMPLOYER.search(question or ""))
+
+
+def reusable(question: str, options: list | None = None) -> bool:
+    """Can an answer to this question be remembered and given to the NEXT employer? Yes for
+    the person's circumstances and for fixed choices — never for a question about this one
+    employer, or an open essay (its answer should differ per job)."""
+    if not (question or "").strip() or about_this_employer(question):
+        return False
+    return bool(topic_of(question) or options)
 
 
 def _now() -> str:
@@ -226,7 +249,7 @@ def match(question: str, options: list[str] | None, facts: list[dict]) -> dict |
     """The fact that answers exactly this question (same normalised wording), with the
     answer snapped to this form's options; None when there is none or it doesn't fit."""
     want = normalise(question)
-    if not want:
+    if not want or about_this_employer(question):
         return None
     for f in clean_facts(facts):
         if normalise(f["question"]) != want:

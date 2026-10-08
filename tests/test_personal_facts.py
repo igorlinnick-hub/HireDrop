@@ -206,3 +206,16 @@ def test_preview_endpoint_prefers_the_location_the_walk_read():
         tools.cover_letter_preview(req, user)
     by_link.assert_not_called()
     assert seen["location"] == "Remote"
+
+
+def test_questions_about_this_employer_are_never_reused_for_the_next():
+    assert not pf.reusable("Have you applied to this company before?", ["Yes", "No"])
+    assert not pf.reusable("Are you willing to work in our Austin office?", ["Yes", "No"])
+    assert not pf.reusable("Why do you want to join us?")
+    assert pf.reusable("Are you willing to relocate to Miami, FL?")
+    assert pf.reusable("Do you have a valid driver's license?", ["Yes", "No"])
+    assert not pf.reusable("Tell us about a project you led")  # open essay
+    facts, _ = pf.upsert(
+        [], {"question": "Have you applied to this company before?", "answer": "No"}
+    )
+    assert pf.match("Have you applied to this company before?", ["Yes", "No"], facts) is None

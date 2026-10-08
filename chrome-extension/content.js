@@ -4154,6 +4154,11 @@
               data: { question: rawLabel, job_title: jobInfo.title || "", company: jobInfo.company || "", job_location: jobInfo.location || "" },
             });
             value = res && res.answer ? res.answer : undefined;
+            // Only the person can answer it (relocate, live near…): no second paid try.
+            if (res && res.ask_person) {
+              logBackend(`Left for you to answer once (we'll remember it): "${String(rawLabel).slice(0, 90)}"`, "warn");
+              break;
+            }
           }
         }
         if (value === undefined || value === "") {

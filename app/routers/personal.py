@@ -63,9 +63,9 @@ def _waiting_questions(rows: list[dict], facts: list[dict]) -> list[dict]:
                 continue
             if pf.match(label, options, facts):
                 continue  # the memory answers it now — the retry will fill it
-            topic = pf.topic_of(label)
-            if not topic and not options:
+            if not pf.reusable(label, options):
                 continue
+            topic = pf.topic_of(label)
             item = items.get(key)
             if item is None:
                 item = items[key] = {

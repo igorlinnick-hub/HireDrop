@@ -100,6 +100,9 @@ async function runAnswer({ reply, options, used = 0 }) {
 
   const relay = slice(BG, 'case "ANSWER_QUESTION": {', 'case "SLEEP"');
   check("relay sends job_location", /job_location: String\(q\.job_location \|\| ""\)/.test(relay));
+  check("relay passes ask_person back to the filler", /out\.ask_person = true/.test(relay));
+  check("the text filler stops retrying when only the person can answer",
+    /if \(res && res\.ask_person\) \{[\s\S]{0,200}break;/.test(CONTENT));
   check("relay tells the person when the server says ask_person",
     /result\.ask_person\) notifyPersonalQuestion\(result\.ask_person\)/.test(relay));
   check("popup answers go to POST /profile/facts",
