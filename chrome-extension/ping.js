@@ -12,6 +12,20 @@
 // from "this tab got no content script at all" and only inject into the latter.
 window.__hdPingReady = true;
 
+// Push, not only poll: the moment content.js writes a new login state (someone just signed
+// in to Indeed in another tab), hand it to the dashboard in the same message the polls get
+// answered with. Before, the card waited for its next 8-10 s poll — on top of the detector
+// itself — and "I logged in and it still says Signed out" read as broken (Igor, 10-08).
+try {
+  chrome.storage.onChanged.addListener(function (changes, area) {
+    if (area !== "local" || !changes.platformConnections) return;
+    window.postMessage(
+      { type: "HIREDROP_PLATFORM_CONNECTIONS", ok: true, connections: changes.platformConnections.newValue || {}, error: null },
+      "*"
+    );
+  });
+} catch (ex) { /* context invalidated — the dashboard's polls still answer */ }
+
 window.addEventListener("message", function (e) {
   if (e.source !== window || !e.data) return;
 
