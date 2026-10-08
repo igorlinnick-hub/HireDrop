@@ -29,6 +29,9 @@ jobs:
       - name: Format check (ruff)
         run: ruff format --check .
 
+      - name: Code standards (CLAUDE.md)
+        run: python scripts/standards_ratchet.py
+
       - name: Security (bandit, medium+)
         run: bandit -r app modules --severity-level medium
 
