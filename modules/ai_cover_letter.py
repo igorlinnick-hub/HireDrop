@@ -7,6 +7,7 @@ import uuid
 import anthropic
 
 from config import ANTHROPIC_API_KEY
+from modules.text_style import no_long_dashes
 
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "..", "templates", "cover_letter.txt")
 
@@ -194,7 +195,8 @@ _CONTACT_LINE = re.compile(r"@[\w.-]+\.\w+|\(?\+?\d[\d\s().-]{7,}\d")
 
 def to_plain_letter(text: str) -> str:
     """Letter as it must reach a plain-text field: no markdown emphasis, no heading
-    marks, no mid-letter --- rules, no contact header block on top."""
+    marks, no mid-letter --- rules, no contact header block on top, no long dashes
+    (the prompt asks for none and the model writes them anyway, see text_style)."""
     if not text:
         return text
     text = re.sub(r"\*\*(.+?)\*\*|__(.+?)__", lambda m: m.group(1) or m.group(2), text)
@@ -209,7 +211,7 @@ def to_plain_letter(text: str) -> str:
         head.append(ln)
     if head and len(head) <= 3 and any(_CONTACT_LINE.search(h) for h in head):
         lines = lines[len(head) :]
-    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+    return no_long_dashes(re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip())
 
 
 def build_system_prompt(writing_style=""):

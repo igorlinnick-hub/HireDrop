@@ -43,6 +43,7 @@ from modules.fit_queue import (
     company_key,
     company_slot_taken,
 )
+from modules.text_style import no_long_dashes
 
 router = APIRouter(tags=["tools"])
 
@@ -760,6 +761,10 @@ def answer_question(req: AnswerQuestionRequest, user=Depends(get_current_user)):
         cached = screener_cache.get(user.id, cache_key)
         if cached:
             screener_cache.touch(user.id, cache_key)
+            # Cached before the no-long-dash rule (text_style) — clean on the way out.
+            # An option is returned verbatim: it must still match the form's wording.
+            if not req.options:
+                cached = no_long_dashes(cached)
             return {"answer": cached, "cached": True}
 
     _claim_ai_slot(user)
