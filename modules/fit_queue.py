@@ -215,7 +215,12 @@ def judge_pending(
 
     `stats`, when given, gets "submitted": how many judge calls were actually started — a
     caller that reserved budget for every row refunds the rest (rows already in flight
-    elsewhere, a deadline that cut the batch, no resume).
+    elsewhere, a deadline that cut the batch, no resume). It also gets "no_verdict": calls
+    that came back WITHOUT a stored verdict (model error, fail-closed) — those rows will
+    be judged again live at apply time, so a caller that charged for the call should hand
+    the charge back or the same posting costs two budget units for one verdict. Calls
+    still running at the deadline are not counted: their verdict stores late and is
+    reused, so the charge bought something.
 
     Each worker stores its own verdict (app.db.jobs.save_fit_verdict), so a call that
     finishes after the deadline is not wasted — the next queue read finds it. Rows judged
@@ -318,12 +323,16 @@ def judge_pending(
                     row, verdict = fut.result()
                 except Exception as e:  # noqa: BLE001
                     print(f"[fit-queue] worker error: {e}", file=sys.stderr)
+                    if stats is not None:
+                        stats["no_verdict"] = stats.get("no_verdict", 0) + 1
                     continue
                 if verdict is not None:
                     row["fit_score"] = verdict.get("fit_score") or 0
                     row["fit_reason"] = verdict.get("reason") or ""
                     row["fit_version"] = version
                     judged += 1
+                elif stats is not None:
+                    stats["no_verdict"] = stats.get("no_verdict", 0) + 1
                 if deadline_s - (time.monotonic() - started) > 0:
                     submit_next(in_flight)
     finally:

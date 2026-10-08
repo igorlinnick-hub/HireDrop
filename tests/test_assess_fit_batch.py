@@ -290,6 +290,18 @@ def test_budget_is_charged_only_for_calls_that_started():
     assert _by_link(out)["2"]["decision"] == "unjudged"
 
 
+def test_a_call_that_stored_no_verdict_is_refunded():
+    # Card 2's judge call fails closed: nothing stored, the card goes back "unjudged",
+    # and the job page will judge it live — a second budget claim for the same posting.
+    # The first claim is handed back, so one verdict never costs two units (#387 tail).
+    out, model, store_verdict, _, _ = _run(
+        [_card(1), _card(2)], [_row(1), _row(2)], scores={"1": 50}
+    )
+    assert model.call_count == 2  # both calls really ran
+    assert [c.args[0] for c in store_verdict.call_args_list] == ["row-1"]
+    assert out["_charged"] == 1  # …but only the one that produced a verdict is paid for
+
+
 def test_a_row_this_request_inserted_gets_its_text_written_again_after_the_judge():
     # The harvest's snippet insert can land between our insert and our judge; the full
     # text is re-asserted after the judge for rows this request created.

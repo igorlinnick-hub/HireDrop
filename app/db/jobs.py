@@ -257,7 +257,7 @@ def rows_by_links(user_id: str, links: list) -> dict:
             .table("jobs")
             .select(
                 "id, link, title, company, location, platform, status, description, "
-                "date_found, fit_score, fit_reason, fit_model, fit_version"
+                "date_found, score, fit_score, fit_reason, fit_model, fit_version"
             )
             .eq("user_id", user_id)
             .in_("link", links[i : i + 40])

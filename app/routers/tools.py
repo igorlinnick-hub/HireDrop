@@ -608,7 +608,12 @@ def _assess_fit_batch(req: AssessFitBatchRequest, user) -> dict:
             version=version,
             stats=stats,
         )
-        _refund_assess_fit(user, budget - stats.get("submitted", 0))
+        # Refund calls that never started AND calls that came back without a verdict
+        # (model error, fail-closed): the card goes back "unjudged", the job page judges
+        # it live, and that call claims budget again — without the refund one verdict
+        # costs two units. Calls still running at the deadline stay charged: their
+        # verdict stores late and the live path answers from it for free.
+        _refund_assess_fit(user, budget - stats.get("submitted", 0) + stats.get("no_verdict", 0))
 
     for c, row in to_judge:
         if not has_current_verdict(row, version):

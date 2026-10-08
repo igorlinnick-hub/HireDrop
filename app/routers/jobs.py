@@ -585,10 +585,12 @@ def get_deck(user=Depends(get_current_user)):
     pass through the same build_queue() as /jobs/ats-queue (below the user's bar is out,
     one application per company per 60 days, freshest first — the score is a gate, not a
     rank), so the card on top of the screen is the posting auto opens next. Indeed rides
-    in the same list and the same order but is NOT prejudged yet (most Indeed rows carry
-    no description server-side); its cards say so, and the live judge decides them at
-    apply time. `fits_today` counts only the judge's passes — "N fit today" must not count
-    postings nobody checked (Igor, 09-30).
+    in the same list and the same order, prejudged as far as the search-page judge has
+    seen it (#387: /tools/assess-fit-batch stores the full posting text and a verdict on
+    every Indeed row the walk's results pages showed). Rows that judge hasn't met carry
+    no stored verdict; their cards say so, and the live judge decides them at apply time.
+    `fits_today` counts only the judge's passes — "N fit today" must not count postings
+    nobody checked (Igor, 09-30).
 
     No judging on this read: the dashboard renders server-side and must not wait on the
     judge. ATS rows without a current verdict ride as unjudged and a background pass
@@ -1047,6 +1049,28 @@ def ingest_jobs(req: IngestJobsRequest, user=Depends(get_current_user)):
     already_saved = jobs_db.existing_links(user.id, [j.link for j in candidates])
     fresh = [j for j in candidates if j.link not in already_saved]
 
+    # The search-page judge (/tools/assess-fit-batch) races this harvest for the same
+    # cards and inserts the ones it wins WITHOUT a score — it judges fit, it does not
+    # rank the deck. Those links arrive here as "already saved" and, skipped entirely,
+    # would sit score-NULL forever and sort last (#387's tail). Backfill ONLY the score
+    # of a never-scored row — status and description stay untouched, so the dedup-lane
+    # promise (no rescore, no resurrect) holds.
+    rescore: list[dict] = []
+    if already_saved:
+        snippets = {j.link: (j.description or "") for j in candidates}
+        try:
+            held = jobs_db.rows_by_links(user.id, list(already_saved))
+            for link, row in held.items():
+                if row.get("score") is not None:
+                    continue
+                desc = row.get("description") or ""
+                if len(desc.strip()) < MIN_SCORABLE_DESC:
+                    desc = snippets.get(link, "")
+                if len(desc.strip()) >= MIN_SCORABLE_DESC:
+                    rescore.append({**row, "description": desc})
+        except Exception as e:
+            print(f"[ingest] score backfill read skipped: {e}", file=sys.stderr)
+
     rows = [
         {
             "title": j.title,
@@ -1063,7 +1087,8 @@ def ingest_jobs(req: IngestJobsRequest, user=Depends(get_current_user)):
 
     scorable = [r for r in rows if len((r.get("description") or "").strip()) >= MIN_SCORABLE_DESC]
     scored_count = 0
-    if scorable:
+    backfilled = 0
+    if scorable or rescore:
         # Never let a scoring hiccup cost the harvest: the rows are the point, the
         # score is an improvement. An exception here used to mean the whole page of
         # cards was lost.
@@ -1073,8 +1098,21 @@ def ingest_jobs(req: IngestJobsRequest, user=Depends(get_current_user)):
             from modules.ai_job_scorer import score_jobs_batch
 
             profile = get_profile(user.id)
-            score_jobs_batch(scorable, profile, resume_text_for(profile))
+            score_jobs_batch(scorable + rescore, profile, resume_text_for(profile))
             scored_count = sum(1 for r in scorable if r.get("score") is not None)
+            for r in rescore:
+                if r.get("score") is None:
+                    continue
+                jobs_db.update_job_score(
+                    r["id"],
+                    user.id,
+                    r["score"],
+                    r.get("ai_verdict", ""),
+                    r.get("ai_flags", []),
+                    r.get("ats_keywords"),
+                    r.get("ats_match_pct", 0),
+                )
+                backfilled += 1
         except Exception as e:
             print(f"[ingest] scoring skipped (rows still saved): {e}", file=sys.stderr)
 
@@ -1088,6 +1126,8 @@ def ingest_jobs(req: IngestJobsRequest, user=Depends(get_current_user)):
         # the extension, and it must not look identical to a healthy run.
         "scored": scored_count,
         "unscored_title_only": len(rows) - len(scorable),
+        # Rows the search-page judge inserted first, ranked now.
+        "score_backfilled": backfilled,
     }
 
 
