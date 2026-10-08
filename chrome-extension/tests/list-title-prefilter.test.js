@@ -59,6 +59,8 @@ function world({ html, url, platform, store }) {
     MAX_APPLICATIONS_PER_PLATFORM: 15,
     isCampaignRunning: async () => true,
     getPlatformCount: async () => 0,
+    // First-SERP city check (tests/indeed-first-search-city.test.js): nothing armed here.
+    correctFirstIndeedSearch: async () => false,
     detectPlatform: () => platform,
     // The logged-out capture carries no "Easily apply" chip (iafilter=1 shows only those
     // cards live), so the chip check is the one thing stubbed on the Indeed side.

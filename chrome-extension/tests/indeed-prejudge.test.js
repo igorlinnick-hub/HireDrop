@@ -127,6 +127,8 @@ function world({ store, verdicts, paneFor, delayFor, titleFor, preselect, more, 
     MAX_APPLICATIONS_PER_PLATFORM: 15,
     isCampaignRunning: async () => (running ? running(++checks, rec) : true),
     getPlatformCount: async () => 0,
+    // First-SERP city check (tests/indeed-first-search-city.test.js): nothing armed here.
+    correctFirstIndeedSearch: async () => false,
     detectPlatform: () => "indeed",
     isEasilyApplyCard: () => true,
     findJobCards: () => Array.from(doc.querySelectorAll(".job_seen_beacon")),
