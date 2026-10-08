@@ -20,3 +20,6 @@ node_modules/
 # Build artifacts
 hiredrop-extension.zip
 store-assets/*.zip
+
+# Session board event log (local; `scripts/sessions.py stats` reads it)
+docs/sessions/.events.jsonl
