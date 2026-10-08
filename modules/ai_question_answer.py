@@ -14,6 +14,7 @@ import re
 
 from config import ANTHROPIC_API_KEY
 from modules.ai_cover_letter import get_anthropic_client, resume_text_for
+from modules.text_style import no_long_dashes
 
 # Hard cap so a malicious/huge question can't blow up the prompt or cost.
 _MAX_QUESTION_CHARS = 600
@@ -487,6 +488,8 @@ talk about the role and the candidate's fit for it instead.
 language, legal work status) get an honest no, or no answer at all.
 - Sound like a real person, not an AI. No buzzwords (leverage, passionate, synergy, \
 thrilled, excited to apply). Plain, direct language.
+- NO em dashes (—), en dashes (–) or double hyphens (--). Use a period, a comma \
+or a colon instead.
 - Be concise: 1-3 short sentences for open questions. No preamble, no sign-off, no \
 hedging ("although I only…").
 - For a multiple-choice question you MUST return EXACTLY one of the provided options, \
@@ -655,4 +658,6 @@ Candidate background (from resume):
         # Off-script or ambiguous — don't guess wrong; let the caller fall back.
         return ""
 
-    return answer
+    # Free text only: an option above is returned verbatim, or it would no longer match
+    # the form's own wording. The prompt asks for no long dashes; this makes it so.
+    return no_long_dashes(answer)
