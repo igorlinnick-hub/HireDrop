@@ -88,18 +88,32 @@ def test_an_account_that_ever_started_owes_nothing():
     assert campaign_db.review_due("u1", {}, {"started_at": "2026-09-01T00:00:00Z"}) is False
 
 
+def _applications(rows):
+    sb = MagicMock()
+    sb.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = rows
+    return patch.object(campaign_db, "get_supabase", return_value=sb)
+
+
 def test_runs_without_a_start_still_count_as_having_run():
-    with patch("app.db.applications.count_applications", return_value=3):
+    with _applications([{"id": "a1"}]):
         assert campaign_db.review_due("u1", {}, {"started_at": None}) is False
 
 
 def test_a_brand_new_account_owes_it():
-    with patch("app.db.applications.count_applications", return_value=0):
+    with _applications([]):
         assert campaign_db.review_due("u1", {}, {"started_at": None}) is True
 
 
+def test_the_history_read_is_scoped_to_the_account_and_one_row():
+    with _applications([]) as gs:
+        campaign_db.ran_before("u1", {"started_at": None})
+    chain = gs.return_value.table.return_value.select.return_value
+    chain.eq.assert_called_once_with("user_id", "u1")
+    chain.eq.return_value.limit.assert_called_once_with(1)
+
+
 def test_a_failed_read_never_holds_start():
-    with patch("app.db.applications.count_applications", side_effect=RuntimeError("down")):
+    with patch.object(campaign_db, "get_supabase", side_effect=RuntimeError("down")):
         assert campaign_db.review_due("u1", {}, {"started_at": None}) is False
 
 

@@ -181,9 +181,12 @@ def ran_before(user_id: str, state: dict | None = None) -> bool:
     st = state if state is not None else get_state(user_id)
     if st.get("started_at"):
         return True
-    from app.db.applications import count_applications
-
-    return count_applications(user_id) > 0
+    # One row is enough — /campaign/status asks this on every poll of a never-confirmed
+    # account that is not running, so it must not page through a history.
+    res = (
+        get_supabase().table("applications").select("id").eq("user_id", user_id).limit(1).execute()
+    )
+    return bool(res.data)
 
 
 def review_due(user_id: str, profile: dict, state: dict | None = None) -> bool:
