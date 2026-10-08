@@ -9,7 +9,12 @@ like job_type: silence is not a mismatch.
 
 import pytest
 
-from modules.job_location import location_verdict, names_foreign_country, parse_user_location
+from modules.job_location import (
+    location_verdict,
+    names_foreign_country,
+    parse_user_location,
+    place_label,
+)
 
 MIAMI = parse_user_location("Miami, Florida, US")
 
@@ -287,3 +292,47 @@ def test_a_foreign_region_is_abroad_and_americas_is_not():
     # The raw fact, for questions: a foreign place is named even when the US is too.
     assert names_non_us_place("authorized to work in Canada? US applicants see above")
     assert not names_non_us_place("authorized to work in the United States")
+
+
+# ── place_label: History's "where was this job" ────────────────────────────────────
+# Every left-hand string is a real location from a live account's applications (10-08).
+
+
+@pytest.mark.parametrize(
+    "raw, place",
+    [
+        ("Houston, TX 77008", "Houston, TX"),
+        ("Missouri City, TX 77489", "Missouri City, TX"),
+        ("New York, NY (HQ)", "New York, NY"),
+        ("Hybrid work in Houston, TX 77056", "Houston, TX"),
+        ("Houston, TX (University Place area)", "Houston, TX"),
+        ("6399 Highway 6 South, Houston, TX 77083", "Houston, TX"),
+        ("Addison, TX (Hybrid); Bellevue, WA (Hybrid)", "Addison, TX"),
+        ("Remote - Boston, Massachusetts; Remote - Chicago, IL", "Boston, MA"),
+        ("Hybrid - San Francisco, California", "San Francisco, CA"),
+        ("Kansas City, Missouri", "Kansas City, MO"),
+        ("St. Louis, MO", "St. Louis, MO"),
+        ("houston, TX", "Houston, TX"),
+    ],
+)
+def test_place_label_reduces_board_text_to_city_and_state(raw, place):
+    assert place_label(raw) == place
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "",
+        "Remote, US",
+        "United States (Remote)",
+        "Hybrid",
+        "Austin",  # no state: a guess, not a place
+        "Paris, France",
+        # A state NAME must end its segment, or this reads as a city in New York state.
+        "San Francisco, New York or Remote (USA)",
+        # Codes are upper-case only: "in" here is a word, not Indiana.
+        "Remote, in office",
+    ],
+)
+def test_place_label_says_nothing_rather_than_guess(raw):
+    assert place_label(raw) is None

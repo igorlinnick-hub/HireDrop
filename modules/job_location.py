@@ -290,6 +290,46 @@ def posting_work_setting(row_location: str, title: str = "") -> str | None:
     return "onsite"
 
 
+# ── Place label ────────────────────────────────────────────────────────────────────
+# History groups what was sent by where the job is, and board text is noisy: "6399
+# Highway 6 South, Houston, TX 77083", "Hybrid work in Houston, TX 77056" and "Houston,
+# TX (West Oaks area)" are one place to a person scanning their record. This reduces a
+# row to "City, ST" — the one shape every US board shares — and returns None when the
+# text has no such shape: a guessed city is worse than an honest blank.
+#
+# Codes must be upper-case ("Remote, in office" must not read as Indiana). A full state
+# name must END its segment, or "San Francisco, New York or Remote" reads as a city in NY.
+_STATE_NAMES_ALT = "|".join(re.escape(n) for n in sorted(_NAME_TO_CODE, key=len, reverse=True))
+_CITY_STATE_RE = re.compile(
+    r"([A-Za-z][A-Za-z.'\- ]*?)\s*,\s*(?:"
+    r"(" + "|".join(c.upper() for c in _STATE_CODES) + r")\b"
+    r"|((?i:" + _STATE_NAMES_ALT + r"))(?=\s*(?:$|[,;|/()\-–—\d]))"
+    r")"
+)
+# Work-mode words a board puts in front of the city ("Hybrid work in", "Remote - ").
+_PLACE_LEAD_RE = re.compile(
+    r"^(?:(?:hybrid|remote|on-?site|in[- ]office|office|work|based|located|in|at)\b[\s\-–—:]*)+",
+    re.I,
+)
+
+
+def place_label(row_location: str) -> str | None:
+    """ "Houston, TX" for any US "City, ST" / "City, State" in the text, else None.
+
+    The first place wins — a multi-city posting ("Addison, TX (Hybrid); Bellevue, WA")
+    lists its main office first.
+    """
+    for m in _CITY_STATE_RE.finditer(row_location or ""):
+        city = re.sub(r"\s+", " ", _PLACE_LEAD_RE.sub("", m.group(1))).strip(" .-")
+        if not city:
+            continue
+        code = m.group(2) or _NAME_TO_CODE[m.group(3).lower()].upper()
+        if city.islower():
+            city = city.title()
+        return f"{city}, {code.upper()}"
+    return None
+
+
 def matches_work_setting(row_location: str, title: str, wanted: str | None) -> bool:
     """Does this posting's arrangement fit what the user asked for? Unknown passes —
     the same silence-is-not-a-mismatch rule as location and job type."""
