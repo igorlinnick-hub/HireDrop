@@ -2693,6 +2693,30 @@
     return "";
   }
 
+  // ZipRecruiter's place line, for History's place filter (the server reduces it with
+  // place_label / posting_work_setting). Captured 10-06: the open job's header carries
+  // <p>Houston, TX • On-site</p> right after [data-testid="serp-job-details-title"], and the
+  // card carries <a data-testid="job-card-location">Houston, TX</a><span> · On-site</span>.
+  // Before 10-08 the ZR path sent no place at all, so every ZR application read "No location".
+  // The open pane first (it is the job being applied to), then this job's own card by uuid —
+  // never a neighbour's.
+  function readZipRecruiterCardLocation(cardEl) {
+    const a = cardEl?.querySelector('[data-testid="job-card-location"]');
+    if (!a) return "";
+    return ((a.closest("p") || a).textContent || "").replace(/\s+/g, " ").trim().slice(0, 200);
+  }
+
+  function readZipRecruiterLocation(doc, uuid, pendingJobs) {
+    const head = doc.querySelector('[data-testid="right-pane"] [data-testid="serp-job-details-title"]');
+    const line = head?.nextElementSibling;
+    const onPane = ((line?.querySelector("p") || line)?.textContent || "").replace(/\s+/g, " ").trim();
+    // A header that grew a paragraph of text is not a place line.
+    if (onPane && onPane.length <= 120) return onPane;
+    const stored = cardLocationFor(uuid, pendingJobs);
+    if (stored) return stored;
+    return uuid ? readZipRecruiterCardLocation(doc.getElementById(`job-card-${uuid}`)) : "";
+  }
+
   async function phase2_jobDetail() {
     const platform = detectPlatform();
     if (await bailIfDeadPosting()) return;
@@ -3094,8 +3118,9 @@
         .map((el) => (el.textContent || "").replace(/\s+/g, " ").trim())
         .filter((t) => t.length > 60);
       const snippet = (zrParas.sort((a, b) => b.length - a.length)[0] || "").slice(0, 1500);
+      const location = readZipRecruiterCardLocation(article);
 
-      candidates.push({ title, company, url: jobUrl, jk: uuid, snippet });
+      candidates.push({ title, company, location, url: jobUrl, jk: uuid, snippet });
     }
 
     // HARVEST-TO-POOL (P0c 2026-07-29): server-side ZR scraping is dead (JobSpy → CF 403),
@@ -3193,6 +3218,7 @@
     );
     const jobDesc = descEl?.textContent?.trim().slice(0, 3000) || "";  // see the note on the /viewjob path
     const jobUrl = window.location.href;
+    const jobLocation = readZipRecruiterLocation(document, jobIdFromUrl(jobUrl), _zrSt.pendingJobs);
 
     if (!jobTitle) {
       log("Could not find job title on ZipRecruiter — skipping", "err");
@@ -3331,7 +3357,7 @@
     await storageSet({
       currentJobInfo: { title: jobTitle, company: jobCompany, description: jobDesc, url: jobUrl },
     });
-    await recordJobDescription(jobTitle, jobCompany, jobDesc, jobUrl);
+    await recordJobDescription(jobTitle, jobCompany, jobDesc, jobUrl, jobLocation);
 
     // No cover letter here either — see ensureCoverLetter: it is written by the form
     // filler, and only when the form shows a field for it.
@@ -5722,7 +5748,17 @@
       ? baselineText
       : (document.body.textContent || "")
     ).toLowerCase();
+    const onZr = detectPlatform() === "ziprecruiter";
     while (Date.now() - start < timeoutMs) {
+      // ZipRecruiter's own post-apply screen ("Send a message to this employer…" with
+      // Send a Message | Skip for Now) is a success, and it is checked before the field
+      // test below: none of its wording is in SUCCESS_TEXTS, so after a multi-step form's
+      // last Continue the loop waited it out and logged "form abandoned without submit".
+      // No pane flag here: the pane is read below only once every dialog has closed.
+      if (onZr) {
+        const zr = zrPostApplySignal();
+        if (zr) return zr;
+      }
       const dlgs = visibleApplyDialogs();
       // A dialog WITH fields on screen → we're mid-flow, not done.
       if (dlgs.some((d) => d.querySelector("input, textarea, select"))) return null;
@@ -5778,11 +5814,16 @@
     // and an unhandled rejection leaves NO log line at all. From the outside that is
     // indistinguishable from "nothing happened" — live 08-15 a one-tap ZipRecruiter apply
     // died exactly this way, twice, with the last line being "form detected".
+    // A ZipRecruiter Quick Apply form lives in a modal: from here on its buttons are the
+    // modal's, never the results page's behind it (see formLivesInDialog).
+    formLivesInDialog = detectPlatform() === "ziprecruiter" && visibleApplyDialogs().length > 0;
     try {
       return await _phase3_fillForm();
     } catch (e) {
       logBackend(`💥 Form filler crashed: ${e && e.message} @ ${(e && e.stack || "").split("\n")[1] || "?"}`, "error");
       await skipToNextJob();
+    } finally {
+      formLivesInDialog = false;
     }
   }
 
