@@ -171,3 +171,15 @@ def test_sign_prints_handoff_line(capsys):
     assert sessions.main(["sign", "--session", "s1"]) == 0
     out = capsys.readouterr().out
     assert out.startswith(f"Сессия: {sessions.name_for('s1')} · лейн ext · цель: G · шаг: N")
+
+
+def test_board_shows_branch_so_another_session_can_continue():
+    sessions.main(
+        ["claim", "--session", "a", "--lane", "ext", "--goal", "g", "--branch", "fix/zr-truth"]
+    )
+    [a] = sessions.load_claims()
+    lines = sessions.board_lines([a], None, sessions.now_utc())
+    assert any("ветка: fix/zr-truth" in line for line in lines)
+    a["status"] = "paused"
+    lines = sessions.board_lines([a], None, sessions.now_utc())
+    assert any("ветка: fix/zr-truth" in line for line in lines)

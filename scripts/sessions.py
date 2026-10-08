@@ -256,6 +256,7 @@ def board_lines(claims: list[dict], me: str | None, at: datetime) -> list[str]:
         )
         lines.append(
             f"    остановилась на: {c.get('now', '')} · хендофф: {c.get('handoff') or '—'}"
+            f" · ветка: {c.get('branch') or '—'}"
             f" · продолжить: claim --lane {c.get('lane', '?')}"
         )
     for c in live:
@@ -269,6 +270,8 @@ def board_lines(claims: list[dict], me: str | None, at: datetime) -> list[str]:
             lines.append(f"    файлы: {c['scope']}")
         if c.get("handoff"):
             lines.append(f"    хендофф: {c['handoff']}")
+        if c.get("branch"):
+            lines.append(f"    ветка: {c['branch']}")
     for c in stale:
         lines.append(
             f"· {c['name']} [{c.get('lane', '?')}] STALE {age(c, at)} — лейн свободен; цель была: {c.get('goal', '')}"
