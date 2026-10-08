@@ -88,8 +88,9 @@ FREE_APP_LIMIT = int(os.getenv("FREE_APP_LIMIT", "40"))
 # =============================================================================
 # OBSERVABILITY — stall watch (the "running but nothing is applied" detector)
 # =============================================================================
-# There is no Sentry/OTel yet: a campaign that keeps its heartbeat but stops
-# producing applications used to be invisible until Igor looked at the dashboard.
+# Sentry (SENTRY_DSN below) sees exceptions, not silence: a campaign that keeps its
+# heartbeat but stops producing applications used to be invisible until Igor looked
+# at the dashboard.
 # The sweep in app/stall_watch.py closes that hole — it writes a warn line into
 # the user's activity log and (if ALERT_EMAIL is set) emails ops via Resend.
 #
@@ -134,7 +135,9 @@ OPS_5XX_WINDOW_MINUTES = int(os.getenv("OPS_5XX_WINDOW_MINUTES", "10"))
 OPS_ZERO_STREAK_THRESHOLD = int(os.getenv("OPS_ZERO_STREAK_THRESHOLD", "5"))
 OPS_ALERT_COOLDOWN_MINUTES = int(os.getenv("OPS_ALERT_COOLDOWN_MINUTES", "30"))
 # Sentry (SAAS_PLAYBOOK §4, the last open observability row). Empty DSN = the SDK is
-# never initialized — zero overhead, zero network. One Railway env var turns it on.
+# never initialized — zero overhead, zero network — and POST /extension/error answers
+# 204 without forwarding. One Railway env var turns both on; app/observability.py
+# scrubs every event (no request bodies, locals, query strings, emails, phones).
 SENTRY_DSN = os.getenv("SENTRY_DSN", "")
 
 

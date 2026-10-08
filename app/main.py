@@ -13,17 +13,14 @@ from fastapi import FastAPI
 # (no SDK init, no network) — flipping one Railway var turns real error tracking on.
 # Complements ops_watch (burst detector), doesn't replace it: Sentry captures each
 # exception with its traceback; ops-watch owns thresholds and email alerts.
+# What an event may carry (no bodies, no locals, PII patterns blanked) is decided in
+# app/observability.py — send_default_pii=False alone still ships both.
 from config import SENTRY_DSN
 
 if SENTRY_DSN:
-    import sentry_sdk
+    from app.observability import init_sentry
 
-    sentry_sdk.init(
-        dsn=SENTRY_DSN,
-        environment=os.getenv("RAILWAY_ENVIRONMENT_NAME", "prod"),
-        traces_sample_rate=0,  # errors only — no perf tracing spend
-        send_default_pii=False,  # job-seeker PII must not leave our infra
-    )
+    init_sentry(SENTRY_DSN)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
