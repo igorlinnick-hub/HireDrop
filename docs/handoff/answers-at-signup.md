@@ -41,6 +41,22 @@ signup/resume, `OPT_OUT`, `SINCE`, `ANSWERS_UI`). Start-гейт требует 
 
 ## Сломано / не доделано
 
+- 🔴 **Вердикт агента-опровергателя (бэкенд/расширение), 10-08 — чинить ДО мержа #397:**
+  1. `stop()` ОБНУЛЯЕТ `started_at` (`app/db/campaign.py` ~387, так же говорит `admin.py:533`) — докстринг
+     `ran_before` («started_at survives Stop») ложный. Фактически «запускал» = есть заявка; кто жал Start, но
+     без заявок, после Stop снова «должен» окно. Чинить: прочный маркер — `filters.kw_cursor` (его пишет каждый
+     `/campaign/start`, `stop()` сохраняет — проверить) → `ran_before = started_at or kw_cursor or заявка`;
+     поправить докстринг и тест `test_an_account_that_ever_started_owes_nothing`.
+  2. Порядок мержа — блокер, если наоборот: старый сайт (`ANSWERS_UI=2`) запускает Tap через
+     `readiness?answers_ui=2` (окна нет → «ready») → расширение спрашивает `/campaign/status` (без answers_ui →
+     3) → `review_missing` → `submit_mode_known:false` → «Couldn't reach HireDrop…» (`background.js:1971`,
+     `TapView.tsx:121`). Поэтому: СНАЧАЛА web #314, потом #397. Вкладки, открытые до деплоя сайта, упрутся до перезагрузки.
+  3. Расширение (1.8.15/1.8.41/1.8.43) любой отказ читает как `mode_unknown`; auto-daily — 3 повтора по 5 мин и
+     вводящая в заблуждение строка (ограничено, не шторм); `HD_START_REFUSALS` без `review_missing` → в ext-задание п.5.
+  4. Снято: запущенную кампанию это не остановит (ping смотрит только `running`); `ANSWERS_UI` 2→3 больше ничего не
+     меняет (`SINCE` max 2); IDOR нет — проба писала `user_id`/`answers_confirmed_at`/`submit_mode`/`resume_url`,
+     записалось только `name` в свою строку.
+
 - 🔴 **Задание для ext-лейна (`content.js` сейчас держит maple-stoat) — не взято:**
   1. Повторная подача Indeed/ZR после ответа на хендбэк. Очереди у них нет (`_QUEUE_PLATFORMS` в
      `app/db/handbacks.py` — только GH/Lever/Ashby; `requeueable()` = job_id или ATS): ответ сохраняется,
@@ -60,11 +76,10 @@ signup/resume, `OPT_OUT`, `SINCE`, `ANSWERS_UI`). Start-гейт требует 
 
 ## Следующий шаг
 
-Модель: **Opus**. 1) Вердикт двух агентов blast-radius в прошлую сессию не дошёл (сессия очищена по лимиту) —
-перезапустить два `general-purpose`-агента-опровергателя по скилу `blast-radius`: (а) расширение/бэкенд-стыки —
-как ext читает `start_refusal`/`review_missing`, `ANSWERS_UI` 2→3, IDOR новых запросов, может ли запускавший
-выглядеть «не запускавшим» (`started_at`); (б) сайт — порядок деплоя, все пути Start (QuickActions, TapView,
-tap-run, auto-daily), логика `onRecheck`/`failed.length` в StartReadiness, ReviewSheet против EmployerAnswersForm
+Модель: **Opus**. 1) Починить п.1 из «Сломано» (прочный маркер «запускал» вместо `started_at`) в ветке
+`feat/first-run-review` (worktree `.wt-review-api`). 2) Вердикт агента по САЙТУ не дошёл — перезапустить одного
+`general-purpose`-опровергателя по скилу `blast-radius`: порядок деплоя, все пути Start (QuickActions, TapView,
+tap-run, auto-daily), `onRecheck`/`failed.length` в StartReadiness, ReviewSheet против EmployerAnswersForm
 → починить найденное → мерж web #314, потом HireDrop #397
 (старый бэкенд `answers_ui=3` игнорирует — этот порядок безопасен) → после деплоя Railway обнулить
 `answers_confirmed_at` у `+buyer1`, пройти окно на hiredrop.io живьём → `sessions.py done`.
