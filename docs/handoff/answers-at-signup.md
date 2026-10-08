@@ -53,6 +53,21 @@ signup/resume, `OPT_OUT`, `SINCE`, `ANSWERS_UI`). Start-гейт требует 
      `TapView.tsx:121`). Поэтому: СНАЧАЛА web #314, потом #397. Вкладки, открытые до деплоя сайта, упрутся до перезагрузки.
   3. Расширение (1.8.15/1.8.41/1.8.43) любой отказ читает как `mode_unknown`; auto-daily — 3 повтора по 5 мин и
      вводящая в заблуждение строка (ограничено, не шторм); `HD_START_REFUSALS` без `review_missing` → в ext-задание п.5.
+  5. **БЛОКЕР (агент по сайту):** старт ИЗ РАСШИРЕНИЯ (кнопка в попапе `popup.js:342`, auto-daily, Tap из старой
+     вкладки или при отказавшем 6-секундном гейте `lib/tap-run.ts:95`) для аккаунта, которому положено окно →
+     `/campaign/status` (answers_ui по умолчанию 3, `campaign.py:225`) → `review_missing` → расширение показывает
+     «Couldn't reach HireDrop… check your connection» и никуда не ведёт. Сейчас таких 5 из 12 онбордившихся + все
+     новые. **Фикс:** окно — вежливость, не замок: требовать его ТОЛЬКО когда клиент явно прислал `answers_ui>=3`
+     (дашборд); `start_refusal(..., answers_ui: int | None)` — для `missing` брать `answers_ui or ANSWERS_UI`, для
+     окна — только явное значение; `/campaign/status` и `/campaign/start` без answers_ui окно не требуют. Тест на это.
+  6. ReviewSheet при `confirmed:false` не показывает `note` сервера (`ReviewSheet.tsx` ~127/166): «не авторизован +
+     спонсорка не нужна» → «fill in the outlined ones», а обведённых нет. Фикс: после неподтверждённого сохранения
+     перечитать `GET /profile/review` (там `note`) и обводить ключи из ответа сервера, а не только пустые в браузере.
+  7. Мелочи: QuickActions покажет сырой `review_missing`, если гейт не ответил за 6 с (`:571`, как уже с
+     `employer_answers_missing`); строка вопроса в ReviewSheet дублирует рендер EmployerAnswersForm — вынести общий
+     компонент строки; `HD_START_REFUSALS` в расширении без `review_missing` (ext-задание п.5).
+  Сайт-агент подтвердил: порядок «новый сайт + старый бэкенд» безопасен (696 вариантов профиля); `onRecheck` верен;
+  флаги/US «No»/info-строки/ZIP/двойной клик — верно. Пробы: pytest 1414 ✓, web 107/107 ✓.
   4. Снято: запущенную кампанию это не остановит (ping смотрит только `running`); `ANSWERS_UI` 2→3 больше ничего не
      меняет (`SINCE` max 2); IDOR нет — проба писала `user_id`/`answers_confirmed_at`/`submit_mode`/`resume_url`,
      записалось только `name` в свою строку.
@@ -76,11 +91,10 @@ signup/resume, `OPT_OUT`, `SINCE`, `ANSWERS_UI`). Start-гейт требует 
 
 ## Следующий шаг
 
-Модель: **Opus**. 1) Починить п.1 из «Сломано» (прочный маркер «запускал» вместо `started_at`) в ветке
-`feat/first-run-review` (worktree `.wt-review-api`). 2) Вердикт агента по САЙТУ не дошёл — перезапустить одного
-`general-purpose`-опровергателя по скилу `blast-radius`: порядок деплоя, все пути Start (QuickActions, TapView,
-tap-run, auto-daily), `onRecheck`/`failed.length` в StartReadiness, ReviewSheet против EmployerAnswersForm
-→ починить найденное → мерж web #314, потом HireDrop #397
+Модель: **Opus**. Оба агента отработали — чинить по «Сломано» в ветках `feat/first-run-review`
+(worktree `.wt-review-api` и `.wt-review-sheet`): 1) п.5 — окно требовать только при явном `answers_ui>=3`;
+2) п.1 — прочный маркер «запускал» (`filters.kw_cursor`/заявка, не `started_at`); 3) п.6 — `note` сервера в окне;
+4) прогнать тесты, коммит+пуш → мерж web #314, потом HireDrop #397
 (старый бэкенд `answers_ui=3` игнорирует — этот порядок безопасен) → после деплоя Railway обнулить
 `answers_confirmed_at` у `+buyer1`, пройти окно на hiredrop.io живьём → `sessions.py done`.
 2) Передать ext-лейну задание из «Сломано».
