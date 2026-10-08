@@ -1,10 +1,8 @@
 """A filter the user picked has to still be there after Stop.
 
-Work setting (remote/hybrid/onsite) lived in React state and travelled only in the
-START payload. Stop calls router.refresh(), the dashboard re-reads the profile, and the
-chip came back "Any setting" — so the user re-picked it every single run (Igor,
-2026-09-21). It has a column now, and the rule that matters is the partial-save one:
-a caller that says nothing about work_setting must not erase it.
+Stop calls router.refresh() and the dashboard re-reads the profile, so work setting
+(remote/hybrid/onsite) survives a run only through its column. The rule that matters
+is the partial-save one: a caller that says nothing about work_setting must not erase it.
 """
 
 from unittest.mock import patch
@@ -21,12 +19,11 @@ BASE_PREFS = {
 
 def _saved_payload(auth_client, body):
     with (
-        patch("app.routers.profile.profile_db.get_profile", return_value={}),
-        patch("app.routers.profile.profile_db.update_profile", return_value={}) as update,
+        patch("app.routers.profile.profile_db.save_search_prefs", return_value={}) as save,
     ):
         res = auth_client.post(f"{API}/profile/prefs", json=body)
     assert res.status_code == 200
-    return update.call_args[0][1]
+    return save.call_args[0][1]
 
 
 def test_a_picked_setting_is_written(auth_client):

@@ -542,8 +542,5 @@
  },
  "tests/test_user_day.py": {
   "history": 5
- },
- "tests/test_work_setting_persists.py": {
-  "history": 2
  }
 }
