@@ -188,6 +188,14 @@ for (const f of ["ziprecruiter-serp-1click-pane.html", "ziprecruiter-serp-applie
   const [cont, nxt] = dlg.querySelectorAll("button");
   check("a dialog's Continue is not page navigation", ctx.isPageNavControl(cont) === false);
   check("a dialog's bare Next is not page navigation", ctx.isPageNavControl(nxt) === false);
+  // A page-level application form keeps its buttons even under a "pagination"-named step bar.
+  doc.body.insertAdjacentHTML("beforeend",
+    '<form id="apply"><input name="email"><div class="form-pagination"><button title="Next page">Next</button>' +
+    '<button type="submit">Submit application</button></div></form>');
+  const [stepNext, submit] = doc.querySelectorAll("#apply button");
+  check("a form's Submit under .form-pagination is allowed", ctx.isDeniedFormButton(submit) === false);
+  check("a form's Next titled \"Next page\" is allowed", ctx.isDeniedFormButton(stepNext) === false);
+  check("…while the results page's arrow outside any form stays denied", ctx.isDeniedFormButton(next) === true);
 }
 {
   const p3 = slice("  async function phase3_fillForm() {", "  async function _phase3_fillForm() {");

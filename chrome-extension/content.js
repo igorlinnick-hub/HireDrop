@@ -5542,6 +5542,11 @@
   function isPageNavControl(b) {
     if (b.closest('[role="dialog"]')) return PAGE_NAV_LABEL_RE.test(btnLabel(b));
     if (PAGE_NAV_LABEL_RE.test(btnLabel(b))) return true;
+    // A page-level application form (Greenhouse, Lever, Ashby, Indeed SmartApply) owns its
+    // buttons the same way: only the label counts, never a "pagination" ancestor or title —
+    // a step bar named that way must not hide the form's Continue/Submit.
+    const form = b.closest("form");
+    if (form && !form.matches('[role="search"]') && form.querySelector("input, textarea, select")) return false;
     const title = (b.getAttribute("title") || "").trim().toLowerCase();
     if (title && PAGE_NAV_LABEL_RE.test(title)) return true;
     return !!b.closest(PAGE_NAV_SCOPE);
