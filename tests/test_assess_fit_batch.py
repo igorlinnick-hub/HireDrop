@@ -92,6 +92,8 @@ def _run(
     def judge(job=None, profile=None, resume_text=None, **_):
         n = job["title"].rsplit(" ", 1)[1]
         s = scores.get(n)
+        if s == "raise":
+            raise RuntimeError("model exploded")
         if s is None:
             return {"judged": False, "fail_closed": True, "decision": "skip"}
         return {"judged": True, "fit_score": s, "reason": f"score {s}", "judge_model": "haiku"}
@@ -300,6 +302,18 @@ def test_a_call_that_stored_no_verdict_is_refunded():
     assert model.call_count == 2  # both calls really ran
     assert [c.args[0] for c in store_verdict.call_args_list] == ["row-1"]
     assert out["_charged"] == 1  # …but only the one that produced a verdict is paid for
+
+
+def test_a_call_that_raised_is_refunded_too():
+    # The other no-verdict shape: the judge call raised (network, model error) instead
+    # of failing closed. Same economics — nothing stored, the live judge pays again.
+    out, model, store_verdict, _, _ = _run(
+        [_card(1), _card(2)], [_row(1), _row(2)], scores={"1": 50, "2": "raise"}
+    )
+    assert model.call_count == 2
+    assert [c.args[0] for c in store_verdict.call_args_list] == ["row-1"]
+    assert out["_charged"] == 1
+    assert _by_link(out)["2"]["decision"] == "unjudged"
 
 
 def test_a_row_this_request_inserted_gets_its_text_written_again_after_the_judge():

@@ -1049,28 +1049,6 @@ def ingest_jobs(req: IngestJobsRequest, user=Depends(get_current_user)):
     already_saved = jobs_db.existing_links(user.id, [j.link for j in candidates])
     fresh = [j for j in candidates if j.link not in already_saved]
 
-    # The search-page judge (/tools/assess-fit-batch) races this harvest for the same
-    # cards and inserts the ones it wins WITHOUT a score — it judges fit, it does not
-    # rank the deck. Those links arrive here as "already saved" and, skipped entirely,
-    # would sit score-NULL forever and sort last (#387's tail). Backfill ONLY the score
-    # of a never-scored row — status and description stay untouched, so the dedup-lane
-    # promise (no rescore, no resurrect) holds.
-    rescore: list[dict] = []
-    if already_saved:
-        snippets = {j.link: (j.description or "") for j in candidates}
-        try:
-            held = jobs_db.rows_by_links(user.id, list(already_saved))
-            for link, row in held.items():
-                if row.get("score") is not None:
-                    continue
-                desc = row.get("description") or ""
-                if len(desc.strip()) < MIN_SCORABLE_DESC:
-                    desc = snippets.get(link, "")
-                if len(desc.strip()) >= MIN_SCORABLE_DESC:
-                    rescore.append({**row, "description": desc})
-        except Exception as e:
-            print(f"[ingest] score backfill read skipped: {e}", file=sys.stderr)
-
     rows = [
         {
             "title": j.title,
@@ -1087,8 +1065,7 @@ def ingest_jobs(req: IngestJobsRequest, user=Depends(get_current_user)):
 
     scorable = [r for r in rows if len((r.get("description") or "").strip()) >= MIN_SCORABLE_DESC]
     scored_count = 0
-    backfilled = 0
-    if scorable or rescore:
+    if scorable:
         # Never let a scoring hiccup cost the harvest: the rows are the point, the
         # score is an improvement. An exception here used to mean the whole page of
         # cards was lost.
@@ -1098,27 +1075,16 @@ def ingest_jobs(req: IngestJobsRequest, user=Depends(get_current_user)):
             from modules.ai_job_scorer import score_jobs_batch
 
             profile = get_profile(user.id)
-            score_jobs_batch(scorable + rescore, profile, resume_text_for(profile))
+            score_jobs_batch(scorable, profile, resume_text_for(profile))
             scored_count = sum(1 for r in scorable if r.get("score") is not None)
-            for r in rescore:
-                if r.get("score") is None:
-                    continue
-                jobs_db.update_job_score(
-                    r["id"],
-                    user.id,
-                    r["score"],
-                    r.get("ai_verdict", ""),
-                    r.get("ai_flags", []),
-                    r.get("ats_keywords"),
-                    r.get("ats_match_pct", 0),
-                )
-                backfilled += 1
         except Exception as e:
             print(f"[ingest] scoring skipped (rows still saved): {e}", file=sys.stderr)
 
     # Insert-only for real: the search-page judge may have saved these links with the full
     # posting while this request was scoring snippets — an upsert would put the snippet back.
     saved = jobs_db.save_jobs_bulk(user.id, rows, insert_only=True)
+
+    backfilled = _backfill_judge_inserted_scores(user.id, candidates, scorable)
     return {
         "saved": saved,
         "skipped_existing": len(candidates) - len(fresh),
@@ -1129,6 +1095,78 @@ def ingest_jobs(req: IngestJobsRequest, user=Depends(get_current_user)):
         # Rows the search-page judge inserted first, ranked now.
         "score_backfilled": backfilled,
     }
+
+
+def _backfill_judge_inserted_scores(user_id: str, candidates: list, scorable: list) -> int:
+    """Rank the rows the search-page judge saved first (#387's tail). Returns how many.
+
+    /tools/assess-fit-batch races this harvest for the same cards and inserts the ones it
+    wins WITHOUT a score — it judges fit, it does not rank the deck. INSERT-only then
+    skips those links here, so they would sit score-NULL forever and sort last. This runs
+    AFTER save_jobs_bulk on purpose: a row the judge wrote mid-request (between the
+    existing_links read and the upsert) is caught too, and the score this request already
+    computed for it is reused instead of dropped with the skipped insert.
+
+    Only the score of a never-scored, still-'new' row is filled — status and description
+    stay untouched (the dedup-lane promise: no rescore, no resurrect), closed/picked rows
+    are not worth a model call (no surface ranks them), and the scorer's own fallback
+    (score_fallback, an outage answering 5 for everything) is never stored: stored, it
+    would end the retry-next-harvest window with a fabricated rank.
+    """
+    backfilled = 0
+    try:
+        computed = {
+            r["link"]: r
+            for r in scorable
+            if r.get("score") is not None and not r.get("score_fallback")
+        }
+        snippets = {j.link: (j.description or "") for j in candidates}
+        held = jobs_db.rows_by_links(user_id, [j.link for j in candidates])
+        rescore: list[dict] = []
+        for link, row in held.items():
+            if row.get("score") is not None or (row.get("status") or "new") != "new":
+                continue
+            done = computed.get(link)
+            if done is None:
+                desc = row.get("description") or ""
+                if len(desc.strip()) < MIN_SCORABLE_DESC:
+                    desc = snippets.get(link, "")
+                if len(desc.strip()) >= MIN_SCORABLE_DESC:
+                    rescore.append({**row, "description": desc})
+                continue
+            jobs_db.update_job_score(
+                row["id"],
+                user_id,
+                done["score"],
+                done.get("ai_verdict", ""),
+                done.get("ai_flags", []),
+                done.get("ats_keywords"),
+                done.get("ats_match_pct", 0),
+            )
+            backfilled += 1
+        if rescore:
+            from app.db.profile import get_profile
+            from modules.ai_cover_letter import resume_text_for
+            from modules.ai_job_scorer import score_jobs_batch
+
+            profile = get_profile(user_id)
+            score_jobs_batch(rescore, profile, resume_text_for(profile))
+            for r in rescore:
+                if r.get("score") is None or r.get("score_fallback"):
+                    continue
+                jobs_db.update_job_score(
+                    r["id"],
+                    user_id,
+                    r["score"],
+                    r.get("ai_verdict", ""),
+                    r.get("ai_flags", []),
+                    r.get("ats_keywords"),
+                    r.get("ats_match_pct", 0),
+                )
+                backfilled += 1
+    except Exception as e:  # noqa: BLE001 — ranking is an improvement, never the harvest
+        print(f"[ingest] score backfill skipped: {e}", file=sys.stderr)
+    return backfilled
 
 
 # Upper bound on stored posting text. The longest real posting in the pool is ~3400
