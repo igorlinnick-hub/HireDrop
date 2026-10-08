@@ -1,4 +1,4 @@
-"""The one-time check before the first run (modules/review_sheet.py, Igor 10-07).
+"""The one-time check before the first run (modules/review_sheet.py).
 
 What this protects: the person sees, once, every value a form gets from their profile —
 including the two the filler would otherwise send without asking ("2 weeks", "Fluent") —

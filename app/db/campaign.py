@@ -1,6 +1,7 @@
 """Операции с campaign_states в Supabase."""
 
 import contextlib
+import sys
 from datetime import UTC, datetime
 
 from app.db.client import get_supabase
@@ -141,7 +142,7 @@ def build_readiness(
     )
     if unanswered:
         checks[-1]["missing"] = unanswered
-    # Once, before the first run (Igor, 10-07): everything we tell employers on one page,
+    # Once, before the first run: everything we tell employers on one page,
     # checked by the person (modules/review_sheet.py). The caller decides whether it is
     # owed (review_due below — it reads the account's history); a tab that cannot draw
     # the sheet is not shown the row at all.
@@ -201,7 +202,8 @@ def review_due(user_id: str, profile: dict, state: dict | None = None) -> bool:
         return False
     try:
         return not ran_before(user_id, state)
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001 — any read failure: the check is a courtesy, never a lock
+        print(f"[review] history unreadable for {user_id}, not asking: {e}", file=sys.stderr)
         return False
 
 

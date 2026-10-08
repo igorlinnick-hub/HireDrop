@@ -1,10 +1,9 @@
-"""The one look at everything we tell employers — before the FIRST run, once (Igor, 10-07).
+"""The one look at everything we tell employers — once, before the first run.
 
-"Когда человек делает первый прогон, всплывает окно со всей информацией, он проверяет, всё
-ли ок, и подтверждает. Один раз, не постоянно." Signup asks the questions one screen at a
-time; nobody ever saw them side by side with the contact details and the answers we pick
-on our own. This sheet is that page: every value a form gets from the profile, editable,
-and one "Everything's correct" that is recorded (`profiles.answers_confirmed_at`).
+Signup asks the questions one screen at a time, so nobody sees them side by side with the
+contact details and the answers we pick on our own. This sheet is that page: every value a
+form gets from the profile, editable, and one "Everything's correct" that is recorded
+(`profiles.answers_confirmed_at`). It is asked once, never again.
 
 Owed only by an account that has never run (app/db/campaign.review_due) and never
 confirmed. Accounts that already ran are not stopped to re-confirm — it is a once-only
