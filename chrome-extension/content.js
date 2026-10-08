@@ -130,16 +130,25 @@
   function detectPlatformAuth(platform) {
     const p = platform || detectPlatform();
     if (p === "indeed") {
-      // secure.indeed.com IS the login wall — you only land there when a session is needed.
+      // Positive first: nothing renders an account menu without a session. Live 10-08:
+      // Connect opens secure.indeed.com/auth, and a finished sign-in lands on
+      // secure.indeed.com/settings/account — AccountMenu + SignOut in its header — but the
+      // host alone read as "the login wall", so the dashboard kept "Signed out — log back
+      // in" after the person had logged in, until they happened to open www.indeed.com.
+      if (document.querySelector(
+        '[data-gnav-element-name="AccountMenu"], [data-gnav-element-name="SignOut"], [data-gnav-element-name="Resume"]'
+      )) return "connected";
+      // secure.indeed.com's sign-in pages ARE the wall (you only land there when a session
+      // is needed) — its sign-in pages, not the whole host (settings live there too).
+      const onSignInPage =
+        window.location.hostname === "secure.indeed.com" &&
+        /^\/(auth|account\/login)\b/.test(window.location.pathname);
       const negative =
-        window.location.hostname === "secure.indeed.com" ||
+        onSignInPage ||
         !!document.querySelector(
           '[data-gnav-element-name="SignIn"], a[href*="secure.indeed.com/auth"], a[href*="/account/login"]'
         );
       if (negative) return onIndeedApplyHost() ? "logged_out" : "unknown";
-      if (document.querySelector(
-        '[data-gnav-element-name="AccountMenu"], [data-gnav-element-name="SignOut"], [data-gnav-element-name="Resume"]'
-      )) return "connected";
       return "unknown";
     }
     if (p === "ziprecruiter") {
@@ -225,6 +234,16 @@
     setInterval(() => { if (!document.hidden) recheck(); }, 45_000);
     window.addEventListener("focus", recheck);
     document.addEventListener("visibilitychange", () => { if (!document.hidden) recheck(); });
+    // A sign-in that finishes inside the page (no navigation) redraws the header: re-read
+    // within ~0.5 s of it instead of on the next 45 s tick. recheck() is a querySelector
+    // and writes only when the answer changed, so a busy page costs next to nothing.
+    try {
+      let pending = null;
+      new MutationObserver(() => {
+        if (pending || document.hidden) return;
+        pending = setTimeout(() => { pending = null; recheck(); }, 500);
+      }).observe(document.documentElement, { childList: true, subtree: true });
+    } catch { /* no observer in this context — the interval and focus still cover it */ }
   }
 
   // The new description block ships its own <style> INSIDE the node, so a plain
