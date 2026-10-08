@@ -137,6 +137,70 @@ def get_for_interview_kit(user_id: str, application_id: str) -> dict | None:
     }
 
 
+_BUDDY_SELECT = (
+    "id, job_title, company, platform, job_url, date_applied, status, cover_letter,"
+    " jobs(title, company, platform, location, tailored_resume_pdf_url)"
+)
+
+
+def _buddy_row(row: dict) -> dict:
+    job = row.get("jobs") or {}
+    return {
+        "id": row["id"],
+        "title": row.get("job_title") or job.get("title") or "",
+        "company": row.get("company") or job.get("company") or "",
+        "platform": row.get("platform") or job.get("platform") or "",
+        "location": job.get("location") or "",
+        "date_applied": row.get("date_applied"),
+        "status": row.get("status"),
+        "link": row.get("job_url") or "",
+        "cover_letter": row.get("cover_letter") or "",
+        "has_resume_pdf": bool(job.get("tailored_resume_pdf_url")),
+    }
+
+
+def find_for_buddy(user_id: str, query: str = "", limit: int = 10, scan: int = 300) -> list[dict]:
+    """The person's applications for Drop, newest first, optionally filtered by words in
+    the title / company / place ("Acme", "designer san diego"). One bounded read, no signed
+    URLs (History signs a PDF link per row — Drop only needs to know one exists).
+    Scoped by user_id: service_role bypasses RLS."""
+    res = (
+        get_supabase()
+        .table("applications")
+        .select(_BUDDY_SELECT)
+        .eq("user_id", user_id)
+        .order("date_applied", desc=True)
+        .order("id")
+        .limit(scan)
+        .execute()
+    )
+    words = [w for w in (query or "").lower().split() if w]
+    out = []
+    for row in res.data or []:
+        r = _buddy_row(row)
+        hay = f"{r['title']} {r['company']} {r['location']} {r['platform']}".lower()
+        if all(w in hay for w in words):
+            out.append(r)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def get_for_buddy(user_id: str, application_id: str) -> dict | None:
+    """One of the person's applications with the letter we sent, or None (also for
+    someone else's id — same answer on purpose)."""
+    res = (
+        get_supabase()
+        .table("applications")
+        .select(_BUDDY_SELECT)
+        .eq("user_id", user_id)
+        .eq("id", application_id)
+        .limit(1)
+        .execute()
+    )
+    return _buddy_row(res.data[0]) if res.data else None
+
+
 def active_user_ids(since_days: int, cap: int = 20_000) -> list[str]:
     """Accounts that applied to at least one job in the last `since_days`.
 
