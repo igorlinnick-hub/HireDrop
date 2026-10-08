@@ -131,6 +131,15 @@ def build_key(question: str, options: list[str] | None, profile: dict) -> str | 
     if status_flags:
         fingerprint += f"|{status_flags}"
 
+    # The person's own answers (modules/personal_facts) reach the prompt as statements
+    # too, so a changed answer ("relocate? now No") retires what was derived from the old
+    # one. Appended only when there are facts: everyone else keeps the key they have.
+    from modules.personal_facts import fingerprint as facts_fingerprint
+
+    told = facts_fingerprint(profile.get("personal_facts") or [])
+    if told:
+        fingerprint += f"|facts={told}"
+
     digest = hashlib.sha256(
         f"{question_norm}\x1e{options_norm}\x1e{fingerprint}".encode()
     ).hexdigest()

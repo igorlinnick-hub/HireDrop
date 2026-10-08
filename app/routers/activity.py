@@ -121,6 +121,30 @@ def add_handback(body: HandbackBody, user=Depends(get_current_user)):
     return {"ok": True, "handback": row}
 
 
+def _remember_reusable(user_id: str, questions: list, answers: dict[str, str]) -> None:
+    """An answer given in History is remembered for EVERY form, not only this job's retry
+    (modules/personal_facts.py) — when it can be reused: a question about the person's
+    circumstances, or a fixed choice. An essay about this one job is not. Best-effort: the
+    hand-back is already answered, and the column may not exist yet."""
+    from app.db import personal_facts as facts_db
+    from modules import personal_facts as pf
+
+    options = {pf.normalise(q.get("label") or ""): q.get("options") or [] for q in questions}
+    try:
+        facts = facts_db.get(user_id)
+        changed = False
+        for label, answer in (answers or {}).items():
+            opts = options.get(pf.normalise(label))
+            if not str(answer or "").strip() or (not opts and not pf.topic_of(label)):
+                continue
+            facts, _ = pf.upsert(facts, {"question": label, "answer": answer, "source": "history"})
+            changed = True
+        if changed:
+            facts_db.save(user_id, facts)
+    except Exception as e:  # noqa: BLE001
+        print(f"[facts] not remembered from History: {e}")
+
+
 @router.post("/handbacks/{handback_id}/answers")
 def answer_handback(handback_id: str, body: HandbackAnswersBody, user=Depends(get_current_user)):
     """The human answers the questions that stopped the application, and it goes back
@@ -152,6 +176,7 @@ def answer_handback(handback_id: str, body: HandbackAnswersBody, user=Depends(ge
     saved = handbacks_db.save_answers(user.id, handback_id, body.answers)
     if not saved:
         raise HTTPException(status_code=400, detail="no_answers")
+    _remember_reusable(user.id, row.get("questions") or [], body.answers)
 
     requeued = False
     job_id = row.get("job_id")

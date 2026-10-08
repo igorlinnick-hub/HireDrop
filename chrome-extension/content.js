@@ -2900,8 +2900,10 @@
     }
 
     // Save current job context
+    // location rides along so the letter writer can tell a job in the city the person
+    // is moving to from a remote one (ensureCoverLetter → /tools/cover-letter-preview).
     await storageSet({
-      currentJobInfo: { title: jobTitle, company: jobCompany, description: jobDesc, url: jobUrl },
+      currentJobInfo: { title: jobTitle, company: jobCompany, description: jobDesc, url: jobUrl, location: jobLocation || "" },
     });
     await recordJobDescription(jobTitle, jobCompany, jobDesc, jobUrl, jobLocation);
 
@@ -3820,7 +3822,12 @@
       const res = await Promise.race([
         sendMsg({
           type: "GENERATE_COVER_LETTER",
-          data: { job_title: jobInfo.title || "", company: jobInfo.company || "", description: jobInfo.description || "" },
+          // url: the server reads the posting's location from the pool by it when the
+          // walk didn't read one (ATS walks); location: what the Indeed walk read.
+          data: {
+            job_title: jobInfo.title || "", company: jobInfo.company || "", description: jobInfo.description || "",
+            location: jobInfo.location || "", url: jobInfo.url || "",
+          },
         }),
         sleep(15000).then(() => ({ error: "timeout" })),
       ]);

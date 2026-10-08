@@ -3106,6 +3106,11 @@ async function handleMessage(msg, sender) {
             keywords: [job.job_title, job.company].filter(Boolean).join(", "),
             style: profile?.writing_style || "",
             job_description: job.description || "",
+            job_title: job.job_title || "",
+            company: job.company || "",
+            // Where the job is — the letter mentions a move only for a job in that place.
+            job_location: job.location || "",
+            job_url: job.url || "",
           }),
           new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 25000)),
         ]);

@@ -533,6 +533,29 @@ def save_answers(user_id: str, handback_id: str, answers: dict[str, str]) -> dic
     return (res.data or [None])[0]
 
 
+def store_answers(user_id: str, handback_id: str, answers: dict[str, str]) -> dict | None:
+    """Store answers WITHOUT re-queueing: some of the row's questions are still open, so a
+    retry would stop on the same blank field. Used when a remembered answer covers one
+    question of a hand-back that asked several (app/routers/personal.py)."""
+    clean = {
+        str(q).strip()[:_MAX_LABEL]: str(a).strip()[:_MAX_ANSWER]
+        for q, a in (answers or {}).items()
+        if str(q).strip() and str(a).strip()
+    }
+    if not clean:
+        return None
+    res = (
+        get_supabase()
+        .table("handbacks")
+        .update({"answers": clean})
+        .eq("user_id", user_id)
+        .eq("id", handback_id)
+        .is_("resolved_at", "null")
+        .execute()
+    )
+    return (res.data or [None])[0]
+
+
 def answers_for_job(user_id: str, job_id: str) -> dict[str, str]:
     """Answers this user gave for this job, for the filler's retry.
 
