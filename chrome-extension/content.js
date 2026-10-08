@@ -540,6 +540,70 @@
     }
   }
 
+  // Indeed's location box ("where"). Selectors in priority order — the id is Indeed's own;
+  // the rest are fallbacks if it is renamed. Never the 'what' box we just typed into.
+  // No captured homepage markup in tests/fixtures yet: selector unverified on a live page.
+  function findIndeedWhereInput(whatInput) {
+    const sels = [
+      "#text-input-where",
+      'input[name="l"]',
+      'input[aria-label*="location" i]',
+      'input[placeholder*="city" i]',
+    ];
+    for (const sel of sels) {
+      const el = document.querySelector(sel);
+      if (el && el !== whatInput) return el;
+    }
+    return null;
+  }
+
+  // The search params the homepage form can lose. iafilter is left out on purpose: the
+  // scan keeps only Easily-apply cards anyway, and counting it would reopen every search.
+  const INDEED_SEARCH_PARAMS = ["q", "l", "radius", "jt"];
+  // A check older than this is from a SERP that never loaded (CF wall, handed-off board);
+  // acting on it later would yank a deep page of the walk back to page 1 of keyword 1.
+  const INDEED_SEARCH_CHECK_TTL_MS = 10 * 60 * 1000;
+
+  // Which of the campaign's search params the SERP at `serpHref` does not carry as asked.
+  function indeedSearchDrift(serpHref, targetHref) {
+    let serp, target;
+    try {
+      serp = new URL(serpHref).searchParams;
+      target = new URL(targetHref).searchParams;
+    } catch {
+      return [];
+    }
+    const norm = (v) => String(v || "").trim().replace(/\s+/g, " ").toLowerCase();
+    return INDEED_SEARCH_PARAMS.filter((k) => norm(serp.get(k)) !== norm(target.get(k)));
+  }
+
+  // First SERP after the warmup's typed search (see sessionWarmup): if it dropped the
+  // city/radius/job type, reopen the campaign's own URL ONCE. cf_clearance is set by now,
+  // which is the whole reason the first hop was typed. The check is consumed before any
+  // navigation, so a SERP Indeed keeps rewriting cannot loop us; if it cannot be consumed
+  // (context gone), we do not navigate at all. True = navigating, the caller must stop.
+  async function correctFirstIndeedSearch() {
+    const { indeedSearchCheck: chk } = await storageGet("indeedSearchCheck");
+    if (!chk) return false;
+    if (!(await storageRemove("indeedSearchCheck"))) return false;
+    if (!chk.url || !(Date.now() - (chk.at || 0) < INDEED_SEARCH_CHECK_TTL_MS)) return false;
+    const serp = new URL(window.location.href).searchParams;
+    // The walk builds its pages with an explicit `start` (even page 1 carries start=0, see
+    // goBackToIndeedJobList); the typed first search never does. Any `start` = not ours.
+    if (serp.has("start")) return false;
+    const drift = indeedSearchDrift(window.location.href, chk.url);
+    if (!drift.length) return false;
+    const got = drift.map((k) => `${k}=${serp.get(k) || "none"}`).join(", ");
+    log(`First search ignored your filters (${got}) — reopening it with them...`, "");
+    logBackend(`📍 First Indeed search came back with ${got} — reopening it with your city/radius/job type`, "info");
+    // A person fixing the filters takes a few seconds; back-to-back page loads are what
+    // Cloudflare rate-limits (goBackToIndeedJobList waits 15-30 s for the same reason).
+    await sleep(humanDelay(4000, 8000));
+    if (!(await isCampaignRunning())) return true;
+    window.location.href = chk.url;
+    return true;
+  }
+
   async function sessionWarmup() {
     // Warmup exists to (a) look human before engaging (anti-bot) and (b) establish a
     // Cloudflare cf_clearance cookie by first landing on a NON-deep-link page (homepage /
@@ -565,6 +629,9 @@
     const poolRun = (await storageGet("atsPlatform")).atsPlatform === "pool";
     const flag = await storageGet("campaignWarmedUp");
     if (flag.campaignWarmedUp) return;
+    // A first-search check left by an earlier run/board whose SERP never loaded must not
+    // fire on this one; the Indeed branch below re-arms it for this board when it applies.
+    await storageRemove("indeedSearchCheck");
 
     log("Session warmup — looking around for a few seconds...", "");
     const startedAt = Date.now();
@@ -629,6 +696,19 @@
       // Indeed: prefer typing into search form (avoids Cloudflare Turnstile on direct nav)
       const targetQ = new URL(campaignTargetUrl).searchParams.get("q") || "";
       const currentQ = new URL(window.location.href).searchParams.get("q") || "";
+      // The typed search used to carry ONLY `q`: 'where' stayed whatever Indeed remembered
+      // and radius/jt were never applied. 10-08 05:16Z live run (city San Diego, radius 25,
+      // part-time): the first SERP was Waikiki/O'ahu/Pearl Harbor and the first application
+      // went to a Hawaii employer; same on 10-06 19:58Z and 22:42Z (one Honolulu apply).
+      // Every later page is a URL built from the filters and was right. So the city is now
+      // typed too, and — because the homepage form cannot carry radius/jt — the SERP the
+      // walk lands on is checked ONCE against this URL (correctFirstIndeedSearch). Armed on
+      // every Indeed path, including "already on a SERP", which is the same bug wearing a
+      // different URL. No location → nothing armed, today's behaviour.
+      const targetL = new URL(campaignTargetUrl).searchParams.get("l") || "";
+      if (targetL) {
+        await storageSet({ indeedSearchCheck: { url: campaignTargetUrl, at: Date.now() } });
+      }
       // Navigate if keywords don't match OR if we're not on a jobs page at all
       // (e.g. indeed.com homepage when filters have no keywords).
       const notOnJobsPage = !window.location.href.includes("/jobs");
@@ -646,6 +726,19 @@
           await sleep(humanDelay(300, 600));
           await typeValue(searchInput, targetQ);
           await sleep(humanDelay(500, 900));
+          if (targetL) {
+            // typeValue clears the box first, so Indeed's remembered city is replaced, not
+            // appended to. A missing box is not fatal: the SERP check reopens the search.
+            const whereInput = findIndeedWhereInput(searchInput);
+            if (whereInput) {
+              await humanClick(whereInput);
+              await sleep(humanDelay(300, 600));
+              await typeValue(whereInput, targetL);
+              await sleep(humanDelay(500, 900));
+            } else {
+              logBackend(`Indeed search form has no location box — the results will be checked against "${targetL}"`, "warn");
+            }
+          }
           const submitBtn = document.querySelector(
             'button[type="submit"], .yosemite_serp_tbl button, [data-testid*="search-button" i]'
           );
@@ -1620,6 +1713,10 @@
 
   async function phase1_indeed() {
     if (!(await isCampaignRunning())) return;
+
+    // Before anything reads this SERP (the empty-q guard, the scan, the pool harvest): the
+    // first search of a board is typed, and may have come back in the wrong city.
+    if (await correctFirstIndeedSearch()) return;
 
     // Guard: if Indeed redirected us to a generic q= page (e.g. from an expired
     // viewjob that auto-redirects), mark the job that caused the redirect as
