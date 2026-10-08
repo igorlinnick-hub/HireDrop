@@ -2448,6 +2448,31 @@
       const clean = lbl.replace(/\s+/g, " ").replace(/\*/g, "").trim().slice(0, 80).toLowerCase();
       if (clean && !labels.includes(clean)) labels.push(clean);
     }
+    // Ashby marks required on the LABEL's class (_required_…), never on the control —
+    // so every Ashby hand-back arrived blind (unfilled: [], questions: []) and the
+    // dashboard had nothing to ask the person (Suno, live 10-08: Location + the office
+    // MultiValueSelect blocked the submit, the row recorded neither). Read the label
+    // marker and judge the entry's own widget: autocomplete input value, checkbox group
+    // any-checked, yes/no buttons aria-pressed.
+    for (const lab of scope.querySelectorAll('[class*="fieldEntry"] label[class*="required"]')) {
+      const entry = lab.closest('[class*="fieldEntry"]');
+      if (!entry || entry.offsetParent === null) continue;
+      let answered;
+      if (entry.querySelector('input[type="file"]')) continue; // resume tracked separately
+      const boxes = entry.querySelectorAll('input[type="checkbox"]');
+      if (entry.querySelector("[aria-pressed]")) {
+        answered = !!entry.querySelector('[aria-pressed="true"]');
+      } else if (boxes.length) {
+        answered = !!entry.querySelector('input[type="checkbox"]:checked');
+      } else {
+        const ctl = entry.querySelector("input, textarea, select");
+        if (!ctl) continue;
+        answered = !!((ctl.value || "").trim() || reactSelectShownValue(ctl));
+      }
+      if (answered) continue;
+      const clean = (lab.textContent || "").replace(/\s+/g, " ").replace(/\*/g, "").trim().slice(0, 80).toLowerCase();
+      if (clean && !labels.includes(clean)) labels.push(clean);
+    }
     return labels.slice(0, 25);
   }
 
@@ -3920,9 +3945,18 @@
     // well its label matched — live 09-23: Mach 1 Stores' "today's date" stayed blank,
     // the step validated against it, and "Continue" was refused 3× into a hand-back.
     // localDay() already returns YYYY-MM-DD, which is exactly what input[type=date] wants.
+    // input:not([type]): Ashby's Location autocomplete is an <input> with NO type
+    // attribute (live Suno form, 10-08) — it matched none of the typed selectors, so the
+    // one filler that can drive a typeahead never saw it, fillComboboxes couldn't open a
+    // menu without typing (hdSkip), and every required Ashby location blocked the submit.
+    // :not([aria-hidden])/:not([tabindex="-1"]): Greenhouse react-selects ship a hidden
+    // typeless <input required> mirror (…requiredInput, 14 on DoorDash's live form) —
+    // typing into those burns the AI budget on invisible fields (#304's class) and makes
+    // an unanswered dropdown look answered to collectUnfilledRequired.
     const inputs = Array.from(scope.querySelectorAll(
       'input[type="text"], input[type="number"], input[type="date"], ' +
-      'input[type="tel"], input[type="email"], input[type="url"], textarea'))
+      'input[type="tel"], input[type="email"], input[type="url"], ' +
+      'input:not([type]):not([aria-hidden="true"]):not([tabindex="-1"]), textarea'))
       .filter(el => {
         if (!el.offsetParent || el.value.trim()) return false;
         if (el.type === "hidden" || el.readOnly || el.disabled) return false;
