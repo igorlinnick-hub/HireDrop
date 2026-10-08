@@ -15,6 +15,7 @@ binding is still recorded, with no user — the report shows that share, so a mi
 is visible instead of lost.
 """
 
+import os
 import sys
 import threading
 from collections.abc import Iterator
@@ -107,6 +108,10 @@ def cost_usd(model: str, usage) -> Decimal | None:
 def record(message, purpose: str) -> None:
     """Write one call to the ledger. Never raises and never delays the caller: the AI path it
     measures must not fail or wait because the ledger is unreachable."""
+    # A measurement script spends on the same key, but not as the product: it sets
+    # AI_METER=off so the ledger stays a record of what serving users costs.
+    if os.getenv("AI_METER") == "off":
+        return
     try:
         usage = getattr(message, "usage", None)
         model = getattr(message, "model", None)

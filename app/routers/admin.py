@@ -1115,8 +1115,8 @@ def _section_ai_cost(
     # Dollars come from the ledger: every Anthropic call priced from its own token counts
     # (modules/ai_meter.py). scripts/ai_cost_report.py computes the same numbers with the
     # same function, so the board and the daily report cannot disagree.
-    s = ai_spend.summarize(ai_calls_db.daily(from_day, to_day), apps, from_day, to_day)
-    start = ai_calls_db.first_day()
+    start = ai_calls_db.first_at()
+    s = ai_spend.summarize(ai_calls_db.daily(from_day, to_day), apps, from_day, to_day, start)
     ceiling = ai_spend.CEILING_PER_APPLICATION_USD
     spenders = [a for a in s["by_account"] if a["user_id"] is not None and a["cost"] > 0]
 
@@ -1182,7 +1182,7 @@ def _section_ai_cost(
         "key": "ai_cost",
         "title": "AI cost",
         "subtitle": (
-            f"Metered since {start}; days before have no record."
+            f"Metered since {start[:10]}; applications before that are left out."
             if start
             else "No AI call has been recorded yet."
         ),

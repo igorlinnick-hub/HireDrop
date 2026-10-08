@@ -64,6 +64,34 @@ def test_cache_share_is_read_tokens_over_all_prompt_tokens():
     assert s["cache_read_share"] == 0.03
 
 
+def test_applications_from_before_the_ledger_do_not_water_down_the_price():
+    # The ledger started mid-day on the 6th: spend before it was never recorded, so the
+    # applications from before it must not divide the spend that was.
+    apps = [_app("2026-10-01")] * 50 + [
+        {"user_id": "u1", "date_applied": "2026-10-06T08:00:00+00:00"},
+        {"user_id": "u1", "date_applied": "2026-10-06T20:00:00+00:00"},
+        _app("2026-10-07"),
+    ]
+    s = ai_spend.summarize(
+        [_day("2026-10-06", 0.03), _day("2026-10-07", 0.03)],
+        apps,
+        "2026-10-01",
+        "2026-10-07",
+        metered_since="2026-10-06T12:00:00+00:00",
+    )
+    assert s["applications"] == 2
+    assert s["per_application"] == 0.03
+    assert s["days"][0] == {**s["days"][0], "metered": False, "per_application": None}
+
+
+def test_the_first_week_of_the_ledger_raises_no_false_jump():
+    apps = [_app(f"2026-10-0{d}") for d in range(1, 9) for _ in range(10)]
+    s = ai_spend.summarize(
+        [_day("2026-10-08", 0.30)], apps, "2026-10-01", "2026-10-08", "2026-10-08T00:00:00+00:00"
+    )
+    assert not any("jumped" in a for a in ai_spend.alerts(s))
+
+
 def test_a_quiet_day_under_the_ceiling_raises_nothing():
     s = ai_spend.summarize(
         [_day("2026-10-07", 0.20)], [_app("2026-10-07")] * 10, "2026-10-07", "2026-10-07"
@@ -108,7 +136,7 @@ def test_the_admin_board_reads_dollars_from_the_ledger():
 
     with (
         patch.object(admin.ai_calls_db, "daily", return_value=[_day("2026-10-07", "0.60")]),
-        patch.object(admin.ai_calls_db, "first_day", return_value="2026-10-07"),
+        patch.object(admin.ai_calls_db, "first_at", return_value="2026-10-07T00:00:00+00:00"),
     ):
         section = admin._section_ai_cost(
             [_app("2026-10-07")] * 3,
@@ -132,7 +160,7 @@ def _report(daily, apps, *args):
 
     with (
         patch.object(report.ai_calls_db, "daily", return_value=daily),
-        patch.object(report.ai_calls_db, "first_day", return_value="2026-10-01"),
+        patch.object(report.ai_calls_db, "first_at", return_value="2026-10-01T00:00:00+00:00"),
         patch.object(report, "_applications", return_value=apps),
     ):
         return report.main(["--to", "2026-10-07", "--days", "1", *args])
@@ -151,7 +179,7 @@ def test_the_report_exits_0_on_a_quiet_day(capsys):
 def test_an_unreadable_ledger_is_exit_2_never_all_clear(capsys):
     import scripts.ai_cost_report as report
 
-    with patch.object(report.ai_calls_db, "first_day", side_effect=RuntimeError("no table")):
+    with patch.object(report.ai_calls_db, "first_at", side_effect=RuntimeError("no table")):
         assert report.main(["--to", "2026-10-07"]) == 2
     assert "ledger unreadable" in capsys.readouterr().err
 
@@ -179,3 +207,57 @@ def test_the_bill_is_summed_from_cents_per_day():
 
     with patch("httpx.get", return_value=Resp()):
         assert report.billed_by_day("2026-10-07", "2026-10-07", "k") == {"2026-10-07": 2.0}
+
+
+def _compare(moment: str, today: str):
+    import scripts.ai_cost_report as report
+
+    windows = []
+
+    def summary(from_day, to_day, _since):
+        windows.append((from_day, to_day))
+        return ai_spend.summarize([], [], from_day, to_day)
+
+    class _Now:
+        @staticmethod
+        def now(tz=None):
+            from datetime import datetime
+
+            return datetime.fromisoformat(f"{today}T12:00:00+00:00")
+
+        fromisoformat = staticmethod(__import__("datetime").datetime.fromisoformat)
+
+    with (
+        patch.object(report.ai_calls_db, "first_at", return_value=None),
+        patch.object(report, "_summary", summary),
+        patch.object(report, "datetime", _Now),
+    ):
+        code = report.main(["--compare", moment, "--days", "2"])
+    return code, windows
+
+
+def test_compare_leaves_the_deploy_day_out_of_both_sides():
+    code, windows = _compare("2026-10-07T21:03:00Z", "2026-10-12")
+    assert code == 0
+    assert windows == [("2026-10-05", "2026-10-06"), ("2026-10-08", "2026-10-09")]
+
+
+def test_compare_reads_a_local_time_on_its_utc_day():
+    # 22:00 in Los Angeles on the 7th is the 8th in UTC.
+    _, windows = _compare("2026-10-07T22:00:00-07:00", "2026-10-12")
+    assert windows[1] == ("2026-10-09", "2026-10-10")
+
+
+def test_compare_on_a_deploy_from_today_says_so_instead_of_an_empty_after(capsys):
+    code, windows = _compare("2026-10-12T09:00:00Z", "2026-10-12")
+    assert code == 0 and windows == []
+    assert "no complete UTC day" in capsys.readouterr().out
+
+
+def test_reconcile_flags_a_ledger_above_the_bill_as_a_price_problem():
+    import scripts.ai_cost_report as report
+
+    s = ai_spend.summarize([_day("2026-10-07", 2.0)], [], "2026-10-07", "2026-10-07")
+    found = report.print_reconcile(s, {"2026-10-07": 1.0})
+    assert any("PRICES" in a for a in found)
+    assert report.print_reconcile(s, {"2026-10-07": 2.1}) == []

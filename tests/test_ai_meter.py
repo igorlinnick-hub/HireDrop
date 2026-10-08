@@ -112,6 +112,58 @@ def test_get_current_user_names_the_user_for_the_meter():
         ai_meter.unbind(token)
 
 
+def test_the_real_app_charges_a_dashboard_call_to_the_signed_in_user(supabase_mock, ai_meter_rows):
+    # The whole chain as it runs in production: the middleware on app.main.app, the
+    # Supabase JWT path of get_current_user, and a real call site recording a response.
+    from app.main import app
+
+    reply = SimpleNamespace(
+        model="claude-haiku-4-5-20251001",
+        usage=SimpleNamespace(input_tokens=100, output_tokens=20),
+        content=[SimpleNamespace(text='["Data Analyst"]')],
+    )
+    fake_client = MagicMock()
+    fake_client.messages.create.return_value = reply
+    supabase_mock.auth.get_user.return_value = SimpleNamespace(
+        user=SimpleNamespace(id="user-jwt", email="jwt@example.com")
+    )
+    with (
+        patch("app.deps.get_supabase", return_value=supabase_mock),
+        patch("app.routers.tools.get_profile", return_value={"apply_mode": "standard"}),
+        patch("app.routers.tools.resume_text_for", return_value="A data analyst resume. " * 20),
+        patch("modules.ai_role_suggest.get_anthropic_client", return_value=fake_client),
+    ):
+        resp = TestClient(app).get(
+            "/api/v1/tools/suggest-roles", headers={"Authorization": "Bearer jwt-token"}
+        )
+    assert resp.status_code == 200
+    assert [(r["user_id"], r["purpose"]) for r in ai_meter_rows] == [("user-jwt", "role_suggest")]
+
+
+def test_the_judge_pool_charges_each_verdict_to_the_user_it_judges_for(ai_meter_rows):
+    from modules import fit_queue
+
+    def assess_fit(job, profile, resume_text):
+        ai_meter.record(_message(input_tokens=10), "fit_judge")
+        return {"judged": True, "fit_score": 80, "reason": "ok", "judge_model": "h"}
+
+    rows = [{"id": f"r{i}", "title": "t", "company": f"c{i}"} for i in range(3)]
+    with (
+        patch("modules.ai_fit_judge.assess_fit", assess_fit),
+        patch("app.db.jobs.save_fit_verdict"),
+    ):
+        fit_queue.judge_pending(
+            "user-pool", {}, rows, max_calls=3, deadline_s=5, resume_text="r", version="v"
+        )
+    assert [r["user_id"] for r in ai_meter_rows] == ["user-pool"] * 3
+
+
+def test_a_measurement_script_keeps_its_spend_out_of_the_ledger(ai_meter_rows, monkeypatch):
+    monkeypatch.setenv("AI_METER", "off")
+    ai_meter.record(_message(input_tokens=10), "fit_judge")
+    assert ai_meter_rows == []
+
+
 def test_set_user_outside_a_request_is_a_no_op():
     ai_meter.set_user("user-d")
     assert ai_meter.current_user() is None

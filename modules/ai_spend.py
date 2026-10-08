@@ -7,7 +7,7 @@ functions here are pure, so every number they produce is testable without a data
 """
 
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from statistics import median
 
 from app.billing_config import PLANS
@@ -42,11 +42,27 @@ def _per(cost: float, n: int) -> float | None:
     return round(cost / n, 4) if n else None
 
 
-def summarize(daily: list[dict], applications: list[dict], from_day: str, to_day: str) -> dict:
+def _before(stamp: str, since: str) -> bool:
+    try:
+        return datetime.fromisoformat(stamp) < datetime.fromisoformat(since)
+    except ValueError:
+        return stamp < since
+
+
+def summarize(
+    daily: list[dict],
+    applications: list[dict],
+    from_day: str,
+    to_day: str,
+    metered_since: str | None = None,
+) -> dict:
     """Spend, calls and applications per UTC day, account, purpose and model.
 
     `daily`: ai_calls_daily rows. `applications`: rows with user_id and date_applied; rows
     outside [from_day, to_day] are ignored, so the caller may pass a wider read.
+    `metered_since`: when the ledger's first call was recorded. An application before it
+    had its AI spend go unrecorded, so counting it would divide real spend by applications
+    that cost "nothing" and show a price several times too low.
     """
     days = _days(from_day, to_day)
     in_range = set(days)
@@ -82,8 +98,9 @@ def summarize(daily: list[dict], applications: list[dict], from_day: str, to_day
         tokens["cache_write"] += int(row.get("cache_write_tokens") or 0)
 
     for app in applications:
-        day = (app.get("date_applied") or "")[:10]
-        if day not in in_range:
+        stamp = app.get("date_applied") or ""
+        day = stamp[:10]
+        if day not in in_range or (metered_since and _before(stamp, metered_since)):
             continue
         apps_day[day] += 1
         by_account[app.get("user_id")]["applications"] += 1
@@ -113,6 +130,7 @@ def summarize(daily: list[dict], applications: list[dict], from_day: str, to_day
                 "calls": calls_day[d],
                 "applications": apps_day[d],
                 "per_application": _per(cost_day[d], apps_day[d]),
+                "metered": not metered_since or d >= metered_since[:10],
             }
             for d in days
         ],

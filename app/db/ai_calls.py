@@ -35,9 +35,9 @@ def daily(from_day: str, to_day: str, cap: int = 50_000) -> list[dict]:
     return fetch_paged(build, cap)
 
 
-def first_day() -> str | None:
-    """The day the ledger starts — earlier days have no record, not zero spend."""
+def first_at() -> str | None:
+    """When the ledger's first call was recorded — earlier spend has no record, not zero."""
     res = (
         get_supabase().table("ai_calls").select("created_at").order("created_at").limit(1).execute()
     )
-    return (res.data[0]["created_at"] or "")[:10] if res.data else None
+    return res.data[0]["created_at"] if res.data else None

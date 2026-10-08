@@ -22,12 +22,14 @@ Usage (from the repo root, service_role key in .env):
     .venv/bin/python scripts/ai_cost_report.py --compare <ISO time of a deploy> [--days 3]
     .venv/bin/python scripts/ai_cost_report.py --reconcile    # needs ANTHROPIC_ADMIN_KEY
 
---compare splits the time around a deploy into the same number of days before and after
-and prints both, so "did this change make an application cheaper" is one command, counted
-by the same formula on both sides. --reconcile asks the Anthropic Usage & Cost Admin API
-what was actually billed per day and prints it next to the ledger; the gap is spend from
-outside the product (scripts, tests, other keys) or a call site that skips the meter. The
-Admin API exists only for organization accounts, not individual ones.
+--compare takes the same number of whole UTC days before and after a deploy (the deploy
+day itself counts on neither side) and prints both, so "did this change make an
+application cheaper" is one command, counted by the same formula on both sides.
+--reconcile asks the Anthropic Usage & Cost Admin API what the organization was billed per
+day and prints it next to the ledger: a bill above the ledger is spend from outside the
+product (measurement scripts run with AI_METER=off, tests, other keys) or a call site that
+skips the meter; a ledger above the bill is a wrong price. The Admin API exists only for
+organization accounts, not individual ones.
 
 --emails resolves account ids to addresses — for a terminal, never for a handoff file.
 
@@ -71,9 +73,13 @@ def _applications(from_day: str, to_day: str) -> list[dict]:
     return fetch_paged(build, 200_000)
 
 
-def _summary(from_day: str, to_day: str) -> dict:
+def _summary(from_day: str, to_day: str, metered_since: str | None) -> dict:
     return ai_spend.summarize(
-        ai_calls_db.daily(from_day, to_day), _applications(from_day, to_day), from_day, to_day
+        ai_calls_db.daily(from_day, to_day),
+        _applications(from_day, to_day),
+        from_day,
+        to_day,
+        metered_since,
     )
 
 
@@ -179,17 +185,26 @@ def billed_by_day(from_day: str, to_day: str, key: str) -> dict[str, float]:
 
 def print_reconcile(s: dict, billed: dict[str, float]) -> list[str]:
     print("\nledger vs Anthropic bill")
-    print(f"{'day':12} {'metered':>10} {'billed':>10} {'unmetered':>10}")
+    print(f"{'day':12} {'metered':>10} {'billed':>10} {'gap':>10}")
     out = []
     for d in s["days"]:
+        if not d["metered"]:
+            continue
         bill = billed.get(d["day"], 0.0)
         gap = bill - d["cost"]
         print(f"{d['day']:12} {_money(d['cost']):>10} {_money(bill):>10} {_money(gap):>10}")
-        if bill >= ai_spend.IDLE_SPEND_USD and gap / bill > UNMETERED_SHARE:
+        if bill < ai_spend.IDLE_SPEND_USD or abs(gap) / bill <= UNMETERED_SHARE:
+            continue
+        if gap > 0:
             out.append(
                 f"{d['day']}: {gap / bill:.0%} of the Anthropic bill is not in the ledger "
-                f"(${gap:.2f}) — scripts and tests on the same key, or a call site without "
-                "ai_meter.record"
+                f"(${gap:.2f}) — other spend in the organization (scripts, tests, other "
+                "keys), or a call site without ai_meter.record"
+            )
+        else:
+            out.append(
+                f"{d['day']}: the ledger is {-gap / bill:.0%} above the Anthropic bill — "
+                "check ai_meter.PRICES"
             )
     return out
 
@@ -207,29 +222,37 @@ def main(argv: list[str] | None = None) -> int:
     yesterday = datetime.now(UTC).date() - timedelta(days=1)
     to_day = date.fromisoformat(args.to) if args.to else yesterday
     try:
-        start = ai_calls_db.first_day()
+        start = ai_calls_db.first_at()
         if args.compare:
-            pivot = datetime.fromisoformat(args.compare.replace("Z", "+00:00")).date()
-            after_end = min(pivot + timedelta(days=args.days - 1), yesterday)
+            moment = datetime.fromisoformat(args.compare.replace("Z", "+00:00"))
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=UTC)
+            # The deploy day is half one, half the other: it counts on neither side.
+            pivot = moment.astimezone(UTC).date()
+            after_end = min(pivot + timedelta(days=args.days), yesterday)
+            if after_end <= pivot:
+                print("no complete UTC day after that moment yet — run it again tomorrow")
+                return 0
             before = _summary(
                 (pivot - timedelta(days=args.days)).isoformat(),
                 (pivot - timedelta(days=1)).isoformat(),
+                start,
             )
-            after = _summary(pivot.isoformat(), after_end.isoformat())
-            if start and start > before["from_day"]:
-                print(f"note: the ledger starts {start}; earlier days have no record\n")
+            after = _summary((pivot + timedelta(days=1)).isoformat(), after_end.isoformat(), start)
+            if start and start[:10] > before["from_day"]:
+                print(f"note: the ledger starts {start[:10]}; earlier days have no record\n")
             print_compare(before, after)
             return 0
         from_day = (to_day - timedelta(days=args.days - 1)).isoformat()
-        s = _summary(from_day, to_day.isoformat())
+        s = _summary(from_day, to_day.isoformat(), start)
     except Exception as e:  # noqa: BLE001 — named and exit 2, so a bot never reads it as "all clear"
         print(f"ledger unreadable: {type(e).__name__}: {e}", file=sys.stderr)
         return 2
 
     if start is None:
         print("the ledger is empty — no AI call has been recorded yet")
-    elif start > s["from_day"]:
-        print(f"note: the ledger starts {start}; earlier days have no record\n")
+    elif start[:10] > s["from_day"]:
+        print(f"note: the ledger starts {start[:10]}; applications before it are left out\n")
     print_summary(s, _emails() if args.emails else None, args.top)
 
     found = ai_spend.alerts(s)

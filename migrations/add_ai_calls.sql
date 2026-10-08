@@ -47,3 +47,5 @@ group by 1, 2, 3, 4;
 
 revoke all on ai_calls from anon, authenticated;
 revoke all on ai_calls_daily from anon, authenticated;
+
+notify pgrst, 'reload schema';
