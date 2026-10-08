@@ -69,6 +69,7 @@ def build_readiness(
     free_used: int | None,
     free_limit: int,
     answers_ui: int = ANSWERS_UI,
+    review_due: bool = False,
 ) -> dict:
     """Single source of truth for "can a campaign start MEANINGFULLY?" (pure — testable).
 
@@ -140,6 +141,19 @@ def build_readiness(
     )
     if unanswered:
         checks[-1]["missing"] = unanswered
+    # Once, before the first run (Igor, 10-07): everything we tell employers on one page,
+    # checked by the person (modules/review_sheet.py). The caller decides whether it is
+    # owed (review_due below — it reads the account's history); a tab that cannot draw
+    # the sheet is not shown the row at all.
+    from modules.review_sheet import REVIEW_SINCE
+
+    if answers_ui >= REVIEW_SINCE:
+        add(
+            "review",
+            not review_due,
+            "Check what we'll tell employers — once, before your first run",
+            "review",
+        )
     if tier == "free":
         add(
             "free_quota",
@@ -155,6 +169,37 @@ def build_readiness(
         "tier": tier,
         "submit_mode": submit_mode,
     }
+
+
+def ran_before(user_id: str, state: dict | None = None) -> bool:
+    """Has this account ever run — a campaign started, or an application on record?
+
+    `started_at` survives Stop (only the flag is reset), so it marks any account that ever
+    pressed Start; the applications count covers runs that never went through
+    /campaign/start. `state` saves the read when the caller already holds it.
+    """
+    st = state if state is not None else get_state(user_id)
+    if st.get("started_at"):
+        return True
+    from app.db.applications import count_applications
+
+    return count_applications(user_id) > 0
+
+
+def review_due(user_id: str, profile: dict, state: dict | None = None) -> bool:
+    """The one-time check before the FIRST run is still owed: never confirmed, never ran.
+
+    A courtesy asked once, never a lock: an account that already ran is not stopped to
+    re-confirm, and a read that fails owes nothing.
+    """
+    from modules.review_sheet import confirmed
+
+    if confirmed(profile):
+        return False
+    try:
+        return not ran_before(user_id, state)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def get_state(user_id: str) -> dict:

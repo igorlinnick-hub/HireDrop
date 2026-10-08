@@ -83,7 +83,9 @@ AUTH_CONTRADICTION_NOTE = (
 # so the old default only let its own /campaign/start through on 8 of the 11 questions.
 # For the next bump: every dashboard since 09-30 sends its number, so SINCE still keeps
 # an older tab to the list it can draw.
-ANSWERS_UI = 2
+# 3 (10-07): the client can also draw the one-time review before the first run
+# (modules/review_sheet.REVIEW_SINCE) — no question was added.
+ANSWERS_UI = 3
 SINCE: dict[str, int] = {"school": 2, "degree": 2, "salary_expectation": 2}
 
 # "I don't have one" IS the answer — the filler then hands a required field back

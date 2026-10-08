@@ -35,6 +35,7 @@ from modules.employer_answers import ANSWERS_UI, outside_us
 from modules.employer_answers import missing as missing_answers
 from modules.keyword_rotation import clean_keywords, complete_keywords
 from modules.keyword_rotation import rotate as rotate_keywords
+from modules.review_sheet import REVIEW_SINCE
 
 router = APIRouter(tags=["campaign"])
 
@@ -145,10 +146,13 @@ def campaign_queue(
     }
 
 
-def start_refusal(user, profile: dict, answers_ui: int = ANSWERS_UI) -> str | None:
+def start_refusal(
+    user, profile: dict, answers_ui: int = ANSWERS_UI, state: dict | None = None
+) -> str | None:
     """Why /campaign/start refuses this profile (its 403 detail), or None = it may start.
 
     One function so /campaign/status can tell the extension the same thing (see there).
+    `state` is the campaign row when the caller already read it.
     """
     # Free-taste abuse guard: throwaway-email accounts never get to spend AI
     # budget. Signup is Supabase-hosted, so the first backend chokepoint is here.
@@ -171,6 +175,10 @@ def start_refusal(user, profile: dict, answers_ui: int = ANSWERS_UI) -> str | No
     # nothing means the current list — the extension sends nothing and never draws the form.
     if missing_answers(profile, answers_ui):
         return "employer_answers_missing"
+    # Once, before the first run: the person checks everything we tell employers
+    # (modules/review_sheet.py). Last, so it is asked of a profile that is otherwise ready.
+    if answers_ui >= REVIEW_SINCE and campaign_db.review_due(user.id, profile, state):
+        return "review_missing"
     return None
 
 
@@ -214,7 +222,7 @@ def campaign_status(
     # anything is an unknown mode, so a profile /campaign/start would refuse reads as
     # unknown here. Only while nothing is running: a run the dashboard started already
     # passed this gate, and nothing reads the flag mid-run. `start_refusal` says why.
-    refusal = None if state["running"] else start_refusal(user, profile)
+    refusal = None if state["running"] else start_refusal(user, profile, state=state)
 
     return {
         "running": state["running"],
@@ -357,8 +365,16 @@ def campaign_readiness(answers_ui: int = ANSWERS_UI, user=Depends(get_current_us
     tier = get_tier(user.id, getattr(user, "email", None))
     submit_mode = get_submit_mode(user.id)
     free_used = get_free_apps_used(user.id) if tier == "free" else None
+    review = answers_ui >= REVIEW_SINCE and campaign_db.review_due(user.id, profile, state)
     return campaign_db.build_readiness(
-        profile, state["running"], tier, submit_mode, free_used, FREE_APP_LIMIT, answers_ui
+        profile,
+        state["running"],
+        tier,
+        submit_mode,
+        free_used,
+        FREE_APP_LIMIT,
+        answers_ui,
+        review_due=review,
     )
 
 

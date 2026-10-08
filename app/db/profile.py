@@ -1,6 +1,6 @@
 """Операции с таблицей profiles в Supabase."""
 
-from datetime import UTC
+from datetime import UTC, datetime
 
 from app.db.client import get_supabase
 
@@ -160,6 +160,8 @@ def get_profile(user_id: str) -> dict:
         # read by the screener answerer, the cover letter and Drop. A missing column
         # (before migrations/add_personal_facts.sql) reads as none.
         "personal_facts": p.get("personal_facts") or [],
+        # The one-time check before the first run (modules/review_sheet.py).
+        "answers_confirmed_at": p.get("answers_confirmed_at"),
     }
 
 
@@ -212,6 +214,14 @@ def update_employer_answers(user_id: str, answers: dict) -> dict:
     if answers:
         get_supabase().table("profiles").update(answers).eq("user_id", user_id).execute()
     return get_profile(user_id)
+
+
+def confirm_answers(user_id: str) -> None:
+    """The person checked everything we tell employers and said it is right — once,
+    before their first run (modules/review_sheet.py)."""
+    get_supabase().table("profiles").update(
+        {"answers_confirmed_at": datetime.now(UTC).isoformat()}
+    ).eq("user_id", user_id).execute()
 
 
 def fill_postal_if_blank(user_id: str, postal_code: str, resume_city: str) -> dict:
