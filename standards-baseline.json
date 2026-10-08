@@ -1,0 +1,549 @@
+{
+ "app/ads/meta_spend.py": {
+  "history": 1
+ },
+ "app/ads/verdict.py": {
+  "history": 1
+ },
+ "app/db/activity.py": {
+  "history": 6
+ },
+ "app/db/applications.py": {
+  "history": 3
+ },
+ "app/db/billing.py": {
+  "history": 2
+ },
+ "app/db/campaign.py": {
+  "history": 9
+ },
+ "app/db/client.py": {
+  "history": 3
+ },
+ "app/db/handbacks.py": {
+  "history": 10
+ },
+ "app/db/jobs.py": {
+  "history": 7
+ },
+ "app/db/profile.py": {
+  "history": 5
+ },
+ "app/db/resume.py": {
+  "history": 5
+ },
+ "app/db/screener_cache.py": {
+  "history": 1
+ },
+ "app/db/subscriptions.py": {
+  "history": 5
+ },
+ "app/db/user_day.py": {
+  "history": 3
+ },
+ "app/main.py": {
+  "history": 2
+ },
+ "app/ops_watch.py": {
+  "history": 3
+ },
+ "app/pool_sweep.py": {
+  "history": 1
+ },
+ "app/routers/activity.py": {
+  "history": 6
+ },
+ "app/routers/admin.py": {
+  "history": 6
+ },
+ "app/routers/affiliate.py": {
+  "history": 4
+ },
+ "app/routers/applications.py": {
+  "history": 3
+ },
+ "app/routers/billing.py": {
+  "history": 4
+ },
+ "app/routers/buddy.py": {
+  "history": 1
+ },
+ "app/routers/campaign.py": {
+  "history": 11
+ },
+ "app/routers/jobs.py": {
+  "history": 27
+ },
+ "app/routers/profile.py": {
+  "history": 5
+ },
+ "app/routers/tools.py": {
+  "history": 11
+ },
+ "app/schemas.py": {
+  "history": 1
+ },
+ "app/stall_watch.py": {
+  "history": 5
+ },
+ "chrome-extension/auto-daily.js": {
+  "history": 1
+ },
+ "chrome-extension/background.js": {
+  "empty_catch": 32,
+  "history": 67
+ },
+ "chrome-extension/content.js": {
+  "empty_catch": 10,
+  "history": 153
+ },
+ "chrome-extension/pill.js": {
+  "empty_catch": 1
+ },
+ "chrome-extension/ping.js": {
+  "history": 1
+ },
+ "chrome-extension/popup.js": {
+  "empty_catch": 10,
+  "history": 1
+ },
+ "chrome-extension/tests/applied-rollback.test.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/approved-first.test.js": {
+  "history": 3
+ },
+ "chrome-extension/tests/ashby-location-required.test.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/auto-daily.test.js": {
+  "empty_catch": 1,
+  "history": 1
+ },
+ "chrome-extension/tests/cf-wait-visible.test.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/combo-pass-budget.test.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/confirmation-not-skipped.test.js": {
+  "history": 8
+ },
+ "chrome-extension/tests/cover-letter-delivery.test.js": {
+  "history": 2
+ },
+ "chrome-extension/tests/diag-mask-pii.test.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/filler-honest.test.js": {
+  "history": 2
+ },
+ "chrome-extension/tests/fit-reuse.test.js": {
+  "history": 2
+ },
+ "chrome-extension/tests/form-blockers.test.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/gh-combo-labels.test.js": {
+  "history": 3
+ },
+ "chrome-extension/tests/gh-react-select-honest.test.js": {
+  "history": 3
+ },
+ "chrome-extension/tests/handback-posting-url.test.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/human-wall-handoff.test.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/indeed-auth-instant.test.js": {
+  "history": 3
+ },
+ "chrome-extension/tests/indeed-first-search-city.test.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/indeed-prejudge.test.js": {
+  "history": 8
+ },
+ "chrome-extension/tests/indeed-resume-choice.test.js": {
+  "history": 2
+ },
+ "chrome-extension/tests/indeed-sdr-retry.test.js": {
+  "history": 5
+ },
+ "chrome-extension/tests/indeed-session-renew.test.js": {
+  "history": 2
+ },
+ "chrome-extension/tests/job-location.test.js": {
+  "history": 2
+ },
+ "chrome-extension/tests/job-page-company.test.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/keyword-breadth.test.js": {
+  "history": 3
+ },
+ "chrome-extension/tests/lever-captcha-hands-back.test.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/list-title-prefilter.test.js": {
+  "history": 3
+ },
+ "chrome-extension/tests/native-watchdog-mutes.test.js": {
+  "history": 3
+ },
+ "chrome-extension/tests/offline-outbox.test.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/platform-order.test.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/pool-native-order.test.js": {
+  "history": 3
+ },
+ "chrome-extension/tests/review-submit-visible.test.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/review-wait-button.test.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/run-all.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/serp-decoy-card.test.js": {
+  "history": 2
+ },
+ "chrome-extension/tests/stall-needs-real-fill.test.js": {
+  "history": 2
+ },
+ "chrome-extension/tests/start-refusal-visible.test.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/stop-halts-walk.test.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/submit-belt.test.js": {
+  "history": 2
+ },
+ "chrome-extension/tests/title-match.test.js": {
+  "history": 2
+ },
+ "chrome-extension/tests/typed-inputs-filled.test.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/verify-baseline.test.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/wall-clear-needs-confirmation.test.js": {
+  "history": 1
+ },
+ "chrome-extension/tests/wall-cleared-by-clean-page.test.js": {
+  "history": 4
+ },
+ "chrome-extension/tests/work-status.test.js": {
+  "history": 3
+ },
+ "chrome-extension/tests/zr-dedupe-key.test.js": {
+  "history": 1
+ },
+ "config.py": {
+  "history": 3
+ },
+ "data/ats_watchlist.py": {
+  "history": 11
+ },
+ "modules/ai_cover_letter.py": {
+  "history": 8
+ },
+ "modules/ai_fit_judge.py": {
+  "history": 2
+ },
+ "modules/ai_job_scorer.py": {
+  "history": 3
+ },
+ "modules/ai_question_answer.py": {
+  "history": 9
+ },
+ "modules/ai_resume_tailor.py": {
+  "history": 2
+ },
+ "modules/ai_role_suggest.py": {
+  "history": 2
+ },
+ "modules/ats_pdf_generator.py": {
+  "history": 4
+ },
+ "modules/buddy.py": {
+  "history": 2
+ },
+ "modules/captcha_profile.py": {
+  "history": 1
+ },
+ "modules/employer_answers.py": {
+  "history": 11
+ },
+ "modules/fit_queue.py": {
+  "history": 12
+ },
+ "modules/job_identity.py": {
+  "history": 3
+ },
+ "modules/job_location.py": {
+  "history": 6
+ },
+ "modules/job_type.py": {
+  "history": 2
+ },
+ "modules/keyword_rotation.py": {
+  "history": 3
+ },
+ "modules/platforms/ats_boards.py": {
+  "history": 17
+ },
+ "modules/platforms/base.py": {
+  "history": 1
+ },
+ "modules/platforms/jobspy_platform.py": {
+  "history": 2
+ },
+ "modules/platforms/remoteok.py": {
+  "history": 1
+ },
+ "modules/platforms/wellfound.py": {
+  "history": 1
+ },
+ "modules/salary_filter.py": {
+  "history": 3
+ },
+ "modules/skills_resume.py": {
+  "history": 1
+ },
+ "modules/text_style.py": {
+  "history": 1
+ },
+ "scripts/ads_spend.py": {
+  "history": 3
+ },
+ "scripts/affiliate_admin.py": {
+  "history": 2
+ },
+ "scripts/affiliate_payout_e2e.py": {
+  "history": 2
+ },
+ "scripts/csp_violations.py": {
+  "history": 1
+ },
+ "scripts/cws_publish.py": {
+  "history": 1
+ },
+ "scripts/form_coverage.py": {
+  "history": 2
+ },
+ "scripts/gsc.py": {
+  "history": 2
+ },
+ "scripts/handback_reasons.py": {
+  "history": 4
+ },
+ "scripts/measure_handback_share.py": {
+  "history": 4
+ },
+ "scripts/measure_judge_calibration.py": {
+  "history": 2
+ },
+ "scripts/measure_letter_delivery.py": {
+  "history": 1
+ },
+ "scripts/measure_letter_models.py": {
+  "history": 4
+ },
+ "scripts/measure_pool_age.py": {
+  "history": 1
+ },
+ "scripts/meta_ads.py": {
+  "history": 1
+ },
+ "scripts/run_affiliate_payouts.py": {
+  "history": 1
+ },
+ "scripts/run_history.py": {
+  "history": 3
+ },
+ "scripts/sessions.py": {
+  "history": 1
+ },
+ "tests/test_admin_affiliates.py": {
+  "history": 2
+ },
+ "tests/test_ads.py": {
+  "history": 1
+ },
+ "tests/test_affiliate_connect.py": {
+  "history": 1
+ },
+ "tests/test_approved_waiting.py": {
+  "history": 2
+ },
+ "tests/test_assess_fit_batch.py": {
+  "history": 2
+ },
+ "tests/test_assess_fit_reuse.py": {
+  "history": 1
+ },
+ "tests/test_ats_pipeline.py": {
+  "history": 5
+ },
+ "tests/test_ats_queue.py": {
+  "history": 6
+ },
+ "tests/test_billing.py": {
+  "history": 3
+ },
+ "tests/test_buddy.py": {
+  "history": 1
+ },
+ "tests/test_campaign_heartbeat.py": {
+  "history": 4
+ },
+ "tests/test_campaign_queue.py": {
+  "history": 1
+ },
+ "tests/test_campaign_readiness.py": {
+  "history": 4
+ },
+ "tests/test_complete_keywords.py": {
+  "history": 1
+ },
+ "tests/test_cover_letter.py": {
+  "history": 5
+ },
+ "tests/test_craigslist_timeout.py": {
+  "history": 1
+ },
+ "tests/test_db_client.py": {
+  "history": 1
+ },
+ "tests/test_delete_account.py": {
+  "history": 3
+ },
+ "tests/test_describe_fills_identity.py": {
+  "history": 2
+ },
+ "tests/test_employer_answers_api.py": {
+  "history": 1
+ },
+ "tests/test_employment_seed.py": {
+  "history": 1
+ },
+ "tests/test_endpoints.py": {
+  "history": 2
+ },
+ "tests/test_ext_versions.py": {
+  "history": 1
+ },
+ "tests/test_fit_gate.py": {
+  "history": 2
+ },
+ "tests/test_fit_queue.py": {
+  "history": 8
+ },
+ "tests/test_get_profile_fields.py": {
+  "history": 2
+ },
+ "tests/test_handbacks.py": {
+  "history": 6
+ },
+ "tests/test_interview_kit.py": {
+  "history": 2
+ },
+ "tests/test_job_identity.py": {
+  "history": 1
+ },
+ "tests/test_job_location.py": {
+  "history": 9
+ },
+ "tests/test_job_type.py": {
+  "history": 3
+ },
+ "tests/test_keyword_rotation.py": {
+  "history": 4
+ },
+ "tests/test_letter_no_invention.py": {
+  "history": 2
+ },
+ "tests/test_meta_ads.py": {
+  "history": 1
+ },
+ "tests/test_ops_watch.py": {
+  "history": 1
+ },
+ "tests/test_platform_availability.py": {
+  "history": 2
+ },
+ "tests/test_platform_caps.py": {
+  "history": 2
+ },
+ "tests/test_pool_warmup.py": {
+  "history": 1
+ },
+ "tests/test_resume_read_fresh.py": {
+  "history": 1
+ },
+ "tests/test_resume_unique_path.py": {
+  "history": 2
+ },
+ "tests/test_role_suggest.py": {
+  "history": 1
+ },
+ "tests/test_run_affiliate_payouts.py": {
+  "history": 2
+ },
+ "tests/test_run_report.py": {
+  "history": 6
+ },
+ "tests/test_salary_filter.py": {
+  "history": 3
+ },
+ "tests/test_salary_gate.py": {
+  "history": 2
+ },
+ "tests/test_scorer_missing_description.py": {
+  "history": 1
+ },
+ "tests/test_screener_cache.py": {
+  "history": 1
+ },
+ "tests/test_screener_policy.py": {
+  "history": 10
+ },
+ "tests/test_screener_sees_posting.py": {
+  "history": 1
+ },
+ "tests/test_skills_resume.py": {
+  "history": 5
+ },
+ "tests/test_stall_watch.py": {
+  "history": 2
+ },
+ "tests/test_tailor_no_fabrication.py": {
+  "history": 1
+ },
+ "tests/test_tailor_on_apply.py": {
+  "history": 3
+ },
+ "tests/test_tailored_fingerprint.py": {
+  "history": 1
+ },
+ "tests/test_tap_deck.py": {
+  "history": 6
+ },
+ "tests/test_text_style.py": {
+  "history": 1
+ },
+ "tests/test_user_day.py": {
+  "history": 5
+ },
+ "tests/test_work_setting_persists.py": {
+  "history": 2
+ }
+}

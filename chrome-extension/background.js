@@ -276,6 +276,29 @@ async function apiGet(path, { retry = true } = {}) {
   return res.json();
 }
 
+// Igor's rule (10-08): text an employer reads carries no long dashes — they read as
+// machine-written. Hand-ported from modules/text_style.no_long_dashes (backend cleans at
+// generation; this is the belt on the last hop). Both run the shared table in
+// tests/fixtures/no-long-dashes-cases.json — extend the table, not one copy. Ranges keep
+// a plain hyphen, a line-edge dash is dropped, everything else becomes a comma without
+// touching punctuation the text already had ("e.g.," stays).
+function noLongDashes(text) {
+  if (!text) return text;
+  const PUNCT = ".,;:!?";
+  let t = String(text)
+    .replace(/(\d)[ \t]*(?:[\u2013\u2014]|--)[ \t]*(\d)/g, "$1-$2")
+    .replace(/(\w)\u2013(\w)/g, "$1-$2")
+    .replace(/^([ \t]*)(?:\u2014|\u2013|(?<!-)--(?!-))[ \t]*/gm, "$1")
+    .replace(/[ \t]*(?:\u2014|\u2013|(?<!-)--(?!-))[ \t]*$/gm, "");
+  return t.replace(/[ \t]*(?:\u2014|\u2013|(?<!-)--(?!-))[ \t]*/g, (m, off, str) => {
+    const nxt = str[off + m.length] || "";
+    if (PUNCT.includes(nxt)) return "";
+    const prev = off ? str[off - 1] : "";
+    if (PUNCT.includes(prev)) return " ";
+    return ", ";
+  });
+}
+
 async function apiPost(path, body, { retry = true } = {}) {
   const token = await getAuthToken();
   const headers = {
@@ -3087,7 +3110,9 @@ async function handleMessage(msg, sender) {
           new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 25000)),
         ]);
         if (result && result.letter) {
-          letter = result.letter;
+          // Belt for the no-long-dash rule (modules/text_style.py is the suspenders):
+          // an em dash in a letter reads as machine-written to an employer.
+          letter = noLongDashes(result.letter);
           source = "AI";
         }
       } catch {}
@@ -3173,7 +3198,10 @@ async function handleMessage(msg, sender) {
           }),
           new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 25000)),
         ]);
-        return { answer: (result && result.answer) || "" };
+        const answer = (result && result.answer) || "";
+        // Free text only: an option must stay verbatim or content.js can no longer
+        // match it against the form's own choices.
+        return { answer: Array.isArray(q.options) && q.options.length ? answer : noLongDashes(answer) };
       } catch {
         return { answer: "" };
       }

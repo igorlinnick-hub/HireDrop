@@ -119,6 +119,25 @@ PR (`npm run test:ext` → `tests/run-all.js`, находит файлы сам 
 отсутствующего `jsdom`. `package.json` в корне `jobflow/` — **dev-only и private**: ничего
 не публикуется, расширение npm-кода не грузит, единственная зависимость нужна только тестам.
 
+## Параллельные сессии: имя, лейн, цель — `docs/sessions/`
+
+SessionStart-хук (`.claude/settings.json` → `scripts/sessions.py hook`) сам даёт сессии имя
+(`amber-otter`, из id сессии) и печатает доску: кто жив, какой лейн, цель, чьи файлы пересекаются.
+Как только задача понятна — `python3 scripts/sessions.py claim --session <id> --lane <лейн> --goal
+"<что значит готово>" --now "<шаг>" --scope <файлы>`; шаг сменился — `beat --now`; лейн закрыт —
+`done`. `/clear` ставит лейн на ПАУЗУ (SessionEnd-хук): следующая сессия берёт его `claim --lane <лейн>`
+без `--goal` — цель, шаг и хендофф переходят. ⚠ ПЕРЕСЕЧЕНИЕ на доске = не правь эти файлы, пока
+не договорился через хендофф той сессии. Первая строка любого хендоффа — вывод `sessions.py sign`. Подробности — `docs/sessions/README.md`.
+
+**Одна задача — один исполнитель.** Лейн на доске держит живая сессия → не бери его, даже если
+задача кажется своей; продолжать можно только ПАУЗУ или STALE.
+
+**Работа не живёт только на диске (решение Игоря 10-08).** Лимит обрывает сессию посреди шага, и
+незакоммиченное остаётся запертым на одном компьютере (так ZR-фикс неделю лежал в `.wt-zr-truth`).
+Поэтому после КАЖДОГО законченного шага: коммит в свою рабочую ветку → `git push -u origin <ветка>`
+→ `sessions.py beat --branch <ветка> --now "<шаг>"`. В `main` — только через PR. Тогда оборванную
+сессию продолжает любая другая, в том числе облачная: ветка + хендофф с доски.
+
 ## Грабли, которые уже стоили часов
 
 **1. Расширение: репо — источник, Рабочий стол — копия.**
@@ -157,10 +176,36 @@ Service worker падает со статусом 15, и это выглядит
 ## Стиль
 
 - Отвечать Игорю по-русски, код и комментарии — по-английски.
-- Коммитить только по просьбе. На `main` — сначала ветка.
+- **Игорь много работает и не всегда дочитывает.** Главная мысль ответа — первой строкой
+  заголовком `##` (крупно), одной фразой. Если от него что-то нужно — отдельным заголовком
+  `## Нужно от тебя: …`. Детали ниже, коротко. Тон — живой, по-человечески, без канцелярита.
+- **Игорь не программист, учится по ходу.** Первые строки — только простыми словами, без
+  терминов: сложное слово в начале сбивает понимание всего остального. Термин (PR, хук, ветка,
+  лейн) — только ниже и сразу с объяснением в скобках, как в книге для изучающего язык.
+  Просьба к нему — что сделать руками и зачем, а не как это называется.
+- В свою рабочую ветку — коммит и пуш после каждого шага (см. «Параллельные сессии»). В `main` —
+  только по просьбе Игоря и через PR.
 - **Миграции Supabase применяет сессия сама** (09-05): `supabase link --project-ref
   msxjcjzmfruizbgkssxo --yes` во временной папке → `supabase db query --linked -f
   migrations/<файл>.sql` → `notify pgrst, 'reload schema'` → проверить колонку через REST.
   Игоря просить не нужно. **Порядок обязателен**: миграция ПЕРЕД мержем website-PR —
   карточка Settings пишет напрямую в PostgREST, и неизвестная колонка (PGRST204) валит
   весь сейв профиля, а не только новое поле.
+
+## Code standards
+
+Every diff, by the author, the review agents and CI. Sources: [google/eng-practices](https://google.github.io/eng-practices/review/reviewer/looking-for.html) (review standard, comments, CL descriptions), the [Google Python style guide](https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings) (comments, TODOs), react.dev [Removing Effect Dependencies](https://react.dev/learn/removing-effect-dependencies) (site). The same section lives in `jobflow-website/AGENTS.md`; change both.
+
+1. **Fix the cause, not the symptom.** Find where the wrong value is produced and fix it there. A guard at the place it shows up is a stopgap, allowed only in an emergency: its own PR titled `stopgap:`, plus an issue for the real fix. Example: an endpoint that overwrites fields the caller did not send is fixed in the endpoint, not by making every caller resend them.
+2. **Comments say why the code is the way it is now.** Not what it does (the code says that), not how it got here. Dates, PR or issue numbers, names, chat quotes, "reproduced on prod", "used to" go in the commit message and PR description, where `git blame` leads. A comment that only makes sense to someone who knew the old code is history: delete it. English only. CI: `scripts/standards_ratchet.py`.
+3. **No silent failures.** A `catch` / `except` handles the error (a recovery the user can see, a retry), re-raises it, or reports it. Ignoring is allowed only for an expected, harmless failure, and the block names it: `catch { /* private mode: the snapshot is optional */ }`. CI: ruff `S110`; JS `catch {}` in the ratchet.
+4. **Lint suppressions name the rule and the reason**: `// eslint-disable-next-line <rule> -- <why>`, `# noqa: <CODE>`. No blanket `# noqa` / `# type: ignore`. CI: ruff `PGH`.
+5. **The diff is as wide as the bug.** No drive-by refactors, renames or copy edits in a fix. User-facing wording is a product decision: show Igor "before → after" first.
+6. **One rule, one place.** Logic needed twice moves into a shared function or hook. A "same as X" comment over a copy is a duplicate.
+7. **Tests check behavior**: call the function, render the component, hit the endpoint. A regex over source files ("setWorkerUrl appears before new Map") passes on real bugs and fails on harmless refactors. A repo-wide scan is fine as a contract over data (every Settings link names a real section).
+8. **No TODO / FIXME / HACK in code.** Open an issue. No commented-out code. CI: ruff `FIX`.
+9. **The PR is the record.** Title: what changes, with a Conventional Commits prefix (`fix:`, `feat:`, `chore:`). Body: root cause → fix → how it was verified (commands, screenshots) → blast radius. History lives here.
+
+**Review.** Approve when the diff leaves the code healthier overall, even if not perfect ([standard of code review](https://google.github.io/eng-practices/review/reviewer/standard.html)). A violation of 1–8 blocks the merge; it is not a style note.
+
+**Old code.** Violations that predate a rule are frozen per file in `standards-baseline.json`; CI fails when a file's count goes up. Do not rewrite old comments en masse. Leave what you touch compliant, then `python scripts/standards_ratchet.py --update` to lock in the gain.
