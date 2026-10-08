@@ -10,8 +10,9 @@ session (one file each, so two sessions never edit the same file and git never c
     python3 scripts/sessions.py claim --lane ext --goal "ZR submits recorded in History" \\
         --now "finish .wt-zr-truth into a PR" --scope chrome-extension/content.js
     python3 scripts/sessions.py beat --now "PR #395 open, CI running"
+    python3 scripts/sessions.py sign                      # first line of the handoff
     python3 scripts/sessions.py done                      # the lane is finished: drop the claim
-    python3 scripts/sessions.py hook                      # SessionStart hook (.claude/settings.json)
+    python3 scripts/sessions.py hook | hook-end           # SessionStart / SessionEnd hooks
 
 The name is NOT chosen by anyone: it is derived from the Claude session id (adjective-noun),
 so the hook announces it before the first prompt and it stays the same across /compact.
@@ -24,6 +25,8 @@ Rules the file encodes (from claims-with-lease practice, Anthropic's long-runnin
   compaction the hook prints them back, so a session that drifted can return.
 - a claim not touched for STALE_HOURS is stale: its lane is free to take over (`claim` on the
   same lane replaces it and says so). A claim is a lease, not a lock.
+- /clear or exit (SessionEnd hook) PAUSES the claim: the lane keeps its goal, step and handoff,
+  and the next session that claims the lane continues it (goal is inherited, not retyped).
 - scope overlap with another live claim is reported loudly: that is the "two sessions in one
   content.js" accident CLAUDE.md warns about.
 """
@@ -39,8 +42,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SESSIONS_DIR = ROOT / "docs" / "sessions"
-STALE_HOURS = 8
-FIELDS = ("name", "session_id", "lane", "goal", "now", "scope", "branch", "started", "updated")
+STALE_HOURS = 8  # an active claim with no beat this long: the session died without saying so
+PAUSED_DAYS = 7  # a lane parked by /clear or exit waits this long for someone to pick it up
+FIELDS = (
+    "name",
+    "session_id",
+    "status",
+    "lane",
+    "goal",
+    "now",
+    "scope",
+    "branch",
+    "handoff",
+    "started",
+    "updated",
+)
 
 ADJECTIVES = [
     "amber",
@@ -181,12 +197,21 @@ def load_claims() -> list[dict]:
     return [parse_claim(p) for p in sorted(SESSIONS_DIR.glob("*.md")) if p.name != "README.md"]
 
 
+def is_paused(claim: dict) -> bool:
+    return claim.get("status") == "paused"
+
+
 def is_stale(claim: dict, at: datetime) -> bool:
     try:
         updated = datetime.fromisoformat(claim.get("updated", ""))
     except ValueError:
         return True
-    return at - updated > timedelta(hours=STALE_HOURS)
+    limit = timedelta(days=PAUSED_DAYS) if is_paused(claim) else timedelta(hours=STALE_HOURS)
+    return at - updated > limit
+
+
+def is_live(claim: dict, at: datetime) -> bool:
+    return not is_paused(claim) and not is_stale(claim, at)
 
 
 def scope_list(claim: dict) -> list[str]:
@@ -219,11 +244,20 @@ def age(claim: dict, at: datetime) -> str:
 
 
 def board_lines(claims: list[dict], me: str | None, at: datetime) -> list[str]:
-    live = [c for c in claims if not is_stale(c, at)]
+    live = [c for c in claims if is_live(c, at)]
+    paused = [c for c in claims if is_paused(c) and not is_stale(c, at)]
     stale = [c for c in claims if is_stale(c, at)]
     lines = []
     if not claims:
         return ["Нет ни одной заявленной сессии (docs/sessions/ пуст)."]
+    for c in paused:
+        lines.append(
+            f"· ПАУЗА [{c.get('lane', '?')}] (была {c['name']}, {age(c, at)} назад) — цель: {c.get('goal', '')}"
+        )
+        lines.append(
+            f"    остановилась на: {c.get('now', '')} · хендофф: {c.get('handoff') or '—'}"
+            f" · продолжить: claim --lane {c.get('lane', '?')}"
+        )
     for c in live:
         tag = " ← ты" if c["name"] == me else ""
         lines.append(
@@ -233,6 +267,8 @@ def board_lines(claims: list[dict], me: str | None, at: datetime) -> list[str]:
             lines.append(f"    сейчас: {c['now']}")
         if c.get("scope"):
             lines.append(f"    файлы: {c['scope']}")
+        if c.get("handoff"):
+            lines.append(f"    хендофф: {c['handoff']}")
     for c in stale:
         lines.append(
             f"· {c['name']} [{c.get('lane', '?')}] STALE {age(c, at)} — лейн свободен; цель была: {c.get('goal', '')}"
@@ -276,13 +312,16 @@ def cmd_claim(args) -> int:
     claims = load_claims()
     own = find_own(claims, sid) or {}
     name = own.get("name") or name_for(sid)
+    inherited: dict = {}
     for c in claims:
         if c["name"] == name or c.get("lane") != args.lane:
             continue
-        if is_stale(c, at):
+        if is_paused(c) or is_stale(c, at):
             c["path"].unlink()
+            inherited = inherited or c
             print(
-                f"Лейн {args.lane}: забрал у протухшей {c['name']} (цель была: {c.get('goal', '')})."
+                f"Лейн {args.lane}: продолжаю за {c['name']} — цель: {c.get('goal', '')} · "
+                f"остановилась на: {c.get('now', '')} · хендофф: {c.get('handoff') or '—'}"
             )
         else:
             print(
@@ -290,20 +329,27 @@ def cmd_claim(args) -> int:
                 "Договорись через её хендофф или возьми другой лейн.",
                 file=sys.stderr,
             )
+    prev = own or inherited
+    goal = args.goal or prev.get("goal")
+    if not goal:
+        print("Нужна --goal: лейн новый, продолжить нечего.", file=sys.stderr)
+        return 2
     claim = {
         "name": name,
         "session_id": sid,
+        "status": "active",
         "lane": args.lane,
-        "goal": args.goal,
-        "now": args.now or own.get("now", ""),
-        "scope": ",".join(args.scope) if args.scope else own.get("scope", ""),
-        "branch": args.branch or own.get("branch", ""),
+        "goal": goal,
+        "now": args.now or prev.get("now", ""),
+        "scope": ",".join(args.scope) if args.scope else prev.get("scope", ""),
+        "branch": args.branch or prev.get("branch", ""),
+        "handoff": args.handoff or prev.get("handoff", ""),
         "started": own.get("started") or at.isoformat(),
         "updated": at.isoformat(),
     }
     path = write_claim(claim)
     print(f"Ты — {name}, лейн {args.lane}. Заявка: {path.relative_to(ROOT)}")
-    others = [c for c in load_claims() if c["name"] != name and not is_stale(c, at)]
+    others = [c for c in load_claims() if c["name"] != name and is_live(c, at)]
     for c in others:
         hits = scopes_overlap(scope_list(claim), scope_list(c))
         if hits:
@@ -325,6 +371,9 @@ def cmd_beat(args) -> int:
         own["goal"] = args.goal
     if args.branch:
         own["branch"] = args.branch
+    if args.handoff:
+        own["handoff"] = args.handoff
+    own["status"] = "active"
     own["updated"] = now_utc().isoformat()
     write_claim(own)
     print(f"{own['name']}: обновлено.")
@@ -342,12 +391,42 @@ def cmd_done(args) -> int:
     return 0
 
 
-def cmd_hook(args) -> int:
-    """SessionStart hook: name the session, show the board, and on compact/resume — its own goal."""
+def cmd_sign(args) -> int:
+    """The line every handoff starts with — who wrote it, which lane, where it is going."""
+    sid = resolve_session_id(args.session)
+    own = find_own(load_claims(), sid) if sid else None
+    if not own:
+        print("У этой сессии нет заявки — сначала `claim`.", file=sys.stderr)
+        return 2
+    print(
+        f"Сессия: {own['name']} · лейн {own.get('lane')} · цель: {own.get('goal')} · "
+        f"шаг: {own.get('now')} · доска: `python3 scripts/sessions.py board`"
+    )
+    return 0
+
+
+def _read_hook_payload() -> dict:
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
-        payload = {}
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def cmd_hook_end(args) -> int:
+    """SessionEnd hook (/clear, exit): park the lane instead of leaving it to look alive."""
+    sid = _read_hook_payload().get("session_id") or ""
+    own = find_own(load_claims(), sid) if sid else None
+    if own:
+        own["status"] = "paused"
+        own["updated"] = now_utc().isoformat()
+        write_claim(own)
+    return 0
+
+
+def cmd_hook(args) -> int:
+    """SessionStart hook: name the session, show the board, and on compact/resume — its own goal."""
+    payload = _read_hook_payload()
     sid = payload.get("session_id") or ""
     source = payload.get("source", "startup")
     if not sid:
@@ -367,9 +446,11 @@ def cmd_hook(args) -> int:
         out.append(f"Обновлять: `python3 scripts/sessions.py beat --session {sid} --now '<шаг>'`.")
     else:
         out.append(
-            "Заявки нет. Как только понятна задача: `python3 scripts/sessions.py claim --session "
+            "Заявки нет. Продолжаешь лейн с ПАУЗЫ (после /clear) — `python3 scripts/sessions.py "
+            f"claim --session {sid} --lane <лейн>`: цель, шаг и хендофф перейдут к тебе. "
+            "Новая задача: `python3 scripts/sessions.py claim --session "
             f"{sid} --lane <лейн> --goal '<конечный результат одной строкой>' --now '<шаг>' "
-            "--scope <файлы,через,запятую>`. Меняется шаг — `beat --now`. Лейн закрыт — `done`."
+            "--scope <файлы,через,запятую>`. Меняется шаг — `beat --now`. Пишешь хендофф — первая строка из `sign`, путь `beat --handoff`. Лейн закрыт — `done`."
         )
     out.append("Кто ещё работает:")
     out.extend(board_lines(claims, name, now_utc()))
@@ -386,22 +467,29 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("claim")
     p.add_argument("--session")
     p.add_argument("--lane", required=True)
-    p.add_argument("--goal", required=True)
+    p.add_argument("--goal")
     p.add_argument("--now")
     p.add_argument("--scope", nargs="*")
     p.add_argument("--branch")
+    p.add_argument("--handoff")
     p.set_defaults(func=cmd_claim)
     p = sub.add_parser("beat")
     p.add_argument("--session")
     p.add_argument("--now")
     p.add_argument("--goal")
     p.add_argument("--branch")
+    p.add_argument("--handoff")
     p.set_defaults(func=cmd_beat)
     p = sub.add_parser("done")
     p.add_argument("--session")
     p.set_defaults(func=cmd_done)
+    p = sub.add_parser("sign")
+    p.add_argument("--session")
+    p.set_defaults(func=cmd_sign)
     p = sub.add_parser("hook")
     p.set_defaults(func=cmd_hook)
+    p = sub.add_parser("hook-end")
+    p.set_defaults(func=cmd_hook_end)
     args = parser.parse_args(argv)
     return args.func(args)
 

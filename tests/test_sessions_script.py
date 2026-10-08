@@ -62,7 +62,7 @@ def test_stale_claim_on_same_lane_is_taken_over(capsys):
     sessions.main(["claim", "--session", "new", "--lane", "ext", "--goal", "new goal"])
     claims = sessions.load_claims()
     assert [c["session_id"] for c in claims] == ["new"]
-    assert "забрал" in capsys.readouterr().out
+    assert "продолжаю за" in capsys.readouterr().out
 
 
 def test_live_claim_on_same_lane_is_kept_and_warned(capsys):
@@ -125,3 +125,49 @@ def test_hook_without_payload_is_silent(monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
     assert sessions.main(["hook"]) == 0
     assert capsys.readouterr().out == ""
+
+
+def test_clear_pauses_lane_and_next_session_continues_it(monkeypatch, capsys):
+    sessions.main(
+        ["claim", "--session", "s1", "--lane", "ext", "--goal", "ZR in History", "--now", "PR"]
+    )
+    sessions.main(["beat", "--session", "s1", "--handoff", "docs/handoff/apply-losses.md"])
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({"session_id": "s1"})))
+    assert sessions.main(["hook-end"]) == 0
+    [parked] = sessions.load_claims()
+    assert parked["status"] == "paused"
+    lines = sessions.board_lines([parked], None, sessions.now_utc())
+    assert any("ПАУЗА [ext]" in line for line in lines)
+
+    capsys.readouterr()
+    assert sessions.main(["claim", "--session", "s2", "--lane", "ext"]) == 0
+    [claim] = sessions.load_claims()
+    assert claim["session_id"] == "s2" and claim["status"] == "active"
+    assert (claim["goal"], claim["now"], claim["handoff"]) == (
+        "ZR in History",
+        "PR",
+        "docs/handoff/apply-losses.md",
+    )
+    assert "продолжаю за" in capsys.readouterr().out
+
+
+def test_paused_claim_does_not_count_as_overlap():
+    sessions.main(["claim", "--session", "a", "--lane", "ext", "--goal", "g", "--scope", "x/"])
+    [a] = sessions.load_claims()
+    a["status"] = "paused"
+    sessions.write_claim(a)
+    sessions.main(["claim", "--session", "b", "--lane", "web", "--goal", "g", "--scope", "x/y"])
+    lines = sessions.board_lines(sessions.load_claims(), None, sessions.now_utc())
+    assert not any("ПЕРЕСЕЧЕНИЕ" in line for line in lines)
+
+
+def test_new_lane_needs_a_goal():
+    assert sessions.main(["claim", "--session", "s1", "--lane", "new"]) == 2
+
+
+def test_sign_prints_handoff_line(capsys):
+    sessions.main(["claim", "--session", "s1", "--lane", "ext", "--goal", "G", "--now", "N"])
+    capsys.readouterr()
+    assert sessions.main(["sign", "--session", "s1"]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith(f"Сессия: {sessions.name_for('s1')} · лейн ext · цель: G · шаг: N")
