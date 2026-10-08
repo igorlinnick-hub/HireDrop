@@ -8,6 +8,7 @@ guarantees they appear naturally in the tailored output.
 """
 
 from config import ANTHROPIC_API_KEY
+from modules import ai_meter
 
 # Measured 2026-10-01 on two live Ashby postings (same prompt, same resume):
 #   sonnet-4-6  tailor 11-14s + structure 9-10s; retitled the headline and wrote Meta
@@ -115,6 +116,7 @@ Output the tailored resume text:"""
             thinking=NO_THINKING,
             messages=[{"role": "user", "content": prompt}],
         )
+        ai_meter.record(message, "resume_tailor")
         return reply_text(message)
     except Exception as e:
         print(f"[tailor] Failed: {e}")

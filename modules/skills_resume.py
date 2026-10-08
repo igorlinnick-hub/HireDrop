@@ -19,6 +19,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
 from config import ANTHROPIC_API_KEY
+from modules import ai_meter
 from modules.ats_pdf_generator import (
     _MARGIN,
     SONNET_MODEL,
@@ -217,6 +218,7 @@ RESUME TEXT:
             max_tokens=2000,
             messages=[{"role": "user", "content": prompt}],
         )
+        ai_meter.record(message, "skills_resume")
         raw = message.content[0].text.strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]

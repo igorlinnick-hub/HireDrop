@@ -7,6 +7,7 @@ verdict + reasons + flags, and extract ATS keywords from the job description.
 import json
 
 from config import ANTHROPIC_API_KEY
+from modules import ai_meter
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
@@ -71,6 +72,7 @@ ats_keywords: extract 5-12 critical terms an ATS would filter on — skills, too
             max_tokens=400,
             messages=[{"role": "user", "content": prompt}],
         )
+        ai_meter.record(message, "job_score")
         raw = message.content[0].text.strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]

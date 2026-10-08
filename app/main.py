@@ -149,6 +149,32 @@ async def request_timing(request, call_next):
     return response
 
 
+class AIMeterScope:
+    """Gives every request its own box for the user its AI calls are charged to
+    (modules/ai_meter.py). Pure ASGI and added last, so it is the outermost layer: the box
+    exists before the auth dependency fills it, and the endpoint, which FastAPI runs on a
+    copy of this context, reads the same box. Threads the code starts itself do not
+    inherit it — they bind their user with ai_meter.attributed."""
+
+    def __init__(self, app_):
+        self.app = app_
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        from modules import ai_meter
+
+        token = ai_meter.bind_request()
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            ai_meter.unbind(token)
+
+
+app.add_middleware(AIMeterScope)
+
+
 app.include_router(jobs.router, prefix="/api/v1")
 app.include_router(applications.router, prefix="/api/v1")
 app.include_router(campaign.router, prefix="/api/v1")

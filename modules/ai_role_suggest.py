@@ -18,6 +18,7 @@ a hidden 35/55/70 fit threshold.
 import json
 
 from config import ANTHROPIC_API_KEY
+from modules import ai_meter
 from modules.ai_cover_letter import get_anthropic_client
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
@@ -71,6 +72,7 @@ def suggest_roles(resume_text: str | None, limit: int = _MAX_SUGGESTIONS) -> lis
                 {"role": "user", "content": f"<resume>\n{text[:_MAX_RESUME_CHARS]}\n</resume>"}
             ],
         )
+        ai_meter.record(message, "role_suggest")
         raw = (message.content[0].text or "").strip()
         start, end = raw.find("["), raw.rfind("]")
         data = json.loads(raw[start : end + 1]) if start != -1 and end != -1 else []
