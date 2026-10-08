@@ -69,6 +69,7 @@ if (!region || !clearFn || !logoutFn || !hostsConst) {
 }
 
 const NOW = Date.now();
+const BUILD = "9.9.9";
 const minsAgo = (n) => NOW - n * 60 * 1000;
 
 /**
@@ -91,6 +92,8 @@ async function tick(store, { liveTabs = [7] } = {}) {
           async set(obj) { Object.assign(store, obj); },
         },
       },
+      // The running build: logoutIsTrustworthy drops a logged_out stamped by any other one.
+      runtime: { getManifest: () => ({ version: BUILD }) },
       tabs: {
         async get(id) {
           if (!liveTabs.includes(id)) throw new Error("No tab with id " + id);
@@ -227,7 +230,7 @@ const WALL = { url: "https://www.indeed.com/viewjob?jk=abc", site: "Indeed", kin
   // --- 5. The logged_out mute is scoped to the board THIS walk is on. --------------------
   {
     const store = walk({
-      platformConnections: { ziprecruiter: { status: "logged_out", checkedAt: minsAgo(2) } },
+      platformConnections: { ziprecruiter: { status: "logged_out", checkedAt: minsAgo(2), extVersion: BUILD } },
     });
     const { reloaded } = await tick(store);
     check("a ZR login wall does not mute an INDEED walk", reloaded.length === 1,
@@ -236,7 +239,7 @@ const WALL = { url: "https://www.indeed.com/viewjob?jk=abc", site: "Indeed", kin
   {
     const store = walk({
       campaignTargetUrl: "https://www.ziprecruiter.com/jobs-search?search=nurse",
-      platformConnections: { indeed: { status: "logged_out", host: "secure.indeed.com", checkedAt: minsAgo(20) } },
+      platformConnections: { indeed: { status: "logged_out", host: "secure.indeed.com", checkedAt: minsAgo(20), extVersion: BUILD } },
     });
     const { reloaded } = await tick(store);
     check("the board a login wall already failed over from does not mute the new one",
@@ -244,7 +247,7 @@ const WALL = { url: "https://www.indeed.com/viewjob?jk=abc", site: "Indeed", kin
   }
   {
     const store = walk({
-      platformConnections: { indeed: { status: "logged_out", host: "secure.indeed.com", checkedAt: minsAgo(2) } },
+      platformConnections: { indeed: { status: "logged_out", host: "secure.indeed.com", checkedAt: minsAgo(2), extVersion: BUILD } },
     });
     const { reloaded } = await tick(store);
     check("a fresh login wall on the walked board DOES mute it", reloaded.length === 0);
@@ -252,7 +255,7 @@ const WALL = { url: "https://www.indeed.com/viewjob?jk=abc", site: "Indeed", kin
   {
     // Same 11-min band as the captcha case: the human is typing their password right now.
     const store = walk({
-      platformConnections: { indeed: { status: "logged_out", host: "secure.indeed.com", checkedAt: minsAgo(11) } },
+      platformConnections: { indeed: { status: "logged_out", host: "secure.indeed.com", checkedAt: minsAgo(11), extVersion: BUILD } },
     });
     const { reloaded } = await tick(store);
     check("a login wall past the silence window but inside its pause still mutes it",
@@ -260,16 +263,26 @@ const WALL = { url: "https://www.indeed.com/viewjob?jk=abc", site: "Indeed", kin
   }
   {
     const store = walk({
-      platformConnections: { indeed: { status: "logged_out", host: "www.indeed.com", checkedAt: minsAgo(2) } },
+      platformConnections: { indeed: { status: "logged_out", host: "www.indeed.com", checkedAt: minsAgo(2), extVersion: BUILD } },
     });
     const { reloaded } = await tick(store);
     check("an untrustworthy indeed logged_out (search host, not an apply host) mutes nothing",
       reloaded.length === 1, "logoutIsTrustworthy must stay in the path");
   }
   {
+    // 10-08: a logged_out outlived the detector that wrote it. A record from another build
+    // describes no wall this build is parked at.
+    const store = walk({
+      platformConnections: { indeed: { status: "logged_out", host: "secure.indeed.com", checkedAt: minsAgo(2), extVersion: "9.9.8" } },
+    });
+    const { reloaded } = await tick(store);
+    check("a login wall stamped by ANOTHER build mutes nothing", reloaded.length === 1,
+      "logoutIsTrustworthy's version rule must stay in the path");
+  }
+  {
     const store = walk({
       campaignTargetUrl: "https://boards.greenhouse.io/acme/jobs/1",
-      platformConnections: { indeed: { status: "logged_out", host: "secure.indeed.com", checkedAt: minsAgo(2) } },
+      platformConnections: { indeed: { status: "logged_out", host: "secure.indeed.com", checkedAt: minsAgo(2), extVersion: BUILD } },
     });
     const { reloaded } = await tick(store);
     check("a target that is not one of the three walkable boards takes no board mute",
