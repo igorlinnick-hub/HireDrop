@@ -284,6 +284,14 @@ def update_radius(user_id: str, miles: int | None) -> None:
     ).eq("user_id", user_id).execute()
 
 
+def save_search_prefs(user_id: str, prefs: dict) -> dict:
+    """Write the search preferences in `prefs` and no other column, so whatever the
+    caller left out keeps its saved value exactly, "" (Any) and [] included."""
+    if prefs:
+        get_supabase().table("profiles").update(prefs).eq("user_id", user_id).execute()
+    return get_profile(user_id)
+
+
 def update_ats(user_id: str, data: dict) -> None:
     """Partial update — only ATS fields. Does not touch other profile columns."""
     payload = {
