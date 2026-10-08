@@ -21,6 +21,19 @@ def test_relocation_and_location_questions_are_circumstances():
     assert pf.topic_of("When can you start?") == "start_date"
 
 
+def test_the_shared_table_python_side():
+    """The extension classifies the same way (content.js circumstanceTopic) — both run
+    chrome-extension/tests/fixtures/circumstance-topics.json; extend the table, not a copy."""
+    import json
+    from pathlib import Path
+
+    table = (
+        Path(__file__).parent.parent / "chrome-extension/tests/fixtures/circumstance-topics.json"
+    )
+    for question, topic in json.loads(table.read_text()):
+        assert pf.topic_of(question) == topic, question
+
+
 def test_experience_questions_that_mention_a_topic_word_are_not():
     # The resume answers these — they must keep going to the normal answerer.
     assert pf.topic_of("Describe your experience working night shifts") is None

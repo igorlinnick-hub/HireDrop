@@ -1927,7 +1927,45 @@ function notifyOpenHireDrop(title, message, path) {
   } catch { /* notifications must never break a start */ }
 }
 
+// "A question only you can answer" — once per question (normalised label), so a run that
+// meets the same relocation question on ten forms says it once. The click opens the popup
+// where the question is asked; where Chrome can't open it, History (same list).
+const HD_ASK_NOTIF_PREFIX = "hd-ask|";
+async function notifyPersonalQuestion(ask) {
+  const question = String((ask && ask.question) || "").trim();
+  if (!question) return;
+  const key = question.toLowerCase().replace(/\s+/g, " ").replace(/[\s*:]+$/, "");
+  const st = await chrome.storage.local.get(["personalQuestionsAsked"]);
+  const asked = Array.isArray(st.personalQuestionsAsked) ? st.personalQuestionsAsked : [];
+  if (asked.includes(key)) return;
+  await chrome.storage.local.set({ personalQuestionsAsked: [...asked, key].slice(-50) });
+  const earlier = Array.isArray(ask.related) && ask.related[0] ? ask.related[0] : null;
+  try {
+    chrome.notifications.create(`${HD_ASK_NOTIF_PREFIX}${Date.now()}`, {
+      type: "basic",
+      iconUrl: "icons/icon128.png",
+      title: "A question only you can answer",
+      message: question.slice(0, 160) +
+        (earlier ? `\nEarlier you said: ${String(earlier.answer || "").slice(0, 80)}` : "") +
+        "\nAnswer once in HireDrop, and we'll remember it.",
+      priority: 1,
+    });
+  } catch { /* a notification must never break the form */ }
+}
+
 chrome.notifications.onClicked.addListener((id) => {
+  if (typeof id === "string" && id.indexOf(HD_ASK_NOTIF_PREFIX) === 0) {
+    chrome.notifications.clear(id);
+    const fallback = () =>
+      chrome.tabs.create({ url: "https://hiredrop.io/dashboard/history" }).catch(() => {});
+    try {
+      // Chrome 127+: opens the popup, where the question card is on top.
+      const p = chrome.action.openPopup && chrome.action.openPopup();
+      if (p && p.catch) p.catch(fallback);
+      else if (!p) fallback();
+    } catch { fallback(); }
+    return;
+  }
   if (typeof id !== "string" || id.indexOf(HD_OPEN_NOTIF_PREFIX) !== 0) return;
   const path = id.slice(HD_OPEN_NOTIF_PREFIX.length).split("|")[0] || "/dashboard";
   const url = `https://hiredrop.io${path.charAt(0) === "/" ? path : "/dashboard"}`;
@@ -3082,6 +3120,35 @@ async function handleMessage(msg, sender) {
       }
     }
 
+    // Questions only the person can answer, asked once and remembered for every form
+    // (app/routers/personal.py). The popup shows them; answering one re-queues the jobs
+    // it completes.
+    case "GET_PERSONAL_QUESTIONS": {
+      try {
+        const r = await apiGet("/personal-questions?limit=5");
+        return { ok: true, questions: r.questions || [] };
+      } catch (e) {
+        // Unreachable is not "nothing to ask" (same rule as GET_HANDBACKS).
+        return { ok: false, questions: [] };
+      }
+    }
+
+    case "ANSWER_PERSONAL_QUESTION": {
+      const a = msg.data || {};
+      try {
+        const r = await apiPost("/profile/facts", {
+          question: String(a.question || "").slice(0, 300),
+          answer: String(a.answer || "").slice(0, 500),
+          replace_ids: Array.isArray(a.replace_ids) ? a.replace_ids.slice(0, 10) : [],
+          in_letters: !!a.in_letters,
+          source: "popup",
+        });
+        return { ok: true, requeued: r.requeued || 0, still_waiting: r.still_waiting || 0 };
+      } catch (e) {
+        return { ok: false, status: e.status || 0, error: e.detail || e.message || "failed" };
+      }
+    }
+
     case "RESOLVE_HANDBACK": {
       try {
         await apiPost(`/handbacks/${encodeURIComponent(msg.id)}/resolve`, {});
@@ -3199,11 +3266,15 @@ async function handleMessage(msg, sender) {
             options: Array.isArray(q.options) ? q.options.slice(0, 30) : [],
             job_title: q.job_title || "",
             company: q.company || "",
+            job_location: String(q.job_location || "").slice(0, 300),
             job_id: jobId,
           }),
           new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 25000)),
         ]);
         const answer = (result && result.answer) || "";
+        // Only the person can answer this one (relocate, live near, on-site…): tell them
+        // now, once per question — the popup asks it and the answer is remembered.
+        if (!answer && result && result.ask_person) notifyPersonalQuestion(result.ask_person).catch(() => {});
         // Free text only: an option must stay verbatim or content.js can no longer
         // match it against the form's own choices.
         return { answer: Array.isArray(q.options) && q.options.length ? answer : noLongDashes(answer) };
