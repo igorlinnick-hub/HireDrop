@@ -2874,6 +2874,20 @@ async function handleMessage(msg, sender) {
         cover_letter: appData.cover_letter || "",
         status: appData.status || "applied",
       };
+      // The questions and the answers we gave, snapshotted by content.js before each
+      // Continue/Submit (collectFormAnswers). Matched to THIS application by its url or
+      // title+company, then cleared so it can never ride along with the next one.
+      try {
+        const { formAnswers } = await chrome.storage.local.get("formAnswers");
+        const low = (x) => String(x || "").trim().toLowerCase();
+        if (formAnswers && Date.now() - (formAnswers.ts || 0) < 60 * 60 * 1000 &&
+            ((formAnswers.url && formAnswers.url === savePayload.job_url) ||
+             (low(formAnswers.title) && low(formAnswers.title) === low(savePayload.job_title) &&
+              low(formAnswers.company) === low(savePayload.company)))) {
+          savePayload.form_answers = formAnswers.items || [];
+          await chrome.storage.local.remove("formAnswers");
+        }
+      } catch { /* the copy is a courtesy; the application row is not */ }
       let serverResult = null;
       try {
         serverResult = await apiPost("/applications/save", savePayload);
