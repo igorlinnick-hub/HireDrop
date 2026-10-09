@@ -55,6 +55,21 @@ USAGE (from jobflow/, service_role + Anthropic keys in .env)
   .venv/bin/python scripts/measure_judge_calibration.py --user <uuid> --user <uuid> \\
       --per-user 200 --budget 3.0 --out <dir>                              # judge + report
   .venv/bin/python scripts/measure_judge_calibration.py --user <uuid> --report-only --out <dir>
+  .venv/bin/python scripts/measure_judge_calibration.py --user <uuid> --user <uuid> \\
+      --per-user 200 --budget 4.0 --out <dir> \\
+      --candidate claude-haiku-5-5 --candidate claude-haiku-5-5+claude-sonnet-5-5
+
+CANDIDATE MODELS (--candidate SCREEN[+JUDGE], repeatable)
+  Is a cheaper judge as good? Every row the current cascade judged is judged again by the
+  candidate — same posting, same resume, same prompt — so the model is the only variable.
+  SCREEN alone = one model decides everything (no escalation); SCREEN+JUDGE = the same
+  cascade with other models. The report lines up both verdicts: how often they agree,
+  every FALSE REJECT (the current judge applies, the candidate would skip: an application
+  lost) and FALSE ACCEPT (an application wasted), and $ per verdict for each. The current
+  judge is the reference, not the truth — read the disagreements before switching. A
+  reasonable bar for switching: false rejects at most 1 in 20 of the current passes, and
+  each one reads as a borderline call. Rows land in <dir>/candidates.jsonl; re-running
+  resumes them, and --budget covers baseline and candidates together.
 
   Default users = top 3 by applications in the last 30 days. Re-running with the same
   --out resumes: rows already in <dir>/judged.jsonl are not paid for again, and the
@@ -66,6 +81,7 @@ row); stops submitting before --budget can be crossed.
 """
 
 import argparse
+import contextlib
 import json
 import os
 import random
@@ -78,8 +94,6 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import UTC, date, datetime, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-# Measurement spend is not product spend: keep it out of the ledger (modules/ai_meter.py).
-os.environ.setdefault("AI_METER", "off")
 
 import config  # noqa: E402,F401  — loads .env before the clients read the keys
 from app.db import jobs as jobs_db  # noqa: E402
@@ -93,15 +107,10 @@ from app.routers.jobs import (  # noqa: E402
     fresh_enough,
     on_search_filter,
 )
-from modules import ai_cover_letter, ai_fit_judge  # noqa: E402
+from modules import ai_cover_letter, ai_fit_judge, ai_meter  # noqa: E402
+from modules.ai_models import plain_answer_kwargs, reply_text  # noqa: E402
 from modules.fit_queue import COMPANY_WINDOW_DAYS, company_cap, company_key  # noqa: E402
 
-# $ per million tokens (input, output), Anthropic list prices — same table as
-# measure_ai_cost.py. A model missing here aborts the run instead of costing $0.
-PRICES = {
-    "claude-sonnet-4-6": (3.0, 15.0),
-    "claude-haiku-4-5-20251001": (1.0, 5.0),
-}
 # Worst case for ONE assess_fit: Haiku + Sonnet, ~2.6k input tokens each, max_tokens=400.
 # Used only as the safety margin of the budget stop.
 MAX_JOB_USD = 0.02
@@ -160,7 +169,7 @@ def _parse_raw_score(message) -> int | None:
     """Each model's own fit_score, for cascade agreement. Telemetry only — the verdict
     is whatever assess_fit returns."""
     try:
-        raw = (message.content[0].text or "").strip()
+        raw = reply_text(message)
         start, end = raw.find("{"), raw.rfind("}")
         return ai_fit_judge._parse_score(json.loads(raw[start : end + 1]))
     except Exception:
@@ -170,11 +179,11 @@ def _parse_raw_score(message) -> int | None:
 # ---------------------------------------------------------------- shims
 
 
-def install_shims() -> None:
+def install_shims(models: list[str]) -> None:
     """Record usage on every judge call; memoise the resume download per URL."""
-    for model in (ai_fit_judge._SCREEN_MODEL, ai_fit_judge._JUDGE_MODEL):
-        if model not in PRICES:
-            raise SystemExit(f"no price for {model} — add it to PRICES before spending")
+    for model in models:
+        if ai_meter.price_of(model) is None:
+            raise SystemExit(f"no price for {model} — add it to ai_meter.PRICES before spending")
 
     real = ai_cover_letter.get_anthropic_client()
 
@@ -182,8 +191,7 @@ def install_shims() -> None:
         def create(self, **kwargs):
             message = real.messages.create(**kwargs)
             usage = message.usage
-            price_in, price_out = PRICES[kwargs["model"]]
-            usd = (usage.input_tokens * price_in + usage.output_tokens * price_out) / 1e6
+            usd = float(ai_meter.cost_usd(kwargs["model"], usage) or 0)
             calls = getattr(_ctx, "calls", None)
             if calls is not None:
                 calls.append(
@@ -435,15 +443,31 @@ def load_rows(path: str) -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
-def run_judge(users: list[dict], out_path: str, budget: float, workers: int) -> None:
-    prior = load_rows(out_path)
+def run_judge(
+    users: list[dict],
+    out_path: str,
+    budget: float,
+    workers: int,
+    candidate: str | None = None,
+    only: set | None = None,
+) -> None:
+    """Judge each user's sample (or, for a candidate, the rows in `only`) into out_path.
+    SPENT must already hold everything spent before — main() counts both files once."""
+    prior = [r for r in load_rows(out_path) if r.get("candidate") == candidate]
     done = {(r["user_id"], r["job_id"]) for r in prior if r.get("judged")}
-    SPENT["usd"] = sum(r.get("cost_usd") or 0 for r in prior)
-    print(f"\nprior rows: {len(prior)} (${SPENT['usd']:.4f} already spent) · budget ${budget:.2f}")
+    label = f"candidate {candidate}" if candidate else "current judge"
+    print(f"\n{label}: {len(prior)} prior rows · ${SPENT['usd']:.4f} spent · budget ${budget:.2f}")
 
     # Round-robin across users, newest first within each: a budget stop leaves every
     # user with a comparable sample instead of one fully judged and one untouched.
-    queues = [[(u, j) for j in u["cands"] if (u["uid"], j["id"]) not in done] for u in users]
+    queues = [
+        [
+            (u, j)
+            for j in u["cands"]
+            if (u["uid"], j["id"]) not in done and (only is None or (u["uid"], j["id"]) in only)
+        ]
+        for u in users
+    ]
     order = []
     for i in range(max((len(q) for q in queues), default=0)):
         order.extend(q[i] for q in queues if i < len(q))
@@ -472,6 +496,8 @@ def run_judge(users: list[dict], out_path: str, budget: float, workers: int) -> 
             finished, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
             for f in finished:
                 row = f.result()
+                if candidate:
+                    row["candidate"] = candidate
                 out.write(json.dumps(row, ensure_ascii=False) + "\n")
                 out.flush()
                 n_done += 1
@@ -708,10 +734,117 @@ def report(users: list[dict], out_dir: str, seed: int) -> None:
     print(f"wrote {out_dir}/summary.json, sheets.jsonl")
 
 
+# ---------------------------------------------------------------- candidates
+
+
+def parse_candidate(spec: str) -> tuple[str, str | None]:
+    """ "SCREEN" -> one model decides; "SCREEN+JUDGE" -> the cascade with these models.
+    A model the judge cannot ask for a plain answer is refused before anything is spent."""
+    screen, _, judge = spec.partition("+")
+    models = screen.strip(), (judge.strip() or None)
+    for model in filter(None, models):
+        try:
+            plain_answer_kwargs(model)
+        except ValueError as e:
+            raise SystemExit(str(e)) from e
+    return models
+
+
+@contextlib.contextmanager
+def judge_config(screen: str, judge: str | None):
+    """Run assess_fit with other models for the length of a phase. Phases run one after
+    another, so no worker ever sees a half-switched judge."""
+    keep = (ai_fit_judge._SCREEN_MODEL, ai_fit_judge._JUDGE_MODEL, ai_fit_judge._CASCADE_ON)
+    ai_fit_judge._SCREEN_MODEL = screen
+    ai_fit_judge._JUDGE_MODEL = judge or screen
+    ai_fit_judge._CASCADE_ON = judge is not None
+    try:
+        yield
+    finally:
+        ai_fit_judge._SCREEN_MODEL, ai_fit_judge._JUDGE_MODEL, ai_fit_judge._CASCADE_ON = keep
+
+
+def compare(baseline: list[dict], candidates: list[dict], spec: str) -> dict:
+    """The candidate's verdicts lined up against the current judge's, row by row."""
+    ref = {(r["user_id"], r["job_id"]): r for r in baseline if r.get("judged")}
+    mine = [c for c in candidates if c.get("candidate") == spec]
+    pairs = [
+        (ref[(c["user_id"], c["job_id"])], c)
+        for c in mine
+        if c.get("judged") and (c["user_id"], c["job_id"]) in ref
+    ]
+    false_rejects = [(b, c) for b, c in pairs if b["decision"] == "apply" != c["decision"]]
+    false_accepts = [(b, c) for b, c in pairs if b["decision"] == "skip" != c["decision"]]
+    passes = sum(1 for b, _ in pairs if b["decision"] == "apply")
+    cost_b = sum(b.get("cost_usd") or 0 for b, _ in pairs)
+    cost_c = sum(c.get("cost_usd") or 0 for _, c in pairs)
+    n = len(pairs)
+    return {
+        "candidate": spec,
+        "paired": n,
+        # A row that failed and was judged on a resumed run is decided, not undecided.
+        "unjudged": len(
+            {(c["user_id"], c["job_id"]) for c in mine if not c.get("judged")}
+            - {(c["user_id"], c["job_id"]) for c in mine if c.get("judged")}
+        ),
+        "agree": round(1 - (len(false_rejects) + len(false_accepts)) / n, 3) if n else None,
+        "current_passes": passes,
+        "false_rejects": len(false_rejects),
+        "false_reject_share_of_passes": round(len(false_rejects) / passes, 3) if passes else None,
+        "false_accepts": len(false_accepts),
+        "mean_abs_score_diff": round(
+            sum(abs((b["fit_score"] or 0) - (c["fit_score"] or 0)) for b, c in pairs) / n, 1
+        )
+        if n
+        else None,
+        "usd_per_verdict_current": round(cost_b / n, 5) if n else None,
+        "usd_per_verdict_candidate": round(cost_c / n, 5) if n else None,
+        "cheaper_by": round(cost_b / cost_c, 1) if cost_c else None,
+        "false_reject_rows": false_rejects,
+        "false_accept_rows": false_accepts,
+    }
+
+
+def compare_report(baseline: list[dict], candidates: list[dict], spec: str, out_dir: str) -> None:
+    c = compare(baseline, candidates, spec)
+    print("\n" + "=" * 100)
+    print(f"CANDIDATE {spec} vs the current judge — {c['paired']} rows judged by both")
+    if not c["paired"]:
+        return
+    print(
+        f"  same decision {c['agree']:.0%} · false rejects {c['false_rejects']} "
+        f"({c['false_reject_share_of_passes'] or 0:.0%} of {c['current_passes']} current passes) · "
+        f"false accepts {c['false_accepts']} · mean |score diff| {c['mean_abs_score_diff']} · "
+        f"undecided {c['unjudged']}"
+    )
+    print(
+        f"  $ per verdict: current {c['usd_per_verdict_current']} → candidate "
+        f"{c['usd_per_verdict_candidate']} ({c['cheaper_by']}x cheaper)"
+    )
+    for title, rows in (
+        ("FALSE REJECTS — current applies, candidate skips (read every one)", "false_reject_rows"),
+        ("FALSE ACCEPTS — current skips, candidate applies", "false_accept_rows"),
+    ):
+        print(f"\n  {title}: current score → candidate score | user | title | company | why")
+        for b, cand in c[rows][:25]:
+            print(
+                f"   {b['fit_score']:>3} → {cand['fit_score']:>3} | {b['user']} | "
+                f"{_words(b['title'], 8)} | {b['company']} | {_words(cand.get('reason') or '', 25)}"
+            )
+    slim = {k: v for k, v in c.items() if not k.endswith("_rows")}
+    name = "compare_" + "".join(ch if ch.isalnum() else "_" for ch in spec) + ".json"
+    with open(os.path.join(out_dir, name), "w") as f:
+        json.dump(slim, f, indent=2)
+    print(f"  wrote {out_dir}/{name}")
+
+
 # ---------------------------------------------------------------- main
 
 
 def main() -> int:
+    # Measurement spend is not product spend: keep it out of the ledger (modules/ai_meter.py).
+    # Set here, not on import, so a process that only imports these helpers keeps its meter.
+    os.environ.setdefault("AI_METER", "off")
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--user", action="append", help="user_id to measure (repeatable)")
     ap.add_argument("--top", type=int, default=3, help="default: top N by applications in 30 days")
@@ -731,6 +864,12 @@ def main() -> int:
     )
     ap.add_argument("--dry-run", action="store_true", help="funnel only — no Anthropic calls")
     ap.add_argument("--report-only", action="store_true", help="re-summarise judged.jsonl — $0")
+    ap.add_argument(
+        "--candidate",
+        action="append",
+        default=[],
+        help="SCREEN[+JUDGE] models to judge the same rows with (repeatable)",
+    )
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -747,13 +886,27 @@ def main() -> int:
     if args.dry_run:
         return 0
 
+    judged_path = os.path.join(args.out, "judged.jsonl")
+    cand_path = os.path.join(args.out, "candidates.jsonl")
     if not args.report_only:
-        install_shims()
+        models = [ai_fit_judge._SCREEN_MODEL, ai_fit_judge._JUDGE_MODEL]
+        for spec in args.candidate:
+            models += [m for m in parse_candidate(spec) if m]
+        install_shims(models)
         for u in users:
             u["resume_chars"] = preflight_resume(u["uid"], u["profile"])
             print(f"  resume ok for {u['label']}: {u['resume_chars']} chars")
-        run_judge(users, os.path.join(args.out, "judged.jsonl"), args.budget, args.workers)
+        SPENT["usd"] = sum(
+            r.get("cost_usd") or 0 for r in load_rows(judged_path) + load_rows(cand_path)
+        )
+        run_judge(users, judged_path, args.budget, args.workers)
+        baseline = {(r["user_id"], r["job_id"]) for r in load_rows(judged_path) if r.get("judged")}
+        for spec in args.candidate:
+            with judge_config(*parse_candidate(spec)):
+                run_judge(users, cand_path, args.budget, args.workers, spec, baseline)
     report(users, args.out, args.seed)
+    for spec in args.candidate:
+        compare_report(load_rows(judged_path), load_rows(cand_path), spec, args.out)
     return 0
 
 

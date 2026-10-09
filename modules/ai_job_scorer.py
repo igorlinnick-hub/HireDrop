@@ -8,6 +8,8 @@ import json
 
 from config import ANTHROPIC_API_KEY
 from modules import ai_meter
+from modules.ai_cover_letter import get_anthropic_client
+from modules.ai_models import plain_answer_kwargs, refused, reply_text
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
 
@@ -29,9 +31,7 @@ def score_job(job: dict, profile: dict, resume_text: str = "") -> dict:
         return _default_score()
 
     try:
-        import anthropic
-
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        client = get_anthropic_client()
 
         job_text = _format_job(job)
         profile_text = _format_profile(profile, resume_text)
@@ -71,9 +71,13 @@ ats_keywords: extract 5-12 critical terms an ATS would filter on — skills, too
             model=HAIKU_MODEL,
             max_tokens=400,
             messages=[{"role": "user", "content": prompt}],
+            **plain_answer_kwargs(HAIKU_MODEL),
         )
         ai_meter.record(message, "job_score")
-        raw = message.content[0].text.strip()
+        if refused(message):
+            print(f"[scorer] {HAIKU_MODEL} declined to score")
+            return _default_score()
+        raw = reply_text(message)
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):

@@ -8,6 +8,7 @@ import anthropic
 
 from config import ANTHROPIC_API_KEY
 from modules import ai_meter
+from modules.ai_models import plain_answer_kwargs, refused, reply_text
 from modules.text_style import no_long_dashes
 
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "..", "templates", "cover_letter.txt")
@@ -335,9 +336,14 @@ Candidate background (from resume):
             max_tokens=512,
             system=system,
             messages=[{"role": "user", "content": prompt}],
+            **plain_answer_kwargs(model),
         )
         ai_meter.record(message, "cover_letter")
-        return to_plain_letter(strip_preamble(message.content[0].text))
+        if refused(message):
+            return fallback_template(job, profile)
+        return to_plain_letter(strip_preamble(reply_text(message))) or fallback_template(
+            job, profile
+        )
     except Exception as e:
         print(f"[cover_letter] AI generation failed: {e}")
         return fallback_template(job, profile)

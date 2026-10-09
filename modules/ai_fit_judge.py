@@ -33,6 +33,7 @@ import os
 from config import ANTHROPIC_API_KEY
 from modules import ai_meter
 from modules.ai_cover_letter import get_anthropic_client, resume_text_for
+from modules.ai_models import plain_answer_kwargs, refused, reply_text
 
 _MAX_DESC_CHARS = 2500
 _MAX_Q = 20
@@ -206,9 +207,13 @@ def _call_model(model: str, system: str, prompt: str) -> dict | None:
             max_tokens=400,
             system=system,
             messages=[{"role": "user", "content": prompt}],
+            **plain_answer_kwargs(model),
         )
         ai_meter.record(message, "fit_judge")
-        raw = (message.content[0].text or "").strip()
+        if refused(message):
+            print(f"[fit_judge] {model} declined to judge")
+            return None
+        raw = reply_text(message)
         start, end = raw.find("{"), raw.rfind("}")
         if start == -1 or end == -1:
             return None

@@ -15,7 +15,10 @@ import re
 from config import ANTHROPIC_API_KEY
 from modules import ai_meter, personal_facts
 from modules.ai_cover_letter import get_anthropic_client, resume_text_for
+from modules.ai_models import plain_answer_kwargs, refused, reply_text
 from modules.text_style import no_long_dashes
+
+SCREENER_MODEL = "claude-sonnet-4-6"
 
 # Hard cap so a malicious/huge question can't blow up the prompt or cost.
 _MAX_QUESTION_CHARS = 600
@@ -638,13 +641,17 @@ Candidate background (from resume):
     try:
         client = get_anthropic_client()
         message = client.messages.create(
-            model="claude-sonnet-4-6",
+            model=SCREENER_MODEL,
             max_tokens=256,
             system=_system_prompt() + (_UNATTENDED_RULES if unattended else ""),
             messages=[{"role": "user", "content": prompt}],
+            **plain_answer_kwargs(SCREENER_MODEL),
         )
         ai_meter.record(message, "screener_answer")
-        answer = (message.content[0].text or "").strip()
+        if refused(message):
+            print(f"[answer_question] {SCREENER_MODEL} declined to answer")
+            return ""
+        answer = reply_text(message)
     except Exception as e:
         print(f"[answer_question] AI generation failed: {e}")
         return ""
