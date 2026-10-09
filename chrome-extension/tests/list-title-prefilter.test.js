@@ -46,6 +46,8 @@ function slice(from, to) {
 const TITLE_BLOCK = slice("  // ── Title relevance", "  // A react-select keeps");
 const INDEED_LIST = slice("  function extractCardInfo(card) {", "  async function getAppliedUrls() {");
 const ZR_LIST = slice("  async function phase1_ziprecruiter() {", "  async function phase2_ziprecruiter() {");
+// ZR cards carry their place line (tests/zr-submit-truth.test.js covers the reader itself).
+const ZR_CARD_PLACE = slice("  function readZipRecruiterCardLocation(cardEl) {", "  function readZipRecruiterLocation(");
 const ZR_BADGE = (SRC.match(/^ {2}const ZR_NATIVE_BADGE_RE = .*$/m) || [""])[0];
 if (!ZR_BADGE) { console.error("ZR_NATIVE_BADGE_RE moved"); process.exit(2); }
 
@@ -85,7 +87,7 @@ function world({ html, url, platform, store }) {
     storageSet: async (patch) => { rec.sets.push(patch); Object.assign(store, patch); },
   };
   vm.createContext(box);
-  vm.runInContext(`${TITLE_BLOCK}\n${ZR_BADGE}\n${INDEED_LIST}\n${ZR_LIST}\n` +
+  vm.runInContext(`${TITLE_BLOCK}\n${ZR_BADGE}\n${INDEED_LIST}\n${ZR_CARD_PLACE}\n${ZR_LIST}\n` +
     "this.phase1_indeed = phase1_indeed; this.phase1_ziprecruiter = phase1_ziprecruiter;", box);
   return { box, rec, store };
 }
@@ -178,6 +180,9 @@ const pendingOf = (store) => (store.pendingJobs || []).map((j) => j.title);
     check("zr: ONE summary line for the page",
       lines.length === 1 && /^Skipped 4 of 20 cards/.test(lines[0]), JSON.stringify(rec.backend));
     check("zr: opens the first matching card", rec.navTo === store.pendingJobs[0].url && /lk=/.test(rec.navTo || ""), rec.navTo);
+    check("zr: every pending card keeps its place line (History's place filter)",
+      store.pendingJobs.every((j) => /, [A-Z]{2}\b/.test(j.location || "")),
+      JSON.stringify(store.pendingJobs.map((j) => j.location).slice(0, 3)));
   }
 
   // --- ZipRecruiter, all off-title: next page, phrase NOT retired ----------------------

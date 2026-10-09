@@ -304,7 +304,7 @@ const DOMESTIC = [
   const CB_CODE =
     `${SRC.match(/const FIELDISH_SELECTOR =\s*\n?\s*'[^']*';/)[0]}\n` +
     [
-      ["  function getFieldLabel(el) {", null], ["  function visibleApplyDialogs() {", null], ["  function formScope() {", null],
+      ["  function getFieldLabel(el) {", null], ["  function isShownDialog(d) {", null], ["  function visibleApplyDialogs() {", null], ["  function formScope() {", null],
     ].map(([sig]) => {
       const at = SRC.indexOf(sig); const open = SRC.indexOf("{", at + sig.length - 1); let d = 0;
       for (let i = open; i < SRC.length; i++) { if (SRC[i] === "{") d++; else if (SRC[i] === "}" && --d === 0) return SRC.slice(at, i + 1); }

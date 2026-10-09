@@ -237,6 +237,7 @@ const stop = (store) => { store.campaignRunning = false; };
       sleep: async () => {},
       humanDelay: () => 0,
       readZipRecruiterCompany: () => "Acme Dental",
+      readZipRecruiterLocation: () => "Houston, TX · On-site",
       jobIdFromUrl: () => "SJQj3h4stZuPhfYM0UTJjA",
       zrDedupeKey: (u) => u,
       getAppliedUrls: async () => new Set(),
