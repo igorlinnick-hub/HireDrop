@@ -1,4 +1,4 @@
-Сессия: calm-quail · лейн drop-finish · цель: Хендбэк: «Let Drop finish it» перезаполняет форму в видимом окне до стены; логистика → Yes; копия Q&A в History · шаг: п.1 и п.2 в main, п.3 спроектирован · доска: `python3 scripts/sessions.py board`
+Сессия: calm-quail · лейн drop-finish · цель: Хендбэк: «Let Drop finish it» перезаполняет форму в видимом окне до стены; логистика → Yes; копия Q&A в History · шаг: п.1+п.2 выпущены в 1.8.46, п.3 спроектирован · доска: `python3 scripts/sessions.py board`
 
 # drop-finish — хендбэк доводится роботом, человек делает один шаг
 
@@ -6,17 +6,18 @@
 
 ## Состояние
 
-- **П.1 логистика → «Yes»: в main (#410), у юзеров НЕТ.** Бэкенд `_willing_yes`
+- **П.1 логистика → «Yes»: выпущен в ext 1.8.46 (#410, #414).** Бэкенд `_willing_yes`
   (`modules/ai_question_answer.py`) работает до модели, но после личного ответа человека
   (personal_facts, #401). Расширение: `isWillingnessQuestion` + `fillCheckboxes` + Ashby yes/no-кнопки.
   Тест на живой разметке Suno.
 - **П.2 копия Q&A в History: в main (#411 + web #327), колонка `applications.form_answers` в проде.**
   Расширение: `collectFormAnswers` / `snapshotFormAnswers` перед каждым Continue/Submit. background
   прикладывает копию в обработчике `APPLICATION_SAVED`. Сайт: `AnswersBlock` «What we answered for you».
-  **У юзеров НЕТ**, пока расширение не выпущено. Блок пустой у старых заявок.
+  Выпущено в 1.8.46. Блок пустой у старых заявок. Кнопку «Change» под ответами делает teal-fox
+  (лейн drop-actions, AnswersBlock вынесен в свой файл) → `/profile/facts`.
 - **П.3 «Let Drop finish it»: не начат, дизайн ниже.**
-- Расширение: main = 1.8.45 + п.1 + п.2 без бампа. Релиз (бамп → sync → CWS) ждёт окончания
-  контрольного прогона plum-salmon и OFF/ON 1.8.45 у teal-fox.
+- **Ext 1.8.46 (10-09):** синкнут на Рабочий стол (папка была `dataless`, синк её восстановил),
+  zip `dist/hiredrop-ext-1.8.46.zip` отправлен в CWS на ревью. У Игоря нужен OFF/ON.
 
 ## Последний заход
 
@@ -50,6 +51,6 @@
 
 ## Следующий шаг
 
-Модель: **Opus**. Выпустить расширение с п.1+п.2, когда соседи закончат (бамп → sync → OFF/ON →
-`cws_publish.py`). Затем п.3 по дизайну выше, `blast-radius` до мержа (content.js, background,
+Модель: **Opus**. Первая подача на 1.8.46 → проверить, что в History появился блок с ответами
+(`form_answers` не пустой). Затем п.3 по дизайну выше, `blast-radius` до мержа (content.js, background,
 ping.js, очередь). Живой тест на GH-форме с email-кодом: стена до Submit, без отправки чужим.
