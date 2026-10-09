@@ -1,49 +1,43 @@
 # drop-actions — Drop с кнопками, память ответов о себе, наблюдение за Drop
 
-Сессия: teal-fox · лейн drop-actions · Обновлено: 2026-10-09 · ветка: main (бэкенд слит), сайт — `feat/drop-cards` в hiredrop-website
+Сессия: teal-fox · лейн drop-actions · Обновлено: 2026-10-09 · ветка: main · ЛЕЙН ЗАКРЫТ (ждёт недельного замера)
 
 ## Состояние
 
-- **Бэкенд в проде** (PR #401, `3b06dea`): факты о человеке (`modules/personal_facts.py`,
-  `profiles.personal_facts`), ответчик сперва смотрит в память и на вопросы-обстоятельства
-  (переезд, где живёшь, офис, командировки, смены, дата выхода) отвечает только из фактов,
-  иначе `ask_person`; письмо знает город вакансии; эндпоинты `/personal-questions`,
-  `/profile/facts` (GET/POST/DELETE), `/profile/ats/contact`, `/buddy/feedback`; Drop с
-  `propose_action` (карточки, путь задаёт сервер) — включается только флагом `cards: true` с сайта.
-- **Миграция** `add_personal_facts.sql` применена 10-09, колонка читается из прода.
-- **Расширение 1.8.45**: на Рабочем столе (sync-ext), в CWS отправлено на ревью 10-09
-  (`dist/hiredrop-ext-1.8.45.zip`). Пока стор раздаёт 1.8.44: радио/селекты на «relocate?»
-  по-старому жмут Yes; обязательные текстовые вопросы-обстоятельства («when can you start?»)
-  уходят в хендбэк — отвечать в History, ответ запоминается.
-- **Наблюдение**: каждый ход Drop → `activity_log` (phase `buddy`); `scripts/buddy_review.py`;
-  ежедневный шаг «3в. Drop вчера» в prod-sweep (корневой `.claude/skills/prod-sweep/SKILL.md`,
-  коммит `00d5e0e`), пробный прогон 10-09: 0 вопросов, чисто.
-- **Сайт в проде** (web #325, `df63f92`): карточки Drop (`cards: true`), 👍/👎, скрепка PDF,
-  `/dashboard/history?app=<id>`, «Only you can answer» в History, «About you» в Settings.
-  Живой карточки Drop end-to-end ещё не было.
+- **Всё в проде**: бэкенд #401 (миграция `personal_facts` применена), сайт web #325 (карточки Drop,
+  👍/👎, скрепка, `?app=`, «Only you can answer», «About you») и web #328 («Change» под каждым
+  ответом в History «What we answered for you» → `POST /profile/facts`, source `history`).
+- **Решение Игоря 10-09**: на логистику (переезд/офис/выходные/командировки) отвечаем «Yes» без
+  вопросов (#410, лейн drop-finish), человек правит в History кнопкой Change, правка запоминается и
+  идёт во все следующие формы раньше дефолта и модели. Факты о себе («живёте рядом с X?», дата
+  выхода, виза, аттестации) по-прежнему уходят человеку.
+- **Расширение**: 1.8.45 (3b06dea) у Игоря в Chrome (подтвердила plum-salmon), в CWS на ревью с 10-09.
+  Следующий релиз 1.8.46 (п.1+п.2 drop-finish: логистика Yes + снимок формы) делает calm-quail;
+  до него `form_answers` пустые и кнопка Change не видна.
+- **Живая проверка 10-09 под `+buyer1`**: факт сохраняется → тот же вопрос отвечается из него
+  (`from_user`) → удаляется; Drop с `cards:true` на «покажи заявку Linear» даёт карточку
+  `open_application` с `navigate=/dashboard/history?app=<id>`; feedback пишется. Тестовые строки удалены.
+- **Наблюдение**: шаг «3в. Drop вчера» в prod-sweep; разовый разбор недели — launchd
+  `com.igor.drop-week-review` 2026-10-16 09:25 (`.claude/scheduled/drop-week-review.sh` в корне,
+  отчёт → `docs/reviews/2026-10-16-drop-week.md` корня + уведомление, задача удаляет себя).
 
 ## Последний заход
 
-- teal-fox (10-09): миграция → ревью-агент по стыкам (старое ext против нового бэкенда, IDOR,
-  кэш, таймауты content.js — всё SAFE) → полный прогон в worktree (pytest 74%, ruff, ratchet,
-  ext 57/57) → мерж #401 → Railway раскатил → sync-ext + CWS ship → шаг в prod-sweep.
-  Запущен агент на сайт.
+- teal-fox (10-09): миграция → ревью стыков → мерж #401 → sync + CWS → prod-sweep → web #325 →
+  живая проверка → web #328 (Change), согласовано с calm-quail (AnswersBlock мой, ряды хендбэков её).
 
 ## Сломано
 
-- Ничего не сломано. Риски: Игорь ещё не делал OFF/ON 1.8.45 (проверить версию в попапе);
-  `/buddy/feedback` принимает любой `turn_id` (пишет под своим user_id, но джойн голосов в
-  админке `buddy_log.py:183` не по user — косметика); факты одним jsonb (≤40), два окна
-  одновременно могут потерять ответ; `openPopup()` из уведомления — Chrome 127+.
-- В основной копии hiredrop-website лежат чужие незакоммиченные правки чата (`BuddyPanel.tsx`,
-  `Buddy.tsx`, `DropFigure.tsx`) — при мерже `feat/drop-cards` возможен конфликт.
+- Мелочь: Drop называет `date_applied` (дата без времени) как полночь UTC в поясе юзера —
+  заявка от 10-09 звучит «Oct 8, 2:00 PM» на Гавайях. Где-то в `modules/buddy_facts.py`.
+- Вопрос длиннее 200 символов: снимок формы режет `q` до 200, `personal_facts.match` сравнивает
+  целиком → правка такого вопроса из History не совпадёт со следующей формой. Редко.
+- Риски с #401 в силе: факты одним jsonb (≤40), `openPopup()` — Chrome 127+.
 
 ## Следующий шаг
 
-Модель: **Opus**. Живая проверка под `+buyer1`: спросить Drop про заявку → карточка Open → History
-раскрыта; добавить факт в About you. Через неделю (~10-16): `buddy_review.py --days 7`,
-`measure_handback_share.py --days 7`, `handback_reasons.py --days 7` — ждём рост хендбэков
-на переезд/офис/смены первые дни, потом спад. Проверить `cws_publish.py status` (1.8.45 опубликована?).
+Модель: **Sonnet** хватит. 10-16 прочитать отчёт launchd (`docs/reviews/2026-10-16-drop-week.md`),
+по нему решить: чинить ли дату в Drop, сколько правок через Change, вышла ли 1.8.45/1.8.46 в CWS.
 
 ## Контракт для сайта (hiredrop-website) — пока НЕ сделан
 
