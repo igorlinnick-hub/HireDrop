@@ -226,7 +226,7 @@ def test_ask_emits_the_card_and_reports_answer_and_cards_on_done():
 
 def test_cost_is_tokens_times_list_price():
     usage = {"input": 1_000_000, "output": 100_000, "cache_read": 1_000_000, "cache_write": 0}
-    assert buddy_log.cost_usd(usage, "claude-sonnet-5-5") == pytest.approx(2.0 + 1.0 + 0.2)
+    assert buddy_log.cost_usd(usage, "claude-sonnet-5-5") == pytest.approx(2.0 + 1.0 + 0.1)
     assert buddy_log.cost_usd(usage, "some-unknown-model") is None
 
 
