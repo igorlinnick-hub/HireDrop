@@ -1,46 +1,40 @@
 # apply-losses — где теряются подачи: хендбэки, ответы в формах, обход Indeed/ZR
 
-Обновлено: 2026-10-06 (ночь) · ветка: main · ext main = **1.8.43** (#378 #381 #382 #383) · **CWS: 1.8.43 отправлен на ревью**
-(1.8.41 раздаётся). Длинная хронология 09-30…10-06 — `git log -p docs/handoff/apply-losses.md`.
+Сессия: maple-stoat · лейн ext-zr-truth · цель: ZR 1-click заявки пишутся в History (не Skip) и с городом; проверено живой ZR-заявкой · шаг: #398 в main (1.8.45), синк на Рабочий стол ✅; живая ZR-заявка заблокирована классификатором прав → ждёт разрешения Игоря · доска: `python3 scripts/sessions.py board`
+
+Обновлено: 2026-10-09 · ветка: main · ext main = **1.8.45** (#398) · CWS: 1.8.43 на ревью. Хронология — `git log -p` этого файла.
 
 ## Состояние
 
-- Живой Indeed на 1.8.43 (22:42Z): 3 подачи / 12 мин, все в `applications`. Вживую подтверждены #381 (карточки
-  отсеиваются на выдаче, строка «Skipped N of M cards»), #382 (ротация ключевиков), кап компании, fit-отсев.
-- **ZipRecruiter сломан тихо:** Quick Apply подаёт в один клик/после одного Continue, ZR показывает диалог
-  `Close | Send a Message | Skip for Now`, а мы пишем «Skip (no ZR form after 40s)» или хендбэк → в `applications` 0 строк
-  (с 09-06 записана 1 ZR-заявка). Ground truth — ziprecruiter.com/candidate/my-jobs («Applied Today» ×3 за 10-06:
-  Equation Events, MLW Hire, Crush Innovations — НЕ внесены, решение Игоря). Плюс степ-луп кликал пагинацию выдачи
-  «next page» ×10 как кнопку формы. Масштаб мал: ZR гонял только Игорь (6 кликов за 2 дня).
-- drive.py: `open` подхватывает окно автоматизации прошлого прогона → «btn-ext-reload not found»; обход — закрыть
-  окна автоматизации по id перед прогоном. `verify.sh` «no rows» врёт (заявки были). `--platform` пишет
-  `profiles.platforms` — вернул `['greenhouse','remoteok']`.
+- Живой Indeed на 1.8.43: 3 подачи / 12 мин, все в `applications`; #381 #382 кап компании, fit-отсев — подтверждены вживую.
+- **ZR (#398, 1.8.45, в main и на Рабочем столе Игоря, вживую НЕ проверен):** экран ZR после подачи
+  (`Send a Message | Skip for Now`, `bsf-*`, «has been submitted») = заявка → `recordSubmittedApplication`; выход —
+  «Skip for Now», «Send a Message» в `DENY_BTN_RE`. Панель «Applied» считается только без открытых окон (пустая
+  Close-оболочка ZR между шагами ≠ конец). Сигнал читается ДО Stop. `_phase3_fillForm` спрашивает ZR в начале шага и
+  перед каждым отказом (`zrFiledDuringForm`). Пагинация выдачи — не кнопка формы (`isPageNavControl`), кнопки модалки
+  ZR ищутся только в модалке (`formLivesInDialog`). Город: карточка `job-card-location` + шапка панели → `/jobs/describe`.
+- Защита от ложного «подано» проверена фикстурами + 2 скептиками; экран после подачи никогда не снимался — его
+  разметка из бандла ZR, доказательство только живой заявкой.
 
-## Последний заход (10-06 ночь)
+## Последний заход (10-08…09, maple-stoat)
 
-- Смержены #382 (ledger капа ключевика со своей датой и ключом-фразой — вчерашние доли гасили прогон),
-  #381 (+ `run_report` считает «Skipped N of M cards» как N), #378 (5 раундов скептика; 0 «прав→неправ»).
-- Открыты, скептики работали в момент /clear (отчёты в новую сессию НЕ придут):
-  **#384** Indeed: Veteran Status (decline-опция с кривым апострофом ’ не узнавалась) + лимит «shorter than 100
-  characters» (обрезка своих ответов по границе фразы); агент заявил, что main на радиогруппах Indeed читал 1-ю
-  опцию как вопрос и мог выбрать «Male» — **проверить**. **#385** вкладка кампании: адопция только smartapply/auth от
-  кампанийной вкладки, `RECLAIM_CAMPAIGN_TAB` на «no form after Apply»/ZR «no form», idle-вкладка перепроверяет
-  (156 таких зависаний с 09-01). Ветка **`ext-zr-submit-truth`** — агент чинил ZR (успех по post-apply диалогу,
-  запрет пагинации как шага); PR мог не открыться — сверить `gh pr list`; пересекается с #385 в ZR no-form пути.
+- Доделал брошенную `.wt-zr-truth` → #398: город, многошаговые формы, флаг модалки, 9 находок скептиков, стандарты кода
+  #393 (комментарии без истории, один `isShownDialog`, тесты вызывают код: `zr-submit-truth.test.js` гоняет настоящие
+  `phase2_ziprecruiter` и `_phase3_fillForm` через Proxy-песочницу).
+- Blast radius: `isDeniedFormButton`/`visibleApplyDialogs` старый vs новый по всем фикстурам — у Ashby/GH/Indeed 0 изменений.
+- `drive.py run auto --platform ziprecruiter` **заблокирован классификатором прав** (Real-World Transactions) — живую
+  подачу запускает только Игорь или разрешение в настройках. `profiles.platforms` до прогона: igor = `["indeed","remoteok"]`.
+- #401 (сессия teal-fox) тоже бампал 1.8.45 и правит content.js — оставлен коммент: rebase + 1.8.46.
 
 ## Сломано / не доделано
 
-- ZR — см. выше; пока не смержен фикс, ZR-прогоны не гонять.
-- `screener_answer_cache` отдаётся раньше `_status_from_profile` (старые «Yes» на «legally work…», 80 строк).
-- `diag.reqEmpty` врёт. Worktree'ы `.wt-*` в `~/Code/JobFlow/` удалить после мержей (Игорю — классификатор режет).
+- ZR вживую не проверен (см. выше). Низкие риски скептика оставлены: нет проверки экрана «подано» ДО клика;
+  старый поиск кнопки Apply по всей странице. ZR-харвест в пул шлёт без города (город доходит только при подаче).
+- #384, #385 открыты (#385 пересекается с #398 в ветке `if (!formReady)` — при ребейзе оставить запись `applied` выше).
+- `screener_answer_cache` раньше `_status_from_profile`; `diag.reqEmpty` врёт; worktree'ы `.wt-*` удалить (Игорю).
 
 ## Следующий шаг
 
-Модель: **Opus**. Скептики заново на #384, #385 (blast-radius: background.js адопция) и PR ветки `ext-zr-submit-truth`
-(PR не открыт: агент умер на лимите; в `.wt-zr-truth` НЕзакоммиченные правки content.js + 2 снятых
-с живого ZR фикстуры `ziprecruiter-serp-1click-pane.html` / `-applied-pane.html` — дописать оттуда, не терять;
-в тот же PR: ZR-путь `recordJobDescription` (`content.js` ~3309) без `jobLocation` → ZR-заявки в History = «No location»,
-передать как Indeed с 1.8.43 — корневой `JobFlow/docs/handoff/history-places.md`) → мерж (`gh pr update-branch` + CI) → бамп 1.8.44 →
-`scripts/sync-ext.sh` → живой ZR и Indeed (`drive.py run auto --platform …`; «давай» есть; окна автоматизации закрыть
-по id до старта) → zip (файлы `chrome-extension/` без tests, см. состав 1.8.43) → `cws_publish.py ship` после одобрения
-1.8.43. **Ждёт Игоря:** внести 3 ZR-заявки задним числом? · год окончания · порог fit 35/32 · street address.
+Модель: **Opus**. Получив разрешение Игоря на живую подачу: `drive.py run auto --minutes 20 --platform ziprecruiter`,
+остановить на первой ZR-строке в `applications` (`scripts/e2e/sql.sh`), проверить в History место (не «No location»),
+вернуть `profiles.platforms` igor = `["indeed","remoteok"]` → `zip` + `cws_publish.py ship` после одобрения 1.8.43.
