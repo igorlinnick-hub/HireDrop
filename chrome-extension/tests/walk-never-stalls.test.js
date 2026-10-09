@@ -87,9 +87,11 @@ async function run(sandbox, expr) {
     // The real shape (React-controlled screener): radios with no name attribute at
     // all, grouped only by their fieldset. Plus a normal named group after them —
     // if the nameless one throws, the named one never fills and the job is lost.
+    // The legend is a question a default may answer; a relocation question may not
+    // (the check below and circumstance-questions.test.js).
     const sb = makeSandbox(`
       <fieldset>
-        <legend>Are you willing to relocate?</legend>
+        <legend>Can you lift 25 pounds?</legend>
         <input type="radio" id="nr-yes"><label for="nr-yes">Yes</label>
         <input type="radio" id="nr-no"><label for="nr-no">No</label>
       </fieldset>
@@ -108,6 +110,20 @@ async function run(sandbox, expr) {
     check("the named group after it still fills (job proceeds)",
       sb.document.getElementById("a-yes").checked === true, "auth=Yes not picked");
     check("both groups counted as filled", filled === 2, `filled=${filled}`);
+  }
+  {
+    // A circumstance question with no remembered answer stays blank (the backend said
+    // nothing): the person answers it once, instead of the default "Yes" answering for them.
+    const sb = makeSandbox(`
+      <fieldset>
+        <legend>Are you willing to relocate?</legend>
+        <input type="radio" name="reloc" id="r-yes"><label for="r-yes">Yes</label>
+        <input type="radio" name="reloc" id="r-no"><label for="r-no">No</label>
+      </fieldset>`);
+    const filled = await run(sb, "fillRadioQuestions()");
+    check("relocation with no answer on file is left for the person",
+      !sb.document.getElementById("r-yes").checked && !sb.document.getElementById("r-no").checked && filled === 0,
+      `filled=${filled}`);
   }
   {
     // A nameless radio with NO enclosing fieldset/radiogroup either — worst case,

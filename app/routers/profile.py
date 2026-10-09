@@ -528,7 +528,11 @@ def ats_structure_put(body: dict, user=Depends(get_current_user)):
     model on its way back in. That is the whole point — the user is here because the
     generated resume got something about their own life wrong.
     """
-    structure = sanitize_structure(body.get("structure") or {})
+    return _save_structure(user.id, sanitize_structure(body.get("structure") or {}))
+
+
+def _save_structure(user_id: str, structure: dict):
+    """Validate, re-render (PDF + DOCX, no model call) and store an ATS structure."""
     if not structure.get("name"):
         return JSONResponse(
             status_code=400, content={"error": "Name is required — it heads the resume."}
@@ -548,15 +552,15 @@ def ats_structure_put(body: dict, user=Depends(get_current_user)):
         print(f"[profile] structure re-render failed: {e}", file=sys.stderr)
         return JSONResponse(status_code=500, content={"error": "Could not rebuild the resume"})
 
-    ats_path = resume_storage.upload_ats(user.id, ats_pdf_bytes)
+    ats_path = resume_storage.upload_ats(user_id, ats_pdf_bytes)
     try:
-        resume_storage.upload_ats_docx(user.id, ats_docx_bytes, ats_path)
+        resume_storage.upload_ats_docx(user_id, ats_docx_bytes, ats_path)
     except Exception as e:
         print(f"[profile] DOCX upload failed (non-fatal): {e}", file=sys.stderr)
 
     # An edit invalidates the score: it was measured on the previous render.
     profile_db.update_ats(
-        user.id,
+        user_id,
         {
             "ats_resume_url": ats_path,
             "ats_structure": structure,
@@ -565,13 +569,35 @@ def ats_structure_put(body: dict, user=Depends(get_current_user)):
             "ats_checked_at": None,
         },
     )
-    _seed_postal_from_resume(user.id, structure)
+    _seed_postal_from_resume(user_id, structure)
 
     return {
         "success": True,
         "structure": structure,
-        "preview_url": resume_storage.signed_download_url_ats(user.id),
+        "preview_url": resume_storage.signed_download_url_ats(user_id),
     }
+
+
+@router.post("/profile/ats/contact")
+def ats_contact_location(body: dict, user=Depends(get_current_user)):
+    """Change only the city line on the ATS resume ("San Diego, CA") and re-render it.
+
+    The one-field edit behind Drop's "put San Diego on my resume" card (the person's click
+    sends this; Drop never does). No model call, no quota — same path as the editor's save,
+    so the PDF prints exactly what was confirmed.
+    """
+    location = " ".join(str((body or {}).get("location") or "").split())[:120]
+    if not location:
+        return JSONResponse(status_code=400, content={"error": "location is required"})
+    structure = profile_db.get_profile(user.id).get("ats_structure")
+    if not structure:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "No ATS resume to edit yet — build one first."},
+        )
+    structure = sanitize_structure(structure)
+    structure["contact"] = {**(structure.get("contact") or {}), "location": location}
+    return _save_structure(user.id, sanitize_structure(structure))
 
 
 @router.get("/profile/resume/text")

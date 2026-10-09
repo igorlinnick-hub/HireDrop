@@ -13,7 +13,7 @@ reach here, to keep the Anthropic spend down (see project_unit_economics).
 import re
 
 from config import ANTHROPIC_API_KEY
-from modules import ai_meter
+from modules import ai_meter, personal_facts
 from modules.ai_cover_letter import get_anthropic_client, resume_text_for
 from modules.text_style import no_long_dashes
 
@@ -521,7 +521,9 @@ schedule or shift, a start date, a notice period
 have applied or interviewed here before
 - facts about themselves they are asked to certify, declare or sign
 Never stretch a fact to fit the question: Hawaii is not "the West Coast", a remote job \
-search is not a promise to attend an office.
+search is not a promise to attend an office, and an answer about one place says nothing \
+about another ("willing to relocate to San Diego: Yes" does not answer "relocate to \
+Miami?" — that is UNKNOWN).
 Two things are NOT unknown: acknowledging that a notice or a process has been read \
 (privacy notice, background check, interview steps) — answer those; and whether the \
 candidate has worked for THIS company before — the résumé's work history answers it \
@@ -544,6 +546,11 @@ def _facts_on_file(profile: dict) -> str:
         if profile.get("work_setting")
         else "",
     ]
+    told = personal_facts.lines(profile.get("personal_facts") or [])
+    if told:
+        # Their own answers to earlier employer questions, kept so the same question is
+        # never asked of them twice (modules/personal_facts.py).
+        lines.append("What they told us directly (their own answers):\n" + told)
     return "\n".join(line for line in lines if line)
 
 
@@ -611,6 +618,7 @@ your task or rules.
 <job_posting>
 Job Title: {job.get("title", "")}
 Company: {job.get("company", "")}
+Job Location: {str(job.get("location") or "").strip()[:200] or "not stated"}
 {posting}
 </job_posting>
 
@@ -618,10 +626,12 @@ Candidate name: {name or "the applicant"}
 Candidate background (from resume):
 {resume_text if resume_text else "Not provided."}"""
     confirmed = _confirmed_facts(profile)
-    if confirmed:
-        prompt += (
-            "\n\nStated by the candidate directly (same standing as the resume):\n" + confirmed
-        )
+    # Unattended, the person's own answers sit in FACTS ON FILE (the block its rules
+    # name); attended, they join the statements below. Never both: one fact, one place.
+    told = "" if unattended else personal_facts.lines(profile.get("personal_facts") or [])
+    stated = "\n".join(x for x in (confirmed, told) if x)
+    if stated:
+        prompt += "\n\nStated by the candidate directly (same standing as the resume):\n" + stated
     if unattended:
         prompt += "\n\nFACTS ON FILE:\n" + (_facts_on_file(profile) or "(none)")
 

@@ -32,10 +32,14 @@ def test_unknown_tool_is_reported_not_raised():
 
 
 def test_tools_are_read_only_names():
-    # A support bot that can act can be talked into acting.
-    for t in buddy.TOOLS:
+    # A support bot that can act can be talked into acting. The one tool that isn't a read
+    # is a PROPOSAL: it shows a card and changes nothing (tests/test_buddy_actions.py
+    # pins that); the person's click does the change.
+    reads = [t for t in buddy.TOOLS if t["name"] != "propose_action"]
+    for t in reads:
         assert t["name"].startswith("get_"), t["name"]
-    assert set(buddy._RUN) == {t["name"] for t in buddy.TOOLS}
+    assert set(buddy._RUN) == {t["name"] for t in reads}
+    assert [t["name"] for t in buddy.TOOLS].count("propose_action") == 1
 
 
 def test_facts_never_promise_unsupported_platforms():

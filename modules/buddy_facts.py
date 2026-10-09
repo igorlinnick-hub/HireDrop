@@ -65,6 +65,28 @@ the HireDrop Chrome extension — at a human pace, with the user in control.
 - No matching jobs: the search filters (role keywords, location, salary floor, fit mode)
   are too narrow — widening them helps most.
 
+# Questions only the user can answer (asked once, remembered)
+- Some employer questions are about the user's own life, not their resume: willing to
+  relocate (to a named city), live near a city, work on-site, travel, weekends or shifts,
+  start date. HireDrop never guesses these. The first time one comes up, that form is
+  handed back and the question is asked ONCE — in the extension popup ("Only you can answer
+  this"), in History, or by Drop in this chat. The answer is remembered and used on every
+  later application that asks the same thing, and the jobs it was blocking go back in the
+  queue. A question about a different city is a new question: it is asked, with the earlier
+  answer shown and an option to replace it.
+- Remembered answers can be changed or forgotten — ask Drop.
+- A note like "Moving to San Diego in December" can be remembered with "mention in cover
+  letters": letters then mention it only where it fits the job (a job in that city), not
+  for remote jobs or other cities.
+
+# What Drop can and can't do
+- Drop can look at the user's account, applications, the cover letters that were sent, and
+  their remembered answers. It never changes anything itself. For a few things it shows a
+  card with one button — remember an answer, forget one, open an application in History,
+  rebuild the ATS resume from the uploaded PDF and use it, choose which resume applications
+  send, change the city line on the ATS resume — and the change happens only when the user
+  presses that button.
+
 # Account safety and data
 - Applications go out from the user's own browser and logged-in job-site sessions, at a
   human pace. No server bots, no captcha cracking.

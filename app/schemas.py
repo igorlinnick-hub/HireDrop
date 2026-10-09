@@ -35,6 +35,14 @@ class LetterPreviewRequest(BaseModel):
     keywords: str
     style: str | None = ""
     job_description: str | None = ""
+    # Where the job is, when the walk read it (Indeed). Otherwise the server looks the
+    # posting up in the person's pool by `job_url` (ATS walks come from the pool).
+    job_location: str | None = Field("", max_length=300)
+    job_url: str | None = Field("", max_length=2000)
+    # Separate fields, so the letter isn't addressed to "your company" when the
+    # extension knows the name.
+    job_title: str | None = Field("", max_length=300)
+    company: str | None = Field("", max_length=300)
 
 
 class AnswerQuestionRequest(BaseModel):
@@ -52,6 +60,9 @@ class AnswerQuestionRequest(BaseModel):
     # The posting text, for runs with no pool row (Indeed/ZipRecruiter live search):
     # without it the answerer sees only the company NAME and guesses the employer.
     job_description: str = Field("", max_length=8000)
+    # Where the job is, when the walk read it — "live within 30 miles?" / "on-site?" are
+    # answerable from the person's own place only when the job's place is known too.
+    job_location: str = Field("", max_length=300)
 
 
 class AssessFitRequest(BaseModel):

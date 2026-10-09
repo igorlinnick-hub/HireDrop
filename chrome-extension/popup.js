@@ -460,6 +460,110 @@ async function renderHandbacks() {
 renderHandbacks();
 
 // ---------------------------------------------------------------------------
+// Questions only the person can answer — asked once, remembered for every form
+// ---------------------------------------------------------------------------
+//
+// "Are you willing to relocate to Miami?", "Do you live within 30 miles of Austin?":
+// no resume says, so the filler leaves them blank and the form comes back. The answer
+// given here is kept (POST /profile/facts) and every later form that asks the same thing
+// is filled from it; the jobs this one question was blocking go back to the queue.
+// When the person said something on the same topic before ("Moving to San Diego"), it is
+// shown, and they choose to keep both answers or replace the earlier one.
+
+let pqDone = null; // the confirmation line after an answer, until the next render
+
+function pqJobsLine(q) {
+  const jobs = q.jobs || [];
+  if (!jobs.length) return "";
+  const first = jobs[0].company || jobs[0].title || "a job";
+  return jobs.length === 1
+    ? `Waiting on this: ${first}`
+    : `Waiting on this: ${first} and ${jobs.length - 1} more`;
+}
+
+async function answerPersonalQuestion(q, answer) {
+  const replace = $("pq-replace");
+  const res = await send({
+    type: "ANSWER_PERSONAL_QUESTION",
+    data: {
+      question: q.question,
+      answer,
+      replace_ids: replace && replace.checked ? (q.related || []).map((f) => f.id) : [],
+    },
+  });
+  if (!res || !res.ok) {
+    const err = $("pq-err");
+    if (err) {
+      err.textContent = res && res.status === 503
+        ? "Can't save answers yet — the server is being updated. Try again later."
+        : "Couldn't save that — try again.";
+    }
+    return;
+  }
+  pqDone = res.requeued
+    ? `Remembered. ${res.requeued === 1 ? "1 job is" : res.requeued + " jobs are"} back in the queue.`
+    : "Remembered. We won't ask this again.";
+  renderPersonalQuestions();
+  renderHandbacks();
+}
+
+async function renderPersonalQuestions() {
+  const card = $("pq-card");
+  if (!card) return;
+  const res = await send({ type: "GET_PERSONAL_QUESTIONS" });
+  const items = (res && res.questions) || [];
+  if (!items.length && !pqDone) { card.style.display = "none"; return; }
+  card.style.display = "";
+  if (!items.length) {
+    $("pq-kicker").textContent = "Thanks";
+    $("pq-body").innerHTML = '<div class="pq-done">' + escapeHtml(pqDone) + "</div>";
+    pqDone = null;
+    return;
+  }
+  const q = items[0];
+  $("pq-kicker").textContent = items.length > 1
+    ? `Only you can answer this · 1 of ${items.length}`
+    : "Only you can answer this";
+  const earlier = (q.related || [])[0];
+  const opts = q.options || [];
+  const asButtons = opts.length && opts.length <= 6; // a long list (states, years) is a select
+  $("pq-body").innerHTML =
+    (pqDone ? '<div class="pq-done" style="margin-bottom:8px">' + escapeHtml(pqDone) + "</div>" : "") +
+    '<div class="pq-q">' + escapeHtml(q.question) + "</div>" +
+    '<div class="pq-meta">' + escapeHtml(pqJobsLine(q)) + " · we'll remember your answer</div>" +
+    (earlier
+      ? '<div class="pq-earlier">Earlier you said: <b>' + escapeHtml(earlier.question) + "</b> — " +
+        escapeHtml(earlier.answer) +
+        '<label><input type="checkbox" id="pq-replace"> This replaces that answer</label></div>'
+      : "") +
+    (asButtons
+      ? '<div class="pq-opts">' + opts.map((o, i) =>
+          '<button data-i="' + i + '">' + escapeHtml(o) + "</button>").join("") + "</div>"
+      : opts.length
+        ? '<div class="pq-text"><select id="pq-input"><option value="">Choose…</option>' +
+          opts.map((o) => '<option>' + escapeHtml(o) + "</option>").join("") +
+          '</select><button id="pq-save">Save</button></div>'
+        : '<div class="pq-text"><input id="pq-input" maxlength="500" placeholder="Your answer">' +
+          '<button id="pq-save">Save</button></div>') +
+    '<div class="pq-err" id="pq-err"></div>';
+  pqDone = null;
+  if (asButtons) {
+    $("pq-body").querySelectorAll(".pq-opts button").forEach((btn) => {
+      btn.addEventListener("click", () => answerPersonalQuestion(q, opts[Number(btn.dataset.i)]));
+    });
+  } else {
+    const save = () => {
+      const v = ($("pq-input").value || "").trim();
+      if (v) answerPersonalQuestion(q, v);
+    };
+    $("pq-save").addEventListener("click", save);
+    $("pq-input").addEventListener("keydown", (e) => { if (e.key === "Enter") save(); });
+  }
+}
+
+renderPersonalQuestions();
+
+// ---------------------------------------------------------------------------
 // Dashboard button
 // ---------------------------------------------------------------------------
 

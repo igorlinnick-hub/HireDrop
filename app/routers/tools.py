@@ -32,6 +32,7 @@ from app.schemas import (
     LetterPreviewRequest,
 )
 from config import RATE_LIMIT_ENFORCE, RATE_LIMIT_LETTERS_PER_DAY
+from modules import personal_facts
 from modules.ai_cover_letter import generate_cover_letter, resume_text_for
 from modules.ai_fit_judge import assess_fit, clears_bar
 from modules.ai_keyword_normalize import normalize_keywords
@@ -158,6 +159,7 @@ def cover_letter(req: CoverLetterRequest, user=Depends(get_current_user)):
                 "title": job["title"],
                 "company": job["company"],
                 "description": job.get("description", ""),
+                "location": job.get("location") or "",
             },
             profile,
         )
@@ -167,16 +169,32 @@ def cover_letter(req: CoverLetterRequest, user=Depends(get_current_user)):
     return {"letter": letter, "job_title": job["title"], "company": job["company"]}
 
 
+def _pool_location(user_id: str, job_url: str) -> str:
+    """The posting's location from the person's own pool, by its link — "" when the
+    posting isn't there or the read fails (a letter must never wait on this)."""
+    if not job_url:
+        return ""
+    try:
+        # user_id-filtered inside get_by_link: service_role bypasses RLS.
+        row = jobs_db.get_by_link(user_id, job_url) or {}
+    except Exception as e:  # noqa: BLE001
+        print(f"[cover-letter] pool location read failed: {e}", file=sys.stderr)
+        return ""
+    return (row.get("location") or "").strip()
+
+
 @router.post("/tools/cover-letter-preview")
 def cover_letter_preview(req: LetterPreviewRequest, user=Depends(get_current_user)):
     profile = get_profile(user.id)
+    location = (req.job_location or "").strip() or _pool_location(user.id, req.job_url or "")
     _claim_ai_slot(user)
     try:
         letter = generate_cover_letter(
             {
-                "title": req.keywords or "the position",
-                "company": "your company",
+                "title": req.job_title or req.keywords or "the position",
+                "company": req.company or "your company",
                 "description": req.job_description or f"Role related to: {req.keywords}",
+                "location": location,
             },
             profile,
         )
@@ -726,6 +744,56 @@ def _match_human_answer(question: str, human: dict[str, str], options: list[str]
     return None
 
 
+def _posting_for(req: AnswerQuestionRequest, user_id: str) -> tuple[str, str]:
+    """(description, location) of the posting being filled: what the extension sent,
+    else the person's pool row. Never raises — an answer must not wait on this."""
+    description = req.job_description or ""
+    location = req.job_location or ""
+    if req.job_id and not (description and location):
+        with contextlib.suppress(Exception):
+            row = jobs_db.get_job_by_id(user_id, req.job_id) or {}
+            description = description or row.get("description") or ""
+            location = location or row.get("location") or ""
+    return description, location
+
+
+def _answer_circumstance(req: AnswerQuestionRequest, user, profile: dict, topic: str) -> dict:
+    """Answer from the person's facts, or come back blank with `ask_person` — the blank
+    field hands the form back, and the question reaches the person once (popup, History,
+    Drop: GET /personal-questions). Their answer is then remembered for every form."""
+    _claim_ai_slot(user)
+    try:
+        description, location = _posting_for(req, user.id)
+        answer = answer_screener_question(
+            req.question,
+            job={
+                "title": req.job_title,
+                "company": req.company,
+                "description": description,
+                "location": location,
+            },
+            profile=profile,
+            options=req.options,
+            unattended=True,
+        )
+    except Exception:
+        usage_db.release_today(user.id)
+        raise
+    if answer:
+        return {"answer": answer, "cached": False, "topic": topic}
+    usage_db.release_today(user.id)
+    return {
+        "answer": "",
+        "ask_person": {
+            "topic": topic,
+            "question": req.question[:300],
+            "related": personal_facts.related(
+                profile.get("personal_facts") or [], topic, req.question
+            ),
+        },
+    }
+
+
 @router.post("/tools/answer-question")
 def answer_question(req: AnswerQuestionRequest, user=Depends(get_current_user)):
     """Generate an answer for one employer screener question (Loop 4 filler).
@@ -756,6 +824,21 @@ def answer_question(req: AnswerQuestionRequest, user=Depends(get_current_user)):
             if answer:
                 return {"answer": answer, "from_user": True}
 
+    # The same question the person already answered on ANOTHER form (modules/
+    # personal_facts): their answer, no model call, no quota — "ask once, never again".
+    facts = profile.get("personal_facts") or []
+    remembered = personal_facts.match(req.question, req.options, facts)
+    if remembered:
+        return {"answer": remembered["answer"], "from_user": True, "fact_id": remembered["id"]}
+
+    # A question about the person's own circumstances (relocate, live near, on-site,
+    # travel, shifts, start date) is answered only from what they told us, never in
+    # "their favour": a Yes to relocating is a promise only the person can make.
+    # Not cached: a cached Yes would outlive the answer it came from.
+    topic = personal_facts.topic_of(req.question)
+    if topic:
+        return _answer_circumstance(req, user, profile, topic)
+
     cache_key = screener_cache.build_key(req.question, req.options, profile)
     if cache_key:
         cached = screener_cache.get(user.id, cache_key)
@@ -777,14 +860,15 @@ def answer_question(req: AnswerQuestionRequest, user=Depends(get_current_user)):
         # The posting text, when we hold the row: the extension sends only title and
         # company, and a model that cannot read the posting invents the employer
         # ("Why us?" answered about the wrong industry — dry-run 09-27).
-        description = req.job_description or ""
-        if req.job_id and not description:
-            with contextlib.suppress(Exception):
-                row = jobs_db.get_job_by_id(user.id, req.job_id)
-                description = (row or {}).get("description") or ""
+        description, location = _posting_for(req, user.id)
         answer = answer_screener_question(
             req.question,
-            job={"title": req.job_title, "company": req.company, "description": description},
+            job={
+                "title": req.job_title,
+                "company": req.company,
+                "description": description,
+                "location": location,
+            },
             profile=profile,
             options=req.options,
         )

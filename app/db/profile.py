@@ -57,6 +57,8 @@ _DEFAULTS = {
     # filter below, which only decides which jobs they see.
     "salary_expectation": "",
     "no_salary_expectation": False,
+    # Answers the person gave once and we reuse (modules/personal_facts.py).
+    "personal_facts": [],
     # Search gates read by on_search_filter (deck, auto ATS queue, night shift).
     "salary_min": None,
     "salary_max": None,
@@ -154,6 +156,10 @@ def get_profile(user_id: str) -> dict:
         "work_setting": p.get("work_setting") or "",
         "ats_structure": p.get("ats_structure"),
         "resume_facts": p.get("resume_facts"),
+        # What the person told us about their circumstances (modules/personal_facts.py):
+        # read by the screener answerer, the cover letter and Drop. A missing column
+        # (before migrations/add_personal_facts.sql) reads as none.
+        "personal_facts": p.get("personal_facts") or [],
     }
 
 

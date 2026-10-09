@@ -40,6 +40,7 @@ from app.routers import (
     csp,
     extension,
     jobs,
+    personal,
     profile,
     promo,
     review,
@@ -194,6 +195,8 @@ app.include_router(affiliate.router, prefix="/api/v1")
 # Ad-spend ingest from the Google Ads Script — its own token (ADS_INGEST_TOKEN).
 app.include_router(ads.router, prefix="/api/v1")
 app.include_router(buddy.router, prefix="/api/v1")
+# Facts the person told us once + the questions only they can answer (asked once).
+app.include_router(personal.router, prefix="/api/v1")
 # CSP Report-Only violations from the site — public, logs `[csp]` lines.
 app.include_router(csp.router, prefix="/api/v1")
 

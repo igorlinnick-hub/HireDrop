@@ -1232,6 +1232,117 @@ def _section_ai_cost(
     }
 
 
+def _section_buddy(from_ts: str, to_ts: str) -> dict:
+    """Drop, the support chat: how much it's used, what it costs, where it falls short.
+
+    Same formula as scripts/buddy_review.py (app/db/buddy_log.summarize). Flags are plain
+    rules over the logged turns — failed, didn't know, re-asked within 3 min, too long,
+    lookup failed, 👎 — so the board costs nothing to open and every flag explains itself.
+    """
+    from app.db import buddy_log
+
+    turns, feedback, limits = buddy_log.read(from_ts, to_ts)
+    s = buddy_log.summarize(turns, feedback, limits)
+    n = s["questions"] or 0
+
+    def pct(x: int) -> float | None:
+        return round(100 * x / n, 1) if n else None
+
+    metrics = [
+        _metric("questions", "Questions", n, emphasis=True),
+        _metric("askers", "People asking", s["askers"]),
+        _metric("per_asker", "Questions / person", s["per_asker"]),
+        _metric(
+            "cost",
+            "Drop spend",
+            s["cost_usd"],
+            "currency",
+            emphasis=True,
+            description="Summed from each answer's logged token counts x list price.",
+        ),
+        _metric("cost_per_answer", "Cost / answer", s["cost_per_answer"], "currency"),
+        _metric(
+            "didnt_know",
+            "Didn't know",
+            pct(s["didnt_know"]),
+            "percent",
+            description="Answers that sent the person to support or said 'not sure' — "
+            "a gap in Drop's tools or facts when it repeats.",
+        ),
+        _metric(
+            "asked_again",
+            "Re-asked within 3 min",
+            pct(s["asked_again"]),
+            "percent",
+            description="The same person asked about the same thing again right away: "
+            "the first answer didn't land.",
+        ),
+        _metric("failed", "Failed answers", s["failed"]),
+        _metric("thumbs", "👍 / 👎", f"{s['thumbs_up']} / {s['thumbs_down']}", "text"),
+        _metric(
+            "cards",
+            "Cards pressed / shown",
+            f"{s['cards_pressed']} / {s['cards_shown']}",
+            "text",
+            description="Drop proposes, the person presses (remember an answer, open an "
+            "application, rebuild the resume…).",
+        ),
+        _metric(
+            "latency",
+            "Answer time p50 / p95",
+            f"{s['latency_p50_s']}s / {s['latency_p95_s']}s",
+            "text",
+        ),
+        _metric(
+            "limit_hits",
+            "Hit the daily cap",
+            s["limit_hitters"],
+            description=f"People refused by the 20/day cap ({s['limit_hits']} refusals).",
+        ),
+    ]
+    return {
+        "key": "buddy",
+        "title": "Drop (support chat)",
+        "subtitle": "Every answer is logged with its cost; flags are rules, not a model's opinion.",
+        "metrics": metrics,
+        "timeseries": {
+            "label": "Questions per day",
+            "format": "number",
+            "points": [{"date": d, "value": v} for d, v in s["by_day"]],
+        },
+        "tables": [
+            _table(
+                "flagged",
+                f"Answers to read ({s['flagged_total']} flagged)",
+                [
+                    _col("at", "When"),
+                    _col("account", "Account"),
+                    _col("flags", "Why"),
+                    _col("question", "Question"),
+                    _col("answer", "Answer"),
+                ],
+                s["flagged"],
+            ),
+            _table(
+                "cards",
+                "Cards by kind",
+                [
+                    _col("kind", "Kind"),
+                    _col("shown", "Shown", "number", "right"),
+                    _col("pressed", "Pressed", "number", "right"),
+                ],
+                s["cards_by_kind"],
+            ),
+            _table(
+                "tools",
+                "Lookups",
+                [_col("tool", "Tool"), _col("calls", "Calls", "number", "right")],
+                s["tools"],
+            ),
+        ],
+    }
+
+
 def _section_affiliates(from_ts: str, to_ts: str) -> dict:
     payable_cutoff = (datetime.now(UTC) - timedelta(days=REFUND_WINDOW_DAYS)).isoformat()
 
@@ -1703,6 +1814,7 @@ def metrics(
             ),
         ),
         ("affiliates", lambda: _section_affiliates(from_ts, to_ts)),
+        ("buddy", lambda: _section_buddy(from_ts, to_ts)),
         (
             "ai_cost",
             lambda: _section_ai_cost(

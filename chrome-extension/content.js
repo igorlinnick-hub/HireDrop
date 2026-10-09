@@ -2923,8 +2923,10 @@
     }
 
     // Save current job context
+    // location rides along so the letter writer can tell a job in the city the person
+    // is moving to from a remote one (ensureCoverLetter → /tools/cover-letter-preview).
     await storageSet({
-      currentJobInfo: { title: jobTitle, company: jobCompany, description: jobDesc, url: jobUrl },
+      currentJobInfo: { title: jobTitle, company: jobCompany, description: jobDesc, url: jobUrl, location: jobLocation || "" },
     });
     await recordJobDescription(jobTitle, jobCompany, jobDesc, jobUrl, jobLocation);
 
@@ -3799,6 +3801,17 @@
         }
       }
 
+      // The person's circumstances (relocate, live near, on-site, travel, shifts): their own
+      // answer or blank — never the eligibility "Yes" below ("able to work on-site?") nor the
+      // generic Yes/first-option default.
+      if (!target && circumstanceTopic(groupLabel)) {
+        const { currentJobInfo = {} } = (await loadStored()) || {};
+        const got = await circumstanceAnswer(groupLabel,
+          labels.map((l) => ({ el: l.el, text: l.lbl })), currentJobInfo || {});
+        if (!got) continue;
+        target = got.pick.el;
+      }
+
       // Other eligibility ("18 or older", background check, "able to perform") and consent
       // to the employer's processing → affirmative. A bare "agree" no longer qualifies:
       // "Are you subject to any employment agreements…?" is a claim, not a consent.
@@ -3964,7 +3977,12 @@
       const res = await Promise.race([
         sendMsg({
           type: "GENERATE_COVER_LETTER",
-          data: { job_title: jobInfo.title || "", company: jobInfo.company || "", description: jobInfo.description || "" },
+          // url: the server reads the posting's location from the pool by it when the
+          // walk didn't read one (ATS walks); location: what the Indeed walk read.
+          data: {
+            job_title: jobInfo.title || "", company: jobInfo.company || "", description: jobInfo.description || "",
+            location: jobInfo.location || "", url: jobInfo.url || "",
+          },
         }),
         sleep(15000).then(() => ({ error: "timeout" })),
       ]);
@@ -4277,9 +4295,14 @@
             if (attempt > 0) await sleep(humanDelay(1500, 2500));
             const res = await sendMsg({
               type: "ANSWER_QUESTION",
-              data: { question: rawLabel, job_title: jobInfo.title || "", company: jobInfo.company || "" },
+              data: { question: rawLabel, job_title: jobInfo.title || "", company: jobInfo.company || "", job_location: jobInfo.location || "" },
             });
             value = res && res.answer ? res.answer : undefined;
+            // Only the person can answer it (relocate, live near…): no second paid try.
+            if (res && res.ask_person) {
+              logBackend(`Left for you to answer once (we'll remember it): "${String(rawLabel).slice(0, 90)}"`, "warn");
+              break;
+            }
           }
         }
         if (value === undefined || value === "") {
@@ -4716,6 +4739,7 @@
         ...(options ? { options: options.map((o) => o.text) } : {}),
         job_title: job.title || "",
         company: job.company || "",
+        job_location: job.location || "",
       },
     });
     const ans = res && res.answer ? String(res.answer).trim() : "";
@@ -4760,6 +4784,56 @@
       /non-?compet|non-?solicit|(employment|restrictive|post-employment) (agreements?|covenants?|restrictions?)|bound by any agreements?|subject to (any|a) [^?]{0,40}agreements?/i.test(q) ||
       (/(worked (at|for)|employed (by|at|with|for)|(former|previous|current) employee)/i.test(q) &&
        !/how (many|long)/i.test(q));
+  }
+
+  // A question about the person's own circumstances — relocate, live near, on-site, travel,
+  // shifts, start date. Port of modules/personal_facts.topic_of; both sides run
+  // tests/fixtures/circumstance-topics.json. No position, default or model guess may
+  // answer these: the radio filler's generic "Yes" on "Are you willing to relocate to
+  // Miami?" would be a promise made for someone moving to San Diego.
+  const CIRCUMSTANCE_EXPERIENCE_RE = /\b(?:describe|tell us|explain|walk us through|give an example|share an example|experience (?:with|in|working)|how have you|why)\b/i;
+  const CIRCUMSTANCE_TOPICS = [
+    ["relocation", /\brelocat\w*|\b(?:move|moving)\s+to\b|\bwilling to move\b/i],
+    ["location", /\bwhere\b.{0,40}\b(?:live|living|reside|residing|located|based)\b|\b(?:do|are|currently)\b.{0,30}\b(?:live|living|reside|residing|located|based)\b.{0,12}\b(?:in|near|within|around|close to)\b|\blocal to\b|\bwithin (?:a )?\d+\s*-?\s*(?:miles?|mi|km)\b|\bcommut(?:able|ing) distance\b/i],
+    ["onsite", /\b(?:on-?site|in[- ]office|in[- ]person|in the office|hybrid)\b/i],
+    ["travel", /\btravel(?:l?ing)?\b/i],
+    ["schedule", /\b(?:weekends?|overnights?|night shifts?|evening shifts?|shifts?|overtime|on-?call|rotating schedule)\b/i],
+    ["start_date", /\bwhen (?:can|could|would) you (?:start|begin)\b|\bstart date\b|\bavailable to (?:start|begin)\b|\bnotice period\b|\bearliest (?:start|available)\b/i],
+  ];
+  function circumstanceTopic(label) {
+    const q = String(label || "").trim();
+    if (!q || CIRCUMSTANCE_EXPERIENCE_RE.test(q)) return null;
+    for (const [topic, re] of CIRCUMSTANCE_TOPICS) if (re.test(q)) return topic;
+    return null;
+  }
+
+  // The person's own answer to a circumstance question (remembered from an earlier form, or
+  // derived from what they told us) — or null, and the field stays blank: a required one
+  // hands the form back and the question reaches them ONCE (popup / History / Drop), after
+  // which every form gets their answer. `options` = [{ text, ... }] or null for a text box.
+  async function circumstanceAnswer(label, options, jobInfo) {
+    if (_aiAnswersUsed >= MAX_AI_ANSWERS_PER_FORM) return null;
+    _aiAnswersUsed++;
+    const job = jobInfo || {};
+    const res = await sendMsg({
+      type: "ANSWER_QUESTION",
+      data: {
+        question: label,
+        ...(options ? { options: options.map((o) => o.text) } : {}),
+        job_title: job.title || "",
+        company: job.company || "",
+        job_location: job.location || "",
+      },
+    });
+    const ans = res && res.answer ? String(res.answer).trim() : "";
+    if (ans) {
+      if (!options) return { pick: ans };
+      const low = ans.toLowerCase();
+      const hit = options.find((o) => String(o.text || "").trim().toLowerCase() === low);
+      if (hit) return { pick: hit };
+    }
+    logBackend(`Left for you to answer once (we'll remember it): "${String(label).slice(0, 90)}"`, "warn");
+    return null;
   }
 
   // Pick a dropdown option deterministically (no AI) for the common cases.
@@ -4813,8 +4887,11 @@
     }
     // Yes/No eligibility that is not legal work status (18+, background check, "legally
     // able to drive") and consent to the employer's processing → Yes. Work status was
-    // decided above; a bare "agree" is no longer enough (isConsentToProcess).
-    if (yes && (/(eligible|18|over 18|legally|background|able to)/i.test(label) || isConsentToProcess(label))) {
+    // decided above; a bare "agree" is no longer enough (isConsentToProcess). "Able to
+    // relocate / work on-site / travel" is the person's circumstance, not eligibility:
+    // circumstanceAnswer asks for their own answer instead.
+    if (yes && !circumstanceTopic(label) &&
+        (/(eligible|18|over 18|legally|background|able to)/i.test(label) || isConsentToProcess(label))) {
       return yes;
     }
     // Salary bracket → the one that HOLDS the user's stated figure (salaryAnswer), never the
@@ -4876,6 +4953,12 @@
     // Where the user lives is the profile's state or nothing — same reasoning.
     const stateList = stateListPick(options, profile);
     if (stateList.isList) return stateList.option;
+    // The person's circumstances: their own answer or blank — none of the fallbacks below
+    // (the "able to" Yes, the first real option) may answer for them.
+    if (!chosen && circumstanceTopic(label)) {
+      const got = await circumstanceAnswer(label, options, jobInfo);
+      return got ? got.pick : null;
+    }
     if (!chosen && _aiAnswersUsed >= MAX_AI_ANSWERS_PER_FORM) {
       if (!_aiBudgetNotified) { logBackend(`Too many custom questions (>${MAX_AI_ANSWERS_PER_FORM}) — leaving the rest for you (faster than auto-answering all)`, "warn"); _aiBudgetNotified = true; }
       // fall through to the SAFE no-AI fallbacks below (neutral/eligibility/blank)
@@ -4889,6 +4972,7 @@
           options: options.map(o => o.text),
           job_title: jobInfo.title || "",
           company: jobInfo.company || "",
+          job_location: jobInfo.location || "",
         },
       });
       const ans = res && res.answer ? String(res.answer).trim().toLowerCase() : "";

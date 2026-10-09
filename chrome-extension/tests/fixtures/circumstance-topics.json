@@ -1,0 +1,23 @@
+[
+  ["Are you willing to relocate to Miami, FL?", "relocation"],
+  ["Are you open to relocation?", "relocation"],
+  ["Would you be willing to move to Austin for this role?", "relocation"],
+  ["Do you currently live in or near San Diego?", "location"],
+  ["Are you located within 30 miles of Austin, TX?", "location"],
+  ["Where are you currently located?", "location"],
+  ["Are you local to the Denver area?", "location"],
+  ["Are you able to work on-site 5 days a week?", "onsite"],
+  ["Are you comfortable working in-office three days a week?", "onsite"],
+  ["Are you willing to travel up to 25%?", "travel"],
+  ["Can you work weekends?", "schedule"],
+  ["Are you available for night shifts?", "schedule"],
+  ["When can you start?", "start_date"],
+  ["What is your notice period?", "start_date"],
+  ["Describe your experience working night shifts", null],
+  ["Do you have experience in the travel industry?", null],
+  ["Why do you want to work in our San Diego office?", null],
+  ["Years of Python experience", null],
+  ["Location", null],
+  ["Are you legally authorized to work in the United States?", null],
+  ["Are you 18 years of age or older?", null]
+]
