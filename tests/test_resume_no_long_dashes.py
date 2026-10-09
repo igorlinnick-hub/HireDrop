@@ -1,9 +1,8 @@
-"""No long dashes in the resume an employer reads (Igor's rule, 2026-10-08).
+"""No long dashes in the resume an employer reads.
 
-The letter and screener answers were cleaned in #392; the resume was not, and it carried
-dashes from three places: our own layout separators, the date schema ("Month Year – Month
-Year") and the structuring model's summary/bullets. Rendered here end to end and read back
-the way an ATS reads it (text extraction), so a new separator or field cannot slip by.
+Dashes reach a resume from three places: the layout separators, the date fields and the
+structuring model's summary and bullets. Each renderer is run end to end and read back by
+text extraction, the way an ATS reads it, so a new separator or field cannot slip by.
 """
 
 import io
