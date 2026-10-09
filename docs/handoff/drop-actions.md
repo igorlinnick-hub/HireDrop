@@ -18,7 +18,9 @@
 - **Наблюдение**: каждый ход Drop → `activity_log` (phase `buddy`); `scripts/buddy_review.py`;
   ежедневный шаг «3в. Drop вчера» в prod-sweep (корневой `.claude/skills/prod-sweep/SKILL.md`,
   коммит `00d5e0e`), пробный прогон 10-09: 0 вопросов, чисто.
-- **Сайт** — НЕ слит: агент делает PR в hiredrop-website (ветка `feat/drop-cards`) по контракту ниже.
+- **Сайт в проде** (web #325, `df63f92`): карточки Drop (`cards: true`), 👍/👎, скрепка PDF,
+  `/dashboard/history?app=<id>`, «Only you can answer» в History, «About you» в Settings.
+  Живой карточки Drop end-to-end ещё не было.
 
 ## Последний заход
 
@@ -38,8 +40,8 @@
 
 ## Следующий шаг
 
-Модель: **Opus**. Дождаться PR агента в hiredrop-website → ревью + скрины 1280/1440/1920/390 в
-обеих темах → мерж. Через неделю (~10-16): `buddy_review.py --days 7`,
+Модель: **Opus**. Живая проверка под `+buyer1`: спросить Drop про заявку → карточка Open → History
+раскрыта; добавить факт в About you. Через неделю (~10-16): `buddy_review.py --days 7`,
 `measure_handback_share.py --days 7`, `handback_reasons.py --days 7` — ждём рост хендбэков
 на переезд/офис/смены первые дни, потом спад. Проверить `cws_publish.py status` (1.8.45 опубликована?).
 
