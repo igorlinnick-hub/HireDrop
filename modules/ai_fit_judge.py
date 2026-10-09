@@ -31,6 +31,7 @@ import json
 import os
 
 from config import ANTHROPIC_API_KEY
+from modules import ai_meter
 from modules.ai_cover_letter import get_anthropic_client, resume_text_for
 
 _MAX_DESC_CHARS = 2500
@@ -206,6 +207,7 @@ def _call_model(model: str, system: str, prompt: str) -> dict | None:
             system=system,
             messages=[{"role": "user", "content": prompt}],
         )
+        ai_meter.record(message, "fit_judge")
         raw = (message.content[0].text or "").strip()
         start, end = raw.find("{"), raw.rfind("}")
         if start == -1 or end == -1:

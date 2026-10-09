@@ -403,6 +403,21 @@ def count_since(user_id: str, phase: str, since_iso: str) -> int:
     return res.count or 0
 
 
+def last_at(user_id: str, phase: str) -> str | None:
+    """Timestamp of the newest line with this phase, or None if there is none."""
+    res = (
+        get_supabase()
+        .table("activity_log")
+        .select("timestamp")
+        .eq("user_id", user_id)
+        .eq("phase", phase)
+        .order("timestamp", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return res.data[0]["timestamp"] if res.data else None
+
+
 def has_since(user_id: str, phase: str, since_iso: str) -> bool:
     """True if a line with this phase was written at/after `since_iso`.
 

@@ -25,6 +25,7 @@ import time
 from datetime import UTC, datetime
 
 from config import ANTHROPIC_API_KEY
+from modules import ai_meter
 from modules.ai_cover_letter import get_anthropic_client
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
@@ -146,6 +147,7 @@ def extract_facts(resume_text: str | None) -> dict[str, str] | None:
             system=_SYSTEM,
             messages=[{"role": "user", "content": f"<resume>\n{text}\n</resume>"}],
         )
+        ai_meter.record(message, "resume_facts")
         raw = _json_object(message.content[0].text or "")
     except Exception as e:  # noqa: BLE001 — a suggestion is a convenience, never a blocker
         print(f"[resume_facts] extraction failed: {e}")

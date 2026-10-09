@@ -119,6 +119,14 @@ RULES: tuple[Rule, ...] = (
     Rule("cover_letter_usage", "user_id", "uid", ERASE, "usage counters keyed to them"),
     Rule("user_timezones", "user_id", "uid", ERASE, "their time zone"),
     Rule(
+        "ai_calls",
+        "user_id",
+        "uid",
+        ERASE,
+        "AI spend charged to them; past periods' totals drop by their share",
+    ),
+    Rule("ai_calls_daily", "user_id", "-", COVERED, "view over ai_calls; goes with its rows"),
+    Rule(
         "extension_status", "user_id", "uid", ERASE, "extension heartbeat (skipped if not in API)"
     ),
     Rule("extension_keys", "user_id", "uid", ERASE, "stored sessions (named in policy)"),

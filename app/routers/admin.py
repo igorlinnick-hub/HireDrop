@@ -40,8 +40,10 @@ from app.ads import meta_spend
 from app.ads import verdict as ad_rules
 from app.billing_config import PLANS
 from app.db import ad_spend as spend_db
+from app.db import ai_calls as ai_calls_db
 from app.db.client import fetch_paged, get_supabase
 from config import FRONTEND_URL
+from modules import ai_spend
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -57,15 +59,6 @@ REFUND_WINDOW_DAYS = 30
 # what separates "running" from "actually alive".
 HEARTBEAT_WINDOW_MIN = 5
 
-# Measured 2026-09-15 (scripts/measure_ai_cost.py) WITH per-application resume
-# tailoring on. Before tailoring the same measurement read $0.0129.
-COST_PER_APPLICATION_USD = 0.0199
-# Calls per application at the time of that measurement. Drift = re-measure.
-MEASURED_CALLS_PER_APPLICATION = 3.5
-
-# Default affiliate share, for the "what's left" line only. The authoritative
-# per-partner rate lives in affiliates.commission_pct.
-AFFILIATE_RATE = 0.30
 
 # Row ceilings. At today's scale nothing comes close; a read that DID hit one
 # would silently under-count, so each section says so in `notes`.
@@ -1119,104 +1112,85 @@ def _section_ads(
 def _section_ai_cost(
     apps: list[dict], from_ts: str, to_ts: str, from_day: str, to_day: str
 ) -> dict:
-    # cover_letter_usage is keyed by (user_id, date) with a plain DATE column —
-    # one shared counter for cover letters, screener answers and resume work.
-    usage = _rows(
-        "cover_letter_usage", "user_id, date, count", date__gte=from_day, date__lte=to_day
-    )
-    period = [a for a in apps if from_ts <= (a.get("date_applied") or "") <= to_ts]
-
-    calls = sum(int(u.get("count") or 0) for u in usage)
-    spend = len(period) * COST_PER_APPLICATION_USD
-    calls_per_app = round(calls / len(period), 2) if period else None
-
-    calls_by_user: dict[str, int] = defaultdict(int)
-    for u in usage:
-        calls_by_user[u.get("user_id") or "?"] += int(u.get("count") or 0)
-    apps_by_user: dict[str, int] = defaultdict(int)
-    for a in period:
-        apps_by_user[a.get("user_id") or "?"] += 1
-
-    spenders = []
-    for uid in set(calls_by_user) | set(apps_by_user):
-        n_apps = apps_by_user.get(uid, 0)
-        n_calls = calls_by_user.get(uid, 0)
-        spenders.append(
-            {
-                # A short id only: cost shape belongs here, names belong in the roster.
-                "account": uid[:8],
-                "applications": n_apps,
-                "calls": n_calls,
-                "per_app": round(n_calls / n_apps, 2) if n_apps else 0,
-                "cost": round(n_apps * COST_PER_APPLICATION_USD, 2),
-            }
-        )
-    spenders.sort(key=lambda s: (-s["applications"], -s["calls"]))
+    # Dollars come from the ledger: every Anthropic call priced from its own token counts
+    # (modules/ai_meter.py). scripts/ai_cost_report.py computes the same numbers with the
+    # same function, so the board and the daily report cannot disagree.
+    start = ai_calls_db.first_at()
+    s = ai_spend.summarize(ai_calls_db.daily(from_day, to_day), apps, from_day, to_day, start)
+    ceiling = ai_spend.CEILING_PER_APPLICATION_USD
+    spenders = [a for a in s["by_account"] if a["user_id"] is not None and a["cost"] > 0]
 
     metrics = [
         _metric(
             "ai_spend",
-            "AI spend (est.)",
-            round(spend, 2),
+            "AI spend",
+            round(s["cost"], 2),
             "currency",
             emphasis=True,
-            description=f"Applications x ${COST_PER_APPLICATION_USD} — measured 2026-09-15, not a live token read.",
+            description="Every Anthropic call, priced from its own token counts.",
         ),
-        _metric(
-            "ai_calls",
-            "AI calls",
-            calls,
-            emphasis=True,
-            description="Counted for real: every billable call through the shared daily quota.",
-        ),
-        _metric("applications", "Applications", len(period)),
+        _metric("ai_calls", "AI calls", s["calls"], emphasis=True),
+        _metric("applications", "Applications", s["applications"]),
         _metric(
             "cost_per_application",
             "Cost / application",
-            COST_PER_APPLICATION_USD,
+            s["per_application"],
             "currency",
-            scope="all_time",
-            description="Measured constant with resume tailoring on. Re-measure: scripts/measure_ai_cost.py.",
+            emphasis=True,
+            description=f"Ceiling ${ceiling}: the monthly price after the affiliate share, "
+            "over every application the paid cap allows in a month.",
         ),
     ]
-    if calls_per_app is not None:
+    if s["calls_per_application"] is not None:
         metrics.append(
-            _metric(
-                "calls_per_application",
-                "Calls / application",
-                calls_per_app,
-                description=f"Measured at {MEASURED_CALLS_PER_APPLICATION} when the cost above was taken — "
-                "drift means the dollar figure is stale.",
-            )
+            _metric("calls_per_application", "Calls / application", s["calls_per_application"])
         )
-    metrics.append(_metric("active_spenders", "Accounts spending", len(calls_by_user)))
-
-    if calls_by_user:
+    metrics.append(_metric("active_spenders", "Accounts spending", len(spenders)))
+    if spenders:
         monthly = PLANS["monthly"]["price_usd"]
-        left = monthly * (1 - AFFILIATE_RATE) - spend / len(calls_by_user)
+        left = monthly * (1 - ai_spend.AFFILIATE_RATE) - s["cost"] / len(spenders)
         metrics.append(
             _metric(
                 "margin_per_paying_user",
-                f"Left after AI + {int(AFFILIATE_RATE * 100)}%",
+                f"Left after AI + {int(ai_spend.AFFILIATE_RATE * 100)}%",
                 round(left, 2),
                 "currency",
                 description=f"${monthly} monthly minus the affiliate share minus this period's AI cost per active account.",
             )
         )
-
-    by_date: dict[str, int] = defaultdict(int)
-    for u in usage:
-        by_date[str(u.get("date"))] += int(u.get("count") or 0)
+    metrics.append(
+        _metric(
+            "unattributed_spend",
+            "Charged to no account",
+            round(s["unattributed_cost"], 2),
+            "currency",
+            description="Calls made outside a request with no user bound (scripts, a thread "
+            "missing ai_meter.attributed).",
+        )
+    )
+    if s["cache_read_share"] is not None:
+        metrics.append(
+            _metric(
+                "cache_read_share",
+                "Prompt from cache",
+                round(s["cache_read_share"] * 100, 1),
+                "percent",
+            )
+        )
 
     return {
         "key": "ai_cost",
         "title": "AI cost",
-        "subtitle": "Calls and applications are counted; dollars are derived from a measured constant.",
+        "subtitle": (
+            f"Metered since {start[:10]}; applications before that are left out."
+            if start
+            else "No AI call has been recorded yet."
+        ),
         "metrics": metrics,
         "timeseries": {
-            "label": "AI calls per day",
-            "format": "number",
-            "points": [{"date": d, "value": v} for d, v in sorted(by_date.items())],
+            "label": "AI spend per day",
+            "format": "currency",
+            "points": [{"date": d["day"], "value": round(d["cost"], 2)} for d in s["days"]],
         },
         "tables": [
             _table(
@@ -1226,11 +1200,34 @@ def _section_ai_cost(
                     _col("account", "Account"),
                     _col("applications", "Apps", "number", "right"),
                     _col("calls", "Calls", "number", "right"),
-                    _col("per_app", "Calls/app", "number", "right"),
+                    _col("cost", "Cost", "currency", "right"),
+                    _col("cost_per_app", "Cost/app", "currency", "right"),
+                ],
+                [
+                    {
+                        # A short id only: cost shape belongs here, names belong in the roster.
+                        "account": str(a["user_id"])[:8],
+                        "applications": a["applications"],
+                        "calls": a["calls"],
+                        "cost": round(a["cost"], 2),
+                        "cost_per_app": a["per_application"],
+                    }
+                    for a in spenders[:SPENDER_LIMIT]
+                ],
+            ),
+            _table(
+                "purposes",
+                "Cost by purpose",
+                [
+                    _col("purpose", "Purpose"),
+                    _col("calls", "Calls", "number", "right"),
                     _col("cost", "Cost", "currency", "right"),
                 ],
-                spenders[:SPENDER_LIMIT],
-            )
+                [
+                    {"purpose": p["purpose"], "calls": p["calls"], "cost": round(p["cost"], 2)}
+                    for p in s["by_purpose"]
+                ],
+            ),
         ],
     }
 

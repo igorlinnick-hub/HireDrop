@@ -67,6 +67,16 @@ def _no_company_history_network():
 
 
 @pytest.fixture(autouse=True)
+def ai_meter_rows():
+    """Every Anthropic call records itself (modules/ai_meter.py) on a thread that writes to
+    Supabase. Tests capture the rows here instead: no thread, no network, and a test that
+    cares about what was recorded reads this list."""
+    rows: list[dict] = []
+    with patch("modules.ai_meter._dispatch", rows.append):
+        yield rows
+
+
+@pytest.fixture(autouse=True)
 def _no_handback_network():
     """Same for the open hand-backs the ATS queue leaves alone (jobs._waiting_on_person)."""
     with patch("app.db.handbacks.open_urls", return_value=[]):

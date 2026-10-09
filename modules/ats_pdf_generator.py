@@ -35,6 +35,7 @@ from reportlab.platypus import (
 )
 
 from config import ANTHROPIC_API_KEY
+from modules import ai_meter
 
 SONNET_MODEL = "claude-sonnet-4-6"
 
@@ -146,6 +147,7 @@ Return ONLY a JSON array of question strings, no explanation:
             max_tokens=400,
             messages=[{"role": "user", "content": prompt}],
         )
+        ai_meter.record(message, "ats_questions")
         raw = message.content[0].text.strip()
         if raw.startswith("```"):
             raw = raw.split("```")[1]
@@ -244,6 +246,7 @@ RESUME TEXT:
             messages=[{"role": "user", "content": prompt}],
             **kwargs,
         )
+        ai_meter.record(message, "resume_structure")
         raw = reply_text(message)
         if raw.startswith("```"):
             raw = raw.split("```")[1]

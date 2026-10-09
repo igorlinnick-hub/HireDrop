@@ -78,6 +78,8 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import UTC, date, datetime, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# Measurement spend is not product spend: keep it out of the ledger (modules/ai_meter.py).
+os.environ.setdefault("AI_METER", "off")
 
 import config  # noqa: E402,F401  — loads .env before the clients read the keys
 from app.db import jobs as jobs_db  # noqa: E402

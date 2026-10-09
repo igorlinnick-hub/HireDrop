@@ -13,9 +13,13 @@ in this shape:
     hold, so a sweep spends its 160 slots on postings we have never seen. Scoring is the
     only paid step ($0.0019/row, measured 09-15) and it runs on new rows only — once a
     search is saturated the nightly sweep costs nothing but board fetches.
-  * THE GATE IS ACTIVITY, NOT EXISTENCE. Only accounts that applied inside
-    POOL_SWEEP_ACTIVE_DAYS are swept. Scoring inventory for somebody who left is the one
-    way this turns into a bill with nothing on the other side of it.
+  * THE SWEEP REFILLS WHAT WAS USED. An account is swept only when it applied to
+    something since its last sweep. Scoring and judging inventory for somebody who is not
+    applying is the one way this turns into a bill with nothing on the other side of it —
+    an account that left costs nothing from its first idle night, not after
+    POOL_SWEEP_ACTIVE_DAYS of them, which now only narrows who is checked. How much a
+    sweep then judges is prejudge_pool's rule: the lists the person sees and the run
+    opens next, never the whole pool.
   * ONE SWEEP PER ACCOUNT PER NIGHT, CLAIMED IN THE DATABASE. The Procfile runs two
     uvicorn workers and each holds its own copy of this loop; an in-process guard cannot
     see the other one. The claim is an activity-log line written BEFORE the sweep starts,
@@ -60,6 +64,20 @@ def _claim(user_id: str) -> bool:
     return True
 
 
+def _used_since_last_sweep(user_id: str) -> int:
+    """Applications since this account's last sweep — the list they used up.
+    0 while the last sweep is recent (the claim window): nothing is due yet. An account
+    never swept counts its whole activity window."""
+    now = datetime.now(UTC)
+    last = activity_db.last_at(user_id, PHASE)
+    if last and datetime.fromisoformat(last.replace("Z", "+00:00")) >= now - timedelta(
+        hours=POOL_SWEEP_EVERY_HOURS
+    ):
+        return 0
+    since = last or (now - timedelta(days=POOL_SWEEP_ACTIVE_DAYS)).isoformat()
+    return apps_db.count_today(user_id, since)
+
+
 def scan() -> int:
     """One pass over the active accounts. Returns how many sweeps were started."""
     from app.routers.jobs import _FIND_ATS_IN_PROGRESS, _run_ats_discovery
@@ -75,7 +93,11 @@ def scan() -> int:
         try:
             # The user may be running a campaign right now — its sweep holds this
             # guard, and a second one would re-fetch and re-score the same boards.
-            if user_id in _FIND_ATS_IN_PROGRESS or not _claim(user_id):
+            if user_id in _FIND_ATS_IN_PROGRESS:
+                continue
+            # Checked before the claim: an idle account must not take tonight's slot, or
+            # an application later today could not earn it back.
+            if not _used_since_last_sweep(user_id) or not _claim(user_id):
                 continue
             # Take the guard for ourselves; _run_ats_discovery clears it in its finally.
             _FIND_ATS_IN_PROGRESS.add(user_id)

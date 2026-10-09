@@ -13,6 +13,7 @@ reach here, to keep the Anthropic spend down (see project_unit_economics).
 import re
 
 from config import ANTHROPIC_API_KEY
+from modules import ai_meter
 from modules.ai_cover_letter import get_anthropic_client, resume_text_for
 from modules.text_style import no_long_dashes
 
@@ -632,6 +633,7 @@ Candidate background (from resume):
             system=_system_prompt() + (_UNATTENDED_RULES if unattended else ""),
             messages=[{"role": "user", "content": prompt}],
         )
+        ai_meter.record(message, "screener_answer")
         answer = (message.content[0].text or "").strip()
     except Exception as e:
         print(f"[answer_question] AI generation failed: {e}")
