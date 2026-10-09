@@ -15,6 +15,7 @@ def save_application(
     company: str = "",
     platform: str = "",
     job_url: str = "",
+    form_answers: list[dict] | None = None,
 ) -> str:
     # Snapshot the display fields ONTO the history row (P3 counter integrity,
     # migrations/2026-07-29_applications_snapshot.sql): history must survive the
@@ -29,6 +30,8 @@ def save_application(
         "platform": platform,
         "job_url": job_url,
     }
+    if form_answers:
+        row["form_answers"] = form_answers
     try:
         res = get_supabase().table("applications").insert(row).execute()
     except Exception:
@@ -93,6 +96,8 @@ def get_history(user_id: str, limit: int = 5000) -> list:
                 "date_applied": row["date_applied"],
                 "status": row["status"],
                 "cover_letter": row.get("cover_letter", ""),
+                # What the employer's form asked and what we answered, [{q, a}].
+                "form_answers": row.get("form_answers") or [],
                 "tailored_resume": job.get("tailored_resume") or "",
                 "resume_pdf_url": resume_storage.signed_url_from_path(pdf_path, user_id)
                 if pdf_path

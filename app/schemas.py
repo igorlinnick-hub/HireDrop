@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class CoverLetterRequest(BaseModel):
@@ -93,6 +93,17 @@ class AssessFitBatchRequest(BaseModel):
     jobs: list[AssessFitCard] = Field(default_factory=list, max_length=30)
 
 
+class FormAnswer(BaseModel):
+    q: str = ""
+    a: str = ""
+
+    # Trimmed, never refused: a long answer must not cost the application row (422).
+    @field_validator("q", "a", mode="before")
+    @classmethod
+    def _clip(cls, v, info):
+        return str(v or "")[: 200 if info.field_name == "q" else 500]
+
+
 class ApplicationSaveRequest(BaseModel):
     job_title: str
     company: str
@@ -100,6 +111,13 @@ class ApplicationSaveRequest(BaseModel):
     job_url: str = ""
     cover_letter: str = ""
     status: str = "applied"
+    # The form's questions and the answers we gave (content.js collectFormAnswers).
+    form_answers: list[FormAnswer] = Field(default_factory=list)
+
+    @field_validator("form_answers", mode="before")
+    @classmethod
+    def _cap_answers(cls, v):
+        return [x for x in (v or []) if isinstance(x, dict)][:60]
 
 
 class ApplicationStatusRequest(BaseModel):

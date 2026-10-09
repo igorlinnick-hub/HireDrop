@@ -62,6 +62,7 @@ def save_application(req: ApplicationSaveRequest, user=Depends(get_current_user)
         company=req.company,
         platform=req.platform,
         job_url=req.job_url,
+        form_answers=[x.model_dump() for x in req.form_answers],
     )
     # A retry that went through (often a newer build re-walking a hand-back) is no longer
     # on the person's to-do list. Best-effort: the application itself is already saved.

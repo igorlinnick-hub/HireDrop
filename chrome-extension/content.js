@@ -2418,6 +2418,67 @@
     );
   }
 
+  // What the employer will read: every question on the form and the answer it carries now,
+  // snapshotted right before each Continue/Submit click and accumulated per posting under
+  // `formAnswers`. background attaches it to the application row (APPLICATION_SAVED), so
+  // History shows the person exactly what was said in their name. Contact fields and the
+  // letter are left out: the person knows the first, History shows the second already.
+  const QA_SKIP_RE = /\b(first|last|full|middle|legal|preferred)?\s*name\b|e-?mail|phone|mobile|linkedin|github|twitter|portfolio|website|\burl\b|address|street|zip|postal|resume|\bcv\b|cover letter|attach/i;
+  const QA_PLACEHOLDER_RE = /^\s*(select|choose|please select|--|—)\b/i;
+  function collectFormAnswers() {
+    const out = new Map();
+    const put = (q, a) => {
+      q = String(q || "").replace(/\s+/g, " ").replace(/\*/g, "").trim().slice(0, 200);
+      a = String(a || "").replace(/\s+/g, " ").trim().slice(0, 500);
+      if (!q || !a || QA_SKIP_RE.test(q) || QA_PLACEHOLDER_RE.test(a)) return;
+      out.set(q, out.has(q) && out.get(q) !== a ? `${out.get(q)}; ${a}` : a);
+    };
+    const scope = formScope();
+    const shown = (el) => el.offsetParent !== null;
+    for (const el of scope.querySelectorAll('input:not([type]), input[type="text"], input[type="number"], input[type="date"], textarea')) {
+      if (!shown(el) || el.getAttribute("aria-hidden") === "true") continue;
+      if (el.tagName === "TEXTAREA" && (el.value || "").length > 600) continue; // the letter
+      // Ashby's inputs carry no id for their label[for]: the entry's heading is the question.
+      const q = el.closest('[class*="fieldEntry"]')?.querySelector("label")?.textContent || getFieldLabel(el);
+      put(q, (el.value || "").trim() || reactSelectShownValue(el));
+    }
+    for (const el of scope.querySelectorAll("select")) {
+      if (!shown(el) || el.selectedIndex < 1) continue;
+      put(getFieldLabel(el), el.options[el.selectedIndex]?.textContent);
+    }
+    const boxText = (c) => (c.id && document.querySelector(`label[for="${CSS.escape(c.id)}"]`)?.textContent) ||
+      c.closest("label")?.textContent || "";
+    for (const c of scope.querySelectorAll('input[type="radio"]:checked, input[type="checkbox"]:checked')) {
+      const g = c.closest("fieldset, [role='group'], [role='radiogroup']");
+      const q = (g && (g.querySelector(":scope > legend")?.textContent || g.getAttribute("aria-label") ||
+        g.querySelector(":scope > label")?.textContent)) || getFieldLabel(c);
+      put(q, boxText(c));
+    }
+    for (const b of scope.querySelectorAll('[aria-pressed="true"]')) {
+      const entry = b.closest('[class*="fieldEntry"]');
+      if (entry) put(entry.querySelector("label")?.textContent, b.textContent);
+    }
+    return Array.from(out, ([q, a]) => ({ q, a })).slice(0, 60);
+  }
+
+  async function snapshotFormAnswers(job) {
+    try {
+      const items = collectFormAnswers();
+      if (!items.length) return;
+      const url = job.url || location.href;
+      const prev = (await storageGet("formAnswers")).formAnswers;
+      const same = prev && prev.url === url && Date.now() - (prev.ts || 0) < 30 * 60 * 1000;
+      const merged = new Map((same ? prev.items : []).map((x) => [x.q, x.a]));
+      for (const x of items) merged.set(x.q, x.a);
+      await storageSet({
+        formAnswers: {
+          url, title: job.title || "", company: job.company || "", ts: Date.now(),
+          items: Array.from(merged, ([q, a]) => ({ q, a })).slice(0, 60),
+        },
+      });
+    } catch { /* a missing copy never blocks a submit */ }
+  }
+
   function collectUnfilledRequired() {
     const labels = [];
     const scope = formScope();
@@ -6267,6 +6328,7 @@
         }
         const submitBtn = findFormButton();
         if (submitBtn) {
+          await snapshotFormAnswers(jobInfo);
           // Mark applied + count BEFORE the click: submitting can navigate the whole
           // page (ZipRecruiter returns to results), which would kill this context
           // before an after-the-fact write runs — leaving the job un-marked and
@@ -6339,6 +6401,7 @@
       // Click Continue/Next button to proceed to next step
       const navBtn = action.btn || findFormButton();
       if (navBtn) {
+        await snapshotFormAnswers(jobInfo);
         log(`Clicking "${(navBtn.textContent || "").trim()}"...`, "");
         await sleep(humanDelay(1000, 2000));
         // Re-check after the pause so a Stop mid-step halts before advancing.
@@ -7149,6 +7212,7 @@
     await sleep(humanDelay(2000, 5000));
     if (!(await isCampaignRunning())) { log("Campaign stopped — not submitting", ""); return; }
 
+    await snapshotFormAnswers({ url: jobUrl, title: jobTitle, company: jobCompany });
     // Record BEFORE the click — submit navigates to the thank-you page.
     await addAppliedUrl(jobUrl);
     await addAppliedJobKey(jobTitle, jobCompany);
