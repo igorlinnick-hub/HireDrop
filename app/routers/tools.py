@@ -642,13 +642,44 @@ def _assess_fit_batch(req: AssessFitBatchRequest, user) -> dict:
             )
 
     results = [out[c.link] for c in cards]
-    return {
+    response = {
         "results": results,
         "judged": judged,
         "reused": len(stored_before),
         "unjudged": sum(1 for r in results if r["decision"] == "unjudged"),
         "ms": int((time.monotonic() - started) * 1000),
     }
+    if req.keyword:
+        response["keyword_yield"] = _count_keyword_page(
+            user.id, req.keyword, cards[0].platform, profile, resume_text, results
+        )
+    return response
+
+
+def _count_keyword_page(
+    user_id: str, keyword: str, platform: str, profile: dict, resume_text: str, results: list
+) -> dict | None:
+    """Store how many of this page's verdicts cleared the bar; -> the phrase's recent tally.
+
+    Only verdicts count — a card skipped by the company cap, already applied or left
+    unjudged says nothing about whether the phrase finds this person's kind of work.
+    """
+    from app.db import keyword_yield
+
+    verdicts = [r for r in results if r["source"] in ("judged", "stored")]
+    version = keyword_yield.yield_version(profile, resume_text)
+    keyword_yield.record_page(
+        user_id,
+        keyword,
+        platform,
+        version,
+        judged=len(verdicts),
+        fits=sum(1 for r in verdicts if r["decision"] == "apply"),
+    )
+    tally = keyword_yield.recent(user_id, version, platform).get(keyword_yield.keyword_key(keyword))
+    if not tally:
+        return None
+    return {"keyword": keyword_yield.keyword_key(keyword), **tally}
 
 
 def _stored_verdict(

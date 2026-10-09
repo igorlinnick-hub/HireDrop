@@ -66,6 +66,7 @@ def _run(
     pool_error=False,
     budget_left=None,
     in_flight=(),
+    keyword="",
 ):
     """Call the endpoint with the pool, the judge and the writes faked."""
     from app.routers import tools
@@ -106,7 +107,7 @@ def _run(
             "day": date.today().isoformat(),
             "n": tools._ASSESS_FIT_DAILY_CAP - budget_left,
         }
-    req = AssessFitBatchRequest(jobs=cards)
+    req = AssessFitBatchRequest(jobs=cards, keyword=keyword)
     from modules import fit_queue
 
     fit_queue._IN_FLIGHT.clear()

@@ -91,6 +91,9 @@ class AssessFitCard(BaseModel):
 class AssessFitBatchRequest(BaseModel):
     # One Indeed results page is ~15 cards after the title gate; 30 bounds a page dump.
     jobs: list[AssessFitCard] = Field(default_factory=list, max_length=30)
+    # The search phrase that brought this page (app/db/keyword_yield). Older extensions
+    # don't send it; the page is then judged exactly the same, just not counted.
+    keyword: str = Field("", max_length=200)
 
 
 class FormAnswer(BaseModel):

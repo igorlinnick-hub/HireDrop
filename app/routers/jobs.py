@@ -654,6 +654,37 @@ def get_deck(user=Depends(get_current_user)):
     }
 
 
+@router.get("/jobs/keyword-yield")
+def get_keyword_yield(user=Depends(get_current_user)):
+    """What each of the person's search phrases brought that fits, last 7 days.
+
+    -> {"keywords": [{keyword, pages, judged, fits, dry}], "window_days", "all_dry"}, one
+    entry per phrase in the profile, in the profile's order. A phrase with no judged page
+    yet reads pages=0, dry=false — unknown is never dry. `all_dry` lets the dashboard say
+    "none of your phrases found a fit" instead of showing a quiet campaign.
+    Counted by the batch judge (/tools/assess-fit-batch, app/db/keyword_yield).
+    """
+    from app.db import keyword_yield
+    from app.db.profile import get_profile
+
+    profile = get_profile(user.id)
+    version = keyword_yield.yield_version(profile, _deck_resume_text(user.id, profile))
+    tallies = keyword_yield.recent(user.id, version)
+    out, seen = [], set()
+    for phrase in profile.get("keywords") or []:
+        key = keyword_yield.keyword_key(phrase)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        t = tallies.get(key) or {"pages": 0, "judged": 0, "fits": 0, "dry": False}
+        out.append({"keyword": phrase.strip(), **t})
+    return {
+        "keywords": out,
+        "window_days": keyword_yield.WINDOW_DAYS,
+        "all_dry": bool(out) and all(k["dry"] for k in out),
+    }
+
+
 @router.post("/jobs/find")
 def find_jobs(req: FindJobsRequest = None, user=Depends(get_current_user)):
     from app.db.profile import get_profile
