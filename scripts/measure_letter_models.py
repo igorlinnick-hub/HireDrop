@@ -1,35 +1,30 @@
 #!/usr/bin/env python3
-"""Put two cover-letter models side by side on the SAME jobs — cost and text.
+"""Put cover-letter models side by side on the SAME postings — cost and text.
 
-Written 2026-09-21 to settle whether tap should keep the cheaper letter model. It did
-settle it (it shouldn't — the split is gone, see COVER_LETTER_MODEL), and the script
-stays because the question recurs: any time a cheaper or newer model shows up, this is
-how you find out what it actually costs and what it actually writes.
+Judging a model swap needs every model's letter for the same posting, same prompt, same
+resume, so the model is the only variable. The letters go through the production
+generate_cover_letter with only the model constant changed; the price comes from
+ai_meter.cost_usd, the same function the spend ledger uses.
 
-measure_ai_cost.py can't answer this: it prices ONE letter per job, with whatever model
-ships. Judging a model swap needs both letters for the SAME posting — same prompt, same
-resume — so the model is the only variable. Edit MODELS below to compare a new pair.
+Read the letters, not only the numbers. A preamble like "Here's a cover letter for
+Jordan:" pasted into an employer's form is invisible to every cost measurement, and
+whether a newer model writes better is a call a human makes by reading.
 
-What the first run found, and why the text half matters as much as the numbers: Sonnet
-opened 5 of 8 letters with "Here's a cover letter for Jordan:" and a --- fence, which
-went into the employer's form verbatim. Four such letters were already in the production
-applications table. That bug was invisible to every cost measurement ever run here.
+USAGE (from jobflow/, keys in .env)
+  # A real user's letters: their profile and resume, postings they applied to lately
+  .venv/bin/python scripts/measure_letter_models.py --user <uuid> --jobs 8 --out letters.md
+  # A fixed sample with a synthetic resume, no Supabase
+  #   sample.json: [{"title": …, "company": …, "description": …}, …]
+  .venv/bin/python scripts/measure_letter_models.py --sample sample.json --out letters.md
 
-This writes two things:
-  * the numbers — measured input/output tokens and dollars per letter, per model, and
-    what the delta does to the cost of an application;
-  * the letters themselves, side by side in a markdown file, because "is Sonnet actually
-    better here" is a judgement a human makes by reading, not a number.
+  --models a,b[,c]  default: the model letters ship with today, then claude-sonnet-5-5.
+                    The first one is the baseline the others are compared with.
 
-USAGE
-  # sample.json: [{"title":…, "company":…, "description":…}, …]
-  .venv/bin/python scripts/measure_letter_models.py sample.json [out.md]
-
-It spends real money: two letters per job, roughly $0.01 per job at current prices.
-Keep samples small. The resume is SYNTHETIC (same one measure_ai_cost.py uses) — cost and
-prompt shape don't depend on whose career it is.
+Spends real money: one letter per posting per model, about $0.01 a letter. Read-only
+against Supabase. Exit 1 when a model wrote no letter at all (an API error is printed).
 """
 
+import argparse
 import json
 import os
 import sys
@@ -38,70 +33,32 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 # Measurement spend is not product spend: keep it out of the ledger (modules/ai_meter.py).
 os.environ.setdefault("AI_METER", "off")
 
-from modules import ai_cover_letter  # noqa: E402
+import config  # noqa: E402,F401  — loads .env before the clients read the keys
+from modules import ai_cover_letter, ai_meter  # noqa: E402
+from modules.ai_models import refused  # noqa: E402
+from modules.ai_spend import CEILING_PER_APPLICATION_USD  # noqa: E402
 
-# $ per million tokens (input, output) — Anthropic list prices, same table as
-# measure_ai_cost.py. Keep the two in sync when prices move.
-PRICES = {
-    "claude-sonnet-4-6": (3.0, 15.0),
-    "claude-haiku-4-5-20251001": (1.0, 5.0),
-}
+CANDIDATE = "claude-sonnet-5-5"
+APPLICATIONS_PER_MONTH_AT_CAP = 30 * 30
 
-# What one application costs today, measured 2026-09-15 (scripts/measure_ai_cost.py).
-# Used only to express the letter delta as a share of the whole — the letter numbers
-# below are measured fresh on every run.
-BASELINE_APP_USD = 0.0129
+# Same length resume_text_for hands the prompt.
+SYNTHETIC_RESUME = (
+    (
+        "JORDAN AVERY — Project Manager\njordan.avery@example.com | Austin, TX\n\n"
+        "EXPERIENCE\nSenior Project Manager, Northwind Logistics (2021-2026)\n"
+        "Ran cross-functional delivery for a 40-person org; shipped a warehouse "
+        "routing rebuild that cut per-order handling time by a fifth. Owned vendor "
+        "negotiation, quarterly roadmap and the incident review process.\n"
+        "Project Manager, Cedar Systems (2018-2021)\nCoordinated three engineering "
+        "teams through a platform migration. Built the intake process the company "
+        "still uses.\n\nSKILLS\nJira, SQL, stakeholder management, agile delivery, "
+        "vendor management, risk registers, budget ownership\n\nEDUCATION\n"
+        "BS Industrial Engineering, University of Texas\n\n"
+    )
+    * 3
+)[:3000]
 
-# Which models to put side by side. Keys are just labels for the report; "tap"/"auto"
-# are kept so the output reads the same as the 09-21 measurement it is compared against.
-MODELS = {
-    "tap": "claude-haiku-4-5-20251001",
-    "auto": "claude-sonnet-4-6",
-}
-
-CALLS: list[dict] = []
-
-
-def _install_recorder():
-    """Wrap the shared client so every call records its real usage block."""
-    real = ai_cover_letter.get_anthropic_client()
-
-    class Recorder:
-        def create(self, **kwargs):
-            message = real.messages.create(**kwargs)
-            usage = message.usage
-            model = kwargs["model"]
-            price_in, price_out = PRICES.get(model, (0.0, 0.0))
-            CALLS.append(
-                {
-                    "model": model,
-                    "in": usage.input_tokens,
-                    "out": usage.output_tokens,
-                    "usd": (usage.input_tokens * price_in + usage.output_tokens * price_out) / 1e6,
-                }
-            )
-            return message
-
-    client = type("C", (), {"messages": Recorder()})()
-    ai_cover_letter.get_anthropic_client = lambda: client
-
-
-# 3000 chars — exactly what load_resume_text() would hand the prompt.
-RESUME = (
-    "JORDAN AVERY — Project Manager\njordan.avery@example.com | Austin, TX\n\n"
-    "EXPERIENCE\nSenior Project Manager, Northwind Logistics (2021-2026)\n"
-    "Ran cross-functional delivery for a 40-person org; shipped a warehouse "
-    "routing rebuild that cut per-order handling time by a fifth. Owned vendor "
-    "negotiation, quarterly roadmap and the incident review process.\n"
-    "Project Manager, Cedar Systems (2018-2021)\nCoordinated three engineering "
-    "teams through a platform migration. Built the intake process the company "
-    "still uses.\n\nSKILLS\nJira, SQL, stakeholder management, agile delivery, "
-    "vendor management, risk registers, budget ownership\n\nEDUCATION\n"
-    "BS Industrial Engineering, University of Texas\n\n"
-) * 3
-RESUME = RESUME[:3000]
-
-BASE_PROFILE = {
+SYNTHETIC_PROFILE = {
     "name": "Jordan",
     "last_name": "Avery",
     "email": "jordan.avery@example.com",
@@ -111,108 +68,267 @@ BASE_PROFILE = {
 }
 
 
-def main(path: str, out_path: str = "letter_models.md") -> int:
+def parse_models(spec: str | None) -> list[str]:
+    """The models to compare, baseline first. Refuses before any money is spent on a model
+    the ledger cannot price, so every number below is a real price."""
+    named = [m.strip() for m in (spec or "").split(",") if m.strip()]
+    models = list(dict.fromkeys(named or [ai_cover_letter.COVER_LETTER_MODEL, CANDIDATE]))
+    if len(models) < 2:
+        raise SystemExit("Name at least two different models: --models a,b")
+    unpriced = [m for m in models if ai_meter.price_of(m) is None]
+    if unpriced:
+        raise SystemExit(f"No price in ai_meter.PRICES for {unpriced}: add it first.")
+    return models
+
+
+class _Recording:
+    """The real client, with every call's tokens, price, refusal or error written down."""
+
+    def __init__(self, client, calls: list[dict]):
+        self._client = client
+        self._calls = calls
+        self.messages = self
+
+    def create(self, **kwargs):
+        model = kwargs["model"]
+        try:
+            message = self._client.messages.create(**kwargs)
+        except Exception as e:
+            self._calls.append({"model": model, "error": f"{type(e).__name__}: {e}"})
+            raise
+        usage = message.usage
+        self._calls.append(
+            {
+                "model": model,
+                "in": usage.input_tokens,
+                "out": usage.output_tokens,
+                "usd": float(ai_meter.cost_usd(model, usage) or 0),
+                "refused": refused(message),
+            }
+        )
+        return message
+
+
+def _outcome(letter: dict) -> str:
+    if letter["error"]:
+        return "ERROR"
+    return "refused" if letter["refused"] else f"${letter['usd']:.5f}"
+
+
+def write_letters(
+    jobs: list[dict], profile: dict, resume: str, models: list[str], client
+) -> list[dict]:
+    """One letter per posting per model, through the production generate_cover_letter."""
+    calls: list[dict] = []
+    real_getter = ai_cover_letter.get_anthropic_client
+    real_resume = ai_cover_letter.resume_text_for
+    shipped = ai_cover_letter.COVER_LETTER_MODEL
+    ai_cover_letter.get_anthropic_client = lambda: _Recording(client, calls)
+    # Read once for the whole run: every letter is written from the same resume.
+    ai_cover_letter.resume_text_for = lambda *_a, **_k: resume
+    pairs = []
+    try:
+        for i, job in enumerate(jobs, 1):
+            letters = {}
+            for model in models:
+                mark = len(calls)
+                ai_cover_letter.COVER_LETTER_MODEL = model
+                text = ai_cover_letter.generate_cover_letter(job, profile)
+                made = calls[mark:]
+                # generate_cover_letter answers every failure with the template letter, so
+                # the recorded call is the only place an API error or a refusal shows.
+                error = next((c["error"] for c in made if "error" in c), None)
+                if not made:
+                    error = "no API call: template letter (is ANTHROPIC_API_KEY set?)"
+                letters[model] = {
+                    "text": text,
+                    "chars": len(text),
+                    "in": sum(c.get("in", 0) for c in made),
+                    "out": sum(c.get("out", 0) for c in made),
+                    "usd": sum(c.get("usd", 0.0) for c in made),
+                    "refused": any(c.get("refused") for c in made),
+                    "error": error,
+                }
+            pairs.append({"job": job, "letters": letters})
+            line = "   ".join(f"{m}: {_outcome(d)}" for m, d in letters.items())
+            print(f"  {i:2}. {(job.get('company') or '?')[:20]:<20} {line}")
+    finally:
+        ai_cover_letter.COVER_LETTER_MODEL = shipped
+        ai_cover_letter.get_anthropic_client = real_getter
+        ai_cover_letter.resume_text_for = real_resume
+    return pairs
+
+
+def summarize(pairs: list[dict], models: list[str]) -> dict:
+    """Per model: averages over the letters it actually wrote, plus what it failed on.
+    The other models are compared with the first one."""
+    out: dict = {}
+    for model in models:
+        rows = [p["letters"][model] for p in pairs]
+        written = [r for r in rows if not r["error"]]
+        n = len(written)
+        out[model] = {
+            "letters": n,
+            "errors": len(rows) - n,
+            "refused": sum(r["refused"] for r in written),
+            "usd": sum(r["usd"] for r in written) / n if n else None,
+            "in": sum(r["in"] for r in written) / n if n else None,
+            "out": sum(r["out"] for r in written) / n if n else None,
+            "chars": sum(r["chars"] for r in written) / n if n else None,
+            "first_error": next((r["error"] for r in rows if r["error"]), None),
+        }
+    base = out[models[0]]["usd"]
+    for model in models[1:]:
+        usd = out[model]["usd"]
+        if base and usd is not None:
+            delta = usd - base
+            out[model]["vs_baseline"] = {
+                "delta_usd": delta,
+                "ratio": usd / base,
+                "per_month_at_cap": delta * APPLICATIONS_PER_MONTH_AT_CAP,
+            }
+    return out
+
+
+def print_summary(summary: dict, models: list[str]) -> None:
+    print("\n" + "=" * 78)
+    print("MEASURED — real usage, every model on the same postings")
+    print("=" * 78)
+    print(f"  {'model':<26}{'letters':>8}{'in':>7}{'out':>6}{'chars':>7}{'$/letter':>11}  refused")
+    for model in models:
+        s = summary[model]
+        if not s["letters"]:
+            print(f"  {model:<26}{0:>8}   no letter: {s['first_error']}")
+            continue
+        print(
+            f"  {model:<26}{s['letters']:>8}{s['in']:>7.0f}{s['out']:>6.0f}{s['chars']:>7.0f}"
+            f"  ${s['usd']:.5f}  {s['refused']}"
+        )
+        if s["errors"]:
+            print(f"  {'':<26}{s['errors']} failed, first: {s['first_error']}")
+    for model in models[1:]:
+        cmp = summary[model].get("vs_baseline")
+        if cmp:
+            print(
+                f"\n  {model} vs {models[0]}: {cmp['delta_usd']:+.5f} $/letter "
+                f"({cmp['ratio']:.2f}x), {cmp['per_month_at_cap']:+.2f} $/month at the 30/day cap"
+            )
+    for model in models:
+        usd = summary[model]["usd"]
+        if usd is not None:
+            print(
+                f"  a {model} letter is {usd / CEILING_PER_APPLICATION_USD:.0%} of the "
+                f"${CEILING_PER_APPLICATION_USD} per-application ceiling"
+            )
+
+
+def write_markdown(
+    pairs: list[dict], summary: dict, models: list[str], source: str, path: str
+) -> None:
+    with open(path, "w") as fh:
+        fh.write(f"# Cover letters: {' vs '.join(models)}\n\n")
+        fh.write(
+            f"{len(pairs)} postings ({source}), one letter from each model: same prompt, same "
+            "resume, the model is the only variable.\n\n"
+        )
+        for model in models:
+            s = summary[model]
+            price = f"${s['usd']:.5f}/letter" if s["usd"] is not None else "no letter"
+            extra = f", {s['refused']} refused" if s["refused"] else ""
+            extra += f", {s['errors']} failed" if s["errors"] else ""
+            fh.write(f"- **{model}**: {price}{extra}\n")
+        fh.write("\nRead the pairs below and decide whether the difference shows in the writing.\n")
+        for pair in pairs:
+            job = pair["job"]
+            fh.write(f"\n---\n\n## {job.get('company', '?')} — {job.get('title', '?')}\n\n")
+            for model in models:
+                d = pair["letters"][model]
+                if d["error"]:
+                    status = f"FAILED ({d['error']}), template letter"
+                elif d["refused"]:
+                    status = "REFUSED, template letter"
+                else:
+                    status = f"${d['usd']:.5f}, {d['out']} output tokens"
+                fh.write(f"### {model} — {status}\n\n```\n{d['text'].strip()}\n```\n\n")
+
+
+def applied_postings(uid: str, n: int) -> list[dict]:
+    """The postings behind this user's latest applications that carry a real description,
+    one per company and title. Scoped by user_id: the service key bypasses RLS."""
+    from app.db.client import get_supabase
+    from app.routers.jobs import MIN_STORABLE_DESC
+
+    res = (
+        get_supabase()
+        .table("applications")
+        .select("job_title, company, jobs(title, company, description)")
+        .eq("user_id", uid)
+        .order("date_applied", desc=True)
+        .limit(n * 10)
+        .execute()
+    )
+    out, seen = [], set()
+    for row in res.data or []:
+        job = row.get("jobs") or {}
+        description = (job.get("description") or "").strip()
+        title = row.get("job_title") or job.get("title") or ""
+        company = row.get("company") or job.get("company") or ""
+        key = (company.lower(), title.lower())
+        if len(description) < MIN_STORABLE_DESC or key in seen:
+            continue
+        seen.add(key)
+        out.append({"title": title, "company": company, "description": description})
+        if len(out) == n:
+            break
+    return out
+
+
+def load_user(uid: str, n: int) -> tuple[list[dict], dict, str, str]:
+    """What /tools/cover-letter would use for this user: their profile and their resume."""
+    from app.db.profile import get_profile
+    from scripts.measure_judge_calibration import label_for, preflight_resume
+
+    profile = get_profile(uid)
+    preflight_resume(uid, profile)
+    jobs = applied_postings(uid, n)
+    if not jobs:
+        raise SystemExit(f"{uid[:8]}: no recent application with a full posting description")
+    resume = ai_cover_letter.resume_text_for(profile)
+    return jobs, profile, resume, f"{label_for(profile)}, their latest applications"
+
+
+def load_sample(path: str) -> tuple[list[dict], dict, str, str]:
     with open(path) as fh:
         jobs = json.load(fh)
-    _install_recorder()
-    ai_cover_letter.load_resume_text = lambda *a, **k: RESUME
-    original_model = ai_cover_letter.COVER_LETTER_MODEL
+    return jobs, SYNTHETIC_PROFILE, SYNTHETIC_RESUME, f"{os.path.basename(path)}, synthetic resume"
 
-    rows = []
-    pairs = []
-    for i, job in enumerate(jobs, 1):
-        letters = {}
-        for mode, model in MODELS.items():
-            mark = len(CALLS)
-            # The model is no longer chosen by submit_mode (that split was dropped on
-            # 2026-09-21 — see COVER_LETTER_MODEL). To compare models this now sets the
-            # module constant directly, which is also what makes the script useful for
-            # ANY future candidate model, not just the two that used to be wired to modes.
-            ai_cover_letter.COVER_LETTER_MODEL = model
-            text = ai_cover_letter.generate_cover_letter(job, BASE_PROFILE)
-            calls = CALLS[mark:]
-            if not calls:
-                print(f"  !! {mode}: no API call recorded (fell back to the template?)")
-                continue
-            letters[mode] = {
-                "text": text,
-                "usd": sum(c["usd"] for c in calls),
-                "in": sum(c["in"] for c in calls),
-                "out": sum(c["out"] for c in calls),
-                "model": calls[-1]["model"],
-                "chars": len(text),
-            }
-        if len(letters) != 2:
-            continue
-        rows.append(letters)
-        pairs.append((job, letters))
-        t, a = letters["tap"], letters["auto"]
-        print(
-            f"  {i:2}. {(job.get('company') or '?')[:18]:<18} "
-            f"haiku ${t['usd']:.5f} ({t['out']:>3} out, {t['chars']:>4}ch)   "
-            f"sonnet ${a['usd']:.5f} ({a['out']:>3} out, {a['chars']:>4}ch)"
-        )
 
-    ai_cover_letter.COVER_LETTER_MODEL = original_model
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    source = ap.add_mutually_exclusive_group(required=True)
+    source.add_argument("--user", help="user_id: their profile, resume and recent postings")
+    source.add_argument("--sample", help="JSON list of {title, company, description}")
+    ap.add_argument("--jobs", type=int, default=8, help="postings to take with --user")
+    ap.add_argument(
+        "--models", help=f"comma-separated, baseline first (default: shipped,{CANDIDATE})"
+    )
+    ap.add_argument("--out", default="letter_models.md")
+    args = ap.parse_args()
 
-    if not rows:
-        print("Nothing measured — did the API key resolve?")
-        return 1
+    models = parse_models(args.models)
+    loaded = load_user(args.user, args.jobs) if args.user else load_sample(args.sample)
+    jobs, profile, resume, label = loaded
+    print(f"{len(jobs)} postings ({label}) x {len(models)} models: {', '.join(models)}")
 
-    n = len(rows)
-    haiku = sum(r["tap"]["usd"] for r in rows) / n
-    sonnet = sum(r["auto"]["usd"] for r in rows) / n
-    delta = sonnet - haiku
-
-    print("\n" + "=" * 72)
-    print("MEASURED — real usage blocks, both models on the same postings")
-    print("=" * 72)
-    for label, key in (("Haiku ", "tap"), ("Sonnet", "auto")):
-        avg_in = sum(r[key]["in"] for r in rows) / n
-        avg_out = sum(r[key]["out"] for r in rows) / n
-        avg_ch = sum(r[key]["chars"] for r in rows) / n
-        usd = haiku if key == "tap" else sonnet
-        print(
-            f"  {label:<22} in {avg_in:>6.0f}  out {avg_out:>5.0f}  "
-            f"{avg_ch:>5.0f} chars  ${usd:.5f}/letter"
-        )
-    print()
-    print(f"  letters measured            {n}")
-    print(f"  difference per letter       ${delta:.5f}  ({sonnet / haiku:.1f}x)")
-    print()
-    print("  What the difference is worth per application:")
-    print(f"    today (tap, Haiku letter)   ${BASELINE_APP_USD - delta:.4f}  approx")
-    print(f"    if tap moved to Sonnet      ${BASELINE_APP_USD:.4f}  = what auto costs now")
-    print(f"    delta per application       ${delta:.5f}  ({delta / BASELINE_APP_USD:.1%} of it)")
-    print(f"    at the 30/day cap           ${delta * 30:.4f}/day, ${delta * 30 * 30:.2f}/month")
-    print()
-    print(f"  spent running this measurement: ${sum(c['usd'] for c in CALLS):.2f}")
-
-    with open(out_path, "w") as fh:
-        fh.write("# Cover letter: Haiku (tap) vs Sonnet (auto), same postings\n\n")
-        fh.write(
-            f"{n} postings, one letter from each model. Same prompt, same synthetic resume — "
-            "the model is the only variable.\n\n"
-        )
-        fh.write(
-            f"- Haiku: **${haiku:.5f}**/letter · Sonnet: **${sonnet:.5f}**/letter · "
-            f"difference **${delta:.5f}** ({sonnet / haiku:.1f}x)\n"
-            f"- Per application that is **{delta / BASELINE_APP_USD:.1%}** of today's "
-            f"${BASELINE_APP_USD:.4f}; at the 30/day cap, **${delta * 30 * 30:.2f}/month**.\n\n"
-            "Read the pairs below and decide whether the difference is visible in the writing.\n"
-        )
-        for job, letters in pairs:
-            fh.write(f"\n---\n\n## {job.get('company', '?')} — {job.get('title', '?')}\n\n")
-            for label, key in (("Haiku", "tap"), ("Sonnet (what ships today)", "auto")):
-                d = letters[key]
-                fh.write(f"### {label} — ${d['usd']:.5f}, {d['out']} output tokens\n\n")
-                fh.write("```\n" + d["text"].strip() + "\n```\n\n")
-    print(f"  letters written to: {out_path}")
-    return 0
+    client = ai_cover_letter.get_anthropic_client()
+    pairs = write_letters(jobs, profile, resume, models, client)
+    summary = summarize(pairs, models)
+    print_summary(summary, models)
+    write_markdown(pairs, summary, models, label, args.out)
+    spent = sum(d["usd"] for p in pairs for d in p["letters"].values())
+    print(f"\n  spent on this measurement: ${spent:.2f}\n  letters written to: {args.out}")
+    return 1 if any(not summary[m]["letters"] for m in models) else 0
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print(__doc__)
-        raise SystemExit(2)
-    raise SystemExit(main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "letter_models.md"))
+    raise SystemExit(main())

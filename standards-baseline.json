@@ -354,9 +354,6 @@
  "scripts/measure_letter_delivery.py": {
   "history": 1
  },
- "scripts/measure_letter_models.py": {
-  "history": 4
- },
  "scripts/measure_pool_age.py": {
   "history": 1
  },
