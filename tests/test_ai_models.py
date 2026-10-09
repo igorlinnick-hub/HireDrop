@@ -10,7 +10,7 @@ import types
 
 import pytest
 
-from modules import ai_cover_letter, ai_fit_judge
+from modules import ai_cover_letter, ai_fit_judge, ai_question_answer
 from modules.ai_models import plain_answer_kwargs, refused, reply_text
 
 
@@ -100,3 +100,38 @@ def test_a_sonnet_5_5_letter_is_written_without_thinking_and_read_past_it(monkey
     )
     assert sent[0]["thinking"] == {"type": "between_tools"}
     assert "I build things." in letter
+
+
+def _screener(monkeypatch, reply):
+    sent = []
+
+    class _Messages:
+        def create(self, **kwargs):
+            sent.append(kwargs)
+            return reply
+
+    monkeypatch.setattr(ai_question_answer, "ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setattr(ai_question_answer, "SCREENER_MODEL", "claude-sonnet-5-5")
+    monkeypatch.setattr(
+        ai_question_answer,
+        "get_anthropic_client",
+        lambda: types.SimpleNamespace(messages=_Messages()),
+    )
+    monkeypatch.setattr(ai_question_answer, "resume_text_for", lambda *a, **k: "resume text")
+    answer = ai_question_answer.answer_screener_question(
+        "How many years of welding experience do you have?",
+        job={"title": "Welder", "company": "Acme", "description": "MIG welding."},
+        options=["0-2", "3-5", "6+"],
+    )
+    return answer, sent
+
+
+def test_a_sonnet_5_5_screener_answer_is_asked_without_thinking_and_read_past_it(monkeypatch):
+    answer, sent = _screener(monkeypatch, _reply("3-5"))
+    assert sent[0]["thinking"] == {"type": "between_tools"}
+    assert answer == "3-5"
+
+
+def test_a_declined_screener_answer_leaves_the_field_blank(monkeypatch):
+    answer, _ = _screener(monkeypatch, _reply("3-5", stop_reason="refusal"))
+    assert answer == ""
