@@ -41,6 +41,8 @@ Rules the file encodes (from claims-with-lease practice, Anthropic's long-runnin
   content.js" accident CLAUDE.md warns about.
 """
 
+from __future__ import annotations  # hooks may run under macOS /usr/bin/python3 (3.9)
+
 import argparse
 import contextlib
 import fnmatch
@@ -48,16 +50,17 @@ import hashlib
 import json
 import os
 import re
-import statistics
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+UTC = timezone.utc  # noqa: UP017 — datetime.UTC is 3.11+, hooks may run on 3.9
 
 ROOT = Path(__file__).resolve().parent.parent
 SESSIONS_DIR = ROOT / "docs" / "sessions"
 STALE_HOURS = 8  # an active claim with no beat this long: the session died without saying so
 PAUSED_DAYS = 7  # a lane parked by /clear or exit waits this long for someone to pick it up
-BEAT_EVERY_SECS = 60  # the Stop/prompt hooks rewrite the claim at most this often
+BEAT_EVERY_SECS = 60  # the Stop hook rewrites the claim at most this often
 AUTO_PREFIX = "авто: "  # a goal the hook took from the first request, not one the session declared
 FIELDS = (
     "name",
@@ -194,6 +197,13 @@ def now_utc() -> datetime:
     return datetime.now(UTC).replace(microsecond=0)
 
 
+def open_dir() -> Path:
+    """Undeclared sessions live here, gitignored: an auto-goal is a person's raw request and
+    never reaches git. Declared lanes (written by `claim`, goal typed by the session) live one
+    level up and are committed with handoffs, as before."""
+    return SESSIONS_DIR / ".open"
+
+
 def parse_claim(path: Path) -> dict:
     """Read the `key: value` header of a claim file (everything before the first blank line)."""
     claim = {"path": path}
@@ -208,20 +218,44 @@ def parse_claim(path: Path) -> dict:
 
 
 def write_claim(claim: dict) -> Path:
-    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-    path = SESSIONS_DIR / f"{claim['name']}.md"
-    header = "\n".join(f"{k}: {claim.get(k, '')}" for k in FIELDS)
-    path.write_text(
+    """Atomic (temp file + rename): other sessions read these files on every prompt."""
+    home = open_dir() if claim.get("status") == "open" else SESSIONS_DIR
+    home.mkdir(parents=True, exist_ok=True)
+    path = home / f"{claim['name']}.md"
+    header = "\n".join(f"{k}: {claim.get(k, '')}" for k in FIELDS if k != "path")
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(
         header + "\n\n<!-- written by scripts/sessions.py; edit via claim/beat, not by hand -->\n",
         encoding="utf-8",
     )
+    os.replace(tmp, path)
+    old = claim.get("path")
+    if old and Path(old) != path:  # open -> declared (or back): one file per session
+        with contextlib.suppress(OSError):
+            Path(old).unlink()
+    claim["path"] = path
     return path
 
 
 def load_claims() -> list[dict]:
-    if not SESSIONS_DIR.is_dir():
-        return []
-    return [parse_claim(p) for p in sorted(SESSIONS_DIR.glob("*.md")) if p.name != "README.md"]
+    """Every claim, declared and open. A file another session deletes mid-read, or one that
+    is not text, is skipped — one bad file must not blind every session's hooks."""
+    files = []
+    for d in (SESSIONS_DIR, open_dir()):
+        if d.is_dir():
+            files += [p for p in sorted(d.glob("*.md")) if p.name != "README.md"]
+    out = []
+    for p in files:
+        try:
+            out.append(parse_claim(p))
+        except (OSError, UnicodeDecodeError):
+            continue
+    return out
+
+
+def unlink_claim(claim: dict) -> None:
+    with contextlib.suppress(OSError, KeyError):
+        Path(claim["path"]).unlink()
 
 
 def is_paused(claim: dict) -> bool:
@@ -294,13 +328,20 @@ def load_events() -> list[dict]:
     return out
 
 
-# Claim files are committed with handoffs, so a goal lifted from a request must not carry
-# what people paste into requests: keys, tokens, addresses.
+# The auto-goal stays in the gitignored .open/ folder, but the board prints it to every
+# session, so it is scrubbed anyway. A secret word cuts the line there — whatever follows
+# "password", "токен", "API_KEY" is not a goal.
+_CUT_AT = re.compile(
+    r"(?i)(pass(word|wd)?|secret|token|bearer|api[_-]?key|private[_-]?key|credential|"
+    r"парол|токен|ключ|секрет|логин)"
+)
 _SECRETS = (
-    re.compile(r"(?i)\b(token|key|secret|password|passwd|bearer)\b\s*[:=]?\s*\S+"),
-    re.compile(r"\b(sk|pk|rk|ghp|gho|xox[abp])[-_][A-Za-z0-9_-]{8,}"),
-    re.compile(r"\b[A-Za-z0-9_\-]{32,}\b"),
-    re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"),
+    re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"),  # emails
+    re.compile(r"https?://\S+"),  # links (query strings carry tokens)
+    re.compile(
+        r"(?=\S*\d)(?=\S*[A-Za-z])[\w\-+/=.]{12,}"
+    ),  # long letter+digit tokens: keys, AWS ids
+    re.compile(r"\+?\d[\d\s()\-]{6,}\d"),  # phone numbers, card-like digit runs
 )
 
 
@@ -311,6 +352,9 @@ def goal_from_prompt(prompt: str, limit: int = 120) -> str:
         # Slash commands, pasted blocks, system tags, image placeholders — not the task.
         if not line or line.startswith(("<", "/", "[Image", "```")):
             continue
+        cut = _CUT_AT.search(line)
+        if cut:
+            line = line[: cut.start()]
         for pat in _SECRETS:
             line = pat.sub("…", line)
         line = re.sub(r"\s+", " ", line).strip(" .…")
@@ -320,10 +364,18 @@ def goal_from_prompt(prompt: str, limit: int = 120) -> str:
     return ""
 
 
-def open_claim(session_id: str, at: datetime) -> dict:
+def unique_name(session_id: str, claims: list[dict]) -> str:
+    """name_for(), unless another session already holds that name: 2,162 names, and a
+    collision would overwrite the other session's file (its paused lane, its handoff)."""
+    base = name_for(session_id)
+    taken = {c.get("name") for c in claims if not same_session(c.get("session_id", ""), session_id)}
+    return base if base not in taken else f"{base}-{session_id[:4]}"
+
+
+def open_claim(session_id: str, at: datetime, claims: list[dict]) -> dict:
     """What the hook writes for a session that has not declared a lane."""
     return {
-        "name": name_for(session_id),
+        "name": unique_name(session_id, claims),
         "session_id": session_id,
         "status": "open",
         "lane": "",
@@ -343,8 +395,8 @@ def drop_dead_open_claims(claims: list[dict], at: datetime) -> list[dict]:
     kept = []
     for c in claims:
         if is_open(c) and is_stale(c, at):
-            with contextlib.suppress(OSError):
-                c["path"].unlink()
+            log_event("close", c, prompts=prompts_of(c))  # killed without SessionEnd
+            unlink_claim(c)
             continue
         kept.append(c)
     return kept
@@ -459,8 +511,10 @@ def find_own(claims: list[dict], session_id: str) -> dict | None:
 
 def cmd_board(args) -> int:
     sid = resolve_session_id(args.session)
-    me = name_for(sid) if sid else None
-    print("\n".join(board_lines(load_claims(), me, now_utc())))
+    claims = load_claims()
+    own = find_own(claims, sid) if sid else None
+    me = own["name"] if own else (name_for(sid) if sid else None)
+    print("\n".join(board_lines(claims, me, now_utc())))
     return 0
 
 
@@ -472,13 +526,15 @@ def cmd_claim(args) -> int:
     at = now_utc()
     claims = load_claims()
     own = find_own(claims, sid) or {}
-    name = own.get("name") or name_for(sid)
+    name = own.get("name") or unique_name(sid, claims)
+    # Keep the full uuid the hooks see, even when --session was given a short prefix.
+    stored_sid = max(sid, own.get("session_id") or "", key=len)
     inherited: dict = {}
     for c in claims:
-        if c["name"] == name or c.get("lane") != args.lane:
+        if same_session(c.get("session_id", ""), sid) or c.get("lane") != args.lane:
             continue
         if is_paused(c) or is_stale(c, at):
-            c["path"].unlink()
+            unlink_claim(c)
             if not is_paused(c):
                 log_event("stale_takeover", c, lane=c.get("lane", ""))  # died without a pause
             inherited = inherited or c
@@ -492,8 +548,33 @@ def cmd_claim(args) -> int:
                 "Договорись через её хендофф или возьми другой лейн.",
                 file=sys.stderr,
             )
-    # The hook's open claim carries no lane: a paused lane being continued wins over it.
-    prev = inherited if (is_open(own) and inherited) else (own or inherited)
+    declared = bool(own) and not is_open(own)
+    # Same lane: an update (scope, step). Otherwise a paused lane being continued, or a new
+    # lane — never the goal of the lane this session is leaving.
+    prev = own if declared and own.get("lane") == args.lane else inherited
+    if declared and own.get("lane") != args.lane:
+        # One file per session: switching lanes must not silently erase the old one. Park it
+        # as a paused lane anyone can continue (`claim --lane <old>`), like /clear would.
+        old_lane = re.sub(r"[^\w-]", "-", own.get("lane") or "lane")
+        parked = {
+            **own,
+            "path": None,
+            "name": f"{name}.{old_lane}",
+            "session_id": "",
+            "status": "paused",
+            "updated": at.isoformat(),
+        }
+        write_claim(parked)
+        log_event(
+            "pause",
+            own,
+            lane=own.get("lane", ""),
+            handoff=bool(own.get("handoff")),
+            prompts=prompts_of(own),
+        )
+        print(
+            f"Лейн {own.get('lane')} поставлен на ПАУЗУ — продолжить: claim --lane {own.get('lane')}"
+        )
     prev_goal = prev.get("goal") or ""
     goal = args.goal or (None if prev_goal.startswith(AUTO_PREFIX) else prev_goal)
     if not goal:
@@ -504,8 +585,9 @@ def cmd_claim(args) -> int:
         )
         return 2
     claim = {
+        "path": own.get("path"),
         "name": name,
-        "session_id": sid,
+        "session_id": stored_sid,
         "status": "active",
         "lane": args.lane,
         "goal": goal,
@@ -519,7 +601,11 @@ def cmd_claim(args) -> int:
     }
     path = write_claim(claim)
     print(f"Ты — {name}, лейн {args.lane}. Заявка: {path.relative_to(ROOT)}")
-    others = [c for c in load_claims() if c["name"] != name and is_live(c, at)]
+    others = [
+        c
+        for c in load_claims()
+        if not same_session(c.get("session_id", ""), stored_sid) and is_live(c, at)
+    ]
     overlaps = 0
     for c in others:
         hits = scopes_overlap(scope_list(claim), scope_list(c))
@@ -532,7 +618,7 @@ def cmd_claim(args) -> int:
         "claim",
         claim,
         lane=args.lane,
-        first=not own or is_open(own),
+        first=not declared,
         prompts=prompts_of(claim),
         scope=bool(scope_list(claim)),
         overlaps=overlaps,
@@ -571,16 +657,31 @@ def cmd_done(args) -> int:
     if not own:
         print("Заявки нет — снимать нечего.")
         return 0
-    own["path"].unlink()
-    if not is_open(own):
-        log_event(
-            "done",
-            own,
-            lane=own.get("lane", ""),
-            handoff=bool(own.get("handoff")),
-            prompts=prompts_of(own),
-        )
-    print(f"{own['name']}: заявка снята, лейн {own.get('lane')} свободен.")
+    if is_open(own):
+        print("Лейн не заявлен — снимать нечего.")
+        return 0
+    log_event(
+        "done",
+        own,
+        lane=own.get("lane", ""),
+        handoff=bool(own.get("handoff")),
+        prompts=prompts_of(own),
+    )
+    # The session itself is still open and may keep working: back to "лейн не заявлен"
+    # rather than off the board (and no false "start hook missed it" on its next request).
+    lane = own.get("lane")
+    own.update(
+        status="open",
+        lane="",
+        goal="",
+        now="",
+        scope="",
+        branch="",
+        handoff="",
+        updated=now_utc().isoformat(),
+    )
+    write_claim(own)
+    print(f"{own['name']}: заявка снята, лейн {lane} свободен.")
     return 0
 
 
@@ -612,7 +713,7 @@ def cmd_hook_end(args) -> int:
         sid = _read_hook_payload().get("session_id") or ""
         own = find_own(load_claims(), sid) if sid else None
         if own and is_open(own):
-            own["path"].unlink()  # never declared a lane: nothing to park
+            unlink_claim(own)  # never declared a lane: nothing to park
             log_event("close", own, prompts=prompts_of(own))
         elif own:
             own["status"] = "paused"
@@ -646,14 +747,18 @@ def cmd_hook(args) -> int:
     if not sid:
         return 0
     at = now_utc()
-    name = name_for(sid)
-    claims = drop_dead_open_claims(load_claims(), at)
-    own = find_own(claims, sid)
-    if not own:
-        own = open_claim(sid, at)
-        own["path"] = write_claim(own)
-        claims.append(own)
-        log_event("open", own, source=source)
+    try:
+        claims = drop_dead_open_claims(load_claims(), at)
+        own = find_own(claims, sid)
+        if not own:
+            own = open_claim(sid, at, claims)
+            write_claim(own)
+            claims.append(own)
+            log_event("open", own, source=source)
+    except Exception as e:  # noqa: BLE001 — still name the session and show what we can
+        print(f"[sessions] registration skipped: {e}", file=sys.stderr)
+        claims, own = [], open_claim(sid, at, [])
+    name = own["name"]
     out = [
         f"[sessions] Ты — сессия «{name}» (id {sid}), ты уже на доске. "
         "Так подписывай хендоффы и сообщения другим сессиям."
@@ -680,13 +785,13 @@ def cmd_hook(args) -> int:
     return 0
 
 
-def _touch(own: dict, at: datetime, *, force: bool = False) -> bool:
+def _due(own: dict, at: datetime) -> bool:
     """Heartbeat: is it time to rewrite `updated`? (Throttled — every turn would churn the file.)"""
     try:
         last = datetime.fromisoformat(own.get("updated", ""))
     except ValueError:
         return True
-    return force or (at - last).total_seconds() >= BEAT_EVERY_SECS
+    return (at - last).total_seconds() >= BEAT_EVERY_SECS
 
 
 def cmd_hook_prompt(args) -> int:
@@ -694,32 +799,34 @@ def cmd_hook_prompt(args) -> int:
     request of an undeclared session — take a provisional goal from it and say so once.
 
     Also the safety net for sessions the start hook missed (opened before it was installed,
-    or the hook timed out): the first request registers them."""
+    or the hook timed out): the first request registers them. Read and write sit back to
+    back (all slow work — the scrub — runs before the read), and the write is atomic, so a
+    `claim` the agent runs at the same moment is not reverted in practice."""
     try:
         payload = _read_hook_payload()
         sid = payload.get("session_id") or ""
         if not sid:
             return 0
+        goal = goal_from_prompt(payload.get("prompt") or "")
         at = now_utc()
-        own = find_own(load_claims(), sid)
+        claims = load_claims()
+        own = find_own(claims, sid)
         if not own:
-            own = open_claim(sid, at)
+            own = open_claim(sid, at, claims)
             log_event("open", own, source="prompt")  # the start hook did not register it
         n = prompts_of(own) + 1
         own["prompts"] = str(n)
         own["updated"] = at.isoformat()
         if is_paused(own):
-            own["status"] = "active"  # resumed after a /clear-less exit: it is working again
+            own["status"] = "active"  # a resumed session asking something is working again
         said = []
-        if is_open(own) and not own.get("goal"):
-            goal = goal_from_prompt(payload.get("prompt") or "")
-            if goal:
-                own["goal"] = AUTO_PREFIX + goal
-                said.append(
-                    f"[sessions] На доске ты «{own['name']}», цель пока взята из запроса: «{goal}». "
-                    f"Заяви лейн, цель и файлы, когда задача станет ясна: {_claim_command(sid)}."
-                )
-        elif is_open(own) and n == CLAIM_EXPECTED_AFTER:
+        if is_open(own) and not own.get("goal") and goal:
+            own["goal"] = AUTO_PREFIX + goal
+            said.append(
+                f"[sessions] На доске ты «{own['name']}», цель пока взята из запроса: «{goal}». "
+                f"Заяви лейн, цель и файлы, когда задача станет ясна: {_claim_command(sid)}."
+            )
+        if is_open(own) and n == CLAIM_EXPECTED_AFTER:
             said.append(
                 f"[sessions] Уже {n} запроса, а лейн не заявлен — другие сессии не видят твоих файлов. "
                 f"{_claim_command(sid)}"
@@ -735,15 +842,16 @@ def cmd_hook_prompt(args) -> int:
 
 
 def cmd_hook_beat(args) -> int:
-    """Stop hook: the turn ended, the session is alive — refresh `updated` (throttled)."""
+    """Stop hook: the turn ended, the session is alive — refresh `updated` (throttled).
+
+    Never un-parks a paused lane: a Stop that lands after SessionEnd (exit right as a turn
+    ends) would otherwise revive a lane nobody holds. Only a new request revives it."""
     try:
         sid = _read_hook_payload().get("session_id") or ""
         own = find_own(load_claims(), sid) if sid else None
         at = now_utc()
-        if own and _touch(own, at):
+        if own and not is_paused(own) and _due(own, at):
             own["updated"] = at.isoformat()
-            if is_paused(own):
-                own["status"] = "active"
             write_claim(own)
     except Exception as e:  # noqa: BLE001
         print(f"[sessions] hook-beat skipped: {e}", file=sys.stderr)
@@ -758,8 +866,52 @@ def _mark(ok: bool | None) -> str:
     return "" if ok is None else (" ✅" if ok else " ❌")
 
 
-def stats_lines(events: list[dict], claims: list[dict], at: datetime, days: int) -> list[str]:
-    """The standard's targets against what the hooks recorded. Pure — tests feed it events."""
+def transcript_sessions(since: datetime, projects: Path | None = None) -> set[str]:
+    """Session ids that did anything after `since`, read from Claude Code's own transcripts
+    (~/.claude/projects/<this checkout>*/<session id>.jsonl) — the source the board does NOT
+    write, so "visibility" can actually fail: a session with hooks broken writes no events
+    but still writes its transcript."""
+    projects = projects or Path.home() / ".claude" / "projects"
+    prefix = re.sub(r"[^A-Za-z0-9]", "-", str(ROOT.parent))
+    cutoff = since.timestamp()
+    seen: set[str] = set()
+    for f in projects.glob(f"{prefix}*/*.jsonl"):
+        try:
+            if f.stat().st_mtime < cutoff:
+                continue
+            with f.open(encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    if '"type":"user"' not in line.replace(" ", ""):
+                        continue
+                    e = json.loads(line)
+                    ts = datetime.fromisoformat(e.get("timestamp", "").replace("Z", "+00:00"))
+                    if ts >= since:
+                        seen.add(f.stem)
+                        break
+        except (OSError, ValueError):
+            continue
+    return seen
+
+
+def _canonical(sids) -> dict[str, str]:
+    """Map every id to the longest id it is the same session as (short --session prefixes)."""
+    out: dict[str, str] = {}
+    for sid in sorted({s for s in sids if s}, key=len, reverse=True):
+        out[sid] = next((k for k in out.values() if same_session(k, sid)), sid)
+    return out
+
+
+def stats_lines(
+    events: list[dict],
+    claims: list[dict],
+    at: datetime,
+    days: int,
+    seen: set[str] | None = None,
+) -> list[str]:
+    """The standard's targets against what the hooks recorded. Pure — tests feed it events.
+    `seen`: session ids active in the window per Claude's transcripts (None = not checked)."""
+    import statistics
+
     since = at - timedelta(days=days)
 
     def when(e: dict) -> datetime | None:
@@ -775,9 +927,16 @@ def stats_lines(events: list[dict], claims: list[dict], at: datetime, days: int)
             "сами — первые цифры после первых сессий с подключёнными хуками."
         ]
     first_at = min(when(e) for e in window if when(e))
+    canon = _canonical(
+        [e.get("sid", "") for e in window]
+        + [c.get("session_id", "") for c in claims]
+        + list(seen or ())
+    )
+    for e in window:
+        e["sid"] = canon.get(e.get("sid", ""), e.get("sid", ""))
     by_sid: dict[str, list[dict]] = {}
     for e in window:
-        by_sid.setdefault(e.get("sid", ""), []).append(e)
+        by_sid.setdefault(e["sid"], []).append(e)
 
     # Requests per session: the largest count any event or the live claim file recorded.
     prompts: dict[str, int] = {}
@@ -785,20 +944,21 @@ def stats_lines(events: list[dict], claims: list[dict], at: datetime, days: int)
         if isinstance(e.get("prompts"), int):
             prompts[e["sid"]] = max(prompts.get(e["sid"], 0), e["prompts"])
     for c in claims:
-        sid = c.get("session_id", "")
+        sid = canon.get(c.get("session_id", ""), "")
         if sid in by_sid:
             prompts[sid] = max(prompts.get(sid, 0), prompts_of(c))
 
-    worked = [sid for sid, es in by_sid.items() if any(e["kind"] == "prompt1" for e in es)]
+    worked = {sid for sid, es in by_sid.items() if any(e["kind"] == "prompt1" for e in es)}
     late = [
         sid
         for sid in worked
         if any(e["kind"] == "open" and e.get("source") == "prompt" for e in by_sid[sid])
     ]
     expected = [sid for sid in worked if prompts.get(sid, 0) >= CLAIM_EXPECTED_AFTER]
-    first_claims = {
-        e["sid"]: e for e in window if e["kind"] == "claim" and e.get("first")
-    }  # last write wins; one per session in practice
+    first_claims: dict[str, dict] = {}
+    for e in sorted(window, key=lambda e: e.get("at", "")):
+        if e["kind"] == "claim" and e.get("first"):
+            first_claims.setdefault(e["sid"], e)  # the FIRST declaration, not a later re-claim
     claimed = [sid for sid in expected if sid in first_claims]
 
     def opened_at(sid: str) -> datetime | None:
@@ -822,11 +982,26 @@ def stats_lines(events: list[dict], claims: list[dict], at: datetime, days: int)
         f"Доска сессий за {days} дн. (лог с {first_at:%m-%d %H:%M}Z, "
         f"сессий в логе {len(by_sid)}, работали {len(worked)}):"
     ]
-    lines.append(
-        f"· Видимость: {len(worked)} из {len(worked)} работавших были на доске "
-        f"(цель {TARGETS['visible']:.0%}, обеспечивает хук, а не память сессии)"
-        + (f" · {len(late)} встали только по первому запросу — проверь хук старта" if late else "")
-    )
+    if seen is None:
+        lines.append(
+            f"· Видимость: не проверена (нет записей Claude), в логе работали {len(worked)}"
+        )
+    else:
+        active = {canon.get(s, s) for s in seen}
+        on_board = active & set(by_sid)
+        missing = sorted(active - set(by_sid))
+        ok = not missing
+        lines.append(
+            f"· Видимость: {len(on_board)} из {len(active)} активных сессий были на доске "
+            f"({_pct(len(on_board), len(active))}, цель {TARGETS['visible']:.0%})"
+            + _mark(ok if active else None)
+            + (f" — не было: {', '.join(name_for(s) for s in missing[:5])}" if missing else "")
+            + (
+                f" · {len(late)} встали только по первому запросу — проверь хук старта"
+                if late
+                else ""
+            )
+        )
     claim_ok = (len(claimed) / len(expected) >= TARGETS["claimed"]) if expected else None
     speed = ""
     if claim_prompts:
@@ -856,7 +1031,16 @@ def stats_lines(events: list[dict], claims: list[dict], at: datetime, days: int)
 
 
 def cmd_stats(args) -> int:
-    print("\n".join(stats_lines(load_events(), load_claims(), now_utc(), args.days)))
+    at = now_utc()
+    events = load_events()
+    starts = [e.get("at", "") for e in events if e.get("at")]
+    # Only sessions active since the log began count against visibility: before that the
+    # hooks did not exist, and "invisible" would measure history, not the mechanism.
+    since = (
+        max(at - timedelta(days=args.days), datetime.fromisoformat(min(starts))) if starts else at
+    )
+    seen = transcript_sessions(since) if starts else None
+    print("\n".join(stats_lines(events, load_claims(), at, args.days, seen)))
     return 0
 
 

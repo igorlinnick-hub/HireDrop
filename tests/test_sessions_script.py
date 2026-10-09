@@ -46,7 +46,10 @@ def test_claim_then_beat_then_done(tmp_sessions, capsys):
     assert claim["now"] == "CI green" and claim["goal"] == "ZR in History"
 
     assert sessions.main(["done", "--session", "s1"]) == 0
-    assert sessions.load_claims() == []
+    # The lane is free; the session itself is still open, back to "лейн не заявлен".
+    [claim] = sessions.load_claims()
+    assert (claim["status"], claim["lane"], claim["goal"]) == ("open", "", "")
+    assert claim["path"].parent.name == ".open"
 
 
 def test_claim_without_session_id_refuses():
@@ -338,8 +341,11 @@ def test_stats_measures_each_target():
         _ev("stale_takeover", "d", 20, lane="ext"),
         _ev("done", "e", 2, handoff=False, prompts=7),
     ]
-    text = "\n".join(sessions.stats_lines(events, [], sessions.now_utc(), 7))
-    assert "Видимость: 3 из 3" in text and "1 встали только по первому запросу" in text
+    # Claude's own transcripts saw a, b, c — and "x", a session whose hooks never ran.
+    seen = {"a", "b", "c", "x"}
+    text = "\n".join(sessions.stats_lines(events, [], sessions.now_utc(), 7, seen))
+    assert "Видимость: 3 из 4 активных" in text and "❌" in text.splitlines()[1]
+    assert sessions.name_for("x") in text and "1 встали только по первому запросу" in text
     assert "Лейн заявлен: 1 из 2 сессий" in text and "50%" in text and "❌" in text
     assert "на 2-м запросе, через 6 мин" in text
     assert "Хендофф при закрытии лейна: 1 из 2" in text
@@ -360,3 +366,161 @@ def test_a_claim_made_with_a_short_id_is_found_by_the_hooks(monkeypatch):
     [c] = sessions.load_claims()
     assert (c["lane"], c["prompts"]) == ("bugs", "1")
     assert not sessions.same_session("1234567", "1234567-rest")  # too short to trust a prefix
+
+
+def test_visibility_passes_when_every_active_session_was_on_the_board():
+    events = [_ev("open", "a", 5, source="startup"), _ev("prompt1", "a", 4)]
+    text = "\n".join(sessions.stats_lines(events, [], sessions.now_utc(), 7, {"a"}))
+    assert "Видимость: 1 из 1 активных" in text and "✅" in text.splitlines()[1]
+
+
+def test_transcripts_are_the_independent_witness(tmp_path, monkeypatch):
+    """Visibility is checked against Claude's own transcripts, which the board never writes."""
+    monkeypatch.setattr(sessions, "ROOT", Path("/Users/me/Code/JobFlow/jobflow"))
+    proj = tmp_path / "-Users-me-Code-JobFlow"
+    proj.mkdir()
+    now = sessions.now_utc()
+    (proj / "abc.jsonl").write_text(
+        json.dumps({"type": "user", "timestamp": now.isoformat().replace("+00:00", "Z")}) + "\n"
+    )
+    (proj / "old.jsonl").write_text(
+        json.dumps({"type": "user", "timestamp": "2020-01-01T00:00:00Z"}) + "\n"
+    )
+    seen = sessions.transcript_sessions(now - timedelta(hours=1), projects=tmp_path)
+    assert seen == {"abc"}
+
+
+def test_two_sessions_with_the_same_name_never_share_a_file(monkeypatch):
+    """2,162 names: collisions happen. 10-08 review simulated a /clear-paused lane being
+    overwritten by an unrelated session that hashed to the same name."""
+    a, b = "sid-a-0001", "sid-b-0002"
+    monkeypatch.setattr(sessions, "name_for", lambda sid: "warm-toucan")
+    sessions.main(["claim", "--session", a, "--lane", "ext", "--goal", "ZR in History"])
+    _run_hook(monkeypatch, "hook-end", {"session_id": a})
+    _run_hook(monkeypatch, "hook", {"session_id": b, "source": "startup"})
+    _run_hook(monkeypatch, "hook-end", {"session_id": b})
+    [parked] = sessions.load_claims()
+    assert (parked["status"], parked["lane"], parked["goal"]) == ("paused", "ext", "ZR in History")
+
+
+def test_switching_lanes_parks_the_old_one_and_never_copies_its_goal(capsys):
+    sessions.main(
+        [
+            "claim",
+            "--session",
+            "b",
+            "--lane",
+            "web",
+            "--goal",
+            "Settings card saves",
+            "--handoff",
+            "web.md",
+            "--branch",
+            "feat/web",
+        ]
+    )
+    sessions.main(
+        [
+            "claim",
+            "--session",
+            "a",
+            "--lane",
+            "ext",
+            "--goal",
+            "ZR in History",
+            "--handoff",
+            "ext.md",
+        ]
+    )
+    [b] = [c for c in sessions.load_claims() if c["lane"] == "web"]
+    b["status"] = "paused"
+    sessions.write_claim(b)
+    assert sessions.main(["claim", "--session", "a", "--lane", "web"]) == 0
+    by_lane = {c["lane"]: c for c in sessions.load_claims()}
+    assert (by_lane["web"]["goal"], by_lane["web"]["handoff"], by_lane["web"]["branch"]) == (
+        "Settings card saves",
+        "web.md",
+        "feat/web",
+    )
+    assert by_lane["web"]["session_id"] == "a"
+    # ext is not lost: parked, continuable by anyone.
+    assert by_lane["ext"]["status"] == "paused" and by_lane["ext"]["goal"] == "ZR in History"
+    assert "claim --lane ext" in capsys.readouterr().out
+
+
+def test_a_new_lane_after_another_needs_its_own_goal():
+    sessions.main(["claim", "--session", "a", "--lane", "ext", "--goal", "ZR in History"])
+    assert sessions.main(["claim", "--session", "a", "--lane", "web"]) == 2
+
+
+def test_a_late_stop_after_exit_does_not_revive_a_parked_lane(monkeypatch):
+    sessions.main(["claim", "--session", "s1", "--lane", "ext", "--goal", "g"])
+    [c] = sessions.load_claims()
+    c["updated"] = (sessions.now_utc() - timedelta(minutes=5)).isoformat()
+    sessions.write_claim(c)
+    _run_hook(monkeypatch, "hook-end", {"session_id": "s1"})
+    _run_hook(monkeypatch, "hook-beat", {"session_id": "s1"})
+    [c] = sessions.load_claims()
+    assert c["status"] == "paused"
+
+
+def test_a_short_id_claim_keeps_the_full_uuid_so_stats_see_one_session(monkeypatch):
+    full = "158b15fc-5959-4ef6-a7c2-1c1e97889051"
+    _run_hook(monkeypatch, "hook", {"session_id": full, "source": "startup"})
+    for i in range(4):
+        _run_hook(monkeypatch, "hook-prompt", {"session_id": full, "prompt": f"step {i} now"})
+    sessions.main(["claim", "--session", "158b15fc", "--lane", "bugs", "--goal", "g"])
+    [c] = sessions.load_claims()
+    assert c["session_id"] == full
+    text = "\n".join(
+        sessions.stats_lines(
+            sessions.load_events(), sessions.load_claims(), sessions.now_utc(), 7, {full}
+        )
+    )
+    assert "Лейн заявлен: 1 из 1" in text
+
+
+def test_the_nudge_fires_even_when_no_goal_could_be_read(monkeypatch, capsys):
+    for _ in range(3):
+        _run_hook(monkeypatch, "hook-prompt", {"session_id": "s1", "prompt": "/code-review high"})
+    assert "лейн не заявлен" in capsys.readouterr().out
+
+
+def test_an_open_claim_is_never_in_the_committed_folder(monkeypatch, tmp_sessions):
+    _run_hook(
+        monkeypatch, "hook-prompt", {"session_id": "s1", "prompt": "deploy with password hunter2"}
+    )
+    assert list(tmp_sessions.glob("*.md")) == []
+    [c] = sessions.load_claims()
+    assert c["path"].parent == tmp_sessions / ".open"
+    assert "hunter2" not in c["goal"]
+
+
+def test_one_unreadable_claim_does_not_blind_the_hooks(tmp_sessions):
+    sessions.main(["claim", "--session", "s1", "--lane", "ext", "--goal", "g"])
+    (tmp_sessions / "broken.md").write_bytes(b"\xff\xfe\x00garbage")
+    assert [c["lane"] for c in sessions.load_claims()] == ["ext"]
+
+
+def test_the_scrub_cuts_at_secret_words_in_both_languages():
+    g = sessions.goal_from_prompt
+    assert "hunter2" not in g("my password is hunter2 please fix")
+    assert "Hunter2024" not in g("пароль от админки: Hunter2024!")
+    assert "abcd1234efgh" not in g("токен railway abcd1234efgh")
+    assert "hunter2" not in g("set db_password=hunter2 and deploy")
+    assert "AKIAIOSFODNN7EXAMPLE" not in g("rotate AKIAIOSFODNN7EXAMPLE today")
+    assert "808" not in g("call me at +1 808 555 0199 later")
+    assert g("Посчитай экономику ИИ за октябрь") == "Посчитай экономику ИИ за октябрь"
+
+
+def test_the_script_runs_on_macos_system_python():
+    """Hooks call bare python3; under a minimal PATH that is /usr/bin/python3 (3.9)."""
+    import shutil
+    import subprocess
+
+    py = "/usr/bin/python3"
+    if not shutil.which(py):
+        pytest.skip("no system python3")
+    script = Path(sessions.__file__ or _SPEC.origin)
+    r = subprocess.run([py, str(script), "stats", "--days", "1"], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
