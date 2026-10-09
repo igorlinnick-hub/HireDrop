@@ -67,10 +67,12 @@ def _no_company_history_network():
 
 
 @pytest.fixture(autouse=True)
-def ai_meter_rows():
+def ai_meter_rows(monkeypatch):
     """Every Anthropic call records itself (modules/ai_meter.py) on a thread that writes to
     Supabase. Tests capture the rows here instead: no thread, no network, and a test that
-    cares about what was recorded reads this list."""
+    cares about what was recorded reads this list. Importing a measurement script switches
+    the meter off for the whole process (AI_METER=off); each test starts with it on."""
+    monkeypatch.delenv("AI_METER", raising=False)
     rows: list[dict] = []
     with patch("modules.ai_meter._dispatch", rows.append):
         yield rows
