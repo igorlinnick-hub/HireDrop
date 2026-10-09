@@ -302,7 +302,7 @@ def test_unattended_mode_turns_unknown_into_no_answer_and_shows_the_facts():
             patch.object(aq, "resume_text_for", return_value="Marketing manager."),
         ):
             out = aq.answer_screener_question(
-                "Are you willing to travel up to 40% of the time?",
+                "Are you currently located in the Miami area?",
                 job={},
                 profile={"city": "Honolulu", "state": "HI", "country": "United States"},
                 options=["Yes", "No"],

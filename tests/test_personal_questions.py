@@ -96,7 +96,7 @@ def test_facts_reach_the_model_once_in_the_right_block():
         patch.object(aq, "resume_text_for", return_value="Marketing."),
     ):
         out = aq.answer_screener_question(
-            "Are you willing to relocate to Miami?",
+            "Are you currently based in the Miami area?",
             job={"title": "t", "company": "c", "location": "Miami, FL"},
             profile={"personal_facts": facts, "city": "Honolulu", "state": "HI"},
             options=["Yes", "No"],
