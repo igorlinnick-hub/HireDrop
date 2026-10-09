@@ -197,6 +197,7 @@ def summarize(
 
     n = len(turns)
     pressed = sum(1 for r in card_results.values() if r == "accepted")
+    cards_failed = sum(1 for r in card_results.values() if r == "failed")
     up = sum(1 for v in votes.values() if v == "up")
     down = sum(1 for v in votes.values() if v == "down")
     flagged.sort(key=lambda f: str(f["at"] or ""), reverse=True)
@@ -212,6 +213,7 @@ def summarize(
         "thumbs_down": down,
         "cards_shown": cards_shown,
         "cards_pressed": pressed,
+        "cards_failed": cards_failed,
         "cards_by_kind": [
             {"kind": k, "shown": c, "pressed": kinds_pressed.get(k, 0)}
             for k, c in kinds_shown.most_common()
@@ -227,3 +229,39 @@ def summarize(
         "flagged": flagged[:flagged_limit],
         "flagged_total": len(flagged),
     }
+
+
+# What makes a day worth a person's look. Thresholds sit above the noise of one odd
+# question: a single "not sure" is honest support; two in a day is a missing tool or fact.
+DIDNT_KNOW_MIN = 2
+ASKED_AGAIN_MIN = 2
+TOO_LONG_MIN = 3
+COST_PER_ANSWER_MAX = 0.03  # 2.5x the ~$0.012 an answer cost when the cap was set
+
+
+def alerts(s: dict) -> list[str]:
+    """One plain line per problem in a summary, for the daily scan; empty = all clear."""
+    out: list[str] = []
+    n = s.get("questions") or 0
+    if s.get("failed"):
+        out.append(f"{s['failed']} ответ(ов) Drop сломались (ошибка или ушёл в цикл)")
+    if s.get("didnt_know", 0) >= DIDNT_KNOW_MIN:
+        out.append(
+            f"Drop не знал ответа {s['didnt_know']} раз из {n} — не хватает инструмента или факта"
+        )
+    if s.get("asked_again", 0) >= ASKED_AGAIN_MIN:
+        out.append(f"{s['asked_again']} раз(а) человек переспросил то же самое — ответ не помог")
+    if s.get("thumbs_down"):
+        out.append(f"{s['thumbs_down']} 👎 под ответами Drop")
+    if s.get("cards_failed"):
+        out.append(f"кнопка Drop не сработала {s['cards_failed']} раз(а)")
+    if s.get("too_long", 0) >= TOO_LONG_MIN:
+        out.append(f"{s['too_long']} слишком длинных ответов")
+    if s.get("limit_hitters"):
+        out.append(f"{s['limit_hitters']} человек(а) упёрлись в лимит 20 вопросов в день")
+    per = s.get("cost_per_answer")
+    if per is not None and per > COST_PER_ANSWER_MAX:
+        out.append(
+            f"ответ Drop стоил в среднем ${per:.3f} — дороже порога ${COST_PER_ANSWER_MAX:.2f}"
+        )
+    return out
