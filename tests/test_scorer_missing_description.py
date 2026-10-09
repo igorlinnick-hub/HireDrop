@@ -37,8 +37,6 @@ def test_present_description_is_passed_through_unchanged():
 
 def test_scoring_prompt_caps_the_unverifiable(monkeypatch):
     """The instruction has to reach the model, not just the docstring."""
-    import sys
-
     seen = {}
 
     class _Messages:
@@ -61,13 +59,8 @@ def test_scoring_prompt_caps_the_unverifiable(monkeypatch):
             )
 
     monkeypatch.setattr(ai_job_scorer, "ANTHROPIC_API_KEY", "test-key")
-    # score_job imports anthropic INSIDE the function, so the module table is the
-    # only hook. setitem (not a bare assignment) so the fake cannot leak into any
-    # other test in the session.
-    monkeypatch.setitem(
-        sys.modules,
-        "anthropic",
-        types.SimpleNamespace(Anthropic=lambda **_: types.SimpleNamespace(messages=_Messages())),
+    monkeypatch.setattr(
+        ai_job_scorer, "get_anthropic_client", lambda: types.SimpleNamespace(messages=_Messages())
     )
 
     result = ai_job_scorer.score_job(JOB, PROFILE)
