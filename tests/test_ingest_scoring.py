@@ -235,7 +235,7 @@ def test_a_mid_request_race_reuses_the_score_this_harvest_already_computed(auth_
 
 
 def test_a_scorer_outage_is_never_written_over_a_row(auth_client):
-    """score_job answers 5/'сомнительно' with fallback=True when the model is
+    """score_job answers its neutral 5 with fallback=True when the model is
     unreachable. Writing that over a score-NULL row would end the retry-next-harvest
     window with a rank nobody computed."""
 

@@ -189,6 +189,6 @@ def _default_score() -> dict:
         # Not a judgment — the model was unreachable (no key, API error). Callers that
         # WRITE a score over an existing row must skip these: a stored 5 ends the
         # retry-next-pass window with a rank nobody computed. Fresh-row inserts keep
-        # their long-standing "5 / сомнительно" middle-of-the-pool default.
+        # their long-standing middle-of-the-pool 5 default.
         "fallback": True,
     }
