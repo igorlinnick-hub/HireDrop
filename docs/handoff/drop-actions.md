@@ -2,7 +2,7 @@
 
 # drop-actions — Drop с кнопками, память ответов о себе, наблюдение за Drop
 
-Обновлено: 2026-10-08 · ветка: **`claude/awesome-heisenberg-r96y2g`** (не смержено, PR не открыт)
+Обновлено: 2026-10-09 · ветка: **`claude/awesome-heisenberg-r96y2g`** · PR [#401](https://github.com/igorlinnick-hub/HireDrop/pull/401) — CI зелёный, конфликтов нет, ждёт миграции и мержа
 
 ## Зачем (Игорь, 10-08)
 
@@ -66,15 +66,25 @@
   - Одна формула `app/db/buddy_log.summarize` → секция `buddy` в `/admin/metrics` и скрипт
     `scripts/buddy_review.py`.
 
-## Деплой — порядок обязателен
+## Деплой — порядок обязателен (делает локальная сессия на Маке)
 
-1. **Миграция** `migrations/add_personal_facts.sql` (`supabase db query --linked -f …`), затем
-   `notify pgrst, 'reload schema'`. Без неё всё работает, как раньше: факты читаются пустыми,
-   а сохранение отвечает 503.
-2. Мерж бэкенда (PR из этой ветки). Railway подхватит сам.
-3. `../scripts/sync-ext.sh` → Игорю: полный OFF/ON (менялись `content.js` и `manifest`) и
-   перезагрузить вкладку дашборда. В CWS — 1.8.45.
-4. Сайт — по контракту ниже, ПОСЛЕ шагов 1–2.
+1. **Миграция** — облако не может, нет ключей:
+   ```bash
+   cd "$(mktemp -d)" && supabase link --project-ref msxjcjzmfruizbgkssxo --yes
+   supabase db query --linked -f ~/Code/JobFlow/jobflow/migrations/add_personal_facts.sql   # сама шлёт notify pgrst
+   ```
+   Проверка: `.venv/bin/python -c "import config; from app.db.client import get_supabase as g; print(g().table('profiles').select('personal_facts').limit(1).execute())"` — без ошибки.
+   Без миграции всё работает как раньше: факты читаются пустыми, сохранение отвечает 503.
+2. **Мерж PR #401** — перед мержем убедиться, что CI зелёный на последнем коммите
+   (`gh pr checks 401`); если `main` ушёл вперёд — смержить `main` в ветку, прогнать
+   `pytest`, `ruff check . && ruff format --check .`, `python scripts/standards_ratchet.py`,
+   `npm run test:ext`. Railway подхватит сам.
+3. **Расширение 1.8.45**: `../scripts/sync-ext.sh` → Игорю: полный OFF/ON на `chrome://extensions`
+   (менялись `content.js` и `manifest`) и перезагрузить вкладку дашборда. Проверка: в попапе
+   версия 1.8.45. В CWS — загрузить 1.8.45 (`scripts/cws_publish.py`, как обычно).
+4. **Шаг в prod-sweep** — раздел «Ежедневный скан Drop» ниже, строки готовы.
+5. **Сайт** — по контракту ниже, ПОСЛЕ шагов 1–2 (карточка Settings пишет в PostgREST напрямую:
+   неизвестная колонка валит весь сейв профиля).
 
 ## Контракт для сайта (hiredrop-website) — пока НЕ сделан
 
@@ -154,8 +164,9 @@ exit 2 → «лог Drop не читается» — поломка, не «вс
 
 ## Следующий шаг
 
-Применить миграцию → открыть PR этой ветки → сайт по контракту → синк расширения → неделя →
-`buddy_review.py --days 7` и `measure_handback_share.py --days 7`.
+Деплой по шагам 1–4 выше → сайт по контракту → через неделю: `buddy_review.py --days 7`,
+`measure_handback_share.py --days 7` и `handback_reasons.py --days 7` (ждём рост хендбэков на
+переезд/офис/смены в первые дни и спад дальше).
 
 ## Ежедневный скан Drop — задачи (передать Игорю)
 
