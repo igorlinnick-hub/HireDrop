@@ -105,6 +105,7 @@ def test_the_product_is_left_as_it_was():
         ai_job_scorer.HAIKU_MODEL,
         ai_job_scorer._default_score,
     )
+    default_before = ai_job_scorer._default_score()
     client = FakeClient({OLD: _message(_verdict(8)), NEW: _message(_verdict(8))})
     sm.score_rows([ROW], {}, "resume", [OLD, NEW], client)
     after = (
@@ -113,7 +114,7 @@ def test_the_product_is_left_as_it_was():
         ai_job_scorer._default_score,
     )
     assert after == before
-    assert "fallback" not in ai_job_scorer._default_score()
+    assert ai_job_scorer._default_score() == default_before
 
 
 def _scored(pairs, described=True):

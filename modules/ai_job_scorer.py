@@ -124,6 +124,8 @@ def score_jobs_batch(
             job["ai_flags"] = scored["flags"]
             job["ats_keywords"] = scored["ats_keywords"]
             job["ats_match_pct"] = scored["ats_match_pct"]
+            if scored.get("fallback"):
+                job["score_fallback"] = True
             results.append(job)
 
     results.sort(key=lambda j: j.get("score", 0), reverse=True)
@@ -184,4 +186,9 @@ def _default_score() -> dict:
         "flags": [],
         "ats_keywords": [],
         "ats_match_pct": 0,
+        # Not a judgment — the model was unreachable (no key, API error). Callers that
+        # WRITE a score over an existing row must skip these: a stored 5 ends the
+        # retry-next-pass window with a rank nobody computed. Fresh-row inserts keep
+        # their long-standing middle-of-the-pool 5 default.
+        "fallback": True,
     }

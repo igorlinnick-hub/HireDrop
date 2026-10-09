@@ -75,6 +75,7 @@ def test_title_only_card_is_saved_but_not_scored(auth_client):
         "skipped_existing": 0,
         "scored": 0,
         "unscored_title_only": 1,
+        "score_backfilled": 0,
     }
     batch.assert_not_called(), "scoring a bare title is the trap, not the feature"
 
@@ -141,12 +142,14 @@ def test_counters_distinguish_a_regression_from_a_quiet_day(auth_client):
 
 
 def test_existing_links_are_still_skipped_entirely(auth_client):
-    """INSERT-only is the dedup lane: a re-harvest must not rescore or resurrect."""
+    """INSERT-only is the dedup lane: a SCORED row must not be rescored or resurrected."""
     batch = MagicMock()
     save = MagicMock(return_value=0)
     link = "https://www.indeed.com/viewjob?jk=abc123"
+    row = {"id": "row-1", "link": link, "status": "applied", "score": 7, "description": SNIPPET}
     with (
         patch("app.routers.jobs.jobs_db.existing_links", return_value={link}),
+        patch("app.routers.jobs.jobs_db.rows_by_links", return_value={link: row}),
         patch("app.routers.jobs.jobs_db.save_jobs_bulk", save),
         patch("modules.ai_job_scorer.score_jobs_batch", batch),
     ):
@@ -154,5 +157,149 @@ def test_existing_links_are_still_skipped_entirely(auth_client):
 
     assert res.json()["skipped_existing"] == 1
     assert res.json()["scored"] == 0
+    assert res.json()["score_backfilled"] == 0
     batch.assert_not_called()
     assert save.call_args.args[1] == []
+
+
+def test_a_row_the_search_page_judge_inserted_first_gets_its_score_backfilled(auth_client):
+    """/tools/assess-fit-batch can win the race and insert the row score-NULL (it judges
+    fit, it doesn't rank the deck). The harvest arriving second used to skip the link
+    entirely, leaving the row unranked forever (#387's tail). It now fills ONLY the
+    score; status and description stay what they are."""
+
+    def fake_batch(rows, _profile, _resume):
+        for r in rows:
+            r["score"] = 6
+            r["ai_verdict"] = "solid match"
+        return rows
+
+    link = "https://www.indeed.com/viewjob?jk=abc123"
+    # The batch judge stored the FULL posting on the row — the card here is title-only.
+    row = {"id": "row-1", "link": link, "status": "new", "score": None, "description": SNIPPET * 3}
+    update = MagicMock()
+    with (
+        patch("app.routers.jobs.jobs_db.existing_links", return_value={link}),
+        patch("app.routers.jobs.jobs_db.rows_by_links", return_value={link: row}),
+        patch("app.routers.jobs.jobs_db.save_jobs_bulk", return_value=0),
+        patch("app.routers.jobs.jobs_db.update_job_score", update),
+        patch("app.db.profile.get_profile", return_value={"resume_url": None}),
+        patch("modules.ai_cover_letter.load_resume_text", return_value="resume"),
+        patch("modules.ai_job_scorer.score_jobs_batch", side_effect=fake_batch),
+    ):
+        res = _ingest(auth_client, [_card(link=link)])
+
+    assert res.json()["score_backfilled"] == 1
+    assert update.call_args.args[0] == "row-1"
+    assert update.call_args.args[2] == 6
+
+
+def test_a_mid_request_race_reuses_the_score_this_harvest_already_computed(auth_client):
+    """The judge can insert the row BETWEEN our existing_links read and our insert-only
+    upsert: the insert is silently skipped and the score this request paid for would be
+    dropped. The backfill runs after the save and reuses the computed score — no second
+    model call."""
+
+    def fake_batch(rows, _profile, _resume):
+        for r in rows:
+            r["score"] = 8
+        return rows
+
+    link = "https://www.indeed.com/viewjob?jk=abc123"
+    judge_row = {
+        "id": "row-9",
+        "link": link,
+        "status": "new",
+        "score": None,
+        "description": SNIPPET * 3,
+    }
+    update = MagicMock()
+    batch = MagicMock(side_effect=fake_batch)
+    with (
+        patch(
+            "app.routers.jobs.jobs_db.existing_links", return_value=set()
+        ),  # we lost the race later
+        patch("app.routers.jobs.jobs_db.rows_by_links", return_value={link: judge_row}),
+        patch("app.routers.jobs.jobs_db.save_jobs_bulk", return_value=1),
+        patch("app.routers.jobs.jobs_db.update_job_score", update),
+        patch("app.db.profile.get_profile", return_value={"resume_url": None}),
+        patch("modules.ai_cover_letter.load_resume_text", return_value="resume"),
+        patch("modules.ai_job_scorer.score_jobs_batch", batch),
+    ):
+        res = _ingest(auth_client, [_card(link=link, description=SNIPPET)])
+
+    assert res.json()["score_backfilled"] == 1
+    assert batch.call_count == 1  # the snippet scoring — the backfill reused it
+    assert update.call_args.args[0] == "row-9"
+    assert update.call_args.args[2] == 8
+
+
+def test_a_scorer_outage_is_never_written_over_a_row(auth_client):
+    """score_job answers its neutral 5 with fallback=True when the model is
+    unreachable. Writing that over a score-NULL row would end the retry-next-harvest
+    window with a rank nobody computed."""
+
+    def fallback_batch(rows, _profile, _resume):
+        for r in rows:
+            r["score"] = 5
+            r["score_fallback"] = True
+        return rows
+
+    link = "https://www.indeed.com/viewjob?jk=abc123"
+    row = {"id": "row-1", "link": link, "status": "new", "score": None, "description": SNIPPET * 3}
+    update = MagicMock()
+    with (
+        patch("app.routers.jobs.jobs_db.existing_links", return_value={link}),
+        patch("app.routers.jobs.jobs_db.rows_by_links", return_value={link: row}),
+        patch("app.routers.jobs.jobs_db.save_jobs_bulk", return_value=0),
+        patch("app.routers.jobs.jobs_db.update_job_score", update),
+        patch("app.db.profile.get_profile", return_value={"resume_url": None}),
+        patch("modules.ai_cover_letter.load_resume_text", return_value="resume"),
+        patch("modules.ai_job_scorer.score_jobs_batch", side_effect=fallback_batch),
+    ):
+        res = _ingest(auth_client, [_card(link=link)])
+
+    assert res.json()["score_backfilled"] == 0
+    update.assert_not_called()
+
+
+def test_backfill_leaves_closed_rows_alone(auth_client):
+    """A score-NULL row the user already applied to or swiped away gets no model call:
+    no surface ranks closed rows (the pool is an archive)."""
+    batch = MagicMock()
+    link = "https://www.indeed.com/viewjob?jk=abc123"
+    row = {
+        "id": "row-1",
+        "link": link,
+        "status": "applied",
+        "score": None,
+        "description": SNIPPET * 3,
+    }
+    with (
+        patch("app.routers.jobs.jobs_db.existing_links", return_value={link}),
+        patch("app.routers.jobs.jobs_db.rows_by_links", return_value={link: row}),
+        patch("app.routers.jobs.jobs_db.save_jobs_bulk", return_value=0),
+        patch("modules.ai_job_scorer.score_jobs_batch", batch),
+    ):
+        res = _ingest(auth_client, [_card(link=link)])
+
+    assert res.json()["score_backfilled"] == 0
+    batch.assert_not_called()
+
+
+def test_backfill_never_scores_what_it_cannot_read(auth_client):
+    """A score-NULL row whose stored text AND card snippet are both thin stays unscored —
+    the #192 trap (title-only scoring) applies to the backfill too."""
+    batch = MagicMock()
+    link = "https://www.indeed.com/viewjob?jk=abc123"
+    row = {"id": "row-1", "link": link, "status": "new", "score": None, "description": "thin"}
+    with (
+        patch("app.routers.jobs.jobs_db.existing_links", return_value={link}),
+        patch("app.routers.jobs.jobs_db.rows_by_links", return_value={link: row}),
+        patch("app.routers.jobs.jobs_db.save_jobs_bulk", return_value=0),
+        patch("modules.ai_job_scorer.score_jobs_batch", batch),
+    ):
+        res = _ingest(auth_client, [_card(link=link)])
+
+    assert res.json()["score_backfilled"] == 0
+    batch.assert_not_called()
