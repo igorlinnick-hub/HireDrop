@@ -164,6 +164,7 @@ check("the same name with a note in brackets is taken",
 const comboParts = [
   extract("  function reactSelectShownValue(el) {"),
   extract("  function getFieldLabel(el) {"),
+  extract("  function isShownDialog(d) {"),
   extract("  function visibleApplyDialogs() {"),
   extract("  function formScope() {"),
   extract("  function findComboMenu(combo) {"),
@@ -243,7 +244,7 @@ function comboWorld(html, { want } = {}) {
   }
 
   // ---- 4. A required race group gets its decline box ---------------------------------
-  const cbParts = [extract("  function getFieldLabel(el) {"), extract("  function visibleApplyDialogs() {"),
+  const cbParts = [extract("  function getFieldLabel(el) {"), extract("  function isShownDialog(d) {"), extract("  function visibleApplyDialogs() {"),
     extract("  function formScope() {"), extract("  function isDemographicQuestion(label, optionTexts) {"),
     SRC.slice(SRC.indexOf("  // ── Legal work status: ONE reading"), SRC.indexOf("  // Pick a dropdown option deterministically")),
     extract("  async function fillCheckboxes() {")];

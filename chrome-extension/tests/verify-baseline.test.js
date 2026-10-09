@@ -46,7 +46,7 @@ const CODE =
   slice("  const POSTAPPLY_URL_HINTS", "  // React-compatible field filling") +
   slice("  const FIELDISH_SELECTOR", "  // Compact \"what modals are on screen\"") +
   slice("  function isFormVisible()", "  function findResumeInput()") +
-  slice("  // Same rule as visibleApplyDialogs(): laid out", "  // Leave ZR's post-apply screen") +
+  slice("  // ZipRecruiter's own word that the application went through.", "  // Leave ZR's post-apply screen") +
   slice("  function jobLooksApplied()", "  // Record a submission that the platform accepted");
 
 function makeSandbox(html, url) {

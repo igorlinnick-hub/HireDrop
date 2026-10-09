@@ -2694,12 +2694,11 @@
   }
 
   // ZipRecruiter's place line, for History's place filter (the server reduces it with
-  // place_label / posting_work_setting). Captured 10-06: the open job's header carries
+  // place_label / posting_work_setting). The open job's header carries
   // <p>Houston, TX • On-site</p> right after [data-testid="serp-job-details-title"], and the
-  // card carries <a data-testid="job-card-location">Houston, TX</a><span> · On-site</span>.
-  // Before 10-08 the ZR path sent no place at all, so every ZR application read "No location".
-  // The open pane first (it is the job being applied to), then this job's own card by uuid —
-  // never a neighbour's.
+  // card carries <a data-testid="job-card-location">Houston, TX</a><span> · On-site</span>
+  // (tests/fixtures/ziprecruiter-serp-*.html). The open pane first (it is the job being
+  // applied to), then this job's own card by uuid — never a neighbour's.
   function readZipRecruiterCardLocation(cardEl) {
     const a = cardEl?.querySelector('[data-testid="job-card-location"]');
     if (!a) return "";
@@ -3514,21 +3513,9 @@
     return null;
   }
 
-  // Same rule as visibleApplyDialogs(): laid out AND not visibility:hidden (ZR's mounted,
-  // hidden header "Settings" modal is the reason).
-  function isShownDialog(d) {
-    if (!d || d.offsetParent === null) return false;
-    try {
-      const view = d.ownerDocument && d.ownerDocument.defaultView;
-      return !view || view.getComputedStyle(d).visibility !== "hidden";
-    } catch { return true; }
-  }
-
-  // ZipRecruiter's own word that the application went through. Ground truth 10-06: three
-  // Quick Applies filed ("Applied Today" in My Jobs) while we logged two "no ZR form" skips
-  // and a 10-page hand-back, and recorded none. What ZR shows after a submit — read from its
-  // apply-flow bundle (screen types beSeenFirst / beSeenFirstNotEligible, 10-06), the live
-  // log matches the first: [1:in=0 btn=Close|Send a Message|Skip for Now]:
+  // ZipRecruiter's own word that the application went through. Its 1-click apply files on
+  // the click and opens no form, only a post-apply screen (screen types beSeenFirst /
+  // beSeenFirstNotEligible in ZR's apply-flow bundle):
   //   - "Send a message to this employer about why you're interested" with buttons
   //     "Send a Message" / "Skip for Now" (testIDs bsf-main-entrypoint-start / -skip);
   //   - "Your application has been submitted!" (data-testid bsf-not-eligible);
@@ -5158,23 +5145,21 @@
   const FIELDISH_SELECTOR =
     'input, textarea, select, [role="combobox"], [role="checkbox"], [role="radio"], [role="switch"], [contenteditable="true"]';
 
-  // "Visible" = laid out AND not visibility:hidden. offsetParent ignores `visibility`, and
+  // "Shown" = laid out AND not visibility:hidden. offsetParent ignores `visibility`, and
   // ZipRecruiter keeps its header "Settings" modal ([role=dialog], buttons Close | Close)
-  // MOUNTED on every page inside a `visibility: hidden` overlay (captured 10-06,
-  // tests/fixtures/ziprecruiter-serp-*.html). Counted as an open dialog it was the
-  // `[0:in=0 btn=Close|Close]` in every ZR log line: the 12-second "empty dialog = external
-  // job" bail fired on one-click applies that had gone through, and detectSilentSubmission
-  // waited on its text instead of reading the job pane. Inlined, not a helper: tests lift
-  // this function out of the file on its own.
+  // mounted on every page inside a `visibility: hidden` overlay
+  // (tests/fixtures/ziprecruiter-serp-*.html). Counted as open, it would trip the "empty
+  // dialog = external job" bail and keep detectSilentSubmission off the job pane.
+  function isShownDialog(d) {
+    if (!d || d.offsetParent === null) return false;
+    try {
+      const view = d.ownerDocument && d.ownerDocument.defaultView;
+      return !view || view.getComputedStyle(d).visibility !== "hidden";
+    } catch { return true; } // unreadable style: trust the layout check above
+  }
+
   function visibleApplyDialogs() {
-    const shown = (d) => {
-      if (d.offsetParent === null) return false;
-      try {
-        const view = d.ownerDocument && d.ownerDocument.defaultView;
-        return !view || view.getComputedStyle(d).visibility !== "hidden";
-      } catch { return true; }
-    };
-    const all = Array.from(document.querySelectorAll('[role="dialog"]')).filter(shown);
+    const all = Array.from(document.querySelectorAll('[role="dialog"]')).filter(isShownDialog);
     const withFields = all.filter((d) => d.querySelector(FIELDISH_SELECTOR));
     const rest = all.filter((d) => !withFields.includes(d) && d.querySelector("button"));
     return withFields.concat(rest);
@@ -5454,9 +5439,9 @@
   }
 
   // Set by phase3 while a ZipRecruiter form lives in a modal: its buttons are the dialog's,
-  // so the page behind is never searched for one. Live 10-06: the Quick Apply modal closed
-  // after its Continue (the application had gone through), the lookup fell to the document,
-  // and the step loop clicked the RESULTS list's "next page" ten times (/jobs-search/2 … /10).
+  // so the page behind is never searched for one. When the modal closes after a Continue
+  // that filed the application, a document-wide lookup would find the results list's
+  // "next page" and walk the pages as if they were form steps.
   let formLivesInDialog = false;
 
   function findFormButton() {
@@ -5579,7 +5564,7 @@
 
   // Results-page navigation is never a form step, on any board. ZipRecruiter's pagination
   // is <a title="Next Page"><svg><title>next page</title></svg></a> inside
-  // section[aria-label="Job listings"] (captured 10-06) — FORM_ADVANCE_RE's /^next\b/ took it.
+  // section[aria-label="Job listings"], which FORM_ADVANCE_RE's /^next\b/ would take.
   // A control inside a dialog is the form's own and is judged by its label alone.
   const PAGE_NAV_LABEL_RE = /^((go to )?(next|previous|prev|first|last) (page|results?)\b|page:? ?\d+\b|\d+$|[‹›«»<>]+$)/;
   const PAGE_NAV_SCOPE =
@@ -5802,10 +5787,9 @@
     const onZr = detectPlatform() === "ziprecruiter";
     while (Date.now() - start < timeoutMs) {
       // ZipRecruiter's own post-apply screen ("Send a message to this employer…" with
-      // Send a Message | Skip for Now) is a success, and it is checked before the field
-      // test below: none of its wording is in SUCCESS_TEXTS, so after a multi-step form's
-      // last Continue the loop waited it out and logged "form abandoned without submit".
-      // No pane flag here: the pane is read below only once every dialog has closed.
+      // Send a Message | Skip for Now) is a success, checked before the field test below:
+      // none of its wording is in SUCCESS_TEXTS. No pane flag here: the pane is read below
+      // only once every dialog has closed.
       if (onZr) {
         const zr = zrPostApplySignal();
         if (zr) return zr;

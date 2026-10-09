@@ -46,6 +46,7 @@ const parts = {
   formBlockers: extract("  function formBlockers() {"),
   formBlockersLine: extract("  function formBlockersLine(fb) {"),
   getFieldLabel: extract("  function getFieldLabel(el) {"),
+  isShownDialog: extract("  function isShownDialog(d) {"),
   visibleApplyDialogs: extract("  function visibleApplyDialogs() {"),
   formScope: extract("  function formScope() {"),
 };
@@ -72,7 +73,7 @@ function load(html, { url, classify } = {}) {
     const btn = w.document.querySelector("button");
     return btn ? { btn, submit: false, label: btn.textContent.trim() } : { btn: null, submit: false, label: "" };
   });
-  w.eval(`${fieldish[0]}\n${parts.getFieldLabel}\n${parts.visibleApplyDialogs}\n${parts.formScope}\n` +
+  w.eval(`${fieldish[0]}\n${parts.getFieldLabel}\n${parts.isShownDialog}\n${parts.visibleApplyDialogs}\n${parts.formScope}\n` +
     `${parts.maskPii}\n${parts.formBlockers}\n${parts.formBlockersLine}\n` +
     "window.__fb = formBlockers; window.__line = formBlockersLine;");
   return w;
