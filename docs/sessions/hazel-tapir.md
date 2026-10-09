@@ -1,6 +1,6 @@
 name: hazel-tapir
 session_id: 7fe19b12-d78b-5965-8ac1-f5614503df30
-status: active
+status: paused
 lane: ai-economics
 goal: Каждый вызов ИИ пишется в ai_calls (кто/зачем/модель/цена); ежедневный отчёт сам считает $/заявку и шумит на скачок; ночная предоценка пополняет запас только на потраченное (молчащим — ноль); всё в проде через PR
 now: PR #400 CI зелёный → мерж; дальше миграция с Мака
@@ -8,6 +8,6 @@ scope: migrations/add_ai_calls.sql,modules/ai_meter.py,app/db/ai_calls.py,script
 branch: claude/blissful-knuth-e3z2bp
 handoff: docs/handoff/ai-economics.md
 started: 2026-10-08T22:58:26+00:00
-updated: 2026-10-09T00:07:39+00:00
+updated: 2026-10-09T00:15:01+00:00
 
 <!-- written by scripts/sessions.py; edit via claim/beat, not by hand -->
