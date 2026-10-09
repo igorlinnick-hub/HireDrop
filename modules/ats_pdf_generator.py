@@ -237,14 +237,13 @@ Incorporate any additional candidate answers into the appropriate fields (add me
 RESUME TEXT:
 {resume_text[:8000]}{answers_block}"""
 
-        from modules.ai_resume_tailor import NO_THINKING, reply_text
+        from modules.ai_models import plain_answer_kwargs, reply_text
 
-        kwargs = {"thinking": NO_THINKING} if model and model.startswith("claude-sonnet-5") else {}
         message = client.messages.create(
             model=model or SONNET_MODEL,
             max_tokens=3000,
             messages=[{"role": "user", "content": prompt}],
-            **kwargs,
+            **plain_answer_kwargs(model or SONNET_MODEL),
         )
         ai_meter.record(message, "resume_structure")
         raw = reply_text(message)
