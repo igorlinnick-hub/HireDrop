@@ -1,4 +1,4 @@
-"""The daily Drop scan: a problem day becomes a task for Igor in the handoff, without
+"""The daily Drop scan: a problem day becomes a task for the owner in the handoff, without
 anyone's words in it (the repository is public)."""
 
 import importlib.util
