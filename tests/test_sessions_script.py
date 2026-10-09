@@ -524,3 +524,39 @@ def test_the_script_runs_on_macos_system_python():
     script = Path(sessions.__file__ or _SPEC.origin)
     r = subprocess.run([py, str(script), "stats", "--days", "1"], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+def test_every_request_shows_who_else_works_and_the_wait_or_work_rule(monkeypatch, capsys):
+    sessions.main(
+        [
+            "claim",
+            "--session",
+            "runner",
+            "--lane",
+            "indeed",
+            "--goal",
+            "g",
+            "--now",
+            "live Indeed run",
+            "--scope",
+            "scripts/e2e/drive.py",
+        ]
+    )
+    sessions.main(
+        ["claim", "--session", "me", "--lane", "zr", "--goal", "g", "--scope", "scripts/e2e/"]
+    )
+    capsys.readouterr()
+    for _ in range(2):  # not once — on every request
+        _run_hook(monkeypatch, "hook-prompt", {"session_id": "me", "prompt": "run ZR"})
+        out = capsys.readouterr().out
+        assert f"{sessions.name_for('runner')} [indeed]" in out and "live Indeed run" in out
+        assert "общие файлы с тобой" in out
+        assert "ждём | работаем" in out
+        assert f"{sessions.name_for('me')} [" not in out  # never lists itself
+
+
+def test_alone_on_the_board_the_request_hook_stays_quiet(monkeypatch, capsys):
+    sessions.main(["claim", "--session", "me", "--lane", "zr", "--goal", "g"])
+    capsys.readouterr()
+    _run_hook(monkeypatch, "hook-prompt", {"session_id": "me", "prompt": "next"})
+    assert capsys.readouterr().out == ""
