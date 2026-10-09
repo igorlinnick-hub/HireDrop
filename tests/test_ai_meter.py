@@ -37,6 +37,12 @@ def test_cache_reads_and_writes_are_priced_apart_from_plain_input():
     assert ai_meter.cost_usd(msg.model, msg.usage) == Decimal("0.007800")
 
 
+def test_sonnet_5_5_cache_reads_cost_a_twentieth_of_its_input():
+    # 10,000 read x $0.10/M + 1,000 in x $2/M
+    msg = _message("claude-sonnet-5-5", cache_read_input_tokens=10000, input_tokens=1000)
+    assert ai_meter.cost_usd(msg.model, msg.usage) == Decimal("0.003000")
+
+
 def test_a_one_hour_cache_write_bills_double_the_input_price():
     usage = SimpleNamespace(
         input_tokens=0,
