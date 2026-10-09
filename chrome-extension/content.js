@@ -3895,7 +3895,8 @@
         (c.closest("label, [class*='question' i], fieldset")?.textContent || "");
       const own = String(boxText(c) || "").trim();
       const g = groupOf(c);
-      const question = (g && (g.querySelector(":scope > legend")?.textContent || g.getAttribute("aria-label"))) || label;
+      const question = (g && (g.querySelector(":scope > legend")?.textContent || g.getAttribute("aria-label") ||
+        g.querySelector(":scope > label")?.textContent)) || label;
       const mates = g ? Array.from(g.querySelectorAll('input[type="checkbox"]')).filter((b) => groupOf(b) === g) : [c];
       // A box reading just "Yes"/"No" is an ANSWER to the question above it, not a consent.
       const isYesNoBox = /^\W*(yes|no)\b/i.test(own);
@@ -3930,11 +3931,20 @@
           // A Yes/No choice: "Yes" only to a consent ("Do you acknowledge and agree to our
           // GDPR policy?"); a factual question ("Are you based in the NYC metro area?") is
           // the person's to answer — `required` used to tick Yes AND No.
-          if (!(/^\W*yes\b/i.test(own) && isConsentToProcess(question))) continue;
+          if (!(/^\W*yes\b/i.test(own) && (isConsentToProcess(question) || isWillingnessQuestion(question)))) continue;
         } else if (!required && !isAffirmation) continue;
       }
       const labelEl = c.id ? document.querySelector(`label[for="${CSS.escape(c.id)}"]`) : null;
       await humanClick(labelEl || c);
+      filled++;
+      await sleep(humanDelay(200, 500));
+    }
+    // Ashby's Boolean is a pair of buttons (aria-pressed), not a box: Yes to willingness.
+    for (const yes of formScope().querySelectorAll('[class*="fieldEntry"] [aria-pressed="false"][data-option="yes"]')) {
+      const entry = yes.closest('[class*="fieldEntry"]');
+      if (!entry || !yes.offsetParent || entry.querySelector('[aria-pressed="true"]')) continue;
+      if (!isWillingnessQuestion(entry.querySelector("label")?.textContent)) continue;
+      await humanClick(yes);
       filled++;
       await sleep(humanDelay(200, 500));
     }
@@ -4767,6 +4777,14 @@
   // whatever consent words it carries; so is anything about being a human and not a bot.
   const FACTUAL_CLAIM_RE = /^\W*(are|have|has|were|was|did|is)\s+you\b/i;
   const PERSON_ONLY_RE = /(real|actual) (human|person)\b|human being|\bnot (a |an )?(automated |ai )?(ro)?bot\b|automated (bot|tool|system|program|agent)/i;
+  // Willingness to the job's conditions (office days, relocation, travel, commute, shifts)
+  // is always Yes: the goal is the interview, conditions are talked through there, and the
+  // person sees what we answered in History. Mirrors modules/ai_question_answer._WILLING_Q;
+  // where someone lives, visa status and attestations keep their own rules.
+  const WILLING_Q_RE = /\b(willing|able|open|comfortable|available|prepared|ok(ay)?|happy|agree|can you|could you|would you)\b[\s\S]{0,80}?\b(relocat\w*|commut\w*|office|on-?site|in[- ]person|hybrid|travel\w*|shifts?|weekends?|evenings?|nights?|overtime|on-?call|schedule|\d\s*days?)\b/i;
+  function isWillingnessQuestion(q) {
+    return WILLING_Q_RE.test(String(q || ""));
+  }
   function isConsentToProcess(label) {
     const q = String(label || "");
     if (!CONSENT_VERB_RE.test(q) || !CONSENT_OBJECT_RE.test(q)) return false;

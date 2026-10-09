@@ -420,6 +420,31 @@ def _only_the_person(question: str, options: list[str]) -> str | None:
     return None
 
 
+# Willingness to the job's conditions: office days, relocation, travel, commute, shifts.
+# Always Yes, never asked: the goal is the interview, and conditions are talked through
+# there. The person sees what we answered in History. This is about WILLINGNESS only:
+# where someone lives, how they heard about us, visa status and attestations keep their
+# own rules (above and in _UNATTENDED_RULES).
+_WILLING_Q = re.compile(
+    r"\b(willing|able|open|comfortable|available|prepared|ok(ay)?|happy|agree|can you|could you"
+    r"|would you)\b.{0,80}?\b(relocat\w*|commut\w*|office|on-?site|in[- ]person|hybrid|travel\w*"
+    r"|shifts?|weekends?|evenings?|nights?|overtime|on-?call|schedule|\d\s*days?)\b",
+    re.I | re.S,
+)
+_YES_OPTION = re.compile(r"^\W*(yes|i am|i'm|i can|i would|absolutely|definitely)\b", re.I)
+_NO_WORDS = re.compile(r"\b(no|not|unable|unwilling|can'?t|cannot|remote only)\b", re.I)
+
+
+def _willing_yes(question: str, options: list[str]) -> str | None:
+    """Yes to a willingness question (the option's own wording), or None when the
+    question is not one or the list has no Yes to give."""
+    if not _WILLING_Q.search(question):
+        return None
+    if not options:
+        return "Yes."
+    return next((o for o in options if _YES_OPTION.search(o) and not _NO_WORDS.search(o)), None)
+
+
 def _confirmed_facts(profile: dict) -> str:
     """Education the candidate stated themselves (signup answers), for the prompt.
 
@@ -518,15 +543,15 @@ is about the candidate's own circumstances and neither the résumé nor the FACT
 state the answer:
 - where they live, or whether they are in / near a given city, region, coast or time zone
 - how they heard about the job or the company
-- what they are willing or available to do: travel, relocate, attend an office, work a \
-schedule or shift, a start date, a notice period
+- a start date or a notice period
 - memberships, affiliations, whether they know or were referred by someone, whether they \
 have applied or interviewed here before
 - facts about themselves they are asked to certify, declare or sign
-Never stretch a fact to fit the question: Hawaii is not "the West Coast", a remote job \
-search is not a promise to attend an office, and an answer about one place says nothing \
-about another ("willing to relocate to San Diego: Yes" does not answer "relocate to \
-Miami?" — that is UNKNOWN).
+Never stretch a fact to fit the question: Hawaii is not "the West Coast", and an answer \
+about one place says nothing about another ("lives in San Diego" does not answer "based in \
+Miami?", that is UNKNOWN).
+Whether the candidate is WILLING to attend an office, relocate, travel, commute or work a \
+given schedule is not unknown: the answer is Yes.
 Two things are NOT unknown: acknowledging that a notice or a process has been read \
 (privacy notice, background check, interview steps) — answer those; and whether the \
 candidate has worked for THIS company before — the résumé's work history answers it \
@@ -586,6 +611,11 @@ def answer_screener_question(question, job=None, profile=None, options=None, una
     personal = _only_the_person(question, options)
     if personal is not None:
         return personal
+
+    # Office days, relocation, travel, shifts: Yes. (See _willing_yes.)
+    willing = _willing_yes(question, options)
+    if willing is not None:
+        return willing
 
     resume_text = resume_text_for(profile)
     about = re.sub(r"\s+", " ", str(job.get("description") or "")).strip()[:_MAX_POSTING_CHARS]

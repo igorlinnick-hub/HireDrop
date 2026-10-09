@@ -343,6 +343,13 @@ const DOMESTIC = [
     check("checkbox privacy acknowledgement → still ticked", priv.on.join() === "b0", priv.on.join());
     const bot = await boxes(`<label><input type="checkbox" id="h" required> I confirm that I am a real human being and not an automated bot</label>`, US);
     check("checkbox “I am a real human, not a bot” → never ticked by us", bot.on.length === 0, bot.on.join());
+    // Willingness to the job's conditions → Yes (office days, relocation, travel, shifts).
+    const reloc = await boxes(cbGroup("Are you open to relocating to Austin, TX?", ["Yes", "No"]), US);
+    check("checkbox willingness (relocation) → Yes", reloc.on.join() === "b0", reloc.on.join());
+    const suno = fs.readFileSync(path.join(__dirname, "fixtures", "ashby-suno-form.html"), "utf8");
+    const office = await boxes(suno, US);
+    check("Ashby live form (Suno): office 5 days → “Yes.” ticked, not “No. I want to work remote.”",
+      office.on.length === 1 && /labeled-checkbox-0$/.test(office.on[0]), office.on.join());
   }
 
   // ---- 6. Text boxes: the same helper, before every keyword rule -----------------------
