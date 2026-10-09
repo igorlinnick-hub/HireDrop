@@ -528,10 +528,23 @@ def test_the_script_runs_on_macos_system_python():
 
 def test_every_request_shows_who_else_works_and_the_wait_or_work_rule(monkeypatch, capsys):
     sessions.main(
-        ["claim", "--session", "runner", "--lane", "indeed", "--goal", "g", "--now", "live Indeed run",
-         "--scope", "scripts/e2e/drive.py"]
+        [
+            "claim",
+            "--session",
+            "runner",
+            "--lane",
+            "indeed",
+            "--goal",
+            "g",
+            "--now",
+            "live Indeed run",
+            "--scope",
+            "scripts/e2e/drive.py",
+        ]
     )
-    sessions.main(["claim", "--session", "me", "--lane", "zr", "--goal", "g", "--scope", "scripts/e2e/"])
+    sessions.main(
+        ["claim", "--session", "me", "--lane", "zr", "--goal", "g", "--scope", "scripts/e2e/"]
+    )
     capsys.readouterr()
     for _ in range(2):  # not once — on every request
         _run_hook(monkeypatch, "hook-prompt", {"session_id": "me", "prompt": "run ZR"})
