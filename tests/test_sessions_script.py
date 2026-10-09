@@ -46,7 +46,7 @@ def test_claim_then_beat_then_done(tmp_sessions, capsys):
     assert claim["now"] == "CI green" and claim["goal"] == "ZR in History"
 
     assert sessions.main(["done", "--session", "s1"]) == 0
-    # The lane is free; the session itself is still open, back to "лейн не заявлен".
+    # The lane is free; the session itself is still open, back to "no lane claimed".
     [claim] = sessions.load_claims()
     assert (claim["status"], claim["lane"], claim["goal"]) == ("open", "", "")
     assert claim["path"].parent.name == ".open"
@@ -197,7 +197,7 @@ def _run_hook(monkeypatch, cmd, payload):
 
 
 def test_a_session_is_on_the_board_the_moment_it_opens(monkeypatch, capsys):
-    """10-08: a read-only 'count the AI costs' session never claimed and was invisible."""
+    """A read-only session that never claims must still be visible."""
     _run_hook(monkeypatch, "hook", {"session_id": "s1", "source": "startup"})
     [c] = sessions.load_claims()
     assert (c["session_id"], c["status"], c["lane"]) == ("s1", "open", "")
@@ -221,7 +221,7 @@ def test_a_session_is_on_the_board_the_moment_it_opens(monkeypatch, capsys):
 
 
 def test_the_first_request_registers_a_session_the_start_hook_missed(monkeypatch):
-    """Opened before the hook was installed (the 10-08 case: 7 s too early)."""
+    """Opened before the hook was installed (seconds too early)."""
     _run_hook(monkeypatch, "hook-prompt", {"session_id": "late", "prompt": "fix the ZR skip"})
     [c] = sessions.load_claims()
     assert c["status"] == "open" and c["goal"] == "авто: fix the ZR skip"
@@ -391,7 +391,7 @@ def test_transcripts_are_the_independent_witness(tmp_path, monkeypatch):
 
 
 def test_two_sessions_with_the_same_name_never_share_a_file(monkeypatch):
-    """2,162 names: collisions happen. 10-08 review simulated a /clear-paused lane being
+    """2,162 names: collisions happen. A review simulated a /clear-paused lane being
     overwritten by an unrelated session that hashed to the same name."""
     a, b = "sid-a-0001", "sid-b-0002"
     monkeypatch.setattr(sessions, "name_for", lambda sid: "warm-toucan")

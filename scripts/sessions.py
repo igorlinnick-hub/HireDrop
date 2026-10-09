@@ -9,7 +9,7 @@ session (one file each, so two sessions never edit the same file and git never c
     python3 scripts/sessions.py board                     # who is live, stale, overlapping
     python3 scripts/sessions.py claim --lane ext --goal "ZR submits recorded in History" \\
         --now "finish .wt-zr-truth into a PR" --scope chrome-extension/content.js
-    python3 scripts/sessions.py beat --now "PR #395 open, CI running"
+    python3 scripts/sessions.py beat --now "PR open, CI running"
     python3 scripts/sessions.py sign                      # first line of the handoff
     python3 scripts/sessions.py done                      # the lane is finished: drop the claim
     python3 scripts/sessions.py stats [--days 7]          # is the board doing its job, in numbers
@@ -20,9 +20,8 @@ Being on the board is NOT up to the session (the service-registry rule: a proces
 on start and the runtime keeps its heartbeat; the worker only declares intent). The hooks
 put every session on the board the moment it opens (status "open"), take a provisional goal
 from its first request, and refresh `updated` on every turn. The session's own job is the
-part a hook cannot guess: `claim` with the lane, the real goal and the files. 10-08 a
-read-only "count the AI costs" session never claimed and was invisible — that is the hole
-this closes.
+part a hook cannot guess: `claim` with the lane, the real goal and the files. A read-only session
+that never claimed used to be invisible — that is the hole this closes.
 
 The name is NOT chosen by anyone: it is derived from the Claude session id (adjective-noun),
 so the hook announces it before the first prompt and it stays the same across /compact.
@@ -78,7 +77,7 @@ FIELDS = (
 )
 
 # What the standard promises, checked by `stats`. Each target is a loss we already paid for:
-# an invisible session (10-08), a lane nobody can see the files of (two sessions in one
+# an invisible session, a lane nobody can see the files of (two sessions in one
 # content.js), a lane that ended without a handoff, a claim that died without pausing.
 TARGETS = {
     "visible": 1.0,  # sessions that did any work and were on the board
@@ -330,7 +329,7 @@ def load_events() -> list[dict]:
 
 # The auto-goal stays in the gitignored .open/ folder, but the board prints it to every
 # session, so it is scrubbed anyway. A secret word cuts the line there — whatever follows
-# "password", "токен", "API_KEY" is not a goal.
+# a password, token or API key word (in either language) is not a goal.
 _CUT_AT = re.compile(
     r"(?i)(pass(word|wd)?|secret|token|bearer|api[_-]?key|private[_-]?key|credential|"
     r"парол|токен|ключ|секрет|логин)"
@@ -490,8 +489,8 @@ def resolve_session_id(explicit: str | None) -> str | None:
 
 
 def same_session(a: str, b: str) -> bool:
-    """Ids match, or one is a prefix (>= 8 chars) of the other. 10-08 ivory-ibis claimed with
-    `--session 158b15fc`; the hooks see the full uuid — without this the session would get a
+    """Ids match, or one is a prefix (>= 8 chars) of the other. A session may claim with
+    a short `--session` prefix; the hooks see the full uuid — without this the session would get a
     second, nameless row on the board."""
     if not a or not b:
         return False
@@ -667,7 +666,7 @@ def cmd_done(args) -> int:
         handoff=bool(own.get("handoff")),
         prompts=prompts_of(own),
     )
-    # The session itself is still open and may keep working: back to "лейн не заявлен"
+    # The session itself is still open and may keep working: back to "no lane claimed"
     # rather than off the board (and no false "start hook missed it" on its next request).
     lane = own.get("lane")
     own.update(
