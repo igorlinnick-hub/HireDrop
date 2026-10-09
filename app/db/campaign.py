@@ -1,6 +1,7 @@
 """Операции с campaign_states в Supabase."""
 
 import contextlib
+import sys
 from datetime import UTC, datetime
 
 from app.db.client import get_supabase
@@ -69,6 +70,7 @@ def build_readiness(
     free_used: int | None,
     free_limit: int,
     answers_ui: int = ANSWERS_UI,
+    review_due: bool = False,
 ) -> dict:
     """Single source of truth for "can a campaign start MEANINGFULLY?" (pure — testable).
 
@@ -140,6 +142,19 @@ def build_readiness(
     )
     if unanswered:
         checks[-1]["missing"] = unanswered
+    # Once, before the first run: everything we tell employers on one page,
+    # checked by the person (modules/review_sheet.py). The caller decides whether it is
+    # owed (review_due below — it reads the account's history); a tab that cannot draw
+    # the sheet is not shown the row at all.
+    from modules.review_sheet import REVIEW_SINCE
+
+    if answers_ui >= REVIEW_SINCE:
+        add(
+            "review",
+            not review_due,
+            "Check what we'll tell employers — once, before your first run",
+            "review",
+        )
     if tier == "free":
         add(
             "free_quota",
@@ -155,6 +170,42 @@ def build_readiness(
         "tier": tier,
         "submit_mode": submit_mode,
     }
+
+
+def ran_before(user_id: str, state: dict | None = None) -> bool:
+    """Has this account ever run — a campaign started, or an application on record?
+
+    `started_at` is wiped by stop(), so it only marks a run in progress. What survives Stop
+    is `filters.kw_cursor`: every /campaign/start writes it and stop() keeps it on purpose
+    (see stop). The applications count covers runs that never went through /campaign/start.
+    `state` saves the read when the caller already holds it.
+    """
+    st = state if state is not None else get_state(user_id)
+    if st.get("started_at") or "kw_cursor" in (st.get("filters") or {}):
+        return True
+    # One row is enough — /campaign/status asks this on every poll of a never-confirmed
+    # account that is not running, so it must not page through a history.
+    res = (
+        get_supabase().table("applications").select("id").eq("user_id", user_id).limit(1).execute()
+    )
+    return bool(res.data)
+
+
+def review_due(user_id: str, profile: dict, state: dict | None = None) -> bool:
+    """The one-time check before the FIRST run is still owed: never confirmed, never ran.
+
+    A courtesy asked once, never a lock: an account that already ran is not stopped to
+    re-confirm, and a read that fails owes nothing.
+    """
+    from modules.review_sheet import confirmed
+
+    if confirmed(profile):
+        return False
+    try:
+        return not ran_before(user_id, state)
+    except Exception as e:  # noqa: BLE001 — any read failure: the check is a courtesy, never a lock
+        print(f"[review] history unreadable for {user_id}, not asking: {e}", file=sys.stderr)
+        return False
 
 
 def get_state(user_id: str) -> dict:

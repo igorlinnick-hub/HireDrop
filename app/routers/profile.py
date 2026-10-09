@@ -160,6 +160,45 @@ def update_employer_answers(
     return {"saved": True, "missing": missing(profile, answers_ui or ANSWERS_UI)}
 
 
+@router.get("/profile/review")
+def get_review(user=Depends(get_current_user)):
+    """Everything we tell employers, on one page — the one-time check before the first
+    run (modules/review_sheet.py). `due` says whether this account still owes it."""
+    from app.db import campaign as campaign_db
+    from modules.review_sheet import flags, sheet
+
+    profile = profile_db.get_profile(user.id)
+    return {
+        "sections": sheet(profile, getattr(user, "email", None)),
+        **flags(profile),
+        "due": campaign_db.review_due(user.id, profile),
+        "confirmed_at": profile.get("answers_confirmed_at"),
+    }
+
+
+@router.post("/profile/review")
+def confirm_review(body: dict, answers_ui: int | None = None, user=Depends(get_current_user)):
+    """Save what the person corrected on the sheet and record that they checked it.
+
+    The confirmation is written only when nothing on the sheet is still blank: the
+    employer questions (`missing`, for the client that asked — see employer_answers.SINCE)
+    and the sheet's own required rows (`incomplete`). Anything blank comes back, so the
+    sheet can point at it; the edits are kept either way.
+    """
+    from modules.employer_answers import ANSWERS_UI, missing
+    from modules.employer_answers import clean as clean_answers
+    from modules.review_sheet import clean, incomplete
+
+    body = body or {}
+    profile = profile_db.update_employer_answers(user.id, {**clean_answers(body), **clean(body)})
+    left = missing(profile, answers_ui or ANSWERS_UI)
+    gaps = incomplete(profile)
+    if left or gaps:
+        return {"confirmed": False, "missing": left, "incomplete": gaps}
+    profile_db.confirm_answers(user.id)
+    return {"confirmed": True, "missing": [], "incomplete": []}
+
+
 @router.post("/profile/apply-mode")
 def update_apply_mode(body: dict, user=Depends(get_current_user)):
     """Switch apply mode without touching the rest of the profile."""
