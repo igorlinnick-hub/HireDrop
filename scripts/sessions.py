@@ -730,6 +730,33 @@ def cmd_hook_end(args) -> int:
     return 0
 
 
+def neighbour_lines(claims: list[dict], own: dict, at: datetime) -> list[str]:
+    """Every request: who else is working right now, one line each, and the rule for the reply.
+    Paused and stale claims are off — nobody is acting there, so nothing to collide with."""
+    others = [
+        c
+        for c in claims
+        if not same_session(c.get("session_id", ""), own.get("session_id", ""))
+        and (is_live(c, at) or (is_open(c) and not is_stale(c, at) and prompts_of(c) > 0))
+    ]
+    if not others:
+        return []
+    lines = ["[sessions] Рядом работают (сверься ДО ответа и действия):"]
+    for c in others:
+        lane = c.get("lane") or "лейн не заявлен"
+        doing = c.get("now") or c.get("goal") or "—"
+        lines.append(f"· {c['name']} [{lane}] {age(c, at)} назад — {doing}")
+        hits = scopes_overlap(scope_list(own), scope_list(c))
+        if hits:
+            lines.append(f"    ⚠ общие файлы с тобой: {', '.join(hits)}")
+    lines.append(
+        "Если твой следующий шаг может пересечься с кем-то из них (те же файлы или лейн, общие "
+        "Chrome/расширение/аккаунт, живой прогон, мерж/релиз) — начни ответ Игорю одной строкой: "
+        "«⚖️ <сессия> сейчас <что> → ждём | работаем: <почему>». Пересечения нет — не упоминай."
+    )
+    return lines
+
+
 def _claim_command(sid: str) -> str:
     return (
         f"`python3 scripts/sessions.py claim --session {sid} --lane <лейн> --goal "
@@ -833,6 +860,7 @@ def cmd_hook_prompt(args) -> int:
         write_claim(own)
         if n == 1:
             log_event("prompt1", own)
+        said.extend(neighbour_lines(claims, own, at))
         if said:
             print("\n".join(said))
     except Exception as e:  # noqa: BLE001 — a hook must never block a request
