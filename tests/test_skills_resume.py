@@ -310,7 +310,8 @@ def test_symbols_helvetica_cannot_draw_are_mapped_not_misprinted():
         "* top 5%",
         ">= 3 quarters",
         "· Café",
-        "— “quoted” €10",
+        # the long dash is dropped on purpose (text_style: no long dashes for employers)
+        "Café, “quoted” €10",
     ]:
         assert expected in text
     assert "fi AE" not in text and "(cid:" not in text

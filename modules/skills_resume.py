@@ -32,6 +32,7 @@ from modules.ats_pdf_generator import (
     esc,
     skill_key,
 )
+from modules.text_style import resume_no_long_dashes
 
 # The candidate writes their own skills; we ask for at least this many so the
 # grouping has something real to work with. Not a hard backend gate — the UI asks,
@@ -200,7 +201,7 @@ Rules:
     {{
       "title": "Job Title",
       "company": "Company Name",
-      "dates": "Month Year – Month Year",
+      "dates": "Month Year - Month Year",
       "one_liner": "One compact line: scope + headline result",
       "skills_gained": ["Skill 1", "Skill 2"]
     }}
@@ -279,7 +280,7 @@ def build_skills_story(data: dict, styles: dict | None = None) -> list:
             meta = [esc(p) for p in [job.get("company"), job.get("dates")] if p]
             header = f"<b>{esc(job.get('title') or '')}</b>"
             if meta:
-                header += f"  |  {' — '.join(meta)}"
+                header += f"  |  {' | '.join(meta)}"
             story.append(Paragraph(header, styles["job_title"]))
             if job.get("one_liner"):
                 story.append(Paragraph(esc(job["one_liner"]), styles["job_meta"]))
@@ -298,7 +299,7 @@ def build_skills_story(data: dict, styles: dict | None = None) -> list:
             parts = [esc(p) for p in [e.get("school"), e.get("year")] if p]
             line = f"<b>{esc(e.get('degree') or '')}</b>"
             if parts:
-                line += f" — {' | '.join(parts)}"
+                line += f" | {' | '.join(parts)}"
             story.append(Paragraph(line, styles["body"]))
         for cert in certs:
             story.append(Paragraph(f"<b>{esc(cert)}</b>", styles["body"]))
@@ -313,6 +314,7 @@ def build_skills_story(data: dict, styles: dict | None = None) -> list:
 
 def generate_skills_pdf(data: dict) -> bytes:
     """Render the structured skills-resume data as an ATS-safe PDF."""
+    data = resume_no_long_dashes(data)  # no long dashes for employers (text_style)
     story = build_skills_story(data)
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -322,7 +324,7 @@ def generate_skills_pdf(data: dict) -> bytes:
         rightMargin=_MARGIN,
         topMargin=_MARGIN,
         bottomMargin=_MARGIN,
-        title=f"{data.get('name', 'Resume')} — Skills Resume",
+        title=f"{data.get('name', 'Resume')} | Skills Resume",
     )
     doc.build(story)
     return buffer.getvalue()
@@ -330,6 +332,7 @@ def generate_skills_pdf(data: dict) -> bytes:
 
 def generate_skills_docx(data: dict) -> bytes:
     """Render the same structured data as .docx (for Word-only boards)."""
+    data = resume_no_long_dashes(data)  # no long dashes for employers (text_style)
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Pt
@@ -398,7 +401,7 @@ def generate_skills_docx(data: dict) -> bytes:
             r.font.size = Pt(11)
             r.font.name = "Arial"
             if meta:
-                r2 = p.add_run("  |  " + " — ".join(meta))
+                r2 = p.add_run("  |  " + " | ".join(meta))
                 r2.font.size = Pt(10.5)
                 r2.font.name = "Arial"
             if job.get("one_liner"):
@@ -415,7 +418,7 @@ def generate_skills_docx(data: dict) -> bytes:
             parts = [p for p in [e.get("school"), e.get("year")] if p]
             line = e.get("degree") or ""
             if parts:
-                line += " — " + " | ".join(parts)
+                line += " | " + " | ".join(parts)
             add_line(line, bold=True)
         for cert in certs:
             add_line(cert, bold=True)

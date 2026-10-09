@@ -36,6 +36,7 @@ from reportlab.platypus import (
 
 from config import ANTHROPIC_API_KEY
 from modules import ai_meter
+from modules.text_style import resume_no_long_dashes
 
 SONNET_MODEL = "claude-sonnet-4-6"
 
@@ -218,7 +219,7 @@ Incorporate any additional candidate answers into the appropriate fields (add me
       "title": "Job Title",
       "company": "Company Name",
       "location": "City, State",
-      "dates": "Month Year – Month Year",
+      "dates": "Month Year - Month Year",
       "bullets": ["Bullet point 1", "Bullet point 2"]
     }}
   ],
@@ -592,7 +593,7 @@ def structure_to_text(data: dict) -> str:
     if d["experience"]:
         lines += ["", "PROFESSIONAL EXPERIENCE"]
         for job in d["experience"]:
-            meta = " — ".join(p for p in (job["company"], job["location"], job["dates"]) if p)
+            meta = " | ".join(p for p in (job["company"], job["location"], job["dates"]) if p)
             header = job["title"]
             if meta:
                 header = f"{header}  |  {meta}" if header else meta
@@ -605,7 +606,7 @@ def structure_to_text(data: dict) -> str:
         lines += ["", "EDUCATION & CERTIFICATIONS"]
         for e in d["education"]:
             rest = " | ".join(p for p in (e["school"], e["year"]) if p)
-            lines.append(f"{e['degree']} — {rest}" if rest else e["degree"])
+            lines.append(f"{e['degree']} | {rest}" if rest else e["degree"])
         lines += list(certs)
 
     if d["tech_skills"]:
@@ -665,7 +666,7 @@ def _build_story(data: dict, styles: dict) -> list:
             meta_parts = [esc(p) for p in [company, location, dates] if p]
             header_text = f"<b>{job_title}</b>"
             if meta_parts:
-                header_text += f"  |  {' — '.join(meta_parts)}"
+                header_text += f"  |  {' | '.join(meta_parts)}"
             story.append(Paragraph(header_text, styles["job_title"]))
 
             for bullet in job.get("bullets") or []:
@@ -685,7 +686,7 @@ def _build_story(data: dict, styles: dict) -> list:
             parts = [esc(p) for p in [school, year] if p]
             line = f"<b>{degree}</b>"
             if parts:
-                line += f" — {' | '.join(parts)}"
+                line += f" | {' | '.join(parts)}"
             story.append(Paragraph(line, styles["body"]))
         for cert in certs:
             story.append(Paragraph(f"<b>{esc(cert)}</b>", styles["body"]))
@@ -741,7 +742,9 @@ def generate_ats_pdf(
 
     Returns PDF bytes.
     """
-    data = _resolve_data(pdf_bytes, resume_text, answers, data)
+    # No long dashes in what an employer reads (modules/text_style): the structuring
+    # model writes them into summaries, bullets and date ranges on its own.
+    data = resume_no_long_dashes(_resolve_data(pdf_bytes, resume_text, answers, data))
 
     styles = _make_styles()
     story = _build_story(data, styles)
@@ -754,7 +757,7 @@ def generate_ats_pdf(
         rightMargin=_MARGIN,
         topMargin=_MARGIN,
         bottomMargin=_MARGIN,
-        title=f"{data.get('name', 'Resume')} — ATS Resume",
+        title=f"{data.get('name', 'Resume')} | ATS Resume",
     )
     doc.build(story)
     return buffer.getvalue()
@@ -800,7 +803,9 @@ def generate_ats_docx(
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.shared import Pt
 
-    data = _resolve_data(pdf_bytes, resume_text, answers, data)
+    # No long dashes in what an employer reads (modules/text_style): the structuring
+    # model writes them into summaries, bullets and date ranges on its own.
+    data = resume_no_long_dashes(_resolve_data(pdf_bytes, resume_text, answers, data))
 
     doc = Document()
     # Base font + 0.75" margins
@@ -860,7 +865,7 @@ def generate_ats_docx(
             r.font.size = Pt(11)
             r.font.name = "Arial"
             if meta:
-                r2 = p.add_run("  |  " + " — ".join(meta))
+                r2 = p.add_run("  |  " + " | ".join(meta))
                 r2.font.size = Pt(10.5)
                 r2.font.name = "Arial"
             for bullet in job.get("bullets") or []:
@@ -877,7 +882,7 @@ def generate_ats_docx(
             parts = [p for p in [e.get("school"), e.get("year")] if p]
             line = e.get("degree") or ""
             if parts:
-                line += " — " + " | ".join(parts)
+                line += " | " + " | ".join(parts)
             add_line(line, bold=True)
         for cert in certs:
             add_line(cert, bold=True)
