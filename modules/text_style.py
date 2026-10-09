@@ -58,3 +58,28 @@ def no_long_dashes(text: str) -> str:
 
 def has_long_dash(text: str) -> bool:
     return bool(text) and bool(re.search(_LONG, text))
+
+
+# Resume fields that hold a span of time. A dash there is a range separator, not a pause:
+# "Jan 2020 – Present" must read "Jan 2020 - Present", never "Jan 2020, Present".
+_DATE_KEYS = {"dates", "year"}
+_DATE_DASH = re.compile(rf"[ \t]*{_LONG}[ \t]*")
+
+
+def resume_no_long_dashes(data):
+    """The same rule over a structured resume (dict/list of strings), the document an
+    employer reads first. Date fields keep a spaced hyphen; every other string goes
+    through no_long_dashes. Returns a cleaned copy; the input is left untouched."""
+
+    def walk(value, key=None):
+        if isinstance(value, str):
+            if key in _DATE_KEYS:
+                return _DATE_DASH.sub(" - ", _RANGE.sub(r"\1-\2", value))
+            return no_long_dashes(value)
+        if isinstance(value, dict):
+            return {k: walk(v, k) for k, v in value.items()}
+        if isinstance(value, list):
+            return [walk(v, key) for v in value]
+        return value
+
+    return walk(data)
