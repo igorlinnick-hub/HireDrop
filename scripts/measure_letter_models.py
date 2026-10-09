@@ -68,11 +68,13 @@ SYNTHETIC_PROFILE = {
 }
 
 
-def parse_models(spec: str | None) -> list[str]:
+def parse_models(spec: str | None, default: list[str] | None = None) -> list[str]:
     """The models to compare, baseline first. Refuses before any money is spent on a model
     the ledger cannot price, so every number below is a real price."""
     named = [m.strip() for m in (spec or "").split(",") if m.strip()]
-    models = list(dict.fromkeys(named or [ai_cover_letter.COVER_LETTER_MODEL, CANDIDATE]))
+    models = list(
+        dict.fromkeys(named or default or [ai_cover_letter.COVER_LETTER_MODEL, CANDIDATE])
+    )
     if len(models) < 2:
         raise SystemExit("Name at least two different models: --models a,b")
     unpriced = [m for m in models if ai_meter.price_of(m) is None]
@@ -81,7 +83,7 @@ def parse_models(spec: str | None) -> list[str]:
     return models
 
 
-class _Recording:
+class Recording:
     """The real client, with every call's tokens, price, refusal or error written down."""
 
     def __init__(self, client, calls: list[dict]):
@@ -123,7 +125,7 @@ def write_letters(
     real_getter = ai_cover_letter.get_anthropic_client
     real_resume = ai_cover_letter.resume_text_for
     shipped = ai_cover_letter.COVER_LETTER_MODEL
-    ai_cover_letter.get_anthropic_client = lambda: _Recording(client, calls)
+    ai_cover_letter.get_anthropic_client = lambda: Recording(client, calls)
     # Read once for the whole run: every letter is written from the same resume.
     ai_cover_letter.resume_text_for = lambda *_a, **_k: resume
     pairs = []
