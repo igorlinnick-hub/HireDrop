@@ -84,8 +84,11 @@ def test_a_confirmed_account_owes_nothing_and_reads_nothing():
     ran.assert_not_called()
 
 
-def test_an_account_that_ever_started_owes_nothing():
-    assert campaign_db.review_due("u1", {}, {"started_at": "2026-09-01T00:00:00Z"}) is False
+def test_an_account_that_started_and_stopped_owes_nothing():
+    # stop() wipes started_at but keeps filters.kw_cursor — that is the marker that lasts.
+    with _applications([]):
+        stopped = {"started_at": None, "filters": {"kw_cursor": 0}}
+        assert campaign_db.review_due("u1", {}, stopped) is False
 
 
 def _applications(rows):
@@ -146,8 +149,23 @@ def _start(client, profile, due, ui=None):
 
 
 def test_start_refuses_a_first_run_until_the_sheet_is_confirmed(auth_client):
-    res = _start(auth_client, PROFILE, due=True)
+    res = _start(auth_client, PROFILE, due=True, ui=3)
     assert res.status_code == 403 and res.json()["detail"] == "review_missing"
+
+
+def test_a_start_from_the_extension_is_never_held_for_the_sheet(auth_client):
+    # The extension sends no answers_ui and cannot draw the sheet; every build shows a
+    # refusal as "Couldn't reach HireDrop". Silence must not be read as "can draw it".
+    res = _start(auth_client, PROFILE, due=True)
+    assert res.status_code != 403
+
+
+def test_status_tells_the_extension_nothing_about_the_sheet():
+    user = MagicMock(id="u1", email="a@b.co")
+    with patch.object(campaign_router.campaign_db, "review_due", return_value=True) as due:
+        assert campaign_router.start_refusal(user, PROFILE) is None
+        assert campaign_router.start_refusal(user, PROFILE, 3) == "review_missing"
+    due.assert_called_once()
 
 
 def test_an_old_tab_is_not_refused_over_a_sheet_it_cannot_draw(auth_client):
@@ -156,7 +174,7 @@ def test_an_old_tab_is_not_refused_over_a_sheet_it_cannot_draw(auth_client):
 
 
 def test_missing_answers_are_named_before_the_review(auth_client):
-    res = _start(auth_client, {**PROFILE, "school": ""}, due=True)
+    res = _start(auth_client, {**PROFILE, "school": ""}, due=True, ui=3)
     assert res.json()["detail"] == "employer_answers_missing"
 
 

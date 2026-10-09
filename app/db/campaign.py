@@ -175,12 +175,13 @@ def build_readiness(
 def ran_before(user_id: str, state: dict | None = None) -> bool:
     """Has this account ever run — a campaign started, or an application on record?
 
-    `started_at` survives Stop (only the flag is reset), so it marks any account that ever
-    pressed Start; the applications count covers runs that never went through
-    /campaign/start. `state` saves the read when the caller already holds it.
+    `started_at` is wiped by stop(), so it only marks a run in progress. What survives Stop
+    is `filters.kw_cursor`: every /campaign/start writes it and stop() keeps it on purpose
+    (see stop). The applications count covers runs that never went through /campaign/start.
+    `state` saves the read when the caller already holds it.
     """
     st = state if state is not None else get_state(user_id)
-    if st.get("started_at"):
+    if st.get("started_at") or "kw_cursor" in (st.get("filters") or {}):
         return True
     # One row is enough — /campaign/status asks this on every poll of a never-confirmed
     # account that is not running, so it must not page through a history.
