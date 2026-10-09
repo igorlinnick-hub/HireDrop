@@ -186,7 +186,7 @@ def test_preview_endpoint_reads_location_from_the_pool_when_the_walk_had_none():
         tools.cover_letter_preview(req, user)
     by_link.assert_called_once_with("u1", "https://boards.greenhouse.io/acme/jobs/1")
     assert seen["location"] == "San Diego, CA"
-    assert seen["company"] == "Acme"  # not "your company" any more when the name is known
+    assert seen["company"] == "Acme"  # the real name, not the "your company" placeholder
 
 
 def test_preview_endpoint_prefers_the_location_the_walk_read():

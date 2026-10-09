@@ -34,6 +34,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+# Measurement spend is not product spend: keep it out of the ledger (modules/ai_meter.py).
+os.environ.setdefault("AI_METER", "off")
 
 from modules import ai_cover_letter, ai_fit_judge  # noqa: E402
 

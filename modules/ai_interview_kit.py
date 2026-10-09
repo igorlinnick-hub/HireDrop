@@ -12,6 +12,7 @@ back an answer, the model must say so in `gaps` instead of inventing one.
 
 import json
 
+from modules import ai_meter
 from modules.ai_cover_letter import get_anthropic_client, resume_text_for
 
 INTERVIEW_KIT_MODEL = "claude-sonnet-4-6"
@@ -163,4 +164,5 @@ The candidate's resume is the ONLY source of their experience. Do not go beyond 
         system=_SYSTEM,
         messages=[{"role": "user", "content": prompt}],
     )
+    ai_meter.record(message, "interview_kit")
     return _normalize(_extract_json(message.content[0].text))

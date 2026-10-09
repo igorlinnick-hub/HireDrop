@@ -55,7 +55,7 @@ def test_the_same_question_answered_before_is_answered_from_memory_for_free():
 
 
 def test_a_circumstance_question_is_never_answered_in_the_candidates_favour():
-    # Live default before this: the attended prompt ("answer in their favour") said Yes.
+    # The attended prompt ("answer in their favour") would say Yes; this path must not.
     req = AnswerQuestionRequest(
         question="Are you willing to relocate to Miami, FL?", options=["Yes", "No"], job_id="j1"
     )

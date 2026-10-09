@@ -177,17 +177,7 @@ def test_post_profile_saves_current_employment_when_sent(auth_client):
 
 
 def test_post_profile_prefs(auth_client):
-    fake_profile = {
-        "name": "Igor",
-        "last_name": "L",
-        "phone": "",
-        "writing_style": "",
-        "resume_url": None,
-    }
-    with (
-        patch("app.routers.profile.profile_db.get_profile", return_value=fake_profile),
-        patch("app.routers.profile.profile_db.update_profile", return_value={}),
-    ):
+    with patch("app.routers.profile.profile_db.save_search_prefs", return_value={}):
         res = auth_client.post(
             "/api/v1/profile/prefs",
             json={

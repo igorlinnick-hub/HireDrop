@@ -6,6 +6,7 @@ from fastapi import Header, HTTPException
 
 from app.db import extension_keys as ext_keys_db
 from app.db.client import get_supabase
+from modules import ai_meter
 
 
 def get_current_user(authorization: str = Header(...)):
@@ -32,6 +33,7 @@ def get_current_user(authorization: str = Header(...)):
         info = ext_keys_db.verify(token)
         if not info:
             raise HTTPException(status_code=401, detail="Invalid or revoked extension key")
+        ai_meter.set_user(info["user_id"])
         return SimpleNamespace(id=info["user_id"], email=info.get("email"))
 
     # Supabase JWT path.
@@ -39,6 +41,7 @@ def get_current_user(authorization: str = Header(...)):
         response = get_supabase().auth.get_user(token)
         if not response or not response.user:
             raise HTTPException(status_code=401, detail="Invalid or expired token")
+        ai_meter.set_user(response.user.id)
         return response.user
     except HTTPException:
         raise

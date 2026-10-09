@@ -3,9 +3,8 @@
 Employer forms keep asking things no resume states: "Are you willing to relocate to
 Miami?", "Do you live within 30 miles of Austin?", "Can you work weekends?". The answerer
 must not guess those (a "Yes" to relocating somewhere the person never meant to go is a
-lie under their name), so until now such a question came back blank, the form was handed
-back, and the person answered it inside that one application — and again on the next
-form, because the answer was stored only on that job's hand-back row.
+lie under their name), so the person answers each one once, and the answer is kept here
+for every later form instead of only on the one hand-back it was given on.
 
 A fact is one answer the person gave, kept on their profile (`profiles.personal_facts`):
 

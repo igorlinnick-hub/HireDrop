@@ -16,6 +16,7 @@ Cheap: one Haiku call for the whole keyword list. See project_unit_economics.
 import json
 
 from config import ANTHROPIC_API_KEY
+from modules import ai_meter
 from modules.ai_cover_letter import get_anthropic_client
 
 HAIKU_MODEL = "claude-haiku-4-5-20251001"
@@ -70,6 +71,7 @@ Terms:
             system=_SYSTEM,
             messages=[{"role": "user", "content": prompt}],
         )
+        ai_meter.record(message, "keyword_normalize")
         raw = (message.content[0].text or "").strip()
     except Exception as e:
         print(f"[keyword_normalize] AI normalization failed: {e}")

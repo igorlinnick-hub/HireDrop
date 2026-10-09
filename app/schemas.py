@@ -40,7 +40,7 @@ class LetterPreviewRequest(BaseModel):
     job_location: str | None = Field("", max_length=300)
     job_url: str | None = Field("", max_length=2000)
     # Separate fields, so the letter isn't addressed to "your company" when the
-    # extension knows the name (it used to send only "title, company" as keywords).
+    # extension knows the name.
     job_title: str | None = Field("", max_length=300)
     company: str | None = Field("", max_length=300)
 
@@ -111,12 +111,12 @@ class FindJobsRequest(BaseModel):
 
 
 class SearchPrefsUpdate(BaseModel):
-    keywords: list[str] = []
-    location: str = "remote"
-    job_type: str = "full-time"
-    platforms: list[str] = ["remoteok"]
-    # None = "not mentioned in this request", so a caller that predates the field
-    # cannot wipe it. "" is a real answer meaning Any, same as job_type.
+    # None = "not mentioned in this request": the saved value stays. "" is a real
+    # answer meaning Any for location, job_type and work_setting.
+    keywords: list[str] | None = None
+    location: str | None = None
+    job_type: str | None = None
+    platforms: list[str] | None = None
     work_setting: str | None = None
 
 

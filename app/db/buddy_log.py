@@ -19,21 +19,12 @@ from collections import Counter, defaultdict
 from datetime import datetime
 
 from app.db.client import fetch_paged, get_supabase
+from modules import ai_meter
 
 PHASE = "buddy"
 FEEDBACK_PHASE = "buddy_feedback"
 LIMIT_PHASE = "buddy_limit"
 
-# $ per million tokens: input, output, cache read, cache write (5 min). Anthropic list
-# prices (claude-api reference, 2026-10-06). input_tokens in usage EXCLUDES cache reads
-# and writes, so the four add up.
-PRICES = {
-    "claude-sonnet-5-5": (2.00, 10.00, 0.20, 2.50),
-    "claude-sonnet-5": (2.00, 10.00, 0.20, 2.50),
-    "claude-opus-5-5": (4.00, 20.00, 0.20, 5.00),
-    "claude-sonnet-4-6": (3.00, 15.00, 0.30, 3.75),
-    "claude-haiku-4-5": (1.00, 5.00, 0.10, 1.25),
-}
 
 # An answer that points to support or admits not knowing: Drop's honest "I can't help
 # here" — fine once, a gap in its tools or facts when it repeats.
@@ -48,7 +39,9 @@ _WORD = re.compile(r"[a-zа-яё0-9]+", re.I)
 
 def cost_usd(usage: dict | None, model: str | None) -> float | None:
     """Dollars for one turn's token counts, or None for a model we have no price for."""
-    price = PRICES.get(str(model or ""))
+    # One price table for the codebase: modules/ai_meter (the AI call ledger). Usage
+    # input_tokens EXCLUDES cache reads and writes, so the four parts add up.
+    price = ai_meter.price_of(str(model or ""))
     if not usage or not price:
         return None
     p_in, p_out, p_read, p_write = price

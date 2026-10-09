@@ -7,6 +7,7 @@ import uuid
 import anthropic
 
 from config import ANTHROPIC_API_KEY
+from modules import ai_meter
 from modules.text_style import no_long_dashes
 
 TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), "..", "templates", "cover_letter.txt")
@@ -301,9 +302,9 @@ def generate_cover_letter(job, profile=None):
             "Do not describe the company.)"
         )
 
-    # Where the job is. Without it "mention my move to San Diego where it fits" could not
-    # work: the writer saw title, company and text, and could not tell a San Diego job
-    # from a remote one (Igor, 10-08). "" = we never read a location for this posting.
+    # Where the job is: "mention my move to San Diego where it fits" needs the writer to
+    # tell a San Diego job from a remote one. "" = we never read a location for this
+    # posting.
     location = re.sub(r"\s+", " ", str(job.get("location") or "")).strip()[:200]
 
     prompt = f"""Write a cover letter for this job application.
@@ -335,6 +336,7 @@ Candidate background (from resume):
             system=system,
             messages=[{"role": "user", "content": prompt}],
         )
+        ai_meter.record(message, "cover_letter")
         return to_plain_letter(strip_preamble(message.content[0].text))
     except Exception as e:
         print(f"[cover_letter] AI generation failed: {e}")

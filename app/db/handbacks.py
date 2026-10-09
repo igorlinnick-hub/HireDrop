@@ -213,11 +213,20 @@ def _add_row(user_id: str, row: dict) -> dict | None:
 
 
 def _update_open(user_id: str, row: dict) -> dict | None:
-    """Overwrite this user's OPEN row for row["url"]; None when there is none."""
+    """Overwrite this user's OPEN row for row["url"]; None when there is none.
+
+    created_at is re-stamped to NOW: the column means "when the (latest) wall
+    happened" — the dashboard's freshness treatment (web, lib/handbacks/freshness)
+    and the created_at-desc ordering both read it that way. Left alone (the DB
+    default only fires on INSERT), a job that was answered, re-queued and walled
+    AGAIN kept Monday's stamp: the brand-new wall rendered "stale", the nav dot
+    stayed dark, and the one row the user had just invested answers in was the
+    one presented as dead (review swarm on web #316, 10-08).
+    """
     res = (
         get_supabase()
         .table("handbacks")
-        .update(row)
+        .update({**row, "created_at": datetime.now(UTC).isoformat()})
         .eq("user_id", user_id)
         .eq("url", row["url"])
         .is_("resolved_at", "null")

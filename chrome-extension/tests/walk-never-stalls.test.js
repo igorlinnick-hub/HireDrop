@@ -87,9 +87,8 @@ async function run(sandbox, expr) {
     // The real shape (React-controlled screener): radios with no name attribute at
     // all, grouped only by their fieldset. Plus a normal named group after them —
     // if the nameless one throws, the named one never fills and the job is lost.
-    // (The legend used to be "Are you willing to relocate?" — since 10-08 that one is
-    // the person's to answer, never a default pick: see the check below and
-    // circumstance-questions.test.js.)
+    // The legend is a question a default may answer; a relocation question may not
+    // (the check below and circumstance-questions.test.js).
     const sb = makeSandbox(`
       <fieldset>
         <legend>Can you lift 25 pounds?</legend>

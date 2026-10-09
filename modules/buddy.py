@@ -30,7 +30,7 @@ from app.db import campaign as campaign_db
 from app.db import handbacks as handbacks_db
 from app.db.profile import get_profile
 from app.db.subscriptions import get_usage_summary
-from modules import buddy_actions
+from modules import ai_meter, buddy_actions
 from modules.ai_cover_letter import get_anthropic_client
 from modules.buddy_facts import FACTS
 
@@ -508,6 +508,7 @@ def ask(
                 answer.append(text)
                 yield {"type": "text", "text": text}
             msg = stream.get_final_message()
+        ai_meter.record(msg, "buddy")
         u = msg.usage
         usage["input"] += u.input_tokens or 0
         usage["output"] += u.output_tokens or 0

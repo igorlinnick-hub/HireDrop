@@ -3,13 +3,14 @@
 //
 //   node <repo>/jobflow/chrome-extension/tests/circumstance-questions.test.js
 //
-// What is pinned:
+// What is pinned (each by running the real code):
 //   1. content.js classifies like the backend (modules/personal_facts.topic_of): both run
 //      fixtures/circumstance-topics.json.
-//   2. The radio filler and the dropdown chooser ask the backend for such a question
-//      BEFORE their "Yes"/first-option fallbacks, and leave it blank when there is no
-//      answer — the radio default clicked "Yes" on "willing to relocate to Miami?" (10-08).
-//   3. The background relays the job's place and tells the person once per question.
+//   2. The dropdown chooser, the radio filler and the text filler leave such a question
+//      blank when there is no answer on file, instead of their "Yes"/first-option
+//      defaults, and fill the person's own answer when there is one.
+//   3. The background relay sends the job's place, hands `ask_person` back, tells the
+//      person once per question, and saves popup answers to /profile/facts.
 //   4. The popup asks the question, shows the earlier answer on the same topic, and saves
 //      the answer (with "replace" when ticked).
 
@@ -51,16 +52,98 @@ for (const [question, topic] of CASES) {
 
 // --- 2. the fillers ask before they fall back -------------------------------------------
 
-const radio = slice(CONTENT, "if (!target && circumstanceTopic(groupLabel))", "Generic fallback: exact");
-check("radio: circumstance branch sits before the eligibility Yes",
-  radio.indexOf("circumstanceAnswer(groupLabel") >= 0 && radio.indexOf("Other eligibility") > radio.indexOf("circumstanceAnswer(groupLabel"));
-check("radio: no answer leaves the group blank", /if \(!got\) continue;/.test(radio));
+// The same extraction filler-honest.test.js uses for the real chooseOption.
+function extract(signature) {
+  const at = CONTENT.indexOf(signature);
+  if (at < 0) throw new Error(`not found: ${signature}`);
+  const open = CONTENT.indexOf("{", at + signature.length - 1);
+  let depth = 0;
+  for (let i = open; i < CONTENT.length; i++) {
+    if (CONTENT[i] === "{") depth++;
+    else if (CONTENT[i] === "}" && --depth === 0) return CONTENT.slice(at, i + 1);
+  }
+  throw new Error(`unbalanced: ${signature}`);
+}
 
-const chooser = slice(CONTENT, "async function chooseOption(", "// Safe fallbacks (no confident answer)");
-check("dropdown: circumstance branch returns before the AI budget and the fallbacks",
-  chooser.indexOf("circumstanceTopic(label)") >= 0 &&
-  chooser.indexOf("circumstanceTopic(label)") < chooser.indexOf("_aiAnswersUsed >= MAX_AI_ANSWERS_PER_FORM") &&
-  /return got \? got\.pick : null;/.test(chooser));
+function chooserWith(reply) {
+  const sent = [];
+  const ctx = {
+    _aiAnswersUsed: 0, MAX_AI_ANSWERS_PER_FORM: 15, _aiBudgetNotified: false,
+    sendMsg: async (m) => { sent.push(m); return reply; },
+    logBackend() {}, log() {},
+  };
+  vm.createContext(ctx);
+  const helpers = slice(CONTENT, "  const PAY_SRC =", "  // Demographic / EEO self-identification");
+  const workStatusAndCircumstance = slice(CONTENT, "  // ── Legal work status: ONE reading", "  // Pick a dropdown option deterministically");
+  vm.runInContext(`${helpers}\n${extract("  function isDemographicQuestion(label, optionTexts) {")}\n` +
+    `${workStatusAndCircumstance}\n${extract("  function pickOptionDeterministic(label, options, profile) {")}\n` +
+    `${extract("  async function chooseOption(label, options, profile, jobInfo) {")}\n` +
+    "globalThis.choose = chooseOption;", ctx);
+  return { choose: ctx.choose, sent };
+}
+
+// Radio groups through the real fillRadioQuestions, on a jsdom form.
+function radioWorld(html, reply) {
+  const dom = new JSDOM(`<!doctype html><body>${html}</body>`, { runScripts: "outside-only" });
+  const w = dom.window;
+  w.formScope = () => w.document;
+  w.humanClick = async (el) => {
+    const t = el.tagName === "LABEL" ? w.document.getElementById(el.getAttribute("for")) : el;
+    if (t) t.checked = true;
+  };
+  w.humanDelay = () => 0;
+  w.sleep = async () => {};
+  w.storageGet = async () => ({ profile: {}, currentJobInfo: { title: "Designer", company: "Acme", location: "Miami, FL" } });
+  w.sendMsg = async () => reply;
+  w.log = () => {};
+  w.logBackend = () => {};
+  w._aiAnswersUsed = 0;
+  w.MAX_AI_ANSWERS_PER_FORM = 15;
+  w.eval(
+    slice(CONTENT, "  // Best-effort human-readable label for any form field.", "  // Find a visible element matching") +
+    slice(CONTENT, "  // Demographic / EEO self-identification", "  // Fill required/empty <select> dropdowns.") +
+    slice(CONTENT, "  // Fill unanswered radio-button screener questions.", "  // Tick required attestation") +
+    "\nwindow.__fill = fillRadioQuestions;");
+  return w;
+}
+
+const RELOC_RADIOS = `
+  <fieldset><legend>Are you willing to relocate to Miami, FL?</legend>
+    <input type="radio" name="reloc" id="r-yes"><label for="r-yes">Yes</label>
+    <input type="radio" name="reloc" id="r-no"><label for="r-no">No</label></fieldset>`;
+
+// Text questions through the real fillTextQuestions.
+function textWorld(html, replies) {
+  const dom = new JSDOM(`<!doctype html><body><form>${html}</form></body>`, { runScripts: "outside-only" });
+  const w = dom.window;
+  Object.defineProperty(w.HTMLElement.prototype, "offsetParent", { get() { return this.parentElement; } });
+  w.CSS = { escape: (s) => String(s) };
+  w.__sent = [];
+  w.__logs = [];
+  w.sendMsg = async (m) => { w.__sent.push(m); return replies.shift() || { answer: "" }; };
+  w.storageGet = async () => ({ profile: {}, currentJobInfo: { title: "Designer", company: "Acme", location: "Miami, FL" } });
+  w.formScope = () => w.document;
+  w.localDay = () => "2026-10-09";
+  w.reactSelectShownValue = () => "";
+  w.isReactSelectField = () => false;
+  w.humanDelay = () => 0;
+  w.sleep = async () => {};
+  w.log = () => {};
+  w.logBackend = (t) => w.__logs.push(t);
+  w.quickSet = (el, v) => { el.value = v; return true; };
+  w.typeValue = async (el, v) => { el.value = v; };
+  w._aiAnswersUsed = 0;
+  w.MAX_AI_ANSWERS_PER_FORM = 15;
+  w.LETTER_LABEL_RE = /cover\s*letter|motivation(al)? letter/i;
+  w.eval(
+    slice(CONTENT, "  // Best-effort human-readable label for any form field.", "  // Find a visible element matching") +
+    slice(CONTENT, "  const PAY_SRC =", "  // Demographic / EEO self-identification") +
+    slice(CONTENT, "  // ── Legal work status: ONE reading", "  // Pick a dropdown option deterministically") +
+    slice(CONTENT, "  const NAME_I18N_FIRST_RE", "  const LABEL_FALLBACKS") +
+    extract("  async function fillTextQuestions() {") +
+    "\nwindow.__fill = fillTextQuestions;");
+  return w;
+}
 
 // circumstanceAnswer itself, with the messaging stubbed.
 const answerFn = slice(CONTENT, "async function circumstanceAnswer(", "// Pick a dropdown option deterministically");
@@ -96,19 +179,76 @@ async function runAnswer({ reply, options, used = 0 }) {
   r = await runAnswer({ reply: { answer: "Yes" }, options: YN, used: 15 });
   check("over the per-form budget → blank, no request", r.out === null && r.sent.length === 0);
 
+  // The real dropdown chooser.
+  let c = chooserWith({ answer: "", ask_person: { topic: "relocation" } });
+  check("dropdown: relocation with nothing on file stays blank (no first-option Yes)",
+    (await c.choose("Are you willing to relocate to Miami, FL?", YN, {}, {})) === null);
+  check("dropdown: on-site with nothing on file stays blank (not the 'able to' Yes)",
+    (await c.choose("Are you able to work on-site 5 days a week?", YN, {}, {})) === null);
+  c = chooserWith({ answer: "No" });
+  check("dropdown: the person's remembered answer is picked",
+    (await c.choose("Are you willing to relocate to Miami, FL?", YN, {}, { location: "Miami, FL" }))?.text === "No");
+  check("…and the job's place went with the question", c.sent[0].data.job_location === "Miami, FL");
+  c = chooserWith({ answer: "" });
+  check("dropdown: an ordinary question keeps its old fallback (only circumstances changed)",
+    (await c.choose("Do you have a valid driver's license?", YN, {}, {}))?.text === "Yes");
+
+  // The real radio filler.
+  let w = radioWorld(RELOC_RADIOS, { answer: "", ask_person: { topic: "relocation" } });
+  let n = await w.__fill();
+  check("radio: relocation with nothing on file is left blank",
+    n === 0 && !w.document.getElementById("r-yes").checked && !w.document.getElementById("r-no").checked);
+  w = radioWorld(RELOC_RADIOS, { answer: "No" });
+  n = await w.__fill();
+  check("radio: the remembered answer is clicked", n === 1 && w.document.getElementById("r-no").checked);
+
+  // The real text filler: one request, then it stops — the person answers, not a retry.
+  w = textWorld('<label for="q1">Are you willing to relocate to Miami, FL?</label><input type="text" id="q1" required>',
+    [{ answer: "", ask_person: true }, { answer: "Yes" }]);
+  await w.__fill();
+  check("text: a circumstance question is asked once, then left for the person",
+    w.__sent.length === 1 && w.document.getElementById("q1").value === "", `sent=${w.__sent.length}`);
+  check("text: the job's place went with it", (w.__sent[0] || { data: {} }).data.job_location === "Miami, FL");
+
   // --- 3. the background relay ----------------------------------------------------------
 
-  const relay = slice(BG, 'case "ANSWER_QUESTION": {', 'case "SLEEP"');
-  check("relay sends job_location", /job_location: String\(q\.job_location \|\| ""\)/.test(relay));
-  check("relay passes ask_person back to the filler", /out\.ask_person = true/.test(relay));
-  check("the text filler stops retrying when only the person can answer",
-    /if \(res && res\.ask_person\) \{[\s\S]{0,200}break;/.test(CONTENT));
-  check("relay tells the person when the server says ask_person",
-    /result\.ask_person\) notifyPersonalQuestion\(result\.ask_person\)/.test(relay));
-  check("popup answers go to POST /profile/facts",
-    /case "ANSWER_PERSONAL_QUESTION"[\s\S]{0,200}apiPost\("\/profile\/facts"/.test(BG));
-  check("popup reads GET /personal-questions",
-    /case "GET_PERSONAL_QUESTIONS"[\s\S]{0,120}apiGet\("\/personal-questions/.test(BG));
+  // The real handleMessage, with the network and Chrome stubbed.
+  const handler = slice(BG, "async function handleMessage(msg, sender) {", "\n}\n") + "\n}\n";
+  function bgWorld(post, get) {
+    const calls = { post: [], get: [], notified: [] };
+    const ctx = {
+      chrome: { storage: { local: { get: async () => ({}), set: async () => {} } } },
+      apiPost: async (path, body) => { calls.post.push({ path, body }); return post(path, body); },
+      apiGet: async (path) => { calls.get.push(path); return get ? get(path) : {}; },
+      notifyPersonalQuestion: async (ask) => { calls.notified.push(ask); },
+      noLongDashes: (t) => t,
+      setTimeout,
+    };
+    vm.createContext(ctx);
+    vm.runInContext(handler + "\nglobalThis.handle = handleMessage;", ctx);
+    return { handle: ctx.handle, calls };
+  }
+  let bg = bgWorld(() => ({ answer: "", ask_person: { topic: "relocation", question: "Relocate to Miami?" } }));
+  let res = await bg.handle({ type: "ANSWER_QUESTION", data: {
+    question: "Relocate to Miami?", options: ["Yes", "No"], job_title: "Designer", company: "Acme", job_location: "Miami, FL" } });
+  check("relay: the job's place reaches /tools/answer-question", bg.calls.post[0].body.job_location === "Miami, FL");
+  check("relay: ask_person comes back to the filler", res.answer === "" && res.ask_person === true);
+  check("relay: the person is told", bg.calls.notified.length === 1);
+  bg = bgWorld(() => ({ answer: "No" }));
+  res = await bg.handle({ type: "ANSWER_QUESTION", data: { question: "Relocate to Miami?", options: ["Yes", "No"] } });
+  check("relay: an answer is passed through and nobody is notified",
+    res.answer === "No" && !res.ask_person && bg.calls.notified.length === 0);
+
+  bg = bgWorld(() => ({ ok: true, requeued: 2 }), () => ({ questions: [{ question: "q" }] }));
+  res = await bg.handle({ type: "ANSWER_PERSONAL_QUESTION",
+    data: { question: "Relocate to Miami?", answer: "No", replace_ids: ["f_00000001"] } });
+  const factPost = bg.calls.post[0];
+  check("popup answer is saved to /profile/facts as the popup's",
+    factPost.path === "/profile/facts" && factPost.body.source === "popup" && factPost.body.replace_ids[0] === "f_00000001");
+  check("…and reports how many jobs it freed", res.ok === true && res.requeued === 2);
+  res = await bg.handle({ type: "GET_PERSONAL_QUESTIONS" });
+  check("popup reads the waiting questions",
+    bg.calls.get[0].startsWith("/personal-questions") && res.questions.length === 1);
 
   // notifyPersonalQuestion: once per question.
   const notifySrc = slice(BG, 'const HD_ASK_NOTIF_PREFIX = "hd-ask|";', "chrome.notifications.onClicked.addListener");

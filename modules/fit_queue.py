@@ -32,6 +32,7 @@ import time
 from collections import Counter
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
+from modules import ai_meter
 from modules.ai_fit_judge import clears_bar
 
 # One application per employer per 60 days (Igor, 10-06; 09-30 said two). An open
@@ -255,7 +256,10 @@ def judge_pending(
 
     def judge(row: dict) -> tuple[dict, dict | None]:
         try:
-            return _judge_one(row)
+            # A pool worker starts with an empty context: without this the judge call
+            # would be charged to nobody.
+            with ai_meter.attributed(user_id):
+                return _judge_one(row)
         finally:
             with _IN_FLIGHT_LOCK:
                 _IN_FLIGHT.discard(row["id"])

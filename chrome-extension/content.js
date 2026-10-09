@@ -4645,8 +4645,8 @@
   // A question about the person's own circumstances — relocate, live near, on-site, travel,
   // shifts, start date. Port of modules/personal_facts.topic_of; both sides run
   // tests/fixtures/circumstance-topics.json. No position, default or model guess may
-  // answer these: the radio filler used to click "Yes" (its generic fallback) on "Are you
-  // willing to relocate to Miami?" for someone moving to San Diego (Igor, 10-08).
+  // answer these: the radio filler's generic "Yes" on "Are you willing to relocate to
+  // Miami?" would be a promise made for someone moving to San Diego.
   const CIRCUMSTANCE_EXPERIENCE_RE = /\b(?:describe|tell us|explain|walk us through|give an example|share an example|experience (?:with|in|working)|how have you|why)\b/i;
   const CIRCUMSTANCE_TOPICS = [
     ["relocation", /\brelocat\w*|\b(?:move|moving)\s+to\b|\bwilling to move\b/i],
@@ -4743,8 +4743,11 @@
     }
     // Yes/No eligibility that is not legal work status (18+, background check, "legally
     // able to drive") and consent to the employer's processing → Yes. Work status was
-    // decided above; a bare "agree" is no longer enough (isConsentToProcess).
-    if (yes && (/(eligible|18|over 18|legally|background|able to)/i.test(label) || isConsentToProcess(label))) {
+    // decided above; a bare "agree" is no longer enough (isConsentToProcess). "Able to
+    // relocate / work on-site / travel" is the person's circumstance, not eligibility:
+    // circumstanceAnswer asks for their own answer instead.
+    if (yes && !circumstanceTopic(label) &&
+        (/(eligible|18|over 18|legally|background|able to)/i.test(label) || isConsentToProcess(label))) {
       return yes;
     }
     // Salary bracket → the one that HOLDS the user's stated figure (salaryAnswer), never the

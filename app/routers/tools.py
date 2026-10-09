@@ -825,16 +825,15 @@ def answer_question(req: AnswerQuestionRequest, user=Depends(get_current_user)):
                 return {"answer": answer, "from_user": True}
 
     # The same question the person already answered on ANOTHER form (modules/
-    # personal_facts): their answer, no model call, no quota. This is "ask once, never
-    # again" — before it, an answer lived only on the one hand-back it was given on.
+    # personal_facts): their answer, no model call, no quota — "ask once, never again".
     facts = profile.get("personal_facts") or []
     remembered = personal_facts.match(req.question, req.options, facts)
     if remembered:
         return {"answer": remembered["answer"], "from_user": True, "fact_id": remembered["id"]}
 
     # A question about the person's own circumstances (relocate, live near, on-site,
-    # travel, shifts, start date) is answered only from what they told us — never in
-    # "their favour" by the model, which said Yes to relocating anywhere it was asked.
+    # travel, shifts, start date) is answered only from what they told us, never in
+    # "their favour": a Yes to relocating is a promise only the person can make.
     # Not cached: a cached Yes would outlive the answer it came from.
     topic = personal_facts.topic_of(req.question)
     if topic:

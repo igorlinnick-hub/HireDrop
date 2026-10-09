@@ -12,8 +12,8 @@ extend-exclude = [".venv", "__pycache__", ".pytest_cache"]
 [tool.ruff.lint]
 # E,F = pyflakes/pycodestyle errors. I = isort. N = naming. UP = pyupgrade.
 # B = bugbear. A = builtins shadowing. C4 = comprehensions. SIM = simplify.
-# S = bandit security (subset).
-select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "SIM", "S"]
+# S = bandit security (subset). FIX = no TODO/FIXME/HACK. PGH = no blanket noqa / type: ignore.
+select = ["E", "F", "I", "N", "UP", "B", "A", "C4", "SIM", "S", "FIX", "PGH"]
 # Tests run with mocks and fake JWTs — security warnings there are noise.
 ignore = [
     "E501",   # line length — soft limit, ruff format handles it
