@@ -9,7 +9,7 @@ guarantees they appear naturally in the tailored output.
 
 from config import ANTHROPIC_API_KEY
 from modules import ai_meter
-from modules.ai_models import plain_answer_kwargs, reply_text
+from modules.ai_models import plain_answer_kwargs, refused, reply_text
 
 # Measured 2026-10-01 on two live Ashby postings (same prompt, same resume):
 #   sonnet-4-6  tailor 11-14s + structure 9-10s; retitled the headline and wrote Meta
@@ -112,6 +112,11 @@ Output the tailored resume text:"""
             **plain_answer_kwargs(SONNET_MODEL),
         )
         ai_meter.record(message, "resume_tailor")
+        # A refusal can stop mid-resume; its partial text must not be stored as the
+        # tailored resume the employer receives.
+        if refused(message):
+            print(f"[tailor] {SONNET_MODEL} declined to tailor")
+            return ""
         return reply_text(message)
     except Exception as e:
         print(f"[tailor] Failed: {e}")

@@ -309,7 +309,9 @@ Candidate background (from resume):
         ai_meter.record(message, "cover_letter")
         if refused(message):
             return fallback_template(job, profile)
-        return to_plain_letter(strip_preamble(reply_text(message)))
+        return to_plain_letter(strip_preamble(reply_text(message))) or fallback_template(
+            job, profile
+        )
     except Exception as e:
         print(f"[cover_letter] AI generation failed: {e}")
         return fallback_template(job, profile)

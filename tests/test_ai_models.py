@@ -6,11 +6,19 @@ to, and can decline; the code that reads their replies must survive all three.
 """
 
 import json
+import sys
 import types
 
 import pytest
 
-from modules import ai_cover_letter, ai_fit_judge, ai_job_scorer, ai_question_answer
+from modules import (
+    ai_cover_letter,
+    ai_fit_judge,
+    ai_job_scorer,
+    ai_question_answer,
+    ai_resume_tailor,
+    ats_pdf_generator,
+)
 from modules.ai_models import plain_answer_kwargs, refused, reply_text
 
 
@@ -26,6 +34,28 @@ from modules.ai_models import plain_answer_kwargs, refused, reply_text
 )
 def test_each_model_gets_the_one_thinking_off_setting_it_accepts(model, thinking):
     assert plain_answer_kwargs(model).get("thinking") == thinking
+
+
+@pytest.mark.parametrize("model", ["claude-opus-5-5", "claude-fable-5-1", "claude-haiku-6"])
+def test_a_model_without_a_known_way_to_stop_thinking_is_refused(model):
+    with pytest.raises(ValueError, match="plain answer"):
+        plain_answer_kwargs(model)
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        ai_cover_letter.COVER_LETTER_MODEL,
+        ai_fit_judge._SCREEN_MODEL,
+        ai_fit_judge._JUDGE_MODEL,
+        ai_question_answer.SCREENER_MODEL,
+        ai_job_scorer.HAIKU_MODEL,
+        ai_resume_tailor.SONNET_MODEL,
+        ats_pdf_generator.SONNET_MODEL,
+    ],
+)
+def test_every_model_a_call_site_ships_with_can_be_asked_plainly(model):
+    plain_answer_kwargs(model)
 
 
 def _reply(text, *, thinking_first=True, stop_reason="end_turn"):
@@ -177,3 +207,34 @@ def test_a_declined_score_is_the_neutral_default_and_says_so(monkeypatch, capsys
     scored, _ = _score(monkeypatch, _reply("", stop_reason="refusal"))
     assert scored == ai_job_scorer._default_score()
     assert "declined" in capsys.readouterr().out
+
+
+def test_an_empty_letter_reply_falls_back_to_the_template(monkeypatch):
+    class _Messages:
+        def create(self, **kwargs):
+            return _reply("")
+
+    monkeypatch.setattr(ai_cover_letter, "COVER_LETTER_MODEL", "claude-sonnet-5-5")
+    monkeypatch.setattr(
+        ai_cover_letter, "get_anthropic_client", lambda: types.SimpleNamespace(messages=_Messages())
+    )
+    monkeypatch.setattr(ai_cover_letter, "resume_text_for", lambda *a, **k: "resume text")
+    job, profile = {"title": "Engineer", "company": "Acme", "description": "d"}, {"name": "Alex"}
+    letter = ai_cover_letter.generate_cover_letter(job, profile)
+    assert letter == ai_cover_letter.fallback_template(job, profile)
+
+
+def test_a_declined_tailoring_stores_nothing_not_the_partial_resume(monkeypatch):
+    partial = _reply("JORDAN AVERY\nExperience\nSenior Project Ma", stop_reason="refusal")
+    client = types.SimpleNamespace(messages=types.SimpleNamespace(create=lambda **k: partial))
+    monkeypatch.setattr(ai_resume_tailor, "ANTHROPIC_API_KEY", "test-key")
+    # tailor_resume imports anthropic inside the function: the module table is the hook.
+    monkeypatch.setitem(
+        sys.modules, "anthropic", types.SimpleNamespace(Anthropic=lambda **_: client)
+    )
+    tailored = ai_resume_tailor.tailor_resume(
+        {"title": "PM", "company": "Acme", "description": "Run delivery."},
+        {},
+        "JORDAN AVERY\nExperience\nSenior Project Manager, Northwind",
+    )
+    assert tailored == ""
