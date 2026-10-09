@@ -5,6 +5,8 @@ arithmetic and its isolation are tested without spending anything."""
 import json
 import types
 
+import pytest
+
 from modules import ai_fit_judge
 from scripts import measure_judge_calibration as cal
 
@@ -69,6 +71,25 @@ def test_disagreements_are_split_into_lost_and_wasted_applications():
     assert c["agree"] == 0.5
     assert c["cheaper_by"] == round(0.023 / 0.002, 1)
     assert [b["job_id"] for b, _ in c["false_reject_rows"]] == ["b"]
+
+
+def test_a_candidate_the_judge_cannot_ask_plainly_is_refused_before_spending():
+    with pytest.raises(SystemExit, match="plain answer"):
+        cal.parse_candidate("claude-haiku-5-5+claude-opus-5-5")
+
+
+def test_a_row_judged_on_a_resumed_run_is_no_longer_undecided():
+    baseline = [_row("j1", "apply", 80, 0.01), _row("j2", "apply", 80, 0.01)]
+    candidates = [
+        _row("j1", None, None, 0, candidate="c", judged=False),
+        _row("j2", None, None, 0, candidate="c", judged=False),
+        _row("j1", "apply", 75, 0.001, candidate="c"),
+    ]
+
+    result = cal.compare(baseline, candidates, "c")
+
+    assert result["paired"] == 1
+    assert result["unjudged"] == 1
 
 
 def test_another_candidates_rows_never_leak_into_the_comparison():

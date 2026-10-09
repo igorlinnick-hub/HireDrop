@@ -2,6 +2,9 @@
 which model writes every letter, so its isolation, its failure reporting and its arithmetic
 are tested without spending anything."""
 
+import os
+import subprocess
+import sys
 import types
 from unittest.mock import MagicMock, patch
 
@@ -73,7 +76,7 @@ def test_each_model_gets_the_same_prompt_and_its_price_from_the_ledger():
     assert got["claude-sonnet-5-5"]["text"].startswith("Dear Acme team")
 
 
-def test_a_refusal_and_an_api_error_show_although_the_product_writes_the_template():
+def test_a_refusal_and_an_api_error_are_failures_though_the_product_writes_the_template():
     client = FakeClient(
         {
             "claude-sonnet-4-6": RuntimeError("400 thinking.type: disabled is not supported"),
@@ -89,12 +92,54 @@ def test_a_refusal_and_an_api_error_show_although_the_product_writes_the_templat
     assert got["claude-sonnet-4-6"]["text"] == template
     assert "thinking.type" in got["claude-sonnet-4-6"]["error"]
     assert got["claude-sonnet-5-5"]["text"] == template
-    assert got["claude-sonnet-5-5"]["refused"] and not got["claude-sonnet-5-5"]["error"]
+    assert got["claude-sonnet-5-5"]["error"] == "refused"
 
     summary = letters.summarize(pairs, ["claude-sonnet-4-6", "claude-sonnet-5-5"])
     assert summary["claude-sonnet-4-6"]["letters"] == 0
     assert summary["claude-sonnet-4-6"]["errors"] == 1
-    assert summary["claude-sonnet-5-5"]["refused"] == 1
+    assert summary["claude-sonnet-5-5"]["letters"] == 0
+    assert summary["claude-sonnet-5-5"]["first_error"] == "refused"
+
+
+def test_a_letter_cut_off_at_max_tokens_is_not_counted_as_written():
+    client = FakeClient(
+        {
+            "claude-sonnet-4-6": _message(),
+            "claude-sonnet-5-5": _message(
+                text="Dear Acme team,\n\nI run", stop_reason="max_tokens"
+            ),
+        }
+    )
+    pairs = letters.write_letters(
+        [JOB], PROFILE, "RESUME", ["claude-sonnet-4-6", "claude-sonnet-5-5"], client
+    )
+
+    summary = letters.summarize(pairs, ["claude-sonnet-4-6", "claude-sonnet-5-5"])
+    assert summary["claude-sonnet-4-6"]["letters"] == 1
+    assert summary["claude-sonnet-5-5"]["letters"] == 0
+    assert summary["claude-sonnet-5-5"]["first_error"] == "cut off at max_tokens"
+    assert "vs_baseline" not in summary["claude-sonnet-5-5"]
+
+
+def test_a_model_that_cannot_answer_without_thinking_is_refused_before_spending():
+    # Opus 5.5 is priced, but its thinking cannot be turned off.
+    with pytest.raises(SystemExit, match="plain answer"):
+        letters.parse_models("claude-sonnet-4-6,claude-opus-5-5")
+
+
+def test_importing_the_measurement_helpers_leaves_the_spend_meter_on():
+    # A fresh process: in this one the scripts are long imported.
+    code = (
+        "import os, scripts.measure_scorer_models, scripts.measure_judge_calibration; "
+        "print(os.environ.get('AI_METER'))"
+    )
+    env = {k: v for k, v in os.environ.items() if k != "AI_METER"}
+    root = os.path.join(os.path.dirname(__file__), "..")
+    out = subprocess.run(
+        [sys.executable, "-c", code], cwd=root, env=env, capture_output=True, text=True
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip() == "None"
 
 
 def test_the_product_is_left_as_it_was():

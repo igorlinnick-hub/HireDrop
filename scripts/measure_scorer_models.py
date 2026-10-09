@@ -16,7 +16,7 @@ variable) and reports:
 
 The first model is the reference, not the truth: read the flips before switching. A
 reasonable bar: same band on 9 rows in 10, flips read as borderline, keywords overlapping
-at least half. Rows with and without a real description are reported apart, because
+at least half. Rows with and without a description are reported apart, because
 without one the prompt caps the score at 5.
 
 USAGE (from jobflow/, keys in .env)
@@ -32,12 +32,10 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-# Measurement spend is not product spend: keep it out of the ledger (modules/ai_meter.py).
-os.environ.setdefault("AI_METER", "off")
 
 import config  # noqa: E402,F401  — loads .env before the clients read the keys
 from modules import ai_job_scorer  # noqa: E402
-from scripts.measure_letter_models import Recording, parse_models  # noqa: E402
+from scripts.measure_letter_models import Recording, call_failure, parse_models  # noqa: E402
 
 CANDIDATE = "claude-haiku-5-5"
 SHEET_FLIPS = 15
@@ -75,15 +73,9 @@ def score_rows(rows: list[dict], profile: dict, resume: str, models: list[str], 
                 mark = len(calls)
                 got = ai_job_scorer.score_job(row, profile, resume)
                 made = calls[mark:]
-                error = next((c["error"] for c in made if "error" in c), None)
-                if not made:
-                    error = "no API call (is ANTHROPIC_API_KEY set?)"
-                elif got.get("fallback") and not error:
-                    error = (
-                        "refused"
-                        if any(c.get("refused") for c in made)
-                        else "no usable score in the reply"
-                    )
+                error = call_failure(made) or (
+                    "no usable score in the reply" if got.get("fallback") else None
+                )
                 scores[model] = {
                     "score": got["score"],
                     "reasons": got["reasons"],
@@ -104,15 +96,13 @@ def score_rows(rows: list[dict], profile: dict, resume: str, models: list[str], 
 
 
 def _job_line(row: dict) -> dict:
-    from app.routers.jobs import MIN_SCORABLE_DESC
-
-    described = len((row.get("description") or "").strip()) >= MIN_SCORABLE_DESC
     return {
         "id": row.get("id"),
         "title": row.get("title") or "",
         "company": row.get("company") or "",
         "platform": row.get("platform") or "",
-        "described": described,
+        # score_job's own test: any description text at all lifts the cap of 5.
+        "described": bool(row.get("description")),
     }
 
 
@@ -241,13 +231,16 @@ def load_user(uid: str, n: int) -> tuple[list[dict], dict, str, str]:
 
     profile = get_profile(uid)
     preflight_resume(uid, profile)
-    rows = jobs_db.get_jobs(uid)[:n]
+    rows = jobs_db.get_jobs(uid, limit=n)
     if not rows:
         raise SystemExit(f"{uid[:8]}: the pool is empty")
     return rows, profile, resume_text_for(profile), label_for(profile)
 
 
 def main() -> int:
+    # Measurement spend is not product spend: keep it out of the ledger (modules/ai_meter.py).
+    # Set here, not on import, so a process that only imports these helpers keeps its meter.
+    os.environ.setdefault("AI_METER", "off")
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--user", required=True, help="user_id whose pool rows are scored")
     ap.add_argument("--rows", type=int, default=80)

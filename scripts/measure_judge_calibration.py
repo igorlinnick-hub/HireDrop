@@ -94,8 +94,6 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import UTC, date, datetime, timedelta
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-# Measurement spend is not product spend: keep it out of the ledger (modules/ai_meter.py).
-os.environ.setdefault("AI_METER", "off")
 
 import config  # noqa: E402,F401  — loads .env before the clients read the keys
 from app.db import jobs as jobs_db  # noqa: E402
@@ -110,7 +108,7 @@ from app.routers.jobs import (  # noqa: E402
     on_search_filter,
 )
 from modules import ai_cover_letter, ai_fit_judge, ai_meter  # noqa: E402
-from modules.ai_models import reply_text  # noqa: E402
+from modules.ai_models import plain_answer_kwargs, reply_text  # noqa: E402
 from modules.fit_queue import COMPANY_WINDOW_DAYS, company_cap, company_key  # noqa: E402
 
 # Worst case for ONE assess_fit: Haiku + Sonnet, ~2.6k input tokens each, max_tokens=400.
@@ -740,9 +738,16 @@ def report(users: list[dict], out_dir: str, seed: int) -> None:
 
 
 def parse_candidate(spec: str) -> tuple[str, str | None]:
-    """ "SCREEN" -> one model decides; "SCREEN+JUDGE" -> the cascade with these models."""
+    """ "SCREEN" -> one model decides; "SCREEN+JUDGE" -> the cascade with these models.
+    A model the judge cannot ask for a plain answer is refused before anything is spent."""
     screen, _, judge = spec.partition("+")
-    return screen.strip(), (judge.strip() or None)
+    models = screen.strip(), (judge.strip() or None)
+    for model in filter(None, models):
+        try:
+            plain_answer_kwargs(model)
+        except ValueError as e:
+            raise SystemExit(str(e)) from e
+    return models
 
 
 @contextlib.contextmanager
@@ -762,10 +767,11 @@ def judge_config(screen: str, judge: str | None):
 def compare(baseline: list[dict], candidates: list[dict], spec: str) -> dict:
     """The candidate's verdicts lined up against the current judge's, row by row."""
     ref = {(r["user_id"], r["job_id"]): r for r in baseline if r.get("judged")}
+    mine = [c for c in candidates if c.get("candidate") == spec]
     pairs = [
         (ref[(c["user_id"], c["job_id"])], c)
-        for c in candidates
-        if c.get("candidate") == spec and c.get("judged") and (c["user_id"], c["job_id"]) in ref
+        for c in mine
+        if c.get("judged") and (c["user_id"], c["job_id"]) in ref
     ]
     false_rejects = [(b, c) for b, c in pairs if b["decision"] == "apply" != c["decision"]]
     false_accepts = [(b, c) for b, c in pairs if b["decision"] == "skip" != c["decision"]]
@@ -776,8 +782,10 @@ def compare(baseline: list[dict], candidates: list[dict], spec: str) -> dict:
     return {
         "candidate": spec,
         "paired": n,
-        "unjudged": sum(
-            1 for c in candidates if c.get("candidate") == spec and not c.get("judged")
+        # A row that failed and was judged on a resumed run is decided, not undecided.
+        "unjudged": len(
+            {(c["user_id"], c["job_id"]) for c in mine if not c.get("judged")}
+            - {(c["user_id"], c["job_id"]) for c in mine if c.get("judged")}
         ),
         "agree": round(1 - (len(false_rejects) + len(false_accepts)) / n, 3) if n else None,
         "current_passes": passes,
@@ -834,6 +842,9 @@ def compare_report(baseline: list[dict], candidates: list[dict], spec: str, out_
 
 
 def main() -> int:
+    # Measurement spend is not product spend: keep it out of the ledger (modules/ai_meter.py).
+    # Set here, not on import, so a process that only imports these helpers keeps its meter.
+    os.environ.setdefault("AI_METER", "off")
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--user", action="append", help="user_id to measure (repeatable)")
     ap.add_argument("--top", type=int, default=3, help="default: top N by applications in 30 days")

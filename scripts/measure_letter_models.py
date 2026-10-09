@@ -30,12 +30,10 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-# Measurement spend is not product spend: keep it out of the ledger (modules/ai_meter.py).
-os.environ.setdefault("AI_METER", "off")
 
 import config  # noqa: E402,F401  — loads .env before the clients read the keys
 from modules import ai_cover_letter, ai_meter  # noqa: E402
-from modules.ai_models import refused  # noqa: E402
+from modules.ai_models import plain_answer_kwargs, refused  # noqa: E402
 from modules.ai_spend import CEILING_PER_APPLICATION_USD  # noqa: E402
 
 CANDIDATE = "claude-sonnet-5-5"
@@ -69,8 +67,9 @@ SYNTHETIC_PROFILE = {
 
 
 def parse_models(spec: str | None, default: list[str] | None = None) -> list[str]:
-    """The models to compare, baseline first. Refuses before any money is spent on a model
-    the ledger cannot price, so every number below is a real price."""
+    """The models to compare, baseline first. Refuses, before any money is spent, a model the
+    ledger cannot price (every number below is a real price) or cannot be asked for a plain
+    answer (it would spend the answer's tokens thinking)."""
     named = [m.strip() for m in (spec or "").split(",") if m.strip()]
     models = list(
         dict.fromkeys(named or default or [ai_cover_letter.COVER_LETTER_MODEL, CANDIDATE])
@@ -80,11 +79,17 @@ def parse_models(spec: str | None, default: list[str] | None = None) -> list[str
     unpriced = [m for m in models if ai_meter.price_of(m) is None]
     if unpriced:
         raise SystemExit(f"No price in ai_meter.PRICES for {unpriced}: add it first.")
+    for model in models:
+        try:
+            plain_answer_kwargs(model)
+        except ValueError as e:
+            raise SystemExit(str(e)) from e
     return models
 
 
 class Recording:
-    """The real client, with every call's tokens, price, refusal or error written down."""
+    """The real client, with every call's tokens, price, refusal, cut-off or error written
+    down."""
 
     def __init__(self, client, calls: list[dict]):
         self._client = client
@@ -106,15 +111,30 @@ class Recording:
                 "out": usage.output_tokens,
                 "usd": float(ai_meter.cost_usd(model, usage) or 0),
                 "refused": refused(message),
+                "cut": getattr(message, "stop_reason", None) == "max_tokens",
             }
         )
         return message
 
 
 def _outcome(letter: dict) -> str:
-    if letter["error"]:
-        return "ERROR"
-    return "refused" if letter["refused"] else f"${letter['usd']:.5f}"
+    return "FAILED" if letter["error"] else f"${letter['usd']:.5f}"
+
+
+def call_failure(made: list[dict]) -> str | None:
+    """Why the calls behind one answer gave no usable answer, or None. The product answers
+    each of these with a stand-in (a template letter, a neutral score), so the recorded
+    calls are the only place the failure shows."""
+    if not made:
+        return "no API call (is ANTHROPIC_API_KEY set?)"
+    error = next((c["error"] for c in made if "error" in c), None)
+    if error:
+        return error
+    if any(c.get("refused") for c in made):
+        return "refused"
+    if any(c.get("cut") for c in made):
+        return "cut off at max_tokens"
+    return None
 
 
 def write_letters(
@@ -137,19 +157,13 @@ def write_letters(
                 ai_cover_letter.COVER_LETTER_MODEL = model
                 text = ai_cover_letter.generate_cover_letter(job, profile)
                 made = calls[mark:]
-                # generate_cover_letter answers every failure with the template letter, so
-                # the recorded call is the only place an API error or a refusal shows.
-                error = next((c["error"] for c in made if "error" in c), None)
-                if not made:
-                    error = "no API call: template letter (is ANTHROPIC_API_KEY set?)"
                 letters[model] = {
                     "text": text,
                     "chars": len(text),
                     "in": sum(c.get("in", 0) for c in made),
                     "out": sum(c.get("out", 0) for c in made),
                     "usd": sum(c.get("usd", 0.0) for c in made),
-                    "refused": any(c.get("refused") for c in made),
-                    "error": error,
+                    "error": call_failure(made),
                 }
             pairs.append({"job": job, "letters": letters})
             line = "   ".join(f"{m}: {_outcome(d)}" for m, d in letters.items())
@@ -172,7 +186,6 @@ def summarize(pairs: list[dict], models: list[str]) -> dict:
         out[model] = {
             "letters": n,
             "errors": len(rows) - n,
-            "refused": sum(r["refused"] for r in written),
             "usd": sum(r["usd"] for r in written) / n if n else None,
             "in": sum(r["in"] for r in written) / n if n else None,
             "out": sum(r["out"] for r in written) / n if n else None,
@@ -196,7 +209,7 @@ def print_summary(summary: dict, models: list[str]) -> None:
     print("\n" + "=" * 78)
     print("MEASURED — real usage, every model on the same postings")
     print("=" * 78)
-    print(f"  {'model':<26}{'letters':>8}{'in':>7}{'out':>6}{'chars':>7}{'$/letter':>11}  refused")
+    print(f"  {'model':<26}{'letters':>8}{'in':>7}{'out':>6}{'chars':>7}{'$/letter':>11}")
     for model in models:
         s = summary[model]
         if not s["letters"]:
@@ -204,7 +217,7 @@ def print_summary(summary: dict, models: list[str]) -> None:
             continue
         print(
             f"  {model:<26}{s['letters']:>8}{s['in']:>7.0f}{s['out']:>6.0f}{s['chars']:>7.0f}"
-            f"  ${s['usd']:.5f}  {s['refused']}"
+            f"  ${s['usd']:.5f}"
         )
         if s["errors"]:
             print(f"  {'':<26}{s['errors']} failed, first: {s['first_error']}")
@@ -236,8 +249,7 @@ def write_markdown(
         for model in models:
             s = summary[model]
             price = f"${s['usd']:.5f}/letter" if s["usd"] is not None else "no letter"
-            extra = f", {s['refused']} refused" if s["refused"] else ""
-            extra += f", {s['errors']} failed" if s["errors"] else ""
+            extra = f", {s['errors']} failed (first: {s['first_error']})" if s["errors"] else ""
             fh.write(f"- **{model}**: {price}{extra}\n")
         fh.write("\nRead the pairs below and decide whether the difference shows in the writing.\n")
         for pair in pairs:
@@ -246,9 +258,7 @@ def write_markdown(
             for model in models:
                 d = pair["letters"][model]
                 if d["error"]:
-                    status = f"FAILED ({d['error']}), template letter"
-                elif d["refused"]:
-                    status = "REFUSED, template letter"
+                    status = f"FAILED: {d['error']}"
                 else:
                     status = f"${d['usd']:.5f}, {d['out']} output tokens"
                 fh.write(f"### {model} — {status}\n\n```\n{d['text'].strip()}\n```\n\n")
@@ -306,6 +316,9 @@ def load_sample(path: str) -> tuple[list[dict], dict, str, str]:
 
 
 def main() -> int:
+    # Measurement spend is not product spend: keep it out of the ledger (modules/ai_meter.py).
+    # Set here, not on import, so a process that only imports these helpers keeps its meter.
+    os.environ.setdefault("AI_METER", "off")
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     source = ap.add_mutually_exclusive_group(required=True)
     source.add_argument("--user", help="user_id: their profile, resume and recent postings")

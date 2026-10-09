@@ -161,3 +161,15 @@ def test_the_report_splits_rows_with_and_without_a_description():
     assert "with a description (2): same band 100%" in text
     assert "without one (1): same band 0%" in text
     assert "0.10x" in text
+
+
+def test_rows_split_where_the_prompt_caps_the_score_at_any_description_at_all():
+    client = FakeClient({OLD: _message(_verdict(5)), NEW: _message(_verdict(5))})
+    rows = [
+        {**ROW, "id": "short", "description": "Weld."},
+        {**ROW, "id": "none", "description": ""},
+    ]
+
+    scored = sm.score_rows(rows, {}, "resume", [OLD, NEW], client)
+
+    assert [r["job"]["described"] for r in scored] == [True, False]
