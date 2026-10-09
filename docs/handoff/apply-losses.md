@@ -1,18 +1,17 @@
 # apply-losses — где теряются подачи: хендбэки, ответы в формах, обход Indeed/ZR
 
-Сессия: maple-stoat · лейн ext-zr-truth · цель: ZR 1-click заявки пишутся в History (не Skip) и с городом; проверено живой ZR-заявкой · шаг: #398 в main (1.8.45), синк на Рабочий стол ✅; живая ZR-заявка заблокирована классификатором прав → ждёт разрешения Игоря · доска: `python3 scripts/sessions.py board`
+Сессия: brisk-toucan · лейн ext-zr-truth · цель: ZR 1-click заявки пишутся в History (не Skip) и с городом; проверено живой ZR-заявкой · шаг: ZR доказан живой заявкой (applied + San Diego, CA); профиль вернул; хендофф + мерж #406 · доска: `python3 scripts/sessions.py board`
 
-Обновлено: 2026-10-09 · ветка: main · ext main = **1.8.45** (#398) · CWS: 1.8.43 на ревью. Хронология — `git log -p` этого файла.
+Обновлено: 2026-10-09 · ветка: main · ext main = **1.8.46** · Хронология — `git log -p` этого файла.
 
 ## Состояние
 
 - Живой Indeed на 1.8.43: 3 подачи / 12 мин, все в `applications`; #381 #382 кап компании, fit-отсев — подтверждены вживую.
-- **ZR (#398, 1.8.45, в main и на Рабочем столе Игоря, вживую НЕ проверен):** экран ZR после подачи
-  (`Send a Message | Skip for Now`, `bsf-*`, «has been submitted») = заявка → `recordSubmittedApplication`; выход —
-  «Skip for Now», «Send a Message» в `DENY_BTN_RE`. Панель «Applied» считается только без открытых окон (пустая
-  Close-оболочка ZR между шагами ≠ конец). Сигнал читается ДО Stop. `_phase3_fillForm` спрашивает ZR в начале шага и
-  перед каждым отказом (`zrFiledDuringForm`). Пагинация выдачи — не кнопка формы (`isPageNavControl`), кнопки модалки
-  ZR ищутся только в модалке (`formLivesInDialog`). Город: карточка `job-card-location` + шапка панели → `/jobs/describe`.
+- **ZR ДОКАЗАН ЖИВОЙ ЗАЯВКОЙ (10-09, brisk-toucan):** `drive.py run auto --platform ziprecruiter`, ext 1.8.46 в content
+  script. Первая подача через ~2 мин → `applications` 3d46289f: Boutique Fitness Studio, «Sales & Operations Manager»,
+  status `applied`, `jobs.location` = «San Diego, CA • On-site» → History `place` = «San Diego, CA», `onsite`.
+  Stop с первого раза. `profiles.platforms` igor вернул в `["indeed","remoteok"]`. Механика (#398): экран ZR после подачи
+  (`Send a Message | Skip for Now`, «has been submitted») → `recordSubmittedApplication`; город — карточка + шапка → `/jobs/describe`.
 - Защита от ложного «подано» проверена фикстурами + 2 скептиками; экран после подачи никогда не снимался — его
   разметка из бандла ZR, доказательство только живой заявкой.
 
@@ -28,13 +27,17 @@
 
 ## Сломано / не доделано
 
-- ZR вживую не проверен (см. выше). Низкие риски скептика оставлены: нет проверки экрана «подано» ДО клика;
-  старый поиск кнопки Apply по всей странице. ZR-харвест в пул шлёт без города (город доходит только при подаче).
+- Низкие риски скептика по ZR оставлены: нет проверки экрана «подано» ДО клика; старый поиск кнопки Apply по всей
+  странице. ZR-харвест в пул шлёт без города (город доходит только при подаче).
+- ⚠ `drive.py run` синкает расширение из ЛОКАЛЬНОГО `jobflow/` (не origin/main): когда checkout отстаёт, синк ОТКАТЫВАЕТ
+  Рабочий стол на старую версию. 10-09 так чуть не откатил 1.8.46 → 1.8.45. Обход: гонять drive.py из копии с
+  `git archive origin/main chrome-extension`. Корень — в sync-ext.sh/drive.py брать источник по коммиту, не по checkout.
+- Диск был 99% → синк на Рабочий стол (iCloud) вис. 10-09 освобождено до 67 ГБ; папку расширения всё ещё стоит увести
+  из iCloud в `~/Code/` (один «Load unpacked» у Игоря).
 - #384, #385 открыты (#385 пересекается с #398 в ветке `if (!formReady)` — при ребейзе оставить запись `applied` выше).
 - `screener_answer_cache` раньше `_status_from_profile`; `diag.reqEmpty` врёт; worktree'ы `.wt-*` удалить (Игорю).
 
 ## Следующий шаг
 
-Модель: **Opus**. Получив разрешение Игоря на живую подачу: `drive.py run auto --minutes 20 --platform ziprecruiter`,
-остановить на первой ZR-строке в `applications` (`scripts/e2e/sql.sh`), проверить в History место (не «No location»),
-вернуть `profiles.platforms` igor = `["indeed","remoteok"]` → `zip` + `cws_publish.py ship` после одобрения 1.8.43.
+Модель: **Opus**. Лейн ext-zr-truth по цели закрыт. Дальше по выбору Игоря: (1) источник синка по коммиту (грабля выше),
+(2) папка расширения вне iCloud, (3) риски скептика по ZR. Статус ZR в `STATUS_MATRIX.json` уже VERIFIED — не трогать.
