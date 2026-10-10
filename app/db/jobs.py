@@ -1,6 +1,6 @@
 """Все операции с таблицей jobs в Supabase."""
 
-import contextlib
+import sys
 from datetime import date
 
 from app.db.client import fetch_paged, get_supabase
@@ -338,12 +338,16 @@ def mark_applied_by_link(user_id: str, url: str, status: str = "applied") -> int
     ]
     if not ids:
         return 0
-    with contextlib.suppress(Exception):
+    try:
         get_supabase().table("jobs").update({"status": status}).in_("id", ids).eq(
             "user_id", user_id
         ).execute()
-        return len(ids)
-    return 0
+    except Exception as e:  # noqa: BLE001 — never break an apply, but say what stayed approved
+        # A silent 0 here looks like "nothing to heal" while the twin row stays approved
+        # and gets applied to again — the exact double-apply this function exists to stop.
+        print(f"[jobs] heal by link FAILED user={user_id} ids={ids}: {e}", file=sys.stderr)
+        return 0
+    return len(ids)
 
 
 def update_job_score(
