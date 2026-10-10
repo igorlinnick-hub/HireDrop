@@ -190,7 +190,9 @@ async function run(sandbox, expr) {
   {
     // The phase_ats counterparts this fix mirrors must stay intact.
     const w = exitWindow("Skipped by you: ${jobTitle}");
-    const adv = w.text.indexOf('await sendMsg({ type: "ATS_JOB_DONE" });');
+    // runMsg tags it with the finish run it belongs to (if any); same advance.
+    const m = /await sendMsg\((?:runMsg\()?\{ type: "ATS_JOB_DONE" \}\)?\);/.exec(w.text);
+    const adv = m ? m.index : -1;
     check("phase_ats review-mode skip still advances",
       adv >= 0 && adv < w.firstReturn, "ATS_JOB_DONE before the return");
     check("phase_ats resume guard still hands back",

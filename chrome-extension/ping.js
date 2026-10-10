@@ -5,6 +5,8 @@
 //   HIREDROP_STORE_TOKEN   → STORE_TOKEN to background, then HIREDROP_TOKEN_STORED back
 //   HIREDROP_READ_STORAGE  → read chrome.storage.local keys, post HIREDROP_STORAGE_DATA back (debug)
 //   HIREDROP_GET/SET_AUTO_DAILY → daily auto-start setting, answered with HIREDROP_AUTO_DAILY
+//   HIREDROP_FINISH_HANDBACK → refill one handed-back ATS form ("Let Drop finish it"),
+//                            answered with HIREDROP_FINISH_STARTED {id, ok, error}
 //   HIREDROP_TEST_ARM_ATS  → (test-only, review-mode-gated) set campaignRunning so an open
 //                            Greenhouse/Lever tab runs phase_ats without a real campaign
 // Marker read by background.js healPingBridges(): it lives in this extension's ISOLATED
@@ -128,6 +130,29 @@ window.addEventListener("message", function (e) {
       // Synchronous throw = "Extension context invalidated" (extension was reloaded
       // but this tab wasn't). Only a page reload reconnects the content script.
       window.postMessage({ type: "HIREDROP_CAMPAIGN_STARTED", ok: false, error: "context_invalidated" }, "*");
+    }
+  }
+
+  // "Let Drop finish it" on a History hand-back: refill that one ATS form in a visible
+  // window and stop at the wall for the person (background startFinishRun). Only the
+  // fields background needs cross the bridge; it validates them again.
+  if (typeof e.data === "object" && e.data.type === "HIREDROP_FINISH_HANDBACK" && e.data.handback && typeof e.data.handback === "object") {
+    const h = e.data.handback;
+    const handback = {
+      id: String(h.id || ""), url: String(h.url || ""), platform: String(h.platform || ""),
+      job_title: String(h.job_title || ""), company: String(h.company || ""),
+      job_id: h.job_id ? String(h.job_id) : null,
+    };
+    try {
+      chrome.runtime.sendMessage({ type: "FINISH_HANDBACK", handback }, function (resp) {
+        if (chrome.runtime.lastError || !resp) {
+          window.postMessage({ type: "HIREDROP_FINISH_STARTED", id: handback.id, ok: false, error: "context_invalidated" }, "*");
+          return;
+        }
+        window.postMessage({ type: "HIREDROP_FINISH_STARTED", id: handback.id, ok: !!resp.started, error: resp.error || null }, "*");
+      });
+    } catch (ex) {
+      window.postMessage({ type: "HIREDROP_FINISH_STARTED", id: handback.id, ok: false, error: "context_invalidated" }, "*");
     }
   }
 
@@ -331,13 +356,15 @@ window.addEventListener("message", function (e) {
   // security check) — the dashboard shows a "solve the captcha" CTA off it.
   if (typeof e.data === "object" && e.data.type === "HIREDROP_GET_LIVE_STATE") {
     try {
-      chrome.storage.local.get(["campaignRunning", "captchaWaiting", "reviewPending", "reviewMode"], function (data) {
+      chrome.storage.local.get(["campaignRunning", "captchaWaiting", "reviewPending", "reviewMode", "finishRun"], function (data) {
         const err = chrome.runtime.lastError ? chrome.runtime.lastError.message : null;
         window.postMessage(
           {
             type: "HIREDROP_LIVE_STATE",
             ok: !err,
-            campaignRunning: !!(data && data.campaignRunning),
+            // A one-form finish (finishRun) borrows the flag to drive the filler; it is
+            // not a campaign, and the Live view must not show it as one.
+            campaignRunning: !!(data && data.campaignRunning && !data.finishRun),
             captchaWaiting: (data && data.captchaWaiting) || null,
             // Tap-mode: a filled application awaiting the human's Approve/Skip on the
             // dashboard card, plus whether tap (review) mode is on at all.

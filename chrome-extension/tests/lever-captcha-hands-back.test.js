@@ -168,6 +168,7 @@ async function runLeverGate({ signal }) {
       apiPost: async (url, body) => { calls.posted.push({ url, body }); return {}; },
       apiPatch: async (url, body) => { calls.patched.push({ url, body }); return {}; },
       advanceAtsQueue: async () => { calls.advanced++; },
+      fromStaleRun: async () => false, // no finish run here: every sender is the current run
       clearHumanHandoff: async () => { await sandbox.chrome.storage.local.set({ captchaWaiting: null }); },
       URL,
       console,

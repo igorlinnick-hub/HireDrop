@@ -294,6 +294,7 @@ function harness(opts = {}) {
       noteAuth401: async () => {},
       _auth401Streak: 0,
       addToActivityLog: async (t) => sb.logs.push(t),
+      endFinishRun: async () => false,
       getCachedProfile: async () => ({ onboarding_completed: true, resume_url: "r", keywords: ["pm"], platforms: ["indeed"] }),
       apiGet: async () => ({ submit_mode: "auto", submit_mode_known: true, limit_per_platform: 20, daily_limit: 30 }),
       pickPrimaryPlatform: () => "indeed",

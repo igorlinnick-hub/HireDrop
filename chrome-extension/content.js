@@ -906,9 +906,39 @@
     return `${u.hostname.toLowerCase()}${segs.length ? "/" + segs.join("/") : ""}`;
   }
 
-  async function markSubmitRecorded(url) {
+  // `key`: the pending submit this record closes, null for none. Only that one: a person's
+  // Submit at a finish-run wall must not take a campaign's pending submit with it.
+  async function markSubmitRecorded(url, key = "pendingAtsSubmit") {
     await storageSet({ lastRecordedSubmit: { identity: postingIdentity(url), ts: Date.now() } });
-    await storageRemove("pendingAtsSubmit");
+    if (key) await storageRemove(key);
+  }
+
+  // A person's Submit at a finish-run wall, one entry per posting: two walls can be open
+  // at once (finish A waits for its email code while finish B stops at a captcha), and a
+  // campaign started meanwhile writes pendingAtsSubmit for its own job. Expired entries go.
+  const FINISH_PENDING_KEY = "finishPendingSubmits";
+  async function finishPendingMap() {
+    const all = (await storageGet(FINISH_PENDING_KEY))[FINISH_PENDING_KEY] || {};
+    const live = {};
+    for (const [id, p] of Object.entries(all)) {
+      if (p && Date.now() - (p.ts || 0) < (p.ttl || PENDING_SUBMIT_MAX_AGE_MS)) live[id] = p;
+    }
+    return { live, changed: Object.keys(live).length !== Object.keys(all).length };
+  }
+  async function addFinishPending(p) {
+    const { live } = await finishPendingMap();
+    live[postingIdentity(p.url)] = p;
+    await storageSet({ [FINISH_PENDING_KEY]: live });
+  }
+  // Removes and returns this posting's entry (null if none). Writes only on a change:
+  // every confirmation page asks.
+  async function takeFinishPending(url) {
+    const { live, changed } = await finishPendingMap();
+    const id = postingIdentity(url);
+    const p = live[id] || null;
+    delete live[id];
+    if (p || changed) await storageSet({ [FINISH_PENDING_KEY]: live });
+    return p;
   }
 
   async function submitAlreadyRecorded(url) {
@@ -917,17 +947,24 @@
       && Date.now() - (r.ts || 0) < PENDING_SUBMIT_MAX_AGE_MS);
   }
 
+  // Our own submit (pendingAtsSubmit), else a person's at a finish-run wall (the map).
   async function _recordPendingSubmitOnce() {
     if (postApplySegmentIndex(location.pathname.toLowerCase().split("/").filter(Boolean)) < 0) return false;
-    const pend = (await storageGet("pendingAtsSubmit")).pendingAtsSubmit;
-    if (!pend || !pend.url) return false;
-    if (!(Date.now() - (pend.ts || 0) < PENDING_SUBMIT_MAX_AGE_MS)) {
+    let pend = (await storageGet("pendingAtsSubmit")).pendingAtsSubmit;
+    if (pend && pend.url && !(Date.now() - (pend.ts || 0) < (pend.ttl || PENDING_SUBMIT_MAX_AGE_MS))) {
       await storageRemove("pendingAtsSubmit"); // stale: whatever it was, it is not this page
-      return false;
+      pend = null;
     }
-    if (postingIdentity(location.href) !== postingIdentity(pend.url)) return false;
-    // Claim first, then send: a second wake on this page must find nothing to record.
-    await markSubmitRecorded(pend.url);
+    if (pend && pend.url && postingIdentity(location.href) === postingIdentity(pend.url)) {
+      // Claim first, then send: a second wake on this page must find nothing to record.
+      await markSubmitRecorded(pend.url);
+    } else {
+      pend = await takeFinishPending(location.href); // claimed by taking it
+      if (!pend) return false;
+      await markSubmitRecorded(pend.url, null);
+      // A person's send was counted by nobody before the click, and no search phrase made it.
+      await recordLocalApplication(pend.platform || detectPlatform() || "", { chargeKeyword: false });
+    }
     logBackend(`⚠️ Applied (unconfirmed — recorded on the confirmation page): ${pend.title} @ ${pend.company || "?"}`, "warn");
     // advance:false — this page may not be the campaign tab, and when it is, the walk
     // branch (recordWokeOnPostApply) advances once. Two advances per submit popped the
@@ -1972,7 +2009,9 @@
   // left the count at 0 despite real submissions. content.js reloads reliably on
   // navigation, so counting here makes the daily cap + count robust regardless of SW
   // state. background's APPLICATION_SAVED no longer increments (backend save only).
-  async function recordLocalApplication(platform) {
+  // chargeKeyword:false for a send that came from no search phrase (a person's Submit at
+  // a finish-run wall): the ledger must not charge the last campaign's keyword for it.
+  async function recordLocalApplication(platform, { chargeKeyword = true } = {}) {
     // One read for everything, so two tabs recording at once race over one round-trip.
     const s = await storageGet([
       "todayCount", "platformCounts", "todayDate", "atsPlatform",
@@ -1987,7 +2026,7 @@
     // set) applies to saved rows, and charging the current phrase for those would rotate
     // the search away from a keyword that never spent anything.
     const keywordCounts = ledgerOf(s.keywordCounts);
-    if (!s.atsPlatform) {
+    if (!s.atsPlatform && chargeKeyword) {
       const key = keywordKeyOf(s);
       if (key) {
         const bucket = keywordCounts[platform] || (keywordCounts[platform] = {});
@@ -2553,6 +2592,18 @@
   // job ends submitted-complete-and-honest OR handed-back-with-a-reason — never a silent
   // half-death.
   async function handBackJob(reason, extra = {}) {
+    // A finish run ("Let Drop finish it") was started BY the person for this one form:
+    // a wall is their step on this page, not another hand-back. Keyed to the run this
+    // form was opened for, not to whichever run is current: once it is over (Start took
+    // over, Stop) this page stays quiet, since the job is already a hand-back and the
+    // queue head now belongs to another run.
+    // typeof guard: tests run this function alone in a vm sandbox.
+    if (typeof _phaseFinishId !== "undefined" && _phaseFinishId) {
+      const cur = await currentFinishRun();
+      if (cur && cur.id === _phaseFinishId) await finishWall(reason, extra);
+      else log("Finish run ended — leaving the form as it is", "");
+      return;
+    }
     await addHandedBackKey(extra.title, extra.company);
     await sendMsg({
       type: "ATS_JOB_FAILED",
@@ -2571,6 +2622,148 @@
         // How many form screens we DID complete. The user's list shows this as
         // progress, so it must be a count we actually observed — never an estimate.
         steps_done: Number(extra.steps) || 0,
+      },
+    });
+  }
+
+  // ── "Let Drop finish it": one handed-back form, refilled with the person watching ──
+  // background startFinishRun owns the run; this side shows what is happening on the
+  // page and, at a wall, marks the spot and waits for the person's own Submit.
+  async function currentFinishRun() {
+    return (await storageGet("finishRun")).finishRun || null;
+  }
+
+  // The finish run this page's phase_ats was opened for (null on a campaign). Messages
+  // that move a queue carry it, so background can drop them once that run is over.
+  let _phaseFinishId = null;
+  const runMsg = (m) => (_phaseFinishId ? { ...m, finishId: _phaseFinishId } : m);
+
+  // Which run a phase_ats belongs to: a finish run by its id, a campaign by its start
+  // stamp. The flag alone can belong to a NEW run (Stop, then "Let Drop finish it"; or
+  // Start while a finish fills, its window left open).
+  async function runToken() {
+    const d = await storageGet(["finishRun", "campaignStartedAt"]);
+    return d.finishRun ? `finish:${d.finishRun.id}` : `campaign:${d.campaignStartedAt || ""}`;
+  }
+
+  // The run this PAGE joined (init), not only the one phase_ats saw: a slow form can sit
+  // in the hydration poll while Start replaces a finish run, or a finish run starts after
+  // Stop. That page must not act for the new run. Null = the page joined no run at init
+  // (it was opened before the run's state was written): no constraint.
+  let _pageRunToken = null;
+  async function capturePageRun() {
+    const fr = await currentFinishRun();
+    _phaseFinishId = fr ? fr.id : null;
+    _pageRunToken = await runToken();
+  }
+  async function pageStillOurs() {
+    return (await isCampaignRunning()) && (!_pageRunToken || (await runToken()) === _pageRunToken);
+  }
+
+  // The person's wall keeps the submit belt open longer than a robot click needs.
+  const FINISH_PENDING_TTL_MS = 30 * 60 * 1000;
+
+  // A banner in a closed shadow root on <html>: page CSS can't reach it, findFormButton
+  // and the body-text checks can't see it, and pointer-events:none keeps every click,
+  // ours or the person's, landing on the form underneath.
+  let _finishHost = null;
+  function showFinishBanner(title, line) {
+    if (!_finishHost) {
+      _finishHost = document.createElement("hiredrop-finish");
+      const root = _finishHost.attachShadow({ mode: "closed" });
+      root.innerHTML = `<style>
+        .b{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:2147483647;
+          pointer-events:none;max-width:min(92vw,520px);padding:12px 18px;border-radius:14px;
+          background:#101014;color:#fff;box-shadow:0 12px 32px rgba(16,16,20,.28);
+          font:500 14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif}
+        .t{font-weight:700;font-size:15px}.l{opacity:.8;margin-top:2px}
+      </style><div class="b"><div class="t"></div><div class="l"></div></div>`;
+      _finishHost._t = root.querySelector(".t");
+      _finishHost._l = root.querySelector(".l");
+      document.documentElement.appendChild(_finishHost);
+    }
+    _finishHost._t.textContent = title;
+    _finishHost._l.textContent = line;
+  }
+
+  function hideFinishBanner() {
+    if (_finishHost) { _finishHost.remove(); _finishHost = null; }
+  }
+
+  // "Hands off" goes with the run: Stop, Start taking over and every early end clear
+  // finishRun. The wall's banner stays, since it is the person's step.
+  let _finishWallShown = false;
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local" || !changes.finishRun || changes.finishRun.newValue) return;
+    if (!_finishWallShown) hideFinishBanner();
+  });
+
+  // Fixed wording per wall: the reason strings are written for the log, not for a person.
+  function finishWallLine(reason) {
+    const r = String(reason || "").toLowerCase();
+    if (r.includes("daily limit")) return "Today's limit for this site is reached, so Drop left the form as it was. Send it yourself if you want this one.";
+    if (r.includes("not confirmed")) return "Drop pressed Submit, but the page didn't confirm it. If something popped up, finish it and press Submit again.";
+    if (r.includes("verification code")) return "Enter the code Greenhouse just emailed you, then press Submit.";
+    if (r.includes("captcha")) return "Solve the captcha, then press Submit.";
+    if (r.includes("resume")) return "Attach your résumé, then press Submit.";
+    if (r.includes("required") || r.includes("validation")) return "Fill the highlighted fields, then press Submit.";
+    return "Check the form and press Submit.";
+  }
+
+  // Outline what is left (the code box, empty required fields) and bring the first into
+  // view; with nothing to point at, the Submit button.
+  function markFinishTargets(reason) {
+    const visible = (el) => !!(el && el.getClientRects().length);
+    const empty = (el) => !String(el.value || "").trim();
+    let els = [];
+    if (/verification code/i.test(reason || "")) {
+      els = Array.from(document.querySelectorAll("input")).filter((el) => visible(el) && empty(el) &&
+        /code|security/i.test(`${el.name} ${el.id} ${el.placeholder} ${el.getAttribute("aria-label") || ""}`));
+    }
+    if (!els.length) {
+      els = Array.from(formScope().querySelectorAll(
+        'input[required], select[required], textarea[required], [aria-required="true"], [aria-invalid="true"]'
+      )).filter((el) => visible(el) && el.type !== "hidden" && el.type !== "file" && empty(el));
+    }
+    for (const el of els.slice(0, 12)) {
+      el.style.outline = "3px solid #E8A33D";
+      el.style.outlineOffset = "2px";
+      el.addEventListener("input", () => { el.style.outline = ""; }, { once: true });
+    }
+    const first = els[0] || findFormButton();
+    if (first) first.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+
+  async function finishWall(reason, extra = {}) {
+    const url = String(extra.url || window.location.href).split("?")[0];
+    const title = extra.title || "", company = extra.company || "";
+    const platform = extra.platform || detectPlatform();
+    logBackend(`👇 Finish: stopped for you on ${title || "the form"} (${String(reason).slice(0, 120)})`, "info");
+    // The person's Submit is recorded like ours: a confirmation PAGE by the belt in init,
+    // an in-page confirmation by the watch below. Its own store (addFinishPending), not
+    // pendingAtsSubmit: a campaign started while they finish writes that for its job.
+    await addFinishPending({
+      url, jobKey: jobDedupKey(title, company), title, company, platform,
+      letter: "", ts: Date.now(), ttl: FINISH_PENDING_TTL_MS,
+    });
+    _finishWallShown = true;
+    showFinishBanner("Your turn 👇", finishWallLine(reason));
+    markFinishTargets(reason);
+    await sendMsg(runMsg({ type: "FINISH_WALL" }));
+    const wallText = document.body.textContent || "";
+    const result = await waitForSubmissionConfirmation(FINISH_PENDING_TTL_MS, { baselineText: wallText });
+    if (!result.verified || (await submitAlreadyRecorded(url))) return;
+    await markSubmitRecorded(url, null);
+    await takeFinishPending(url);
+    // Nothing counted this send before the click (phase_ats counts its own).
+    await recordLocalApplication(platform, { chargeKeyword: false });
+    showFinishBanner("Sent ✓", "Your application went through. You can close this window.");
+    await sendMsg({
+      type: "APPLICATION_SAVED",
+      advance: false,
+      data: {
+        job_title: title, company, platform, job_url: url, cover_letter: "",
+        status: "applied", verified: true, verify_signal: `finish:${result.signal}`,
       },
     });
   }
@@ -3564,6 +3757,8 @@
   // Called after phase_ats finishes (any exit) — if we arrived from a board, go back so
   // the campaign continues. No-op for standalone ATS tabs (atsReturnUrl unset).
   async function returnToBoardAfterAts() {
+    // A finish-run page never came from a board; a return URL in storage is another run's.
+    if (_phaseFinishId) return;
     const { atsReturnUrl } = await storageGet("atsReturnUrl");
     if (!atsReturnUrl) return;
     await storageRemove("atsReturnUrl");
@@ -6978,10 +7173,23 @@
   async function phase_ats(platform) {
     if (!(await isCampaignRunning())) return;
     const label = platform === "lever" ? "Lever" : platform === "ashby" ? "Ashby" : "Greenhouse";
+    const finish = await currentFinishRun();
+    const token = await runToken();
+    if (_pageRunToken && token !== _pageRunToken) { log("This page belongs to a run that already ended — leaving it", ""); return; }
+    _phaseFinishId = finish ? finish.id : null;
+    // Still the run this form was opened for? The flag alone can be a newer run's.
+    const stillOurs = async () => (await isCampaignRunning()) && (await runToken()) === token;
+    if (finish) showFinishBanner("Drop is filling this in for you", "Hands off for a minute. You'll get the last step if there is one.");
 
     const count = await getPlatformCount(platform);
     if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
       log(`${label} daily limit reached. Stopping.`, "");
+      // A finish run is not a campaign: a Stop would log the person's Stop and tell the
+      // server a run ended. Nothing is filled; the form is theirs.
+      if (finish) {
+        await handBackJob(`${label} daily limit reached`, { title: finish.title, company: finish.company, platform });
+        return;
+      }
       await sendMsg({ type: "STOP_CAMPAIGN" });
       return;
     }
@@ -7004,7 +7212,7 @@
 
     if (!jobTitle) {
       logBackend(`⏭️ ${label}: no job title on page — skipping to next`, "warn");
-      await sendMsg({ type: "ATS_JOB_DONE" }); // advance the pool walk past this page
+      await sendMsg(runMsg({ type: "ATS_JOB_DONE" })); // advance the pool walk past this page
       return;
     }
 
@@ -7013,7 +7221,7 @@
     const appliedJobs = await getAppliedJobKeys();
     if (applied.has(jobUrl) || appliedJobs.has(jobDedupKey(jobTitle, jobCompany))) {
       logBackend(`⏭️ Already applied: ${jobTitle} @ ${jobCompany} — next job`, "info");
-      await sendMsg({ type: "ATS_JOB_DONE" }); // was a silent dead-stop: nothing advanced the queue
+      await sendMsg(runMsg({ type: "ATS_JOB_DONE" })); // was a silent dead-stop: nothing advanced the queue
       return;
     }
 
@@ -7036,13 +7244,13 @@
       // opened postings lost to that second verdict). The full href: jobUrl drops the
       // query, and an employer-hosted Greenhouse page carries its posting id in ?gh_jid=.
       const fit = await sendMsg({ type: "ASSESS_FIT", data: { job_title: jobTitle, company: jobCompany, description: jobDesc, job_url: window.location.href } });
-      if (!(await isCampaignRunning())) return; // Stop landed while the judge answered
+      if (!(await stillOurs())) return; // Stop landed while the judge answered
       const src = fitSourceNote(fit);
       // FAIL CLOSED: only proceed on an explicit "apply" (null/missing verdict → skip).
       if (!fit || fit.decision !== "apply") {
         const why = (fit && fit.reason ? fit.reason : "fit check unavailable — skipped for safety").slice(0, 140);
         logBackend(`Skipped (fit ${(fit && fit.fit_score != null) ? fit.fit_score : "?"}): ${jobTitle} @ ${jobCompany} — ${why}${src}`, (!fit || fit.failClosed) ? "warn" : "info");
-        await sendMsg({ type: "ATS_JOB_DONE" }); // fit-skip must still advance the pool walk
+        await sendMsg(runMsg({ type: "ATS_JOB_DONE" })); // fit-skip must still advance the pool walk
         return;
       }
       if (fit.judged) logBackend(`Good fit (${fit.fit_score}): ${jobTitle} @ ${jobCompany}${src}`, "info");
@@ -7156,7 +7364,7 @@
     }
     await sleep(humanDelay(1500, 2500));
 
-    if (!(await isCampaignRunning())) return;
+    if (!(await stillOurs())) return;
 
     const action = classifyFormButton();
     if (action.label) log(`${label} button: "${action.label}" → ${action.submit ? "SUBMIT" : "continue?"}`, "");
@@ -7209,7 +7417,7 @@
       });
       if (choice !== "submit") {
         logBackend(`⏭️ Skipped by you: ${jobTitle} @ ${jobCompany}`, "info");
-        await sendMsg({ type: "ATS_JOB_DONE" }); // tap-skip advances to the next card
+        await sendMsg(runMsg({ type: "ATS_JOB_DONE" })); // tap-skip advances to the next card
         return; // never submits, never records applied
       }
       logBackend(`👍 You approved — submitting: ${jobTitle} @ ${jobCompany}`, "ok");
@@ -7261,7 +7469,9 @@
     }
 
     await sleep(humanDelay(2000, 5000));
-    if (!(await isCampaignRunning())) { log("Campaign stopped — not submitting", ""); return; }
+    // Never on a NEW run's flag: a finish run Start took over, a campaign stopped before
+    // "Let Drop finish it" (that would send a job the person stopped).
+    if (!(await stillOurs())) { log("Campaign stopped — not submitting", ""); return; }
 
     await snapshotFormAnswers({ url: jobUrl, title: jobTitle, company: jobCompany });
     // Record BEFORE the click — submit navigates to the thank-you page.
@@ -7318,10 +7528,39 @@
         return;
       }
     }
+    // A finish run closes its window on a send, and unconfirmed is not a send to stand
+    // behind (a captcha after the click, a code prompt we didn't recognise). The person
+    // is right there: it is their wall, and only a confirmation closes the window.
+    if (finish && !result.verified) {
+      if (submitBtn.isConnected && window.location.href === jobUrl) {
+        await storageRemove("pendingAtsSubmit");
+        await subtractLocalApplication(platform);
+        await handBackJob("submit not confirmed by the page", { url: jobUrl, title: jobTitle, company: jobCompany, platform });
+        return;
+      }
+      // The form is gone (the page moved on) without a word we recognise: it most likely
+      // went. Recorded as unconfirmed, the same honesty rule as a run's, and the window
+      // stays so the person can see for themselves.
+      logBackend(`⚠️ Applied (unconfirmed): ${jobTitle} @ ${jobCompany}`, "warn");
+      await sendMsg(runMsg({
+        type: "APPLICATION_SAVED",
+        advance: false,
+        data: {
+          job_title: jobTitle, company: jobCompany, platform,
+          job_url: jobUrl, cover_letter: coverLetter,
+          status: "applied_unconfirmed", verified: false, verify_signal: result.signal,
+        },
+      }));
+      await markSubmitRecorded(jobUrl);
+      _finishWallShown = true;
+      showFinishBanner("Sent, not confirmed", "The page moved on without saying it went through. Check this window before you close it.");
+      await sendMsg(runMsg({ type: "FINISH_WALL", unconfirmedSend: true }));
+      return;
+    }
     // RECEIPT (council #3 trust primitive): freeze the confirmation-page moment —
     // screenshot + text + signal — regardless of verified/unconfirmed, so every submit
     // is auditable ("did it land?") without relying on employer emails.
-    await sendMsg({
+    await sendMsg(runMsg({
       type: "RECEIPT_CAPTURE",
       data: {
         job_title: jobTitle, company: jobCompany, platform,
@@ -7329,14 +7568,14 @@
         verified: result.verified, signal: result.signal,
         snippet: (document.body.innerText || "").replace(/\s+/g, " ").slice(0, 600),
       },
-    });
+    }));
     if (result.verified) {
       log(`Applied (verified ${result.signal}): ${jobTitle} @ ${jobCompany}`, "ok");
       logBackend(`✅ Applied: ${jobTitle} @ ${jobCompany}`, "ok");
     } else {
       logBackend(`⚠️ Applied (unconfirmed): ${jobTitle} @ ${jobCompany}`, "warn");
     }
-    await sendMsg({
+    await sendMsg(runMsg({
       type: "APPLICATION_SAVED",
       data: {
         job_title: jobTitle, company: jobCompany, platform,
@@ -7344,7 +7583,7 @@
         status: result.verified ? "applied" : "applied_unconfirmed",
         verified: result.verified, verify_signal: result.signal,
       },
-    });
+    }));
     // Recorded here — the belt must not write this submit a second time on a later wake.
     await markSubmitRecorded(jobUrl);
   }
@@ -7886,7 +8125,9 @@
       const today = localDay();
       const total = c.todayDate === today ? (c.todayCount || 0) : 0;
       const dailyTotal = (c.campaignCaps && c.campaignCaps.dailyTotal > 0) ? c.campaignCaps.dailyTotal : 30;
-      if (total >= dailyTotal) {
+      // Not on a finish run: startFinishRun checked the budget, and its last slot lands
+      // here on the confirmation page, where a Stop would read as the person's.
+      if (total >= dailyTotal && !(await currentFinishRun())) {
         log(`Daily budget reached (${total}/${dailyTotal}). Campaign complete.`, "ok");
         await sendMsg({ type: "STOP_CAMPAIGN" });
         return;
@@ -8168,8 +8409,9 @@
           // /jobs?q=&l=remote&vjk=…). Running phase1 would walk the search and apply
           // jobs the user never swiped — the exact footgun. Skip the item instead.
           if ((await storageGet("atsPlatform")).atsPlatform === "pool") {
+            if (!(await pageStillOurs())) break;
             logBackend("Posting looks closed (Indeed sent us to search) — skipping to your next pick", "warn");
-            await sendMsg({ type: "ATS_JOB_DONE" });
+            await sendMsg(runMsg({ type: "ATS_JOB_DONE" }));
             break;
           }
           if (detectPlatform() === "linkedin") { await phase1_linkedinList(); break; }
@@ -8196,7 +8438,7 @@
           // Unknown page. Pool swipe run: never "recover" into a board SEARCH (that
           // walk applies un-swiped jobs) — skip this queue item and advance the pool.
           if ((await storageGet("atsPlatform")).atsPlatform === "pool") {
-            if (await isCampaignRunning()) {
+            if (await pageStillOurs()) {
               // EXCEPT the warm-landing homepage: for Indeed/ZR pool jobs background opens
               // the platform HOMEPAGE first (to pass Cloudflare), then sessionWarmup
               // navigates to the picked job. That homepage (pathname "/") is an "unknown"
@@ -8218,7 +8460,7 @@
                 let _ready = false;
                 for (let i = 0; i < 8 && !_ready; i++) {
                   await sleep(2500);
-                  if (!(await isCampaignRunning())) break;
+                  if (!(await pageStillOurs())) break;
                   _ready = detectPhase() === "form";
                 }
                 if (_ready) {
@@ -8230,8 +8472,9 @@
                   }
                 }
               }
+              if (!(await pageStillOurs())) break; // the run changed while the form loaded
               logBackend(`Couldn't open this job page (${location.hostname}) — skipping to your next pick`, "warn");
-              await sendMsg({ type: "ATS_JOB_DONE" });
+              await sendMsg(runMsg({ type: "ATS_JOB_DONE" }));
             }
             break;
           }
@@ -8588,6 +8831,8 @@
       // cached and runPhase enforces it for every caller (mayAutomateThisTab).
       if (campaignOn && !(await mayAutomateThisTab())) campaignOn = false;
       if (campaignOn) {
+        // typeof guard: tests run init alone in a vm sandbox.
+        if (typeof capturePageRun === "function") await capturePageRun();
         // Version in the line = proof of WHICH content.js is injected (store vs unpacked,
         // pre/post reload) — the 08-15 double-install cost a whole run to "assumed 1.4.4".
         let ver = "?"; try { ver = chrome.runtime.getManifest().version; } catch { /* context gone */ }
