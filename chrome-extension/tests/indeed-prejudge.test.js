@@ -83,7 +83,7 @@ function world({ store, verdicts, paneFor, delayFor, titleFor, preselect, more, 
   const { window } = new JSDOM(html, { url, pretendToBeVisual: true, virtualConsole: new VirtualConsole() });
   const doc = window.document;
   const pane = doc.getElementById("jobsearch-ViewjobPaneWrapper");
-  const rec = { backend: [], judged: [], clicks: [], fetched: [], nextPage: 0, navTo: null, sent: [] };
+  const rec = { backend: [], judged: [], clicks: [], fetched: [], nextPage: 0, navTo: null, sent: [], msgs: [], dry: [] };
   const view = { narrow: !!narrow };
   // jsdom lays nothing out; the pane is drawn unless the window is "narrow" (display:none, 0 px).
   window.HTMLElement.prototype.getBoundingClientRect = function () {
@@ -141,6 +141,7 @@ function world({ store, verdicts, paneFor, delayFor, titleFor, preselect, more, 
     sendMsg: async (m) => {
       rec.sent.push(m.type);
       if (m && m.type === "PREJUDGE_CARDS") {
+        rec.msgs.push(m.data);
         rec.judged.push(...m.data.jobs);
         return typeof verdicts === "function" ? verdicts(m.data.jobs) : verdicts;
       }
@@ -150,6 +151,8 @@ function world({ store, verdicts, paneFor, delayFor, titleFor, preselect, more, 
     goBackToJobList: async () => { rec.nextPage++; },
     skipToNextJob: async () => {},
     retireKeyword: async () => {},
+    judgeKeywordTag: async () => (store.campaignFilters ? { index: 0, keyword: "marketing", page: "run:0:0" } : null),
+    retireDryKeyword: async (tag, y) => { rec.dry.push({ tag, y }); return true; },
     storageGet: async (keys) => {
       const list = typeof keys === "string" ? [keys] : keys;
       const out = {};
@@ -220,7 +223,33 @@ const pending = (store) => (store.pendingJobs || []).map((j) => j.jk);
   {
     const chunkSrc = slice("  async function prejudgeIndeedCards(pageCards) {", "    const answers = await Promise.all(inFlight);");
     check("a chunk is sent without waiting for its answer (judging overlaps reading)",
-      /inFlight\.push\(sendCardsToJudge\(chunk, texts\)\)/.test(chunkSrc) && !/await sendCardsToJudge/.test(chunkSrc));
+      /inFlight\.push\(sendCardsToJudge\(chunk, texts, tag\)\)/.test(chunkSrc) && !/await sendCardsToJudge/.test(chunkSrc));
+  }
+
+  // --- keyword yield: every chunk names the phrase and the page; the skip is decided once ---
+  {
+    const y = (judged) => ({ keyword: "marketing", pages: 2, judged, fits: 0, dry: true });
+    let call = 0;
+    const { rec, box } = world({
+      store: { ...KW },
+      more: 2,
+      verdicts: (jobs) => ({
+        results: jobs.map((j) => ({ link: j.link, decision: "skip", fit_score: 5, source: "judged", reason: "no" })),
+        keyword_yield: y(++call === 1 ? 25 : 22),
+      }),
+    });
+    await box.phase1_indeed();
+    check("each chunk of the page carries the phrase and the same page key",
+      rec.msgs.length >= 2 && rec.msgs.every((d) => d.keyword === "marketing" && d.page === "run:0:0"),
+      JSON.stringify(rec.msgs.map((d) => [d.keyword, d.page, d.jobs.length])));
+    check("the dry decision is made once per page, on the fullest tally",
+      rec.dry.length === 1 && rec.dry[0].y.judged === 25, JSON.stringify(rec.dry));
+  }
+  {
+    const { rec, box } = world({ store: {}, verdicts: answer({ [JK_FIT]: { job_id: "a", decision: "skip", reason: "no" } }) });
+    await box.phase1_indeed();
+    check("no keyword list: chunks go without keyword/page and nothing is retired",
+      rec.msgs.every((d) => !("keyword" in d) && !("page" in d)) && rec.dry.length === 0, JSON.stringify(rec.msgs));
   }
 
   // --- 2. unjudged keeps its job_id; company cap wording ------------------------------------

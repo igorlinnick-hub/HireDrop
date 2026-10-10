@@ -40,7 +40,7 @@ function makeSandbox(store) {
     MAX_APPLICATIONS_PER_PLATFORM: 15,
     localDay: () => "2026-09-19",
     log: () => {},
-    logBackend: () => {},
+    logBackend: (t) => (box.feed = box.feed || []).push(t),
     // The block under test reads storage through the orphan-guard gateway now; the
     // gateway itself lives outside the sliced region, so shim it straight onto the fake.
     storageGet: (keys) => box.chrome.storage.local.get(keys),
@@ -176,6 +176,41 @@ const THREE = ["Welder", "Fabrication", "Fitter"];
   await recBox.subtractLocalApplication("indeed");
   check("subtract: a blocked submit gives the phrase its slot back",
     recStore.keywordCounts.indeed.fabrication, 4);
+
+  // --- 9: a phrase the server calls dry skips its later laps this run --------------------
+  const STARTED = "2026-10-09T23:17:08.630Z";
+  const dryStore = { campaignFilters: { keywords: THREE }, kwIndex: 1, kwLap: 2, campaignStartedAt: STARTED };
+  const dryBox = makeSandbox(dryStore);
+  const tag = await dryBox.judgeKeywordTag();
+  check("tag: the phrase searched and a page key unique to this run, lap and phrase",
+    tag, { index: 1, keyword: "Fabrication", page: `${STARTED}:1:2` });
+  check("tag: a pool / ATS queue walk has no phrase to credit",
+    await makeSandbox({ ...dryStore, atsPlatform: "greenhouse" }).judgeKeywordTag(), null);
+  const DRY = { keyword: "fabrication", pages: 3, judged: 28, fits: 0, dry: true };
+  check("dry: not dry → nothing retired",
+    [await dryBox.retireDryKeyword(tag, { ...DRY, dry: false }, "indeed"), dryStore.kwDone], [false, undefined]);
+  check("dry: retired for the run, with one feed line in the agreed wording",
+    [await dryBox.retireDryKeyword(tag, DRY, "indeed"), dryStore.kwDone, dryBox.feed],
+    [true, [1], ['⏭️ "Fabrication": 0 of 28 fit in 3 pages — skipping it this run']]);
+  check("dry: a second dry answer for the same page retires nothing twice",
+    [await dryBox.retireDryKeyword(tag, DRY, "indeed"), dryStore.kwDone, dryBox.feed.length], [false, [1], 1]);
+  dryStore.kwIndex = 0;
+  await dryBox.advanceKeyword("indeed");
+  check("dry: the walk steps over the retired phrase", THREE[dryStore.kwIndex], "Fitter");
+
+  const longStore = { campaignFilters: { keywords: ["x".repeat(250), "Welder"] }, kwIndex: 0 };
+  check("tag: a phrase longer than the server takes is cut to 200, not sent whole",
+    (await makeSandbox(longStore).judgeKeywordTag()).keyword.length, 200);
+
+  const lastStore = { campaignFilters: { keywords: THREE }, kwIndex: 0, kwDone: [2],
+    keywordCounts: { day: "2026-09-19", indeed: { fabrication: 5 } } };
+  const lastBox = makeSandbox(lastStore);
+  check("dry: the last live phrase keeps going (others retired or spent)",
+    [await lastBox.retireDryKeyword(await lastBox.judgeKeywordTag(), DRY, "indeed"), lastStore.kwDone], [false, [2]]);
+  const oneStore = { campaignFilters: { keywords: ["Welder"] }, kwIndex: 0 };
+  const oneBox = makeSandbox(oneStore);
+  check("dry: a single phrase is never retired",
+    [await oneBox.retireDryKeyword(await oneBox.judgeKeywordTag(), DRY, "indeed"), oneStore.kwDone], [false, undefined]);
 
   console.log(failures ? `\n${failures} failure(s)` : "\nall good");
   process.exit(failures ? 1 : 0);

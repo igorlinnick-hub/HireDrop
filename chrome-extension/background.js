@@ -2984,10 +2984,13 @@ async function handleMessage(msg, sender) {
     // null on any failure: the walk then judges each posting live on its page, as before.
     case "PREJUDGE_CARDS": {
       try {
-        const jobs = (msg.data && msg.data.jobs) || [];
+        const d = msg.data || {};
+        const jobs = d.jobs || [];
         if (!jobs.length) return null;
+        // keyword + page: the server's tally of what this phrase brings (app/db/keyword_yield).
+        const tag = d.keyword ? { keyword: d.keyword, page: d.page || undefined } : {};
         return await Promise.race([
-          apiPost("/tools/assess-fit-batch", { jobs: jobs.slice(0, 30) }),
+          apiPost("/tools/assess-fit-batch", { jobs: jobs.slice(0, 30), ...tag }),
           // Under 30 s: Chrome terminates a service worker whose fetch() waits longer. The
           // server's judge deadline is 16 s, so a slow page still answers inside this.
           new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 28000)),
