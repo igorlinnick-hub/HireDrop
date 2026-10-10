@@ -103,13 +103,13 @@ def test_the_question_is_a_template_with_no_score_and_no_long_dashes():
     q = fit_clarify.snapshot(_row(1, 47, title="Brand Manager — West", location="Remote–US"), 55, V)
     text = fit_clarify.question_text(q)
     assert "Brand Manager, West" in text and "Co1" in text and "Remote" in text
-    assert "left this one off your list" in text
+    assert "just missed your list" in text
     assert "47" not in text and "55" not in text
     out = fit_clarify.public({**q, "id": "q1"})
     assert "fit_score" not in json.dumps(out) and "bar" not in out
     assert out["text"] == text
     above = fit_clarify.question_text({**q, "side": "above"})
-    assert "made your list" in above
+    assert "barely made your list" in above
     assert not has_long_dash(text) and not has_long_dash(above)
 
 
@@ -203,7 +203,7 @@ def test_drop_records_the_answer_once_on_the_persons_own_question():
     assert json.loads(results[0]["content"])["recorded"] is True
     assert json.loads(results[1]["content"]) == {"recorded": False, "why": "already recorded"}
     # The question rides on the message, and the tool is offered only for it.
-    assert "Would Marketing Manager at Acme (Austin, TX) suit you?" in seen[0]["last"]
+    assert "Close call: Marketing Manager at Acme (Austin, TX) just missed" in seen[0]["last"]
     assert "record_fit_answer" in [t["name"] for t in seen[0]["tools"]]
     # Recording is not a lookup: Drop doesn't sit down at the desk for it.
     assert not any(e.get("state") == "checking" for e in events)
@@ -260,7 +260,7 @@ def test_the_open_question_comes_back_all_day(router):
         patch.object(router, "_pick_question") as pick,
     ):
         out = router.get_clarify(USER)
-    assert out["question"]["id"] == "q1" and "suit you" in out["question"]["text"]
+    assert out["question"]["id"] == "q1" and "Worth applying?" in out["question"]["text"]
     pick.assert_not_called()
 
 

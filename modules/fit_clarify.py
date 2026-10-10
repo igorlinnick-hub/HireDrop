@@ -208,15 +208,10 @@ def question_text(q: dict) -> str:
     named = f"{job} at {company}" if company else job
     if where:
         named += f" ({where})"
-    lead = (
-        "This one made your list, but it was a close call."
-        if q.get("side") == "above"
-        else "I left this one off your list, but it was a close call."
-    )
-    return (
-        f"Quick question, so I get better at picking for you. {lead} Would {named} suit you? "
-        "Give it 0 to 10, or just 👍 or 👎. You can skip it, nothing changes if you do."
-    )
+    # No "so I get better at picking": until the answer acts on the list (step 3), that is a
+    # promise the product doesn't keep yet.
+    landed = "barely made your list" if q.get("side") == "above" else "just missed your list"
+    return f"Close call: {named} {landed}. Worth applying? 0 to 10, or 👍 👎."
 
 
 def public(q: dict) -> dict:
