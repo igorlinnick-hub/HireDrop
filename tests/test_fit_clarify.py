@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from modules import buddy, fit_clarify
+from modules.text_style import has_long_dash
 from scripts import clarify_report
 
 USER = SimpleNamespace(id="u1", email="a@b.c")
@@ -98,10 +99,10 @@ def test_two_a_day_at_most_and_the_second_only_after_a_real_answer():
 # ── the words the person sees ─────────────────────────────────────────────────────────
 
 
-def test_the_question_is_a_template_with_no_score_and_no_dashes():
-    q = fit_clarify.snapshot(_row(1, 47, title="Brand Manager — West"), 55, V)
+def test_the_question_is_a_template_with_no_score_and_no_long_dashes():
+    q = fit_clarify.snapshot(_row(1, 47, title="Brand Manager — West", location="Remote–US"), 55, V)
     text = fit_clarify.question_text(q)
-    assert "Brand Manager" in text and "Co1" in text and "San Diego, CA" in text
+    assert "Brand Manager, West" in text and "Co1" in text and "Remote" in text
     assert "left this one off your list" in text
     assert "47" not in text and "55" not in text
     out = fit_clarify.public({**q, "id": "q1"})
@@ -109,9 +110,7 @@ def test_the_question_is_a_template_with_no_score_and_no_dashes():
     assert out["text"] == text
     above = fit_clarify.question_text({**q, "side": "above"})
     assert "made your list" in above
-    for t in (text, above):
-        for dash in ("—", "–", " - ", "--"):
-            assert dash not in t.replace("Brand Manager — West", "")
+    assert not has_long_dash(text) and not has_long_dash(above)
 
 
 def test_the_snapshot_keeps_what_the_measure_needs():

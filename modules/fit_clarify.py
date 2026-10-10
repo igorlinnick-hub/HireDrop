@@ -29,6 +29,7 @@ from collections import Counter
 
 from modules.ai_fit_judge import clears_bar
 from modules.fit_queue import has_current_verdict
+from modules.text_style import no_long_dashes
 
 # The disputed zone: same half-width as the judge's cascade band (ai_fit_judge._CASCADE_BAND),
 # which is where the cheap model hands over to the good one because a few points flip the verdict.
@@ -148,8 +149,7 @@ def pick(rows: list[dict], version: str, bar: int, history: list[dict]) -> dict 
 
     Order: the side of the bar the person has answered LESS about first — a fair sample of
     both mistakes the judge can make (a good job left off, a poor one let on); then the
-    score closest to the bar; then the freshest posting. One per family even among the
-    candidates of a single pick."""
+    score closest to the bar; then the freshest posting."""
     found = candidates(rows, version, bar, asked_categories(history))
     if not found:
         return None
@@ -194,12 +194,17 @@ def _clip(value, limit: int) -> str:
     return " ".join(str(value or "").split())[:limit]
 
 
+def _shown(value, limit: int) -> str:
+    """A posting field inside Drop's sentence: the shared long-dash rule applies to it too."""
+    return no_long_dashes(_clip(value, limit))
+
+
 def question_text(q: dict) -> str:
     """THE question, the same words every time (no text from the model reaches the person
-    here). No dashes: the site's copy rule."""
-    job = _clip(q.get("title"), 120) or "this job"
-    company = _clip(q.get("company"), 80)
-    where = _clip(q.get("location"), 60)
+    here), with no long dashes in it."""
+    job = _shown(q.get("title"), 120) or "this job"
+    company = _shown(q.get("company"), 80)
+    where = _shown(q.get("location"), 60)
     named = f"{job} at {company}" if company else job
     if where:
         named += f" ({where})"
