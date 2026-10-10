@@ -104,6 +104,25 @@ const GH = {
 };
 
 (async () => {
+  // ---- 0. without finishRun an ordinary campaign is exactly as before ---------------
+  {
+    const store = {
+      campaignRunning: true, campaignTabId: 70, campaignWindowId: 7, atsPlatform: "pool",
+      atsQueue: [{ id: "a", applyUrl: "https://job-boards.greenhouse.io/a/jobs/1" }, { id: "b", applyUrl: "https://jobs.lever.co/b/2" }],
+      atsNavAt: Date.now() - 60 * 60 * 1000, atsNavTries: 0,
+    };
+    const sb = bgSandbox(store);
+    await vm.runInContext("sendExtensionPing()", sb);
+    check("a campaign still reports campaign_running:true", sb.pings[0] && sb.pings[0].campaign_running === true, sb.pings);
+    check("a campaign still honours the server's should_run:false", store.campaignRunning === false, store);
+    store.campaignRunning = true;
+    await vm.runInContext("atsWalkWatchdog()", sb);
+    check("the ATS watchdog still reloads a silent campaign page", sb.calls.some((c) => c[0] === "tabs.reload"), sb.calls);
+    await vm.runInContext("advanceAtsQueue({ sent: true })", sb);
+    check("a campaign still walks to the next job", sb.calls.some((c) => c[0] === "navigatePoolNext") && store.atsQueue.length === 1, sb.calls);
+    check("a campaign's window is never closed by the walk", !sb.calls.some((c) => c[0] === "windows.remove"), sb.calls);
+  }
+
   // ---- 1. refusals ------------------------------------------------------------------
   {
     const sb = bgSandbox();
