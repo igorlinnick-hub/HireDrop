@@ -208,8 +208,8 @@ def question_text(q: dict) -> str:
     named = f"{job} at {company}" if company else job
     if where:
         named += f" ({where})"
-    # No "so I get better at picking": until the answer acts on the list (step 3), that is a
-    # promise the product doesn't keep yet.
+    # The answer doesn't change the list yet, so the question promises nothing ("so I pick
+    # better for you" would be a promise the product doesn't keep).
     landed = "barely made your list" if q.get("side") == "above" else "just missed your list"
     return f"Close call: {named} {landed}. Worth applying? 0 to 10, or 👍 👎."
 
