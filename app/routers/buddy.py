@@ -18,6 +18,8 @@ POST /buddy/feedback ties a 👍/👎 or a pressed card back to.
 
 import contextlib
 import json
+import re
+import sys
 import time
 import uuid
 from datetime import UTC, datetime
@@ -25,19 +27,23 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from postgrest.exceptions import APIError
 from pydantic import BaseModel, Field
 
 from app.db import activity as activity_db
 from app.db import buddy_log
+from app.db import fit_clarify as clarify_db
 from app.db.subscriptions import is_admin
+from app.db.user_day import user_day_start
 from app.deps import get_current_user
-from modules import buddy
+from modules import buddy, fit_clarify
 
 router = APIRouter(prefix="/buddy", tags=["buddy"])
 
 # ~$0.012/answer on Sonnet 5.5 (measured 2026-10-01) -> worst case ~$7/month per user.
 DAILY_QUESTIONS = 20
 DAILY_FEEDBACK = 200  # votes and card outcomes: a ceiling, not a budget
+_UUID = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 
 
 class AskBody(BaseModel):
@@ -51,6 +57,9 @@ class AskBody(BaseModel):
     # The chat can draw proposal cards (website sends true once it renders them). Without
     # it Drop gets no propose_action tool and says where to click instead.
     cards: bool = False
+    # Drop's open question this message may answer (GET /buddy/clarify). Sent while the
+    # question is open; the stream's {"type":"clarify","recorded":true} closes it.
+    clarify_id: str | None = Field(default=None, pattern=_UUID)
 
 
 def _today() -> str:
@@ -79,6 +88,7 @@ def ask(body: AskBody, user=Depends(get_current_user)):
         )
 
     turn_id = uuid.uuid4().hex
+    clarify = _open_question(user.id, body.clarify_id)
 
     def events():
         record: dict = {}
@@ -86,7 +96,13 @@ def ask(body: AskBody, user=Depends(get_current_user)):
         started = time.monotonic()
         try:
             for ev in buddy.ask(
-                user, body.question, body.history, body.tz, body.attachment, body.cards
+                user,
+                body.question,
+                body.history,
+                body.tz,
+                body.attachment,
+                body.cards,
+                clarify=clarify,
             ):
                 if ev["type"] == "done":
                     record = ev
@@ -137,6 +153,7 @@ def ask(body: AskBody, user=Depends(get_current_user)):
                         "cost_usd": buddy_log.cost_usd(usage, model),
                         "latency_ms": int((time.monotonic() - started) * 1000),
                         "history_turns": len(body.history or []),
+                        **({"clarify_id": clarify["id"]} if clarify else {}),
                         **({"error": record["error"]} if record.get("error") else {}),
                         **({"error": "rabbit_hole"} if record.get("type") == "error" else {}),
                     },
@@ -173,3 +190,131 @@ def feedback(body: FeedbackBody, user=Depends(get_current_user)):
         metadata=body.model_dump(exclude_none=True),
     )
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- Drop the clarifier
+
+# "Nothing to ask" (or a failure finding out) is remembered for a while: the dashboard asks
+# on every load, and finding the answer reads the whole pool and the resume. Per process —
+# the other worker may look once more, which costs a read, never a second question (the
+# unique index on (user_id, job_id) lets only one of two racing inserts in).
+_NOTHING_TO_ASK_S = 30 * 60
+_nothing_to_ask: dict[str, float] = {}
+
+
+def _ts(value) -> datetime | None:
+    if not value:
+        return None
+    try:
+        ts = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return ts if ts.tzinfo else ts.replace(tzinfo=UTC)
+
+
+def _open_question(user_id: str, question_id: str | None) -> dict | None:
+    """The person's own still-unanswered question with this id, or None (then the message is
+    an ordinary chat message — a stale or foreign id costs the person nothing)."""
+    if not question_id:
+        return None
+    try:
+        q = clarify_db.get(user_id, question_id)
+    except Exception as e:  # noqa: BLE001
+        print(f"[clarify] open question unreadable: {e}", file=sys.stderr)
+        return None
+    return q if q and not q.get("answered_at") else None
+
+
+def _pick_question(user_id: str, history: list[dict]) -> dict | None:
+    """Choose today's posting from the rows the list is built from (the ones the person can
+    see, plus the ones the judge left just below their bar) and store the question."""
+    from app.db import jobs as jobs_db
+    from app.db.profile import get_profile
+    from app.routers.jobs import _deck_queue, _deck_resume_text, _deck_rows
+    from modules.ai_fit_judge import mode_threshold, verdict_version
+
+    profile = get_profile(user_id) or {}
+    _swipeable, _on_search, live_ats, live_indeed = _deck_rows(
+        user_id, profile, jobs_db.get_jobs(user_id)
+    )
+    rows = live_ats + live_indeed
+    version = verdict_version(profile, _deck_resume_text(user_id, profile))
+    listed = {j.get("id") for j in _deck_queue(user_id, profile, rows, version)["jobs"]}
+    bar = mode_threshold(profile)
+    row = fit_clarify.pick(rows, version, bar, history, listed)
+    if row is None:
+        return None
+    return clarify_db.create(user_id, fit_clarify.snapshot(row, bar, version))
+
+
+def _asked_today(user_id: str, history: list[dict]) -> list[dict]:
+    """Questions offered since the person's midnight. An unreadable day start counts from
+    the UTC midnight, never from now (that would make every day empty and lift the cap)."""
+    start = _ts(user_day_start(user_id)) or datetime.now(UTC).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return [q for q in history if (_ts(q.get("created_at")) or start) >= start]
+
+
+def _still_stands(user_id: str, q: dict) -> bool:
+    from app.db import jobs as jobs_db
+    from app.db.profile import get_profile
+    from modules.ai_fit_judge import mode_threshold
+
+    job = jobs_db.get_job_by_id(user_id, q["job_id"]) if q.get("job_id") else None
+    return fit_clarify.still_stands(q, job, mode_threshold(get_profile(user_id) or {}))
+
+
+def _todays_question(user_id: str) -> tuple[dict | None, bool]:
+    """(question, searched): searched = the pool was read to find one."""
+    history = clarify_db.history(user_id)
+    today = _asked_today(user_id, history)
+    open_q = next((q for q in today if not q.get("answered_at")), None)
+    if open_q:
+        # A question whose words stopped being true is not asked, and it still counts as
+        # today's open one, so nothing replaces it before tomorrow.
+        return (open_q if _still_stands(user_id, open_q) else None), False
+    if not fit_clarify.may_ask(today):
+        return None, False
+    try:
+        return _pick_question(user_id, history), True
+    except APIError as e:
+        # Two dashboard loads at once picked the same posting: the unique index let the
+        # other one in, so its question is today's.
+        if e.code != "23505":
+            raise
+    today = _asked_today(user_id, clarify_db.history(user_id))
+    return next((q for q in today if not q.get("answered_at")), None), False
+
+
+@router.get("/clarify")
+def get_clarify(user=Depends(get_current_user)):
+    """Drop's question for today about one close-call posting, or {"question": null}.
+
+    The same open question comes back all day until it is answered; a new one only when
+    fit_clarify.may_ask allows (two a day at most, the second after a real answer). Any
+    failure reads as "nothing to ask": a question is never worth a broken dashboard."""
+    if time.monotonic() - _nothing_to_ask.get(user.id, -1e9) < _NOTHING_TO_ASK_S:
+        return {"question": None}
+    try:
+        q, searched = _todays_question(user.id)
+    except Exception as e:  # noqa: BLE001
+        print(f"[clarify] no question: {type(e).__name__}: {str(e)[:200]}", file=sys.stderr)
+        q, searched = None, True
+    if q is None:
+        if searched:
+            _nothing_to_ask[user.id] = time.monotonic()
+        return {"question": None}
+    return {"question": fit_clarify.public(q)}
+
+
+@router.post("/clarify/{question_id}/seen")
+def clarify_seen(question_id: str, user=Depends(get_current_user)):
+    """The chat was opened with this question in it: its title family is now used up."""
+    if not re.fullmatch(_UUID, question_id):
+        raise HTTPException(status_code=400, detail="bad question id")
+    try:
+        return {"ok": clarify_db.mark_seen(user.id, question_id)}
+    except Exception as e:  # noqa: BLE001 — a lost "seen" may let the family be asked again
+        print(f"[clarify] seen not stored: {e}", file=sys.stderr)
+        return {"ok": False}

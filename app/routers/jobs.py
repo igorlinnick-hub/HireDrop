@@ -577,6 +577,19 @@ def _deck_rows(user_id: str, profile: dict, rows: list) -> tuple[list, list, lis
 DAILY_LIST_SIZE = 30
 
 
+def _deck_queue(user_id: str, profile: dict, rows: list, version: str) -> dict:
+    """Today's list as the dashboard shows it: no judging on this read."""
+    return _prejudged_queue(
+        user_id,
+        profile,
+        rows,
+        limit=DAILY_LIST_SIZE,
+        judge_calls=0,
+        deadline_s=0,
+        version=version,
+    )
+
+
 @router.get("/jobs/deck")
 def get_deck(user=Depends(get_current_user)):
     """Today's list — the one queue the dashboard shows, Tap swipes and auto applies in.
@@ -614,15 +627,7 @@ def get_deck(user=Depends(get_current_user)):
     )
 
     version = verdict_version(profile, _deck_resume_text(user.id, profile))
-    queue = _prejudged_queue(
-        user.id,
-        profile,
-        live_ats + live_indeed,
-        limit=DAILY_LIST_SIZE,
-        judge_calls=0,
-        deadline_s=0,
-        version=version,
-    )
+    queue = _deck_queue(user.id, profile, live_ats + live_indeed, version)
     # Only the list is judged ahead (prejudge_pool). An unjudged ATS row past it is normal
     # and must not keep restarting the background pass on every poll.
     ats_ids = {j.get("id") for j in live_ats}
