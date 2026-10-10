@@ -11,7 +11,10 @@ from modules import ai_meter
 from modules.ai_cover_letter import get_anthropic_client
 from modules.ai_models import plain_answer_kwargs, refused, reply_text
 
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
+# Haiku 5.5 since 10-09: on Igor's 80 pool rows it landed in the same band as Haiku 4.5
+# 91% of the time with no strong<->skip flips, at 1/8 the cost per score
+# (scripts/measure_scorer_models.py, docs/handoff/ai-economics.md).
+HAIKU_MODEL = "claude-haiku-5-5"
 
 
 def score_job(job: dict, profile: dict, resume_text: str = "") -> dict:
