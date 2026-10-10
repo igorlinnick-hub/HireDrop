@@ -198,6 +198,10 @@ const THREE = ["Welder", "Fabrication", "Fitter"];
   await dryBox.advanceKeyword("indeed");
   check("dry: the walk steps over the retired phrase", THREE[dryStore.kwIndex], "Fitter");
 
+  const longStore = { campaignFilters: { keywords: ["x".repeat(250), "Welder"] }, kwIndex: 0 };
+  check("tag: a phrase longer than the server takes is cut to 200, not sent whole",
+    (await makeSandbox(longStore).judgeKeywordTag()).keyword.length, 200);
+
   const lastStore = { campaignFilters: { keywords: THREE }, kwIndex: 0, kwDone: [2],
     keywordCounts: { day: "2026-09-19", indeed: { fabrication: 5 } } };
   const lastBox = makeSandbox(lastStore);

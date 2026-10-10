@@ -6724,13 +6724,21 @@
   // The key holds the run's start, so page 1 of today's run is not page 1 of yesterday's.
   // null for a pool / ATS queue walk or an empty list: no phrase to credit.
   async function judgeKeywordTag() {
-    const s = await storageGet(["campaignFilters", "kwIndex", "kwLap", "atsPlatform", "campaignStartedAt"]);
+    const s = await storageGet(["kwLap", "atsPlatform", "campaignStartedAt"]);
     if (s.atsPlatform) return null;
-    const kws = (s.campaignFilters?.keywords || []).filter(Boolean);
+    const kws = await keywordList();
     if (!kws.length) return null;
-    const i = Math.min(Math.max(s.kwIndex || 0, 0), kws.length - 1);
+    const i = await currentKeywordIndex();
     const lap = Math.max(0, s.kwLap || 0);
-    return { index: i, keyword: kws[i], page: `${s.campaignStartedAt || ""}:${i}:${lap}` };
+    // The server takes at most 200 characters of a phrase; a longer one would fail the whole
+    // request and cost the page its judge.
+    return { index: i, keyword: kws[i].slice(0, 200), page: `${s.campaignStartedAt || ""}:${i}:${lap}` };
+  }
+
+  // Still worth a search this run: not retired, and not past its slice of the board cap.
+  function phraseIsLive(kws, j, done, counts, cap) {
+    if (done.has(j)) return false;
+    return kws.length <= 1 || (counts[keywordKey(kws[j])] || 0) < cap;
   }
 
   // The server calls a phrase dry when its recent pages brought not one fit for this person
@@ -6744,9 +6752,7 @@
     if (done.has(tag.index)) return false;
     const cap = await keywordSubCap();
     const counts = await getKeywordCounts(platform);
-    const othersLive = kws.some(
-      (k, j) => j !== tag.index && !done.has(j) && (counts[keywordKey(k)] || 0) < cap
-    );
+    const othersLive = kws.some((_, j) => j !== tag.index && phraseIsLive(kws, j, done, counts, cap));
     if (!othersLive) return false;
     await storageSet({ kwDone: [...done, tag.index] });
     logBackend(
@@ -6784,8 +6790,7 @@
       i += 1;
       if (i >= kws.length) { i = 0; lap += 1; }
       if (lap >= laps) return false; // page budget spent for every phrase
-      if (done.has(i)) continue;
-      if (kws.length > 1 && (counts[keywordKey(kws[i])] || 0) >= cap) continue;
+      if (!phraseIsLive(kws, i, done, counts, cap)) continue;
       await storageSet({ kwIndex: i, kwLap: lap });
       log(`Keyword done — switching to "${kws[i]}" (page ${lap + 1})`, "");
       logBackend(`Next keyword: ${kws[i]} (page ${lap + 1})`, "info");

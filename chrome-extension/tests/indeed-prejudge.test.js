@@ -235,7 +235,7 @@ const pending = (store) => (store.pendingJobs || []).map((j) => j.jk);
       more: 2,
       verdicts: (jobs) => ({
         results: jobs.map((j) => ({ link: j.link, decision: "skip", fit_score: 5, source: "judged", reason: "no" })),
-        keyword_yield: y(++call === 1 ? 22 : 25),
+        keyword_yield: y(++call === 1 ? 25 : 22),
       }),
     });
     await box.phase1_indeed();

@@ -366,6 +366,9 @@
  "scripts/run_history.py": {
   "history": 3
  },
+ "scripts/sessions.py": {
+  "history": 1
+ },
  "tests/test_admin_affiliates.py": {
   "history": 2
  },
