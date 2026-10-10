@@ -57,7 +57,7 @@ const ZR = (lk) => `https://www.ziprecruiter.com/jobs-search?search=marketing&lk
       } } },
     };
     vm.createContext(ctx);
-    vm.runInContext(`${fn}\nglobalThis.f = forgetHandedBackFromApplied;`, ctx);
+    vm.runInContext(`${fn}\n${extract(BG, "async function releaseAppliedMarks(rows) {")}\nglobalThis.f = forgetHandedBackFromApplied;`, ctx);
     await ctx.f();
     return store;
   };

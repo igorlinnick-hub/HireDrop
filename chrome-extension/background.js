@@ -646,7 +646,7 @@ async function sendExtensionPing() {
     const token = await getAuthToken();
     if (!token) return; // nothing to ping with yet
     const data = await chrome.storage.local.get([
-      "campaignRunning", "todayCount", "campaignWindowId", "todayDate",
+      "campaignRunning", "todayCount", "campaignWindowId", "todayDate", "finishRun",
     ]);
     const today = localDay();
     const todayCount = data.todayDate === today ? (data.todayCount || 0) : 0;
@@ -672,11 +672,15 @@ async function sendExtensionPing() {
         windowVisible = win.state === "normal" || win.state === "maximized";
       } catch {}
     }
-    const campaignAlive = !!data.campaignRunning && windowAlive;
+    // A finish run is not a campaign (see startFinishRun): never reported as one.
+    const campaignAlive = !!data.campaignRunning && windowAlive && !data.finishRun;
+    if (data.finishRun && !windowAlive) {
+      await endFinishRun({ note: "The window Drop was finishing in was closed" });
+    }
     // Nobody home: stop claiming a pulse, and put our own flag down so the next Start is
     // a clean start rather than a resume of a corpse. One writer for the backend flag
     // stays the backend's TTL (#98/#107/#111) — this only clears OUR local copy.
-    if (data.campaignRunning && !windowAlive) {
+    if (data.campaignRunning && !windowAlive && !data.finishRun) {
       await chrome.storage.local.set({ campaignRunning: false });
       await clearHumanHandoff();
       await addToActivityLog(
@@ -707,7 +711,7 @@ async function sendExtensionPing() {
     // and the extension keep applying. Honor the backend's flag as source of truth.
     try {
       const j = await res.json();
-      if (j && j.should_run === false && data.campaignRunning) {
+      if (j && j.should_run === false && data.campaignRunning && !data.finishRun) {
         // Say so out loud. This path killed a live run mid-form on 08-15 and left NOTHING
         // in the durable log — from the outside the campaign just froze on an open
         // application. Every stop must name itself.
@@ -743,6 +747,9 @@ function browserTimeZone() {
 let _autoDailyBusy = false;
 async function autoDailyTick(trigger) {
   if (_autoDailyBusy) return { action: "busy" };
+  // A finish run takes a minute or two: wait it out (the next tick asks again) rather
+  // than read it as "already running" and spend today's start on it.
+  if (await finishRunActive()) return { action: "busy" };
   _autoDailyBusy = true;
   try {
     return await hdAutoDailyTick(trigger, {
@@ -1212,6 +1219,14 @@ const SWEEP_POLL_MS = 5_000;
 // URLs compare without the query only on ATS hosts: every ZipRecruiter posting shares the
 // jobs-search path and differs only in its query. A failed read changes nothing.
 async function forgetHandedBackFromApplied() {
+  try {
+    const open = (((await apiGet("/handbacks?limit=100")) || {}).handbacks || []).filter((h) => h.requeued_at);
+    if (open.length) await releaseAppliedMarks(open);
+  } catch (e) { /* hand-backs unreadable — filter as before */ }
+}
+
+// Drop the local "applied" marks of these postings ({url, job_title, company}).
+async function releaseAppliedMarks(rows) {
   const norm = (s) => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
   const ATS_HOST = /(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com)$/i;
   const keyOf = (u) => {
@@ -1220,18 +1235,96 @@ async function forgetHandedBackFromApplied() {
       return ATS_HOST.test(x.hostname) ? x.origin + x.pathname : x.href;
     } catch { return String(u || ""); }
   };
-  try {
-    const open = (((await apiGet("/handbacks?limit=100")) || {}).handbacks || []).filter((h) => h.requeued_at);
-    if (!open.length) return;
-    const s0 = await chrome.storage.local.get(["appliedUrls", "appliedJobKeys"]);
-    const urls = new Set(open.map((h) => keyOf(h.url)).filter(Boolean));
-    const keys = new Set(open.map((h) => `${norm(h.job_title)}|${norm(h.company)}`).filter((k) => k !== "|"));
-    const keptUrls = (s0.appliedUrls || []).filter((u) => !urls.has(keyOf(u)));
-    const keptKeys = (s0.appliedJobKeys || []).filter((k) => !keys.has(k));
-    if (keptUrls.length !== (s0.appliedUrls || []).length || keptKeys.length !== (s0.appliedJobKeys || []).length) {
-      await chrome.storage.local.set({ appliedUrls: keptUrls, appliedJobKeys: keptKeys });
-    }
-  } catch (e) { /* hand-backs unreadable — filter as before */ }
+  const s0 = await chrome.storage.local.get(["appliedUrls", "appliedJobKeys"]);
+  const urls = new Set(rows.map((h) => keyOf(h.url)).filter(Boolean));
+  const keys = new Set(rows.map((h) => `${norm(h.job_title)}|${norm(h.company)}`).filter((k) => k !== "|"));
+  const keptUrls = (s0.appliedUrls || []).filter((u) => !urls.has(keyOf(u)));
+  const keptKeys = (s0.appliedJobKeys || []).filter((k) => !keys.has(k));
+  if (keptUrls.length !== (s0.appliedUrls || []).length || keptKeys.length !== (s0.appliedJobKeys || []).length) {
+    await chrome.storage.local.set({ appliedUrls: keptUrls, appliedJobKeys: keptKeys });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// "Let Drop finish it": one handed-back ATS form, refilled in a VISIBLE window
+// ---------------------------------------------------------------------------
+// A hand-back used to leave the person to redo the employer's form from scratch. The
+// History button now sends it here: the ordinary ATS filler runs on that one apply URL,
+// in a focused window, and where it would hand the job back (a code, a captcha, a field
+// it can't answer) it stops on the page, marks the spot and gives the person the last
+// step. With no wall it submits like any run.
+//
+// It borrows the run machinery (campaignRunning, campaignTabId, atsQueue with
+// atsPlatform "pool", which also skips a second fit verdict on a job the person chose)
+// and `finishRun` marks it as NOT a campaign: no /campaign/start, the heartbeat reports
+// not-running and ignores the server's should_run, the watchdogs and the pool refill
+// stand down, auto-start waits it out, and the queue never advances past its one job.
+const FINISH_ATS = ["greenhouse", "lever", "ashby"];
+const FINISH_ATS_HOST = /(^|\.)(greenhouse\.io|lever\.co|ashbyhq\.com)$/i;
+
+async function finishRunActive() {
+  return !!(await chrome.storage.local.get("finishRun")).finishRun;
+}
+
+async function startFinishRun(h) {
+  const platform = String((h && h.platform) || "").toLowerCase();
+  let url;
+  try { url = new URL(String((h && h.url) || "")); } catch { url = null; }
+  // Only the hosts content.js is injected on (manifest.matches): an employer-hosted
+  // Greenhouse page would open and sit there with nothing driving it.
+  if (!FINISH_ATS.includes(platform) || !url || url.protocol !== "https:" || !FINISH_ATS_HOST.test(url.hostname)) {
+    return { started: false, error: "unsupported" };
+  }
+  if ((await campaignAliveLocally()) || (await finishRunActive())) return { started: false, error: "busy" };
+  const c = await chrome.storage.local.get(["campaignCaps", "todayCount", "todayDate"]);
+  const used = c.todayDate === localDay() ? (c.todayCount || 0) : 0;
+  const dailyTotal = (c.campaignCaps && c.campaignCaps.dailyTotal > 0) ? c.campaignCaps.dailyTotal : DEFAULT_DAILY_TOTAL;
+  if (used >= dailyTotal) return { started: false, error: "daily_limit" };
+
+  // The filler skips a posting it already marked applied, and a wall AFTER the click
+  // (email code, a field the form rejected) leaves that mark. The person asked for this
+  // one by hand, so its marks go.
+  await releaseAppliedMarks([{ url: url.href, job_title: h.job_title, company: h.company }]);
+
+  // Opened blank and pointed at the form only after the state is written: the filler on
+  // that page asks for its run at init, and must find it.
+  const win = await chrome.windows.create({ url: "about:blank", focused: true, width: 1280, height: 900 });
+  const tab = win.tabs[0];
+  chrome.tabs.update(tab.id, { autoDiscardable: false }).catch(() => {});
+  await chrome.storage.local.set({
+    finishRun: {
+      id: `${Date.now()}`, handbackId: String(h.id || ""), url: url.href,
+      title: String(h.job_title || ""), company: String(h.company || ""), platform, startedAt: Date.now(),
+    },
+    captchaWaiting: null, reviewPending: null, reviewDecision: null, reviewMode: false, currentJob: null,
+    atsQueue: [{ id: h.job_id || null, applyUrl: url.href, title: h.job_title || "", company: h.company || "", platform }],
+    atsPlatform: "pool", atsNavAt: Date.now(), atsNavTries: 0,
+    campaignTargetUrl: url.href, campaignTabId: tab.id, campaignWindowId: win.id,
+    campaignRunning: true,
+  });
+  await chrome.storage.local.remove(["poolLeadMode"]);
+  await chrome.tabs.update(tab.id, { url: url.href });
+  await addToActivityLog(`Drop is finishing ${[h.job_title, h.company].filter(Boolean).join(" @ ") || "your application"} in a new window`, "info");
+  updateBadge();
+  return { started: true };
+}
+
+// Ends the finish run. `closeWindow` only when it was sent: anywhere else the window is
+// where the person finishes, and closing it would take the form away.
+async function endFinishRun({ note = "", closeWindow = false } = {}) {
+  const d = await chrome.storage.local.get(["finishRun", "campaignTabId", "campaignWindowId"]);
+  if (!d.finishRun) return false;
+  await chrome.storage.local.set({
+    campaignRunning: false, campaignTabId: null, campaignWindowId: null,
+    currentJob: null, captchaWaiting: null,
+    finishRun: null, // in the same write as the flag: the flag watcher reads it as an orderly end
+  });
+  await chrome.storage.local.remove(["atsQueue", "atsPlatform", "atsNavAt", "atsNavTries"]);
+  if (d.campaignTabId) await detachDebugger(d.campaignTabId).catch(() => {});
+  if (note) await addToActivityLog(note, "info");
+  if (closeWindow && d.campaignWindowId) chrome.windows.remove(d.campaignWindowId).catch(() => {});
+  updateBadge();
+  return true;
 }
 
 async function buildAtsQueue(platform, perPlatformCap) {
@@ -1525,7 +1618,14 @@ async function navigatePoolNext(tabId, job) {
 // (APPLICATION_SAVED) AND after any non-submit outcome (ATS_JOB_DONE from phase_ats —
 // fit-skip / already-applied / missing form). Before that second caller existed, any
 // skipped job dead-stopped the walk: nothing advanced the queue except a real submit.
-async function advanceAtsQueue() {
+async function advanceAtsQueue({ sent = false } = {}) {
+  // A finish run has one job: its outcome ends it, it never walks on.
+  if (await finishRunActive()) {
+    await endFinishRun(sent
+      ? { note: "✅ Drop finished it and sent the application", closeWindow: true }
+      : { note: "Drop couldn't finish this one: the form is open for you in its window" });
+    return;
+  }
   try {
     const { atsQueue, campaignTabId, atsPlatform: plat, poolDoneUrls } =
       await chrome.storage.local.get(["atsQueue", "campaignTabId", "atsPlatform", "poolDoneUrls"]);
@@ -1615,6 +1715,8 @@ async function atsWalkWatchdog() {
   ]);
   if (!d.campaignRunning || !d.atsPlatform || !Array.isArray(d.atsQueue) || !d.atsQueue.length) return;
   if (!d.campaignTabId || !d.atsNavAt) return;
+  // A finish run puts a person on this page: a reload would wipe what they are typing.
+  if (await finishRunActive()) return;
   const age = Date.now() - d.atsNavAt;
   if (age < ATS_WATCHDOG_SILENT_MS) return;
   const mins = Math.round(age / 60000);
@@ -1783,6 +1885,7 @@ async function tapPoolIdleRefill() {
     "poolIdleSince", "poolLeadMode",
   ]);
   if (!d.campaignRunning || d.atsPlatform !== "pool" || !d.campaignTabId) return;
+  if (await finishRunActive()) return; // one job, never refilled with more swipes
   // Waiting inside the pool for more swipes is the TAPALKA's behaviour. An auto run that
   // led with approved cards has already handed off to the boards by now; this guard makes
   // that explicit so a stray pool state can never park an auto run on "waiting for swipes".
@@ -1985,6 +2088,8 @@ chrome.notifications.onClicked.addListener((id) => {
 // instead), and it runs the keyword order the server hands back — a manual start already
 // got that order from the dashboard's own /campaign/start call.
 async function startCampaign(rawFilters, { source = "manual" } = {}) {
+  // A run outranks a finish in progress; its window stays for the person.
+  await endFinishRun({ note: "Drop stopped finishing the form: your campaign is starting" });
   // Self-heal + observability: a fresh Start must not inherit a stale captcha
   // hand-off OR a phantom "running" flag from a prior stalled run (that phantom
   // pinned the tap page on "preparing…" forever). Hard-reset the run state, and
@@ -2582,6 +2687,19 @@ async function handleMessage(msg, sender) {
       return res;
     }
 
+    // ----- "Let Drop finish it" (History → ping.js) -----
+    case "FINISH_HANDBACK":
+      return startFinishRun(msg.handback || {});
+
+    // The filler reached a wall on a finish run: the page is marked for the person, the
+    // run ends, the window comes to the front and stays.
+    case "FINISH_WALL": {
+      const { campaignWindowId } = await chrome.storage.local.get("campaignWindowId");
+      const ended = await endFinishRun({ note: "👇 Your turn: Drop filled what it could, the last step is yours in its window" });
+      if (ended && campaignWindowId) chrome.windows.update(campaignWindowId, { focused: true, state: "normal" }).catch(() => {});
+      return { ok: ended };
+    }
+
     // ----- Screenshot capture (triggered by content.js) -----
     case "CAPTURE_SCREENSHOT": {
       await captureActiveAutomationTab();
@@ -2824,6 +2942,7 @@ async function handleMessage(msg, sender) {
         captchaWaiting: null,
         reviewPending: null,
         reviewDecision: null,
+        finishRun: null,
       });
       await chrome.storage.local.remove(["atsQueue", "atsPlatform", "poolLeadMode"]);
 
@@ -2941,7 +3060,7 @@ async function handleMessage(msg, sender) {
       // no atsQueue and are driven by in-page navigation, so this is a no-op for them.
       // advance:false = a record-only sender (the submit belt on a confirmation page, maybe
       // not the campaign tab); the walk that owns the queue advances it exactly once.
-      if (msg.advance !== false) await advanceAtsQueue();
+      if (msg.advance !== false) await advanceAtsQueue({ sent: true });
 
       const cur = await chrome.storage.local.get("platformCounts");
       return { saved: true, platformCount: (cur.platformCounts || {})[platform] || 0, job_id: serverResult?.job_id };
@@ -3039,12 +3158,13 @@ async function handleMessage(msg, sender) {
       // Durably flip it out of `approved` in the DB so it never re-enters the queue
       // in FUTURE runs either (the in-run guard is poolDoneUrls). Best-effort.
       try {
-        const d = await chrome.storage.local.get(["atsPlatform", "atsQueue"]);
+        const d = await chrome.storage.local.get(["atsPlatform", "atsQueue", "finishRun"]);
         // recorded:true = the head was SENT (its applications row exists) — not a skip.
-        const head = !msg.recorded && d.atsPlatform === "pool" && Array.isArray(d.atsQueue) ? d.atsQueue[0] : null;
+        // A finish run is the person's own pick: its job is never written off here.
+        const head = !msg.recorded && !d.finishRun && d.atsPlatform === "pool" && Array.isArray(d.atsQueue) ? d.atsQueue[0] : null;
         if (head && head.id) apiPatch(`/jobs/${head.id}/status`, { status: "skipped" }).catch(() => {});
       } catch {}
-      await advanceAtsQueue();
+      await advanceAtsQueue({ sent: msg.recorded === true });
       return { advanced: true };
     }
 
@@ -3618,7 +3738,7 @@ async function handleMessage(msg, sender) {
 // A storage-level watcher is the one instrument that cannot be evaded by a missing log
 // line: it fires on the WRITE, whoever made it.
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== "local" || !changes.campaignRunning) return;
+  if (area !== "local" || !changes.campaignRunning || changes.finishRun) return;
   const { oldValue, newValue } = changes.campaignRunning;
   if (oldValue === true && newValue !== true) {
     addToActivityLog(`🔎 campaignRunning true → ${JSON.stringify(newValue)} (storage write)`, "warn").catch(() => {});
@@ -3626,7 +3746,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
-  const data = await chrome.storage.local.get(["campaignTabId", "campaignRunning"]);
+  const data = await chrome.storage.local.get(["campaignTabId", "campaignRunning", "finishRun"]);
+  if (data.finishRun && data.campaignTabId === tabId) {
+    await endFinishRun({ note: "The window Drop was finishing in was closed" });
+    return;
+  }
   if (data.campaignRunning && data.campaignTabId === tabId) {
     await addToActivityLog("⏹ Campaign stopped — its automation tab was closed.", "warn");
     await chrome.storage.local.set({
@@ -3644,7 +3768,11 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 // process goes away — catch it at the window level too, or the campaign keeps "running"
 // with no window (one of the zombie paths in ZOMBIE_FIX_PLAN.md).
 chrome.windows.onRemoved.addListener(async (windowId) => {
-  const data = await chrome.storage.local.get(["campaignWindowId", "campaignRunning"]);
+  const data = await chrome.storage.local.get(["campaignWindowId", "campaignRunning", "finishRun"]);
+  if (data.finishRun && data.campaignWindowId === windowId) {
+    await endFinishRun({ note: "The window Drop was finishing in was closed" });
+    return;
+  }
   if (data.campaignRunning && data.campaignWindowId === windowId) {
     await addToActivityLog("⏹ Campaign stopped — its automation window was closed.", "warn");
     await chrome.storage.local.set({

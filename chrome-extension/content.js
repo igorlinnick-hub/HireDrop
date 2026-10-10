@@ -921,7 +921,7 @@
     if (postApplySegmentIndex(location.pathname.toLowerCase().split("/").filter(Boolean)) < 0) return false;
     const pend = (await storageGet("pendingAtsSubmit")).pendingAtsSubmit;
     if (!pend || !pend.url) return false;
-    if (!(Date.now() - (pend.ts || 0) < PENDING_SUBMIT_MAX_AGE_MS)) {
+    if (!(Date.now() - (pend.ts || 0) < (pend.ttl || PENDING_SUBMIT_MAX_AGE_MS))) {
       await storageRemove("pendingAtsSubmit"); // stale: whatever it was, it is not this page
       return false;
     }
@@ -2553,6 +2553,10 @@
   // job ends submitted-complete-and-honest OR handed-back-with-a-reason — never a silent
   // half-death.
   async function handBackJob(reason, extra = {}) {
+    // A finish run ("Let Drop finish it") was started BY the person for this one form:
+    // a wall is their step on this page, not another hand-back.
+    // typeof guard: tests run this function alone in a vm sandbox.
+    if (typeof currentFinishRun === "function" && (await currentFinishRun())) { await finishWall(reason, extra); return; }
     await addHandedBackKey(extra.title, extra.company);
     await sendMsg({
       type: "ATS_JOB_FAILED",
@@ -2571,6 +2575,104 @@
         // How many form screens we DID complete. The user's list shows this as
         // progress, so it must be a count we actually observed — never an estimate.
         steps_done: Number(extra.steps) || 0,
+      },
+    });
+  }
+
+  // ── "Let Drop finish it": one handed-back form, refilled with the person watching ──
+  // background startFinishRun owns the run; this side shows what is happening on the
+  // page and, at a wall, marks the spot and waits for the person's own Submit.
+  async function currentFinishRun() {
+    return (await storageGet("finishRun")).finishRun || null;
+  }
+
+  // The person's wall keeps the submit belt open longer than a robot click needs.
+  const FINISH_PENDING_TTL_MS = 30 * 60 * 1000;
+
+  // A banner in a closed shadow root on <html>: page CSS can't reach it, findFormButton
+  // and the body-text checks can't see it, and pointer-events:none keeps every click,
+  // ours or the person's, landing on the form underneath.
+  let _finishHost = null;
+  function showFinishBanner(title, line) {
+    if (!_finishHost) {
+      _finishHost = document.createElement("hiredrop-finish");
+      const root = _finishHost.attachShadow({ mode: "closed" });
+      root.innerHTML = `<style>
+        .b{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:2147483647;
+          pointer-events:none;max-width:min(92vw,520px);padding:12px 18px;border-radius:14px;
+          background:#101014;color:#fff;box-shadow:0 12px 32px rgba(16,16,20,.28);
+          font:500 14px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,sans-serif}
+        .t{font-weight:700;font-size:15px}.l{opacity:.8;margin-top:2px}
+      </style><div class="b"><div class="t"></div><div class="l"></div></div>`;
+      _finishHost._t = root.querySelector(".t");
+      _finishHost._l = root.querySelector(".l");
+      document.documentElement.appendChild(_finishHost);
+    }
+    _finishHost._t.textContent = title;
+    _finishHost._l.textContent = line;
+  }
+
+  // Fixed wording per wall: the reason strings are written for the log, not for a person.
+  function finishWallLine(reason) {
+    const r = String(reason || "").toLowerCase();
+    if (r.includes("verification code")) return "Enter the code Greenhouse just emailed you, then press Submit.";
+    if (r.includes("captcha")) return "Solve the captcha, then press Submit.";
+    if (r.includes("resume")) return "Attach your résumé, then press Submit.";
+    if (r.includes("required") || r.includes("validation")) return "Fill the highlighted fields, then press Submit.";
+    return "Check the form and press Submit.";
+  }
+
+  // Outline what is left (the code box, empty required fields) and bring the first into
+  // view; with nothing to point at, the Submit button.
+  function markFinishTargets(reason) {
+    const visible = (el) => !!(el && el.getClientRects().length);
+    const empty = (el) => !String(el.value || "").trim();
+    let els = [];
+    if (/verification code/i.test(reason || "")) {
+      els = Array.from(document.querySelectorAll("input")).filter((el) => visible(el) && empty(el) &&
+        /code|security/i.test(`${el.name} ${el.id} ${el.placeholder} ${el.getAttribute("aria-label") || ""}`));
+    }
+    if (!els.length) {
+      els = Array.from(formScope().querySelectorAll(
+        'input[required], select[required], textarea[required], [aria-required="true"], [aria-invalid="true"]'
+      )).filter((el) => visible(el) && el.type !== "hidden" && el.type !== "file" && empty(el));
+    }
+    for (const el of els.slice(0, 12)) {
+      el.style.outline = "3px solid #E8A33D";
+      el.style.outlineOffset = "2px";
+      el.addEventListener("input", () => { el.style.outline = ""; }, { once: true });
+    }
+    const first = els[0] || findFormButton();
+    if (first) first.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+
+  async function finishWall(reason, extra = {}) {
+    const url = String(extra.url || window.location.href).split("?")[0];
+    const title = extra.title || "", company = extra.company || "";
+    const platform = extra.platform || detectPlatform();
+    logBackend(`👇 Finish: stopped for you on ${title || "the form"} (${String(reason).slice(0, 120)})`, "info");
+    // The person's Submit is recorded like ours: a confirmation PAGE by the belt in init,
+    // an in-page confirmation by the watch below.
+    await storageSet({
+      pendingAtsSubmit: {
+        url, jobKey: jobDedupKey(title, company), title, company, platform,
+        letter: "", ts: Date.now(), ttl: FINISH_PENDING_TTL_MS,
+      },
+    });
+    showFinishBanner("Your turn 👇", finishWallLine(reason));
+    markFinishTargets(reason);
+    await sendMsg({ type: "FINISH_WALL" });
+    const wallText = document.body.textContent || "";
+    const result = await waitForSubmissionConfirmation(FINISH_PENDING_TTL_MS, { baselineText: wallText });
+    if (!result.verified || (await submitAlreadyRecorded(url))) return;
+    await markSubmitRecorded(url);
+    showFinishBanner("Sent ✓", "Your application went through. You can close this window.");
+    await sendMsg({
+      type: "APPLICATION_SAVED",
+      advance: false,
+      data: {
+        job_title: title, company, platform, job_url: url, cover_letter: "",
+        status: "applied", verified: true, verify_signal: `finish:${result.signal}`,
       },
     });
   }
@@ -6978,6 +7080,8 @@
   async function phase_ats(platform) {
     if (!(await isCampaignRunning())) return;
     const label = platform === "lever" ? "Lever" : platform === "ashby" ? "Ashby" : "Greenhouse";
+    const finish = await currentFinishRun();
+    if (finish) showFinishBanner("Drop is filling this in for you", "Hands off for a minute. You'll get the last step if there is one.");
 
     const count = await getPlatformCount(platform);
     if (count >= MAX_APPLICATIONS_PER_PLATFORM) {
@@ -7262,6 +7366,8 @@
 
     await sleep(humanDelay(2000, 5000));
     if (!(await isCampaignRunning())) { log("Campaign stopped — not submitting", ""); return; }
+    // A finish run that was ended (Start took over, Stop) must not submit on a NEW run's flag.
+    if (finish && ((await currentFinishRun()) || {}).id !== finish.id) { log("Finish run ended — not submitting", ""); return; }
 
     await snapshotFormAnswers({ url: jobUrl, title: jobTitle, company: jobCompany });
     // Record BEFORE the click — submit navigates to the thank-you page.

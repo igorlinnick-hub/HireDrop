@@ -76,6 +76,7 @@ function sandbox(over = {}) {
   const sb = {
     logs: [], notes: [], windowsCreated: 0, tabsCreated: 0, started: 0,
     addToActivityLog: async (text, cls) => { sb.logs.push({ text, cls }); },
+    endFinishRun: async () => false,
     getCachedProfile: async () => (over.profile !== undefined ? over.profile : PROFILE),
     apiGet: over.apiGet || (async () => STATUS),
     apiPost: async (p) => { if (p === "/campaign/start") sb.started += 1; return { started: true }; },
