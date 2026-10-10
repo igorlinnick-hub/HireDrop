@@ -2237,11 +2237,12 @@
     }
   }
 
-  function sendCardsToJudge(cards, texts) {
+  function sendCardsToJudge(cards, texts, tag) {
     return sendMsg(
       {
         type: "PREJUDGE_CARDS",
         data: {
+          ...(tag ? { keyword: tag.keyword, page: tag.page } : {}),
           jobs: cards.map((c) => ({
             title: c.title || "",
             company: c.company || "",
@@ -2276,6 +2277,7 @@
       logBackend("Search-page judge: no results pane (window too narrow?) — checking each posting on its page", "warn");
       return null;
     }
+    const tag = await judgeKeywordTag();
     const texts = {};
     const inFlight = [];
     let chunk = [];
@@ -2314,7 +2316,7 @@
         await paneSettle();
       }
       if (chunk.length >= PREJUDGE_CHUNK) {
-        inFlight.push(sendCardsToJudge(chunk, texts));
+        inFlight.push(sendCardsToJudge(chunk, texts, tag));
         chunk = [];
         // A page takes a minute or more at a person's pace; a silent minute reads as a
         // stall to the feed and to drive.py (180 s of silence = stuck).
@@ -2324,7 +2326,7 @@
       // judge's answers come back while the next cards are read, so it costs no wait.
       await sleep(humanDelay(2500, 7000));
     }
-    if (chunk.length) inFlight.push(sendCardsToJudge(chunk, texts));
+    if (chunk.length) inFlight.push(sendCardsToJudge(chunk, texts, tag));
     if (!inFlight.length) {
       logBackend("Search-page judge: no posting text in the results pane — checking each posting on its page", "warn");
       return null;
@@ -2347,6 +2349,13 @@
     if (lost === answers.length) {
       logBackend("Search-page judge unavailable — checking each posting on its page", "warn");
       return null;
+    }
+    // Each chunk's answer carries the phrase's tally as the server saw it then; the fullest
+    // one has every chunk of this page counted, so the skip is decided on the whole page.
+    const yields = answers.map((a) => a && a.keyword_yield).filter(Boolean);
+    if (yields.length) {
+      const y = yields.reduce((a, b) => ((b.judged || 0) > (a.judged || 0) ? b : a));
+      await retireDryKeyword(tag, y, "indeed");
     }
     const verdicts = new Map(results.map((v) => [v.link, v]));
     // Broad mode's daily cap is spent: every card on every page would come back skipped, so
@@ -6708,6 +6717,43 @@
     const done = d.kwDone || [];
     if (done.includes(i)) return;
     await storageSet({ kwDone: [...done, i] });
+  }
+
+  // What the batch judge is told about the page it judges: the phrase it was searched under,
+  // and a page key the server counts once however many requests carry this page's cards.
+  // The key holds the run's start, so page 1 of today's run is not page 1 of yesterday's.
+  // null for a pool / ATS queue walk or an empty list: no phrase to credit.
+  async function judgeKeywordTag() {
+    const s = await storageGet(["campaignFilters", "kwIndex", "kwLap", "atsPlatform", "campaignStartedAt"]);
+    if (s.atsPlatform) return null;
+    const kws = (s.campaignFilters?.keywords || []).filter(Boolean);
+    if (!kws.length) return null;
+    const i = Math.min(Math.max(s.kwIndex || 0, 0), kws.length - 1);
+    const lap = Math.max(0, s.kwLap || 0);
+    return { index: i, keyword: kws[i], page: `${s.campaignStartedAt || ""}:${i}:${lap}` };
+  }
+
+  // The server calls a phrase dry when its recent pages brought not one fit for this person
+  // (app/db/keyword_yield). Its later laps are skipped for the rest of the run, the same way
+  // a phrase with no results is retired. The last phrase with anything left keeps going:
+  // a thin search still beats ending the board.
+  async function retireDryKeyword(tag, y, platform) {
+    const kws = await keywordList();
+    if (!tag || !y || y.dry !== true || kws.length <= 1) return false;
+    const done = new Set((await storageGet("kwDone")).kwDone || []);
+    if (done.has(tag.index)) return false;
+    const cap = await keywordSubCap();
+    const counts = await getKeywordCounts(platform);
+    const othersLive = kws.some(
+      (k, j) => j !== tag.index && !done.has(j) && (counts[keywordKey(k)] || 0) < cap
+    );
+    if (!othersLive) return false;
+    await storageSet({ kwDone: [...done, tag.index] });
+    logBackend(
+      `⏭️ "${tag.keyword}": 0 of ${y.judged || 0} fit in ${y.pages || 0} pages — skipping it this run`,
+      "info"
+    );
+    return true;
   }
 
   async function currentSearchPhrase() {
