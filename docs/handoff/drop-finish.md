@@ -34,21 +34,46 @@
   метки applied после стены после клика, сторож перезагрузил бы страницу под человеком — всё учтено.
 - Blast radius: факт безопасности доказан ступенью 4 (тест §0). Перекос версий закрыт на сайте
   (PONG отличает старое расширение). Хосты/manifest не менялись, бэкенд не трогали.
-- Запущено адверсариальное ревью обоих диффов (агент); результат в эту сессию не вернулся.
+- Адверсариальное ревью обоих диффов вернулось: 4 блокера, список в «Сломано».
 
 ## Сломано / не доделано
 
-- **Ревью #424/#334 не получено.** Перезапустить: агент-ревьюер по `git diff origin/main...HEAD`
-  обеих веток (что проверять: все читатели campaignRunning/atsQueue/captchaWaiting, двойная запись
-  belt + finishWall + recordWokeOnPostApply, гонки Start/закрытия окна, таймеры в хуке).
+**Ревью #424/#334 получено: 4 блокирующих бага, НЕ МЕРЖИТЬ до починки.**
+1. Start во время заполнения: `startCampaign`→`endFinishRun` оставляет окно, его `phase_ats` идёт
+   дальше на флаге НОВОЙ кампании; на стене `currentFinishRun()` уже null → обычный `handBackJob`
+   → `ATS_JOB_FAILED` PATCH-ит skipped голову новой очереди и сдвигает её. Фикс: передать `finish`
+   из входа `phase_ats` в `handBackJob` и молчать при смене id; в bg игнорировать
+   `ATS_JOB_DONE`/`ATS_JOB_FAILED`/advance из `APPLICATION_SAVED`, если `sender.tab.id !== campaignTabId`.
+2. Обратная гонка: Stop посреди кампании → «Let Drop finish it»: `phase_ats` старой кампании
+   (finish=null) проходит `isCampaignRunning()` на флаге finish и подаёт старую вакансию, её
+   `APPLICATION_SAVED` закрывает окно finish. Фикс: тот же sender-tab чек + run-токен для каждого `phase_ats`.
+3. Кап на платформу не проверяется в `startFinishRun`: `phase_ats` шлёт `STOP_CAMPAIGN`
+   («stopped_by_user» + `/campaign/stop`), окно с «Hands off» над пустой формой. Фикс: проверить
+   `platformCounts[platform]` против per-platform капа → `daily_limit`.
+4. `applied_unconfirmed` тоже закрывает окно (`advanceAtsQueue({sent:true})`) и закрывает хендбэк.
+   Фикс: в finish-run при `!result.verified` → `finishWall` («Check the form and press Submit»),
+   окно закрывать только при verified.
+
+Риски (чинить там же): 5) `finishRun` остаётся висеть на путях без `endFinishRun` (429 в
+`APPLICATION_SAVED`, `noteAuth401` закрывает окно, `onInstalled`) → автостарт вечно «busy»; в пинге
+завершать при `finishRun && (!windowAlive || !campaignRunning)`, чистить в onInstalled/noteAuth401.
+6) подача человеком на стене не считается локально (`recordLocalApplication`). 7) `startFinishRun`
+ждёт `addToActivityLog` (сеть) до ответа → сайт может показать «нет расширения»; не await-ить лог.
+8) `captureActiveAutomationTab` цепляет CDP к окну человека → вернуть false при finishRun.
+9) free-лимит не проверяется до старта. Сайт: 10) у finishable-строки может не быть входа (ссылка
+только при отказе) → ссылку показывать всегда рядом с кнопкой; 11) утечка `onPong`, `unsupported`
+с неверным текстом. Мелочи: 12) плашка «Hands off» висит после ранних выходов/Stop; 13) 30-мин
+`pendingAtsSubmit` может перезаписать следующая кампания.
+Тесты: `finish-run.test.js` не покрывает 1–5 → добавить сценарии вместе с фиксами.
+
 - **Живой тест (ступень 5) не делался.** Нужен «давай» Игоря и окно без чужого прогона
-  (coral-merlin гонит Indeed ~30 мин с ~10-09 вечер HST; ждать её «прогон закончен»).
+  (coral-merlin гонит Indeed ~30 мин; ждать её «прогон закончен»).
 - Ashby yes/no-кнопки на не-логистике по-прежнему не жмутся; Ashby #392 и чипсы #308 живьём не проверены.
-- Worktree'и этой сессии в scratchpad (`be`, `web`, `ho`): ветки запушены, локально можно удалить.
+- Worktree'и этой сессии в scratchpad (`be`, `web`): ветки запушены, локально можно удалить.
 
 ## Следующий шаг
 
-Модель: **Opus**. 1) Ревью #424 + #334 (агент, см. выше) → починить находки. 2) После «прогон
+Модель: **Opus**. 1) Починить баги 1–4 + риски 5–11 из «Сломано» в ветках #424/#334 (`git checkout feat/drop-finish-handback` в worktree), тесты на сценарии 1–5, повторное ревью. 2) После «прогон
 закончен» от coral-merlin и «давай» Игоря: `sync-ext.sh` из ветки #424 на Рабочий стол (`stat` папки —
 iCloud dataless), `HIREDROP_DEV_RELOAD`, проверить 1.8.48 на `?dev=1`, нажать «Let Drop finish it» на
 одной GH-хендбэк Игоря **с email-кодом** (стена после клика, без кода ничего не уходит), снять экран
