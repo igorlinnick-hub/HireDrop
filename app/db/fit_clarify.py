@@ -36,6 +36,8 @@ def history(user_id: str) -> list[dict]:
 
 
 def create(user_id: str, fields: dict) -> dict:
+    """Store a question. A posting already asked about raises APIError 23505
+    (fit_clarifications_user_job_uidx): two dashboard loads racing to ask store one."""
     res = get_supabase().table(TABLE).insert({**fields, "user_id": user_id}).execute()
     if not res.data:
         raise RuntimeError("fit_clarifications insert returned no row")
@@ -72,14 +74,13 @@ def mark_seen(user_id: str, question_id: str) -> bool:
 def record_answer(user_id: str, question_id: str, answer: dict, text: str) -> dict | None:
     """Store the answer once. None = no such open question of this person (answered already,
     or not theirs): the second answer never overwrites the first."""
-    now = _now()
     res = (
         get_supabase()
         .table(TABLE)
         .update(
             {
-                "answered_at": now,
-                "seen_at": now,
+                # seen_at stays as the chat stored it: when the person first opened it.
+                "answered_at": _now(),
                 "rating": answer.get("rating"),
                 "thumb": answer.get("thumb"),
                 "skipped": bool(answer.get("skipped")),

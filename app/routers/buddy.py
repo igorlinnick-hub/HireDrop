@@ -27,6 +27,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
+from postgrest.exceptions import APIError
 from pydantic import BaseModel, Field
 
 from app.db import activity as activity_db
@@ -193,9 +194,10 @@ def feedback(body: FeedbackBody, user=Depends(get_current_user)):
 
 # ---------------------------------------------------------------- Drop the clarifier
 
-# "Nothing to ask" is remembered for a while: the dashboard asks on every load, and finding
-# the answer reads the whole pool and the resume. Per process — the other worker may look
-# once more, which costs a read, never a second question (one open question at a time).
+# "Nothing to ask" (or a failure finding out) is remembered for a while: the dashboard asks
+# on every load, and finding the answer reads the whole pool and the resume. Per process —
+# the other worker may look once more, which costs a read, never a second question (the
+# unique index on (user_id, job_id) lets only one of two racing inserts in).
 _NOTHING_TO_ASK_S = 30 * 60
 _nothing_to_ask: dict[str, float] = {}
 
@@ -224,23 +226,65 @@ def _open_question(user_id: str, question_id: str | None) -> dict | None:
 
 
 def _pick_question(user_id: str, history: list[dict]) -> dict | None:
-    """Choose today's posting from the list's own rows (the ones the person can see, plus the
-    ones the judge left just below their bar) and store the question."""
+    """Choose today's posting from the rows the list is built from (the ones the person can
+    see, plus the ones the judge left just below their bar) and store the question."""
     from app.db import jobs as jobs_db
     from app.db.profile import get_profile
-    from app.routers.jobs import _deck_resume_text, _deck_rows
+    from app.routers.jobs import _deck_queue, _deck_resume_text, _deck_rows
     from modules.ai_fit_judge import mode_threshold, verdict_version
 
     profile = get_profile(user_id) or {}
     _swipeable, _on_search, live_ats, live_indeed = _deck_rows(
         user_id, profile, jobs_db.get_jobs(user_id)
     )
+    rows = live_ats + live_indeed
     version = verdict_version(profile, _deck_resume_text(user_id, profile))
+    listed = {j.get("id") for j in _deck_queue(user_id, profile, rows, version)["jobs"]}
     bar = mode_threshold(profile)
-    row = fit_clarify.pick(live_ats + live_indeed, version, bar, history)
+    row = fit_clarify.pick(rows, version, bar, history, listed)
     if row is None:
         return None
     return clarify_db.create(user_id, fit_clarify.snapshot(row, bar, version))
+
+
+def _asked_today(user_id: str, history: list[dict]) -> list[dict]:
+    """Questions offered since the person's midnight. An unreadable day start counts from
+    the UTC midnight, never from now (that would make every day empty and lift the cap)."""
+    start = _ts(user_day_start(user_id)) or datetime.now(UTC).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return [q for q in history if (_ts(q.get("created_at")) or start) >= start]
+
+
+def _still_stands(user_id: str, q: dict) -> bool:
+    from app.db import jobs as jobs_db
+    from app.db.profile import get_profile
+    from modules.ai_fit_judge import mode_threshold
+
+    job = jobs_db.get_job_by_id(user_id, q["job_id"]) if q.get("job_id") else None
+    return fit_clarify.still_stands(q, job, mode_threshold(get_profile(user_id) or {}))
+
+
+def _todays_question(user_id: str) -> tuple[dict | None, bool]:
+    """(question, searched): searched = the pool was read to find one."""
+    history = clarify_db.history(user_id)
+    today = _asked_today(user_id, history)
+    open_q = next((q for q in today if not q.get("answered_at")), None)
+    if open_q:
+        # A question whose words stopped being true is not asked, and it still counts as
+        # today's open one, so nothing replaces it before tomorrow.
+        return (open_q if _still_stands(user_id, open_q) else None), False
+    if not fit_clarify.may_ask(today):
+        return None, False
+    try:
+        return _pick_question(user_id, history), True
+    except APIError as e:
+        # Two dashboard loads at once picked the same posting: the unique index let the
+        # other one in, so its question is today's.
+        if e.code != "23505":
+            raise
+    today = _asked_today(user_id, clarify_db.history(user_id))
+    return next((q for q in today if not q.get("answered_at")), None), False
 
 
 @router.get("/clarify")
@@ -253,20 +297,13 @@ def get_clarify(user=Depends(get_current_user)):
     if time.monotonic() - _nothing_to_ask.get(user.id, -1e9) < _NOTHING_TO_ASK_S:
         return {"question": None}
     try:
-        history = clarify_db.history(user.id)
-        start = _ts(user_day_start(user.id)) or datetime.now(UTC)
-        today = [q for q in history if (_ts(q.get("created_at")) or start) >= start]
-        open_q = next((q for q in today if not q.get("answered_at")), None)
-        if open_q:
-            return {"question": fit_clarify.public(open_q)}
-        if not fit_clarify.may_ask(today):
-            return {"question": None}
-        q = _pick_question(user.id, history)
+        q, searched = _todays_question(user.id)
     except Exception as e:  # noqa: BLE001
         print(f"[clarify] no question: {type(e).__name__}: {str(e)[:200]}", file=sys.stderr)
-        return {"question": None}
+        q, searched = None, True
     if q is None:
-        _nothing_to_ask[user.id] = time.monotonic()
+        if searched:
+            _nothing_to_ask[user.id] = time.monotonic()
         return {"question": None}
     return {"question": fit_clarify.public(q)}
 
