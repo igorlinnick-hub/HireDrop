@@ -167,6 +167,9 @@ async function runLeverGate({ signal }) {
       addToActivityLog: async (text, cls, meta) => { calls.log.push({ text, cls, meta }); },
       apiPost: async (url, body) => { calls.posted.push({ url, body }); return {}; },
       apiPatch: async (url, body) => { calls.patched.push({ url, body }); return {}; },
+      // background reportJobStatus: the status PATCH (its failure paths are tested in silent-apply-path.test.js).
+      reportJobStatus: async (id, status) => sandbox.apiPatch(`/jobs/${id}/status`, { status }),
+      queueOutbox: async () => {}, isRetryableApiError: () => false,
       advanceAtsQueue: async () => { calls.advanced++; },
       fromStaleRun: async () => false, // no finish run here: every sender is the current run
       clearHumanHandoff: async () => { await sandbox.chrome.storage.local.set({ captchaWaiting: null }); },
