@@ -48,7 +48,7 @@ def test_an_old_extension_without_a_phrase_counts_nothing():
 
 def test_dry_needs_pages_and_verdicts_and_under_five_percent_fits():
     assert ky.is_dry({"pages": 2, "judged": 20, "fits": 0})
-    assert ky.is_dry({"pages": 3, "judged": 25, "fits": 1})  # 4%: the 10-10 project manager
+    assert ky.is_dry({"pages": 3, "judged": 25, "fits": 1})  # 4%: a broad phrase that rarely fits
     assert ky.is_dry({"pages": 5, "judged": 70, "fits": 3})  # 4.3%
     assert not ky.is_dry({"pages": 2, "judged": 20, "fits": 1})  # exactly 5% is not dry
     assert not ky.is_dry({"pages": 4, "judged": 60, "fits": 3})  # 5% where float 0.05*60 > 3

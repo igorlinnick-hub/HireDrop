@@ -9,8 +9,7 @@ were few.
 A phrase is DRY when, under the person's current resume, mode and location, it has had at
 least DRY_MIN_PAGES judged pages and DRY_MIN_JUDGED verdicts in the last WINDOW_DAYS and
 fewer than DRY_MAX_FIT_PCT percent of them fit. A rare fit does not keep a phrase alive: at
-~1¢ a verdict, 1 fit in 25 is ~25¢ per fit against a ~3¢ ceiling per application (10-10 run:
-"project manager" 1/25 took ~60% of the run's judging). Dry is advice, never a deletion: the
+~1¢ a verdict, 1 fit in 25 is ~25¢ per fit against a ~3¢ ceiling per application. Dry is advice, never a deletion: the
 walk may skip the phrase for the rest of a run (it still gets its first page every run), and
 the dashboard asks the person whether to refine it. Keywords are NOT part of the fingerprint
 — replacing one phrase must not wipe what the others have shown.
