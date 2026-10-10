@@ -37,7 +37,9 @@ import config  # noqa: E402,F401  — loads .env before the clients read the key
 from modules import ai_job_scorer  # noqa: E402
 from scripts.measure_letter_models import Recording, call_failure, parse_models  # noqa: E402
 
-CANDIDATE = "claude-haiku-5-5"
+# The model the scorer ran before today's: the default pair is "what we left vs what runs
+# now", so a rerun after a switch still compares two different models.
+PREVIOUS = "claude-haiku-4-5-20251001"
 SHEET_FLIPS = 15
 SHEET_WIDEST = 10
 
@@ -245,12 +247,12 @@ def main() -> int:
     ap.add_argument("--user", required=True, help="user_id whose pool rows are scored")
     ap.add_argument("--rows", type=int, default=80)
     ap.add_argument(
-        "--models", help=f"comma-separated, reference first (default: today's,{CANDIDATE})"
+        "--models", help=f"comma-separated, reference first (default: {PREVIOUS},today's)"
     )
     ap.add_argument("--out", default="scorer_models.md")
     args = ap.parse_args()
 
-    models = parse_models(args.models, [ai_job_scorer.HAIKU_MODEL, CANDIDATE])
+    models = parse_models(args.models, [PREVIOUS, ai_job_scorer.HAIKU_MODEL])
     rows, profile, resume, label = load_user(args.user, args.rows)
     print(f"{len(rows)} pool rows ({label}) x {len(models)} models: {', '.join(models)}")
 
