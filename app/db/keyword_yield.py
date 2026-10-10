@@ -7,11 +7,12 @@ after page, each page a minute of judging, and the person never learned why appl
 were few.
 
 A phrase is DRY when, under the person's current resume, mode and location, it has had at
-least DRY_MIN_PAGES judged pages and DRY_MIN_JUDGED verdicts in the last WINDOW_DAYS with
-not one fit. Dry is advice, never a deletion: the walk may skip the phrase for the rest of
-a run (it still gets its first page every run), and the dashboard asks the person whether
-to refine it. Keywords are NOT part of the fingerprint — replacing one phrase must not wipe
-what the others have shown.
+least DRY_MIN_PAGES judged pages and DRY_MIN_JUDGED verdicts in the last WINDOW_DAYS and
+fewer than DRY_MAX_FIT_PCT percent of them fit. A rare fit does not keep a phrase alive: at
+~1¢ a verdict, 1 fit in 25 is ~25¢ per fit against a ~3¢ ceiling per application. Dry is advice, never a deletion: the
+walk may skip the phrase for the rest of a run (it still gets its first page every run), and
+the dashboard asks the person whether to refine it. Keywords are NOT part of the fingerprint
+— replacing one phrase must not wipe what the others have shown.
 
 Every failure here is swallowed: a missing count must never cost a page or an application.
 """
@@ -28,6 +29,7 @@ from app.db.client import fetch_paged, get_supabase
 WINDOW_DAYS = 7
 DRY_MIN_PAGES = 2
 DRY_MIN_JUDGED = 20
+DRY_MAX_FIT_PCT = 5  # dry below 5% fits; exactly 5% is not dry (integer math, no float edge)
 _MAX_KEYWORD_CHARS = 120
 _MAX_PAGE_KEY_CHARS = 40
 # The extension sends one results page in several requests, all with the same page key.
@@ -132,5 +134,5 @@ def is_dry(stats: dict | None) -> bool:
     return (
         s.get("pages", 0) >= DRY_MIN_PAGES
         and s.get("judged", 0) >= DRY_MIN_JUDGED
-        and s.get("fits", 0) == 0
+        and s.get("fits", 0) * 100 < DRY_MAX_FIT_PCT * s.get("judged", 0)
     )

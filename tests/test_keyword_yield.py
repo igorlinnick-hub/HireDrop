@@ -7,7 +7,7 @@ applications were few. What must hold:
 
   * a page counts only VERDICTS — company cap, applied, unjudged say nothing about a phrase;
   * an extension that sends no phrase is judged exactly as before and nothing is counted;
-  * dry needs enough evidence (pages AND verdicts) and zero fits; unknown is never dry;
+  * dry needs enough evidence (pages AND verdicts) and under 5% fits; unknown is never dry;
   * a new resume starts every phrase over, replacing one phrase does not wipe the others;
   * a failed write or read never costs the page — the read failing reads as "unknown".
 """
@@ -46,11 +46,15 @@ def test_an_old_extension_without_a_phrase_counts_nothing():
     assert out["results"][0]["decision"] == "apply"
 
 
-def test_dry_needs_pages_and_verdicts_and_no_fit():
+def test_dry_needs_pages_and_verdicts_and_under_five_percent_fits():
     assert ky.is_dry({"pages": 2, "judged": 20, "fits": 0})
+    assert ky.is_dry({"pages": 3, "judged": 25, "fits": 1})  # 4%: a broad phrase that rarely fits
+    assert ky.is_dry({"pages": 5, "judged": 70, "fits": 3})  # 4.3%
+    assert not ky.is_dry({"pages": 2, "judged": 20, "fits": 1})  # exactly 5% is not dry
+    assert not ky.is_dry({"pages": 4, "judged": 60, "fits": 3})  # 5% where float 0.05*60 > 3
+    assert not ky.is_dry({"pages": 5, "judged": 70, "fits": 4})  # 5.7% works
     assert not ky.is_dry({"pages": 1, "judged": 30, "fits": 0})  # one page is one bad page
     assert not ky.is_dry({"pages": 3, "judged": 12, "fits": 0})  # too few verdicts
-    assert not ky.is_dry({"pages": 5, "judged": 70, "fits": 1})  # one fit = it works
     assert not ky.is_dry(None) and not ky.is_dry({})
 
 
