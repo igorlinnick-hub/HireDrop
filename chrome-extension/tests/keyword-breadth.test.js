@@ -27,7 +27,8 @@ const vm = require("vm");
 const SRC = fs.readFileSync(path.join(__dirname, "..", "content.js"), "utf8");
 const START = SRC.indexOf("  // ── keyword rotation ──");
 const END = SRC.indexOf("  async function goBackToJobList() {", START);
-const REC_START = SRC.indexOf("  async function recordLocalApplication(platform) {");
+// Prefix: the signature also takes options ({ chargeKeyword }).
+const REC_START = SRC.indexOf("  async function recordLocalApplication(platform");
 const REC_END = SRC.indexOf("  // Council 2026-08-04 \"frequency ledger\"", REC_START);
 if (START < 0 || END < 0 || REC_START < 0 || REC_END < 0) {
   console.error("Could not locate the keyword rotation block in content.js — markers moved.");

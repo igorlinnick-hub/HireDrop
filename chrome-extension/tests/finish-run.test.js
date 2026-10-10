@@ -19,7 +19,12 @@
 //   7. Stop + "Let Drop finish it": the stopped campaign's page does not submit, and its
 //      messages never close the finish window or end the finish run;
 //   8. an unconfirmed send on a finish run is a wall, not a send (window stays);
-//   9. the per-platform cap on a finish run is a wall, never a Stop of a campaign.
+//   9. the per-platform cap on a finish run is a wall, never a Stop of a campaign;
+//  10. the person's Submit at a wall is recorded by the belt, one entry per posting;
+//  11. second review: Start always wins a race with a finish start; the auto-start guard
+//      holds against two ticks; a page that joined another run never acts; the last slot
+//      of the day is not a Stop; a moved-on page records unconfirmed; boards and the popup
+//      never treat a finish run as a campaign.
 
 const fs = require("fs");
 const path = require("path");
@@ -65,9 +70,11 @@ const BG_SRC = [
   sliceFrom(BG, "async function atsWalkWatchdog() {", "\n}\n"),
   sliceFrom(BG, "async function sendExtensionPing() {", "\n}\n"),
   sliceFrom(BG, "async function captureActiveAutomationTab() {", "\n}\n"),
+  sliceFrom(BG, "let _autoDailyBusy = false;", "\n"),
+  sliceFrom(BG, "async function autoDailyTick(trigger) {", "\n}\n"),
   // The message handlers a finish run talks through, wired as handleMessage wires them.
   "globalThis.__msg = async function (msg, sender) {\n  switch (msg.type) {\n" +
-    ["FINISH_WALL", "APPLICATION_SAVED", "ATS_JOB_DONE", "ATS_JOB_FAILED"].map(caseOf).join("\n") +
+    ["FINISH_WALL", "APPLICATION_SAVED", "ATS_JOB_DONE", "ATS_JOB_FAILED", "PLATFORM_EXHAUSTED", "GET_STATUS"].map(caseOf).join("\n") +
     "\n  }\n  return null;\n};",
 ].join("\n");
 
@@ -110,6 +117,8 @@ function bgSandbox(store = {}, over = {}) {
     getAuthToken: async () => "tok",
     apiGet: async (p) => {
       sb.calls.push(["apiGet", p]);
+      if (p === "/stats") return {};
+      if (typeof sb.status === "function") return sb.status();
       if (sb.status === "hang") return new Promise(() => {});
       if (sb.status === "fail") throw new Error("API 500");
       return sb.status;
@@ -125,7 +134,10 @@ function bgSandbox(store = {}, over = {}) {
     handleMessage: async (m) => { sb.calls.push(["handleMessage", m.type]); },
     navigatePoolNext: async () => { sb.calls.push(["navigatePoolNext"]); },
     buildApprovedAtsQueue: async () => [],
-    setTimeout, Date, URL, String, Promise, Array, Set, JSON, Object,
+    ticks: 0,
+    hdAutoDailyTick: async () => { sb.ticks++; await new Promise((r) => setTimeout(r, 20)); return { action: "started" }; },
+    browserTimeZone: () => "", startCampaign: async () => ({}), notifyOpenHireDrop: async () => {},
+    setTimeout, Date, URL, String, Promise, Array, Set, JSON, Object, Math,
   };
   vm.createContext(sb);
   vm.runInContext(BG_SRC, sb);
@@ -145,6 +157,7 @@ const PHASE_SRC = [
   sliceFrom(CS, "  let _phaseFinishId = null;", "\n"),
   sliceFrom(CS, "  const runMsg = ", "\n"),
   sliceFrom(CS, "  async function runToken() {", "\n  }\n"),
+  sliceFrom(CS, "  let _pageRunToken = null;", "\n"),
   sliceFrom(CS, "  async function handBackJob(reason, extra = {}) {", "\n  }\n"),
   sliceFrom(CS, "  async function phase_ats(platform) {", "    await markSubmitRecorded(jobUrl);\n  }\n"),
 ].join("\n");
@@ -153,7 +166,8 @@ const PHASE_SRC = [
 // Stop in the middle of a fill. `confirm` is what the page says after the click.
 // `onSubmitReady` runs after the form is filled and its button found: the last moment
 // before the submit guard.
-function phaseSandbox(store, { onFill = null, onSubmitReady = null, confirm = { verified: true, signal: "text" }, count = 0 } = {}) {
+// `pageRun` = the token the page captured at init; `movesOn` = the click takes the form away.
+function phaseSandbox(store, { onFill = null, onSubmitReady = null, confirm = { verified: true, signal: "text" }, count = 0, pageRun = null, movesOn = false } = {}) {
   const url = "https://job-boards.greenhouse.io/acme/jobs/123";
   const { window } = new JSDOM(`<body><h1>Marketing Manager</h1><main><form>
     <input id="first" name="first_name"><button id="submit" type="submit">Submit application</button>
@@ -195,7 +209,7 @@ function phaseSandbox(store, { onFill = null, onSubmitReady = null, confirm = { 
     recordLocalApplication: async () => { ev.push(["count+"]); },
     subtractLocalApplication: async () => { ev.push(["count-"]); },
     shouldMisclick: () => false, performMisclick: async () => {},
-    humanClick: async () => { ev.push(["click"]); },
+    humanClick: async () => { ev.push(["click"]); if (movesOn) window.document.getElementById("submit").remove(); },
     waitForSubmissionConfirmation: async () => confirm,
     greenhouseAsksEmailCode: () => false,
     isDetected: () => ({ signal: "" }),
@@ -204,7 +218,7 @@ function phaseSandbox(store, { onFill = null, onSubmitReady = null, confirm = { 
     Date, String, Promise, Set, Array, Object, JSON,
   };
   vm.createContext(sb);
-  vm.runInContext(`${PHASE_SRC}\nglobalThis.run = () => phase_ats("greenhouse");`, sb);
+  vm.runInContext(`${PHASE_SRC}\n_pageRunToken = ${JSON.stringify(pageRun)};\nglobalThis.run = () => phase_ats("greenhouse");`, sb);
   return sb;
 }
 const types = (sent) => sent.map((m) => m.type);
@@ -450,14 +464,16 @@ const walls = (sb) => sb.ev.filter((e) => e[0] === "wall").map((e) => e[1]);
         detectPlatform: () => "greenhouse",
         storageSet: async (o) => Object.assign(store2, o),
         storageRemove: async (k) => { delete store2[k]; },
+        addFinishPending: async (p) => { (store2.finish = store2.finish || {})[p.url] = p; },
+        takeFinishPending: async (u) => { const p = (store2.finish || {})[u] || null; if (store2.finish) delete store2.finish[u]; return p; },
         showFinishBanner: (t) => ev.push(["banner", t]),
         finishWallLine: () => "",
         markFinishTargets: () => {},
         sendMsg: async (m) => { sent2.push(m); return {}; },
         waitForSubmissionConfirmation: async () => confirm,
         submitAlreadyRecorded: async () => false,
-        markSubmitRecorded: async (u, key) => { ev.push(["recorded", key]); delete store2[key || "pendingAtsSubmit"]; },
-        recordLocalApplication: async (p) => { ev.push(["count+", p]); },
+        markSubmitRecorded: async (u, key) => { ev.push(["recorded", key]); if (key) delete store2[key]; },
+        recordLocalApplication: async (p, o) => { ev.push(["count+", p, o]); },
         Date, String,
       };
       vm.createContext(ctx2);
@@ -466,18 +482,17 @@ const walls = (sb) => sb.ev.filter((e) => e[0] === "wall").map((e) => e[1]);
       return { sent2, ev, store2, ctx2 };
     };
     const w1 = await runFw({ verified: false, signal: "timeout" });
-    check("the wall leaves the person's submit belt open under its own key, keyed to the posting, long TTL, counted on send",
-      w1.store2.finishPendingSubmit && w1.store2.finishPendingSubmit.url === GH.url &&
-      w1.store2.finishPendingSubmit.ttl === 30 * 60 * 1000 && w1.store2.finishPendingSubmit.countLocal === true &&
+    check("the wall leaves the person's submit belt open in its own store, keyed to the posting (no query), long TTL",
+      w1.store2.finish && w1.store2.finish[GH.url] && w1.store2.finish[GH.url].ttl === 30 * 60 * 1000 &&
       !w1.store2.pendingAtsSubmit, w1.store2);
     check("the wall tells background FINISH_WALL (with its run id) and records nothing unconfirmed",
       w1.sent2.length === 1 && w1.sent2[0].type === "FINISH_WALL" && w1.sent2[0].finishId === "F1", w1.sent2);
     check("the wall's banner is marked as the person's step (it outlives the run)", w1.ctx2._finishWallShown === true, w1.ctx2._finishWallShown);
     const w2 = await runFw({ verified: true, signal: "text" });
-    check("risk 6: the person's confirmed send is counted locally and recorded once",
-      w2.ev.some((e) => e[0] === "count+" && e[1] === "greenhouse") &&
-      w2.sent2.filter((m) => m.type === "APPLICATION_SAVED").length === 1 && !w2.store2.finishPendingSubmit &&
-      w2.ev.some((e) => e[0] === "recorded" && e[1] === "finishPendingSubmit"), { ev: w2.ev, sent: w2.sent2 });
+    check("risk 6: the person's confirmed send is counted locally (no keyword charged) and recorded once",
+      w2.ev.some((e) => e[0] === "count+" && e[1] === "greenhouse" && e[2] && e[2].chargeKeyword === false) &&
+      w2.sent2.filter((m) => m.type === "APPLICATION_SAVED").length === 1 && !w2.store2.finish[GH.url] &&
+      w2.ev.some((e) => e[0] === "recorded" && e[1] === null), { ev: w2.ev, sent: w2.sent2 });
   }
 
   // ---- 6. bug 1: Start during the fill ----------------------------------------------
@@ -594,23 +609,30 @@ const walls = (sb) => sb.ev.filter((e) => e[0] === "wall").map((e) => e[1]);
         sendMsg: async (m) => { sent.push(m); return {}; },
         logBackend: () => {}, log: () => {},
         detectPlatform: () => "greenhouse",
-        recordLocalApplication: async (p) => { ev.push(["count+", p]); },
+        recordLocalApplication: async (p, o) => { ev.push(["count+", p, o]); },
       };
       vm.createContext(ctx);
       vm.runInContext(`${BELT}\nglobalThis.belt = _recordPendingSubmitOnce;`, ctx);
       return ctx;
     };
-    const person = { url: FORM, title: "Marketing Manager", company: "Acme", platform: "greenhouse", ts: Date.now(), ttl: 30 * 60 * 1000, countLocal: true };
-    // A campaign started while the person finished: its own pending submit, another posting.
-    const store = { finishPendingSubmit: person, pendingAtsSubmit: { url: "https://jobs.lever.co/other/9", title: "X", ts: Date.now() } };
+    const ID = "job-boards.greenhouse.io/acme/jobs/123";
+    const person = { url: FORM, title: "Marketing Manager", company: "Acme", platform: "greenhouse", ts: Date.now(), ttl: 30 * 60 * 1000 };
+    const other = { url: "https://jobs.ashbyhq.com/b/9/application", title: "B job", company: "B", platform: "ashby", ts: Date.now(), ttl: 30 * 60 * 1000 };
+    // A campaign started while the person finished (its own pending submit, another
+    // posting), and a second finish wall (B) is open at the same time.
+    const store = {
+      finishPendingSubmits: { [ID]: person, "jobs.ashbyhq.com/b/9": other },
+      pendingAtsSubmit: { url: "https://jobs.lever.co/other/9", title: "X", ts: Date.now() },
+    };
     const ctx = beltCtx(store);
     const ok = await ctx.belt();
     check("risk 13: the person's Submit is recorded although a campaign wrote its own pending submit since",
       ok === true && ctx.sent.length === 1 && ctx.sent[0].type === "APPLICATION_SAVED" &&
       ctx.sent[0].data.job_title === "Marketing Manager" && ctx.sent[0].advance === false, ctx.sent);
-    check("risk 6: …counted locally, its key gone, the campaign's pending submit kept",
-      ctx.ev.some((e) => e[0] === "count+" && e[1] === "greenhouse") && !store.finishPendingSubmit && !!store.pendingAtsSubmit,
-      { ev: ctx.ev, store });
+    check("risk 6: …counted locally with no keyword charged; its entry gone, the campaign's pending submit kept",
+      ctx.ev.some((e) => e[0] === "count+" && e[1] === "greenhouse" && e[2] && e[2].chargeKeyword === false) &&
+      !store.finishPendingSubmits[ID] && !!store.pendingAtsSubmit, { ev: ctx.ev, store });
+    check("review 5: a second open wall (another posting) keeps its own entry", !!store.finishPendingSubmits["jobs.ashbyhq.com/b/9"], store);
     const again = await beltCtx(store).belt();
     check("…and a second wake on the page records nothing", again === false, again);
     const robot = { pendingAtsSubmit: { url: FORM, title: "Marketing Manager", company: "Acme", platform: "greenhouse", ts: Date.now() } };
@@ -618,6 +640,103 @@ const walls = (sb) => sb.ev.filter((e) => e[0] === "wall").map((e) => e[1]);
     await rctx.belt();
     check("the robot's own submit is still recorded and NOT counted twice (phase_ats counted it)",
       rctx.sent.length === 1 && !rctx.ev.some((e) => e[0] === "count+"), { sent: rctx.sent, ev: rctx.ev });
+  }
+
+  // ---- 11. second review ------------------------------------------------------------
+  {
+    // r1: a Start that lands while the finish start waits on the server wins: no window.
+    const sb = bgSandbox();
+    sb.status = () => new Promise((r) => setTimeout(() => { sb.campaignAlive = true; r({}); }, 30));
+    const r = await start(sb);
+    check("review 1: a Start landing during the finish's server read refuses the finish (no window)",
+      r.error === "busy" && !sb.calls.some((c) => c[0] === "windows.create"), r);
+    // …and startCampaign ends a finish that slipped in, before picking a window, and its
+    // last write clears the marker.
+    const sc = sliceFrom(BG, "async function startCampaign(rawFilters", "  return { started: true, tabId: tab.id, windowId: tabInfo.windowId };\n}\n");
+    const endAt = sc.lastIndexOf("await endFinishRun(");
+    const pickAt = sc.indexOf('const prevData = await chrome.storage.local.get(["campaignWindowId"');
+    const finalSet = sc.slice(sc.indexOf("campaignRunning: true,"), sc.indexOf("campaignStartedAt: new Date()"));
+    check("review 1: startCampaign ends a finish again right before it picks a window",
+      endAt > 0 && pickAt > endAt && sc.slice(endAt, pickAt).split("await ").length <= 3, { endAt, pickAt });
+    check("review 1: …and its run-state write clears finishRun", /finishRun: null/.test(finalSet), finalSet);
+  }
+  {
+    // r2: two auto-start ticks at once (onStartup + the minute alarm): one start.
+    const sb = bgSandbox();
+    await Promise.all([vm.runInContext('autoDailyTick("startup")', sb), vm.runInContext('autoDailyTick("alarm")', sb)]);
+    check("review 2: two simultaneous auto-start ticks run the day's start once", sb.ticks === 1, sb.ticks);
+  }
+  {
+    // r3: a page that joined a finish run, now under a NEW campaign (Start while it loaded).
+    const sb = phaseSandbox({ campaignRunning: true, campaignStartedAt: "T2", atsPlatform: "pool" }, { pageRun: "finish:F1" });
+    await sb.run();
+    check("review 3: a page that joined another run does nothing for the new one",
+      !clicked(sb) && sb.sent.length === 0, types(sb.sent));
+    // …and the reverse: a stopped campaign's page entering phase_ats after a finish began.
+    const rv = phaseSandbox({ campaignRunning: true, campaignStartedAt: "T1", finishRun: { id: "F9" }, atsPlatform: "pool" }, { pageRun: "campaign:T1" });
+    await rv.run();
+    check("review 3: a stopped campaign's page never acts on the finish run's flag", !clicked(rv) && rv.sent.length === 0, types(rv.sent));
+    const same = phaseSandbox({ campaignRunning: true, campaignStartedAt: "T1", atsPlatform: "pool" }, { pageRun: "campaign:T1" });
+    await same.run();
+    check("review 3: a page of the current campaign still applies", clicked(same), same.ev);
+    const pre = sliceFrom(CS, "                for (let i = 0; i < 8 && !_ready; i++) {", "              await sendMsg(runMsg({ type: \"ATS_JOB_DONE\" }));");
+    check("review 3: the hydration poll and its skip ask whether the page is still in its run",
+      (pre.match(/pageStillOurs\(\)/g) || []).length >= 2, pre.slice(0, 200));
+  }
+  {
+    // r4: the budget stop at the top of every page tick.
+    const blk = sliceFrom(CS, "      const c = await storageGet([\"campaignCaps\", \"todayCount\", \"todayDate\"]);", "\n      }\n");
+    const runBudget = async (store) => {
+      const sent = [];
+      const ctx = {
+        sent, store, Date,
+        storageGet: async (k) => { const o = {}; for (const x of [].concat(k)) if (x in store) o[x] = store[x]; return o; },
+        localDay: () => "2026-10-09", log: () => {},
+        sendMsg: async (m) => { sent.push(m); return {}; },
+        currentFinishRun: async () => store.finishRun || null,
+      };
+      vm.createContext(ctx);
+      vm.runInContext(`globalThis.b = async () => {\n${blk}\n return "went on"; };`, ctx);
+      return { out: await ctx.b(), sent };
+    };
+    const full = { campaignCaps: { dailyTotal: 30 }, todayCount: 30, todayDate: "2026-10-09" };
+    const fin = await runBudget({ ...full, finishRun: { id: "F1" } });
+    check("review 4: the last slot of the day on a finish run is not a Stop on its confirmation page",
+      fin.out === "went on" && !fin.sent.length, fin);
+    const camp = await runBudget(full);
+    check("review 4: a campaign at its budget still stops", camp.sent.some((m) => m.type === "STOP_CAMPAIGN"), camp);
+  }
+  {
+    // r6: the click took the form away but nothing confirmed it: recorded unconfirmed.
+    const sb = phaseSandbox({ campaignRunning: true, campaignStartedAt: "T0", finishRun: { id: "F1" }, atsPlatform: "pool" },
+      { confirm: { verified: false, signal: "timeout" }, movesOn: true });
+    await sb.run();
+    const save = sb.sent.find((m) => m.type === "APPLICATION_SAVED");
+    const wall = sb.sent.find((m) => m.type === "FINISH_WALL");
+    check("review 6: a moved-on page is recorded applied_unconfirmed, never advancing, tagged with its run",
+      save && save.data.status === "applied_unconfirmed" && save.advance === false && save.finishId === "F1", sb.sent);
+    check("review 6: …the run ends with the window kept, and the count stands",
+      wall && wall.unconfirmedSend === true && !walls(sb).length && !sb.ev.some((e) => e[0] === "count-"), { sent: types(sb.sent), ev: sb.ev });
+    const bg = bgSandbox();
+    await start(bg);
+    const r = await bg.msg({ type: "FINISH_WALL", finishId: bg.store.finishRun.id, unconfirmedSend: true }, 70);
+    check("review 6: background says it was sent but unconfirmed, and leaves the window",
+      r.ok && bg.logs.some((l) => /didn't confirm it/.test(l)) && !bg.calls.some((c) => c[0] === "windows.remove"), bg.logs);
+  }
+  {
+    // r7: a board hand-off never takes the finish window.
+    const bg = bgSandbox();
+    await start(bg);
+    const r = await bg.msg({ type: "PLATFORM_EXHAUSTED", platform: "greenhouse", reason: "consent gate" }, 70);
+    check("review 7: PLATFORM_EXHAUSTED on a finish run ends it, window left, no board",
+      r.stopped && !bg.store.finishRun && !bg.calls.some((c) => c[0] === "windows.remove" || c[0] === "handleMessage"), { r, calls: bg.calls });
+    const bg2 = bgSandbox();
+    await start(bg2);
+    const s2 = await bg2.msg({ type: "PLATFORM_EXHAUSTED", platform: "lever" }, 50);
+    check("review 7: …and one from a stopped campaign's page is ignored", s2.stale && !!bg2.store.finishRun, s2);
+    // r8: the popup.
+    const st = await bg2.msg({ type: "GET_STATUS" }, null);
+    check("review 8: the popup does not show a finish run as a running campaign", st.campaignRunning === false, st);
   }
 
   console.log(failures ? `\n${failures} FAILED` : "\nall passed");

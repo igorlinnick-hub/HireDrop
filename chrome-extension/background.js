@@ -55,7 +55,7 @@ const USER_SCOPED_KEYS = [
   // Indeed resume choice (content.js preferIndeedResume): learned on this user's runs.
   "indeedSdrRefusedAt", "indeedLastResumeKind", "indeedResumeOffered", "indeedSdrRetryJob", "indeedResumeJob",
   // content.js submit belt: a pending ATS submit must never be recorded on another account.
-  "pendingAtsSubmit", "lastRecordedSubmit", "finishPendingSubmit",
+  "pendingAtsSubmit", "lastRecordedSubmit", "finishPendingSubmits",
   // Daily auto-start (auto-daily.js): the opt-in, its day record and the launch it repeats
   // are one user's consent and one user's search — a new user on this browser starts OFF.
   "autoDaily", "autoDailyState", "lastLaunch", "autoDailyLastNotice",
@@ -751,12 +751,13 @@ function browserTimeZone() {
 let _autoDailyBusy = false;
 async function autoDailyTick(trigger) {
   if (_autoDailyBusy) return { action: "busy" };
-  // A finish run takes a minute or two: wait it out (the next tick asks again) rather
-  // than read it as "already running" and spend today's start on it.
-  await healFinishRun();
-  if (await finishRunActive()) return { action: "busy" };
+  // Claimed before any await: two ticks must never both pass the check above.
   _autoDailyBusy = true;
   try {
+    // A finish run takes a minute or two: wait it out (the next tick asks again) rather
+    // than read it as "already running" and spend today's start on it.
+    await healFinishRun();
+    if (await finishRunActive()) return { action: "busy" };
     return await hdAutoDailyTick(trigger, {
       get: (keys) => chrome.storage.local.get(keys),
       set: (obj) => chrome.storage.local.set(obj),
@@ -1338,6 +1339,8 @@ async function startFinishRun(h) {
   const usedHere = Math.max(today ? ((c.platformCounts || {})[platform] || 0) : 0,
     (st && st.platform_counts && st.platform_counts[platform]) || 0);
   if (used >= dailyTotal || usedHere >= perPlatform) return { started: false, error: "daily_limit" };
+  // Asked again after the server read: a Start (or another finish) may have landed in it.
+  if ((await campaignAliveLocally()) || (await finishRunActive())) return { started: false, error: "busy" };
 
   // The filler skips a posting it already marked applied, and a wall AFTER the click
   // (email code, a field the form rejected) leaves that mark. The person asked for this
@@ -2475,6 +2478,10 @@ async function startCampaign(rawFilters, { source = "manual" } = {}) {
   // window to be in normal state and rendering. Minimizing or moving it
   // off-screen breaks screenshot capture.
   let tab;
+  // A finish started during the seconds of network calls above ("Let Drop finish it"
+  // pressed after this Start): end it here too, before its window could be reused and
+  // the person's form navigated away. Its window stays theirs.
+  await endFinishRun({ note: "Drop stopped finishing the form: your campaign is starting" });
   const prevData = await chrome.storage.local.get(["campaignWindowId", "campaignTabId"]);
   let reusingWindow = false;
   if (prevData.campaignWindowId) {
@@ -2512,6 +2519,8 @@ async function startCampaign(rawFilters, { source = "manual" } = {}) {
 
   await chrome.storage.local.set({
     campaignRunning: true,
+    // A finish that slipped in after the line above must not leave its marker on a run.
+    finishRun: null,
     campaignFilters: filters,
     campaignTargetUrl: targetUrl,
     campaignStartedAt: new Date().toISOString(),
@@ -2758,7 +2767,11 @@ async function handleMessage(msg, sender) {
     case "FINISH_WALL": {
       if (await fromStaleRun(msg, sender)) return { ok: false, stale: true };
       const { campaignWindowId } = await chrome.storage.local.get("campaignWindowId");
-      const ended = await endFinishRun({ note: "👇 Your turn: Drop filled what it could, the last step is yours in its window" });
+      const ended = await endFinishRun({ note: msg.unconfirmedSend
+        // The form left the page but the employer never said "received": recorded as
+        // unconfirmed, and the window stays so the person can check.
+        ? "Drop sent it, but the page didn't confirm it: check its window before you close it"
+        : "👇 Your turn: Drop filled what it could, the last step is yours in its window" });
       if (ended && campaignWindowId) chrome.windows.update(campaignWindowId, { focused: true, state: "normal" }).catch(() => {});
       return { ok: ended };
     }
@@ -2847,6 +2860,13 @@ async function handleMessage(msg, sender) {
     }
 
     case "PLATFORM_EXHAUSTED": {
+      // A finish run has no boards to move on to: its window is the person's form. A
+      // stopped page's wait loop that saw the finish flag is not the run either.
+      if (await fromStaleRun(msg, sender)) return { ok: false, stale: true };
+      if (await finishRunActive()) {
+        await endFinishRun({ note: "Drop couldn't finish this one: the form is open for you in its window" });
+        return { ok: true, stopped: true };
+      }
       const ex = await chrome.storage.local.get([
         "campaignRunning", "campaignFilters", "campaignTabId", "triedPlatforms", "platformConnections",
         "platformFailover", "atsPlatform", "poolLeadMode",
@@ -3763,6 +3783,7 @@ async function handleMessage(msg, sender) {
         "currentJob",
         "captchaWaiting",
         "campaignCaps",
+        "finishRun",
       ]);
 
       const today = localDay();
@@ -3780,7 +3801,8 @@ async function handleMessage(msg, sender) {
       } catch {}
 
       return {
-        campaignRunning: data.campaignRunning || false,
+        // A finish run borrows the flag; the popup must not show (or Stop) it as a campaign.
+        campaignRunning: (data.campaignRunning && !data.finishRun) || false,
         filters: data.campaignFilters || {},
         startedAt: data.campaignStartedAt || null,
         todayCount,
