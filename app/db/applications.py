@@ -372,16 +372,22 @@ def update_status(application_id: str, status: str, user_id: str) -> bool:
 
 def count_today_by_platform(user_id: str, since_iso: str | None = None) -> dict:
     today = _valid_since(since_iso) or date.today().isoformat()
-    res = (
-        get_supabase()
-        .table("applications")
-        .select("*, jobs(platform)")
-        .eq("user_id", user_id)
-        .gte("date_applied", today)
-        .execute()
-    )
+
+    def build(start: int, end: int):
+        return (
+            get_supabase()
+            .table("applications")
+            .select("id, jobs(platform)")
+            .eq("user_id", user_id)
+            .gte("date_applied", today)
+            .order("id")
+            .range(start, end)
+        )
+
+    # Paged like its siblings: this count gates per-platform caps, and PostgREST cuts a
+    # plain read at 1000 rows without an error.
     counts: dict = {}
-    for row in res.data or []:
+    for row in fetch_paged(build, 10_000):
         platform = (row.get("jobs") or {}).get("platform", "unknown")
         counts[platform] = counts.get(platform, 0) + 1
     return counts

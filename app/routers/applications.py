@@ -69,7 +69,10 @@ def save_application(req: ApplicationSaveRequest, user=Depends(get_current_user)
     try:
         handbacks_db.resolve_for_posting(user.id, req.job_url)
     except Exception as e:  # noqa: BLE001
-        print(f"[applications] hand-back close failed: {e}", file=sys.stderr)
+        print(
+            f"[applications] hand-back close failed user={user.id} url={req.job_url}: {e}",
+            file=sys.stderr,
+        )
     # Free taste: count ONLY real saved applications (this path), never scans/skips.
     free_used = check["free_used"]
     if check["tier"] == "free":
