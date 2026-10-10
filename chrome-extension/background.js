@@ -343,11 +343,17 @@ function isNetworkError(err) {
     /failed to fetch|networkerror|network changed/i.test((err && err.message) || "");
 }
 
-async function queueOutbox(path, body) {
+// `method`: POST (a report) or PATCH (a status). Only writes that are safe to send twice
+// go here: the server dedupes hand-backs, and a status PATCH is idempotent.
+async function queueOutbox(path, body, method = "POST") {
   const { outbox } = await chrome.storage.local.get("outbox");
   const list = Array.isArray(outbox) ? outbox : [];
-  list.push({ path, body, queuedAt: Date.now(), tries: 0 });
+  list.push({ path, body, method, queuedAt: Date.now(), tries: 0 });
   await chrome.storage.local.set({ outbox: list });
+}
+
+function isRetryableApiError(err) {
+  return isNetworkError(err) || /API 5\d\d/.test((err && err.message) || "");
 }
 
 let _outboxFlushing = false;
@@ -359,13 +365,15 @@ async function flushOutbox() {
   _outboxFlushing = true;
   try {
     const remaining = [];
-    let sent = 0;
+    let sent = 0, sentOther = 0;
     for (const item of outbox) {
       try {
-        await apiPost(item.path, item.body);
-        sent += 1;
+        if (item.method === "PATCH") await apiPatch(item.path, item.body);
+        else await apiPost(item.path, item.body);
+        if (item.path === "/applications/save") sent += 1;
+        else sentOther += 1;
       } catch (err) {
-        const retryable = isNetworkError(err) || /API 5\d\d/.test((err && err.message) || "");
+        const retryable = isRetryableApiError(err);
         const tries = (item.tries || 0) + 1;
         // Bound the queue so one permanently broken item can't grow storage forever:
         // 48h or 40 attempts (one per minute-tick while online), whichever comes first.
@@ -382,17 +390,39 @@ async function flushOutbox() {
       }
     }
     await chrome.storage.local.set({ outbox: remaining });
-    if (sent) {
-      await addToActivityLog(
-        `📡 Back online — delivered ${sent} queued application report${sent === 1 ? "" : "s"}.`,
-        "info"
-      );
+    if (sent || sentOther) {
+      const parts = [];
+      if (sent) parts.push(`${sent} queued application report${sent === 1 ? "" : "s"}`);
+      if (sentOther) parts.push(`${sentOther} queued update${sentOther === 1 ? "" : "s"} (hand-backs, skipped jobs)`);
+      await addToActivityLog(`📡 Back online — delivered ${parts.join(" and ")}.`, "info");
     }
   } finally {
     _outboxFlushing = false;
   }
 }
 // end outbox
+
+// A pool row's status after a walk outcome ("skipped"). Never fire-and-forget: a PATCH
+// that doesn't land leaves the row `approved`, and /campaign/queue serves it again on
+// the next run. Network / 5xx → the outbox re-sends it. A refusal (the server answers
+// 404 when no row changed) → a durable line with the id instead of nothing.
+async function reportJobStatus(jobId, status) {
+  const path = `/jobs/${jobId}/status`;
+  try {
+    await apiPatch(path, { status });
+  } catch (err) {
+    const why = String((err && err.message) || err || "?").slice(0, 160);
+    if (isRetryableApiError(err)) {
+      await queueOutbox(path, { status }, "PATCH");
+      return;
+    }
+    await addToActivityLog(
+      `⚠️ Couldn't take a ${status} job off your approved list (${why}) — it may come back in a later run`,
+      "warn",
+      { type: "job_status_failed", job_id: jobId, status, error: why },
+    );
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Profile — fetch from API, cache in chrome.storage.local
@@ -1762,7 +1792,21 @@ async function advanceAtsQueue({ sent = false } = {}) {
         updateBadge();
       }
     }
-  } catch (e) { /* advance is best-effort; a failure just pauses the walk */ }
+  } catch (e) {
+    // This used to be silent, and "a failure just pauses the walk" meant: frozen with
+    // `running` on, nothing in the log, and nothing for atsWalkWatchdog to time (atsNavAt
+    // is set only after a successful step). Say it durably, and put whatever job is now
+    // at the head back under the watchdog, which reloads it and then moves on.
+    const why = String((e && e.message) || e || "unknown error").slice(0, 160);
+    try {
+      await addToActivityLog(`⚠️ Couldn't move on to the next job (${why}) — the watchdog will retry in a few minutes`, "warn",
+        { type: "ats_advance_failed", error: why });
+      const d = await chrome.storage.local.get(["campaignRunning", "atsQueue", "campaignTabId"]);
+      if (d.campaignRunning === true && Array.isArray(d.atsQueue) && d.atsQueue.length && d.campaignTabId) {
+        await chrome.storage.local.set({ atsNavAt: Date.now(), atsNavTries: 0 });
+      }
+    } catch { /* storage itself is failing: nothing left to write to */ }
+  }
 }
 
 // ATS walk WATCHDOG (the Oura freeze, GLOBAL_PLAN P1 polish c): after advancing to the
@@ -3247,13 +3291,14 @@ async function handleMessage(msg, sender) {
       }
       // Pool mode: this head is being skipped (dead posting / fit-skip / no form).
       // Durably flip it out of `approved` in the DB so it never re-enters the queue
-      // in FUTURE runs either (the in-run guard is poolDoneUrls). Best-effort.
+      // in FUTURE runs either (the in-run guard is poolDoneUrls). reportJobStatus queues
+      // it when the network drops and says so when the server refuses.
       try {
         const d = await chrome.storage.local.get(["atsPlatform", "atsQueue", "finishRun"]);
         // recorded:true = the head was SENT (its applications row exists) — not a skip.
         // A finish run is the person's own pick: its job is never written off here.
         const head = !msg.recorded && !d.finishRun && d.atsPlatform === "pool" && Array.isArray(d.atsQueue) ? d.atsQueue[0] : null;
-        if (head && head.id) apiPatch(`/jobs/${head.id}/status`, { status: "skipped" }).catch(() => {});
+        if (head && head.id) await reportJobStatus(head.id, "skipped");
       } catch {}
       await advanceAtsQueue({ sent: msg.recorded === true });
       return { advanced: true };
@@ -3306,22 +3351,38 @@ async function handleMessage(msg, sender) {
           failedJobId = q.atsQueue[0].id || null;
         }
       } catch {}
+      const handbackRow = {
+        job_title: f.title || "",
+        company: f.company || "",
+        url: f.url || "",
+        platform: f.platform || "",
+        reason: f.reason || "",
+        steps_done: f.steps_done || 0,
+        // The questions we left blank travel WITH the to-do row now. They were
+        // already collected (collectUnfilledRequired) and already sent to the
+        // activity log; the row that the user actually acts on was the one place
+        // they never reached, so "needs your hands" could not say what it needs.
+        questions: unfilled,
+        job_id: failedJobId,
+      };
+      // The walk advances either way, but the row must not vanish with a network blip:
+      // together with the skip below that left neither a to-do nor a status change.
+      // Network / 5xx → the outbox delivers it (the server dedupes a repeat); a refusal
+      // is said out loud, since the line above is then the person's only copy.
       try {
-        await apiPost("/handbacks", {
-          job_title: f.title || "",
-          company: f.company || "",
-          url: f.url || "",
-          platform: f.platform || "",
-          reason: f.reason || "",
-          steps_done: f.steps_done || 0,
-          // The questions we left blank travel WITH the to-do row now. They were
-          // already collected (collectUnfilledRequired) and already sent to the
-          // activity log; the row that the user actually acts on was the one place
-          // they never reached, so "needs your hands" could not say what it needs.
-          questions: unfilled,
-          job_id: failedJobId,
-        });
-      } catch { /* best-effort: the walk must advance even if the row didn't land */ }
+        await apiPost("/handbacks", handbackRow);
+      } catch (err) {
+        try {
+          if (isRetryableApiError(err)) {
+            await queueOutbox("/handbacks", handbackRow);
+            await addToActivityLog(`📡 ${who} isn't on your hand-back list yet (no connection) — queued; it will appear when the connection is back.`, "warn");
+          } else {
+            const why = String((err && err.message) || err || "?").slice(0, 160);
+            await addToActivityLog(`⚠️ ${who} didn't reach your hand-back list (${why}) — the link above is the only copy`, "warn",
+              { type: "handback_save_failed", job_url: f.url || "", error: why });
+          }
+        } catch { /* storage failing too: the activity line above still has the link */ }
+      }
       try {
         if (unfilled.length) {
           const s = await chrome.storage.local.get("unfilledLedger");
@@ -3335,7 +3396,7 @@ async function handleMessage(msg, sender) {
       try {
         const d = await chrome.storage.local.get(["atsPlatform", "atsQueue"]);
         const head = d.atsPlatform === "pool" && Array.isArray(d.atsQueue) ? d.atsQueue[0] : null;
-        if (head && head.id) apiPatch(`/jobs/${head.id}/status`, { status: "skipped" }).catch(() => {});
+        if (head && head.id) await reportJobStatus(head.id, "skipped");
       } catch {}
       await advanceAtsQueue();
       return { advanced: true, handedBack: true };
