@@ -1,6 +1,6 @@
 # drop-actions — Drop с кнопками, память ответов о себе, наблюдение за Drop
 
-Сессия: jade-owl · лейн drop-actions · Обновлено: 2026-10-09 · ветка: feat/drop-clarifier · в работе: Drop-уточнитель, шаг 1 (бэкенд) · ждёт: недельный замер 10-16
+Сессия: jade-owl · лейн drop-actions · Обновлено: 2026-10-09 · ветка: feat/drop-clarifier · в работе: Drop-уточнитель, шаг 1 готов в ветке → ревью → PR → мерж · ждёт: недельный замер 10-16
 
 ## Состояние
 
@@ -23,6 +23,17 @@
 
 ## Последний заход
 
+- jade-owl (10-09): подтвердил одобрение Игоря по транскрипту → 4 решения Игоря (ниже) → шаг 1
+  бэкенда в ветке `feat/drop-clarifier` (`7ff49de` + `f9b1c95`, запушено): миграция
+  `fit_clarifications` **ПРИМЕНЕНА в проде** (RLS, 0 политик, revoke anon/authenticated, PostgREST
+  видит), `modules/fit_clarify.py`, `app/db/fit_clarify.py`, `GET /buddy/clarify`,
+  `POST /buddy/clarify/{id}/seen`, `AskBody.clarify_id`, инструмент `record_fit_answer` в
+  `modules/buddy.py`, событие стрима `clarify`, `scripts/clarify_report.py`, правило удаления.
+  1737 тестов + 16 новых, ruff, ratchet ок. Живая проверка локальным кодом на прод-БД под `+buyer1`
+  (вопрос → тот же весь день → Sonnet записал «7» со словами → второй вопрос с другой стороны планки;
+  чужой id инертен; второй ответ не перезаписывает) — тестовые строки удалены. Blast radius: запрос
+  к модели без `clarify_id` побайтно = main (доказано запуском); сухой прогон удаления видит таблицу.
+  Текст PR: `pr_body` ниже в «Следующем шаге» пересобрать из этого блока.
 - teal-fox (10-09): миграция → ревью стыков → мерж #401 → sync + CWS → prod-sweep → web #325 →
   живая проверка → web #328 (Change), согласовано с calm-quail (AnswersBlock мой, ряды хендбэков её).
 
@@ -54,6 +65,24 @@
 - Ответы для ai-economics — **дополнительный сигнал, не условие** (у них свой
   `measure_judge_calibration.py`; 1–2 ответа в день не наполняются без юзера → [[honest-metrics]]).
 - Судья НЕ называет человеку очки («38 fit») — Drop знает только сторону (в списке / отсекли).
+
+**Сейчас (после /clear начинать отсюда, модель Opus):** `claim --lane drop-actions`, worktree от
+`origin/feat/drop-clarifier`. Два скептика (A: роутер/БД/миграция/IDOR/совместимость сайта;
+B: цикл Drop/выбор/категории/инъекции/честность) были запущены и **результатов не дали до /clear —
+запустить заново** (по скилу blast-radius, дифф ~1070 строк). Починить подтверждённое → PR
+`feat(drop): the clarifier asks about one close-call posting a day and records the answer`
+(тело: что/зачем/проверено/Blast radius из «Последнего захода») → зелёный CI → мерж → Railway →
+`GET /buddy/clarify` отвечает 401/422 без токена. Потом шаг 2 (сайт).
+
+**Сайт, шаг 2 — что уже разобрано:** `components/buddy/Buddy.tsx` уже умеет «nudge» (пузырь одной
+строкой, раз на текст; комментарий-правило «только когда что-то сломано» обновить: уточнитель —
+решение Игоря); `BuddyBubble.tsx` рисует его; `BuddyPanel.tsx` `greeting` = первая реплика Drop
+(стр. ~253), `send()` ~109 → `ask(question, msgs, on, attachment)` — добавить `clarify_id`, пока не
+пришло событие `clarify` (парсер `lib/drop/stream.ts` его сейчас молча пропускает — добавить
+`onClarify`); `DashboardBuddy.tsx` — `GET /buddy/clarify` при загрузке, nudge «Quick question?»,
+при открытии чата greeting = `question.text` + `POST /buddy/clarify/{id}/seen`; значок Drop на
+карточке с `id == question.job_id` — `components/dashboard/TodayList.tsx` (вакансии ниже планки в
+списке нет — для них значка нет, вакансия названа в тексте вопроса). Обе темы, 390/1280.
 
 **Порядок (каждый шаг в проде отдельно, ничего не врёт):**
 1. Бэкенд: таблица `fit_clarifications`, выбор вакансии, `GET /buddy/clarify`, ответ через
