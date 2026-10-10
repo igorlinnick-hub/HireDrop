@@ -127,6 +127,7 @@ RULES: tuple[Rule, ...] = (
     ),
     Rule("ai_calls_daily", "user_id", "-", COVERED, "view over ai_calls; goes with its rows"),
     Rule("keyword_yield", "user_id", "uid", ERASE, "how their search phrases performed"),
+    Rule("fit_clarifications", "user_id", "uid", ERASE, "their answers to Drop about jobs"),
     Rule(
         "extension_status", "user_id", "uid", ERASE, "extension heartbeat (skipped if not in API)"
     ),

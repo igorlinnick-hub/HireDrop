@@ -30,7 +30,7 @@ from app.db import campaign as campaign_db
 from app.db import handbacks as handbacks_db
 from app.db.profile import get_profile
 from app.db.subscriptions import get_usage_summary
-from modules import ai_meter, buddy_actions
+from modules import ai_meter, buddy_actions, fit_clarify
 from modules.ai_cover_letter import get_anthropic_client
 from modules.buddy_facts import FACTS
 
@@ -372,6 +372,27 @@ def run_proposal(user, args: dict) -> tuple[str, dict | None]:
     return json.dumps(buddy_actions.summary_for_model(card)), card
 
 
+def run_clarify_answer(user, clarify: dict, args: dict, said: str) -> tuple[str, bool]:
+    """(tool_result for the model, recorded?) for record_fit_answer. Writes ONE thing: the
+    answer onto the person's own open question, the id of which came from their client, not
+    from the model — so nothing in a posting can steer it to another row or another write."""
+    from app.db import fit_clarify as clarify_db
+
+    try:
+        answer = fit_clarify.parse_answer(args)
+    except ValueError as e:
+        return json.dumps({"recorded": False, "why": str(e)}), False
+    try:
+        row = clarify_db.record_answer(
+            user.id, clarify["id"], answer, said[: fit_clarify.MAX_ANSWER_TEXT]
+        )
+    except Exception as e:  # noqa: BLE001 — say so, let it answer honestly
+        return json.dumps({"recorded": False, "why": f"could not save it: {str(e)[:120]}"}), False
+    if not row:
+        return json.dumps({"recorded": False, "why": "this question was already answered"}), False
+    return json.dumps(fit_clarify.RECORDED), True
+
+
 # Rows carry UTC ISO strings. Left to the model, the conversion went wrong in the
 # 2026-10-02 A/B: with thinking off it printed its arithmetic to the user ("Converting the
 # timestamps (Hawaii is UTC-10)…"), wrote "Oct 30" for Sep 30 and counted six applications
@@ -461,9 +482,13 @@ def ask(
     tz: str | None = None,
     attachment: str | None = None,
     cards: bool = False,
+    clarify: dict | None = None,
 ) -> Iterator[dict]:
     """Yield events: state(thinking|checking|speaking), text(delta), proposal(card),
-    done(usage, answer, proposals) | error."""
+    clarify(id, recorded), done(usage, answer, proposals) | error.
+
+    `clarify` = Drop's open question this message may answer (modules/fit_clarify.py): the
+    question rides on the message, and Drop gets the one tool that records the answer."""
     client = get_anthropic_client()
     # The browser's IANA zone, so "at 14:38" means something to the user. Bad/missing -> UTC.
     try:
@@ -472,6 +497,8 @@ def ask(
         zone = UTC
     now = f"{datetime.now(zone):%a %b %d %Y, %I:%M %p} ({tz or 'UTC'})"
     note = ATTACHMENT_NOTES.get(attachment or "", "")
+    if clarify:
+        note = (note + "\n" if note else "") + fit_clarify.note_for_model(clarify)
     messages = clean_history(history) + [
         {
             "role": "user",
@@ -491,6 +518,9 @@ def ask(
     cards_on = cards
     cards: list[dict] = []
 
+    tools = (TOOLS if cards_on else READ_TOOLS) + ([fit_clarify.TOOL] if clarify else [])
+    recorded = False
+
     yield {"type": "state", "state": "thinking"}
     speaking = False
     for _ in range(MAX_TOOL_ROUNDS + 1):
@@ -498,7 +528,7 @@ def ask(
             model=MODEL,
             max_tokens=MAX_TOKENS,
             system=system,
-            tools=TOOLS if cards_on else READ_TOOLS,
+            tools=tools,
             messages=messages,
         ) as stream:
             for text in stream.text_stream:
@@ -526,7 +556,8 @@ def ask(
             }
             return
 
-        reads = [c.name for c in calls if c.name != buddy_actions.TOOL["name"]]
+        writes = (buddy_actions.TOOL["name"], fit_clarify.TOOL["name"])
+        reads = [c.name for c in calls if c.name not in writes]
         speaking = False
         if reads:
             # Drop goes to the desk: a lookup is genuinely happening now.
@@ -546,6 +577,13 @@ def ask(
                 if card:
                     cards.append(card)
                     yield {"type": "proposal", "proposal": card}
+            elif c.name == fit_clarify.TOOL["name"] and clarify:
+                if recorded:
+                    content = json.dumps({"recorded": False, "why": "already recorded"})
+                else:
+                    content, recorded = run_clarify_answer(user, clarify, c.input, question)
+                    if recorded:
+                        yield {"type": "clarify", "id": clarify["id"], "recorded": True}
             else:
                 content = run_tool(user, c.name, c.input, zone)
                 if content.startswith('{"error"'):

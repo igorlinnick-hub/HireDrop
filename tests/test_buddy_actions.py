@@ -313,7 +313,7 @@ async def _collect(resp):
 def test_router_logs_the_whole_turn_and_hands_out_the_turn_id():
     from app.routers import buddy as router
 
-    def fake_ask(user, q, history, tz, attachment, cards):
+    def fake_ask(user, q, history, tz, attachment, cards, clarify=None):
         yield {"type": "state", "state": "thinking"}
         yield {"type": "proposal", "proposal": {"id": "p_00000001", "kind": "use_resume"}}
         yield {
