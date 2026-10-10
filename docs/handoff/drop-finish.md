@@ -1,70 +1,56 @@
-Сессия: hazel-yak · лейн drop-finish · цель: Хендбэк: «Let Drop finish it» перезаполняет форму в видимом окне до стены; логистика → Yes; копия Q&A в History · шаг: развёртки History в проде (web #332); дальше OFF/ON 1.8.46 и п.3 · доска: `python3 scripts/sessions.py board`
+Сессия: hazel-yak · лейн drop-finish · цель: Хендбэк: «Let Drop finish it» перезаполняет форму в видимом окне до стены; логистика → Yes; копия Q&A в History · шаг: п.3: PR #424 (ext 1.8.48) + web #334 открыты, ждут ревью; живой тест после прогона coral-merlin и «давай» Игоря · доска: `python3 scripts/sessions.py board`
 
 # drop-finish — хендбэк доводится роботом, человек делает один шаг
 
-Обновлено: 2026-10-09 (hazel-yak) · ветка: main
+Обновлено: 2026-10-09 (hazel-yak) · ветки: `feat/drop-finish-handback` (HireDrop #424), `feat/drop-finish-button` (web #334)
 
 ## Состояние
 
-- **П.1 логистика → «Yes»: выпущен в ext 1.8.46 (#410, #414).** Бэкенд `_willing_yes`
-  (`modules/ai_question_answer.py`) работает до модели, но после личного ответа человека
-  (personal_facts, #401). Расширение: `isWillingnessQuestion` + `fillCheckboxes` + Ashby yes/no-кнопки.
-  Тест на живой разметке Suno.
-- **П.2 копия Q&A в History: в main (#411 + web #327), колонка `applications.form_answers` в проде.**
-  Расширение: `collectFormAnswers` / `snapshotFormAnswers` перед каждым Continue/Submit. background
-  прикладывает копию в обработчике `APPLICATION_SAVED`. Сайт: `AnswersBlock` «What we answered for you».
-  Выпущено в 1.8.46. Блок пустой у старых заявок. Кнопку «Change» под ответами делает teal-fox
-  (лейн drop-actions, AnswersBlock вынесен в свой файл) → `/profile/facts`.
-- **П.3 «Let Drop finish it»: не начат, дизайн ниже.**
-- **Ext 1.8.46 (10-09):** синкнут на Рабочий стол (папка была `dataless`, синк её восстановил),
-  zip `dist/hiredrop-ext-1.8.46.zip` отправлен в CWS на ревью. У Игоря нужен OFF/ON.
+- **П.1 логистика → «Yes»** и **П.2 копия Q&A в History**: в проде, ext 1.8.46+. У Игоря в Chrome
+  **1.8.47** (перезагрузила `HIREDROP_DEV_RELOAD`, пинг проверен на `?dev=1`). `form_answers` у старых
+  заявок пустой, наполнится с новых.
+- **Развёртки в карточке заявки: web #332 в проде.** `Fold` в `HistoryView.tsx`: ответы, письмо,
+  резюме свёрнуты; ответы робота с маркером `.hd-ours`, исправленные через «Change» маркер теряют.
+- **П.3 «Let Drop finish it»: код готов, PR открыты, НЕ смержены.**
+  - ext #424 (1.8.48): `ping.js` `HIREDROP_FINISH_HANDBACK` → bg `FINISH_HANDBACK` →
+    `startFinishRun` (фокусное окно about:blank → состояние → навигация; очередь из одной вакансии,
+    `atsPlatform:"pool"`, маркер `finishRun`). На стене `handBackJob` → `finishWall` (content.js):
+    плашка в closed shadow root, обводка, `pendingAtsSubmit` с ttl 30 мин, `FINISH_WALL` → bg
+    `endFinishRun` (окно остаётся), затем `waitForSubmissionConfirmation` на 30 мин пишет
+    подтверждение без смены URL. Без стены: `APPLICATION_SAVED` → `advanceAtsQueue({sent:true})`
+    → окно закрывается.
+  - Не кампания: пинг `campaign_running:false` и игнор `should_run`; `atsWalkWatchdog` и
+    `tapPoolIdleRefill` молчат; `autoDailyTick` ждёт; `startCampaign` перехватывает; STOP чистит;
+    `ATS_JOB_DONE` не PATCH-ит skipped; закрытие окна → `endFinishRun`.
+  - web #334: `useFinishHandback.ts` (кнопка только для GH/Lever/Ashby на их хостах; «Filling…»;
+    отказы фиксированным текстом: busy / daily_limit / old_extension (есть PONG) / no_extension;
+    через 20 с кнопка возвращается, ссылка «Finish form ↗» на месте при отказе).
+  - Тесты: `chrome-extension/tests/finish-run.test.js` (27 проверок, §0 доказывает, что обычная
+    кампания не изменилась), весь набор 60/60; web tsc/eslint/129 тестов.
 
 ## Последний заход
 
-- **Развёртки в карточке заявки: web #332 смержен (`7f221a0`).** `ApplicationDetail` → компонент
-  `Fold`: ответы, письмо и резюме свёрнуты, заголовок «капс · счётчик (N answers / N words) · линия ·
-  Copy». Copy стоит рядом с переключателем, не внутри него. Тело скрывается через `hidden`, без
-  размонтирования, поэтому недописанный «Change» переживает сворачивание. Ответы робота помечены маркером
-  `.hd-ours` (`--accent`: днём янтарь, ночью фиолет), точка того же цвета в заголовке служит легендой.
-  Ответ, исправленный через «Change», теряет маркер. На 390 Copy только иконкой, капс переносится.
-  Скрины 1280/390 в обеих темах сняты на временной превью-странице (в git её нет). Ревью
-  сабагентом: блокеров нет, 5 мелочей исправлены.
-- **History Игоря на проде (только чтение, своё окно Chrome):** 132 заявки, строки раскрываются.
-  `form_answers` пустые у 8 свежих (последняя 10-09 13:19): ответы пишет только 1.8.46, а у Игоря
-  ещё не было OFF/ON. Safari залогинен под `+buyer1` (0 заявок), так что настоящий History смотреть
-  в Chrome. Сессионную куку не читать: автопроверка это запрещает.
+- Карта движка ATS (агент): глобальные синглтоны run-state, heartbeat убил бы мини-прогон за ~60 с,
+  метки applied после стены после клика, сторож перезагрузил бы страницу под человеком — всё учтено.
+- Blast radius: факт безопасности доказан ступенью 4 (тест §0). Перекос версий закрыт на сайте
+  (PONG отличает старое расширение). Хосты/manifest не менялись, бэкенд не трогали.
+- Запущено адверсариальное ревью обоих диффов (агент); результат в эту сессию не вернулся.
 
 ## Сломано / не доделано
 
-- **П.3 дизайн («кампания из одной вакансии», только ATS: GH/Lever/Ashby):**
-  1. Сайт `HistoryView.tsx`: кнопка «Let Drop finish it» вместо «Finish form ↗», без подписи.
-     `window.postMessage({type:"HIREDROP_FINISH_HANDBACK", handback})` → `ping.js` → background
-     (по образцу `HIREDROP_START_CAMPAIGN`, ping.js ~103). Ряд → «Filling…».
-  2. background: если идёт обычная кампания → отказ «Drop занят твоим прогоном». Иначе видимое
-     окно `focused:true`; storage `finishMode={handbackId,url}`, `atsQueue=[{applyUrl:url}]`,
-     `atsPlatform=<ats>`, `campaignRunning=true` (движку нужен этот флаг: 68 проверок в content.js).
-  3. content.js `phase_ats`: в finishMode плашка в shadow DOM («Заполняю за тебя, не трогай,
-     ~1 мин · шаг N из M»). На стене (капча, GH email-код, leftover required) вместо `handBackJob`:
-     плашка «Твой ход 👇» + подсветка, `pendingAtsSubmit` (страница подтверждения запишет заявку
-     сама, `_recordPendingSubmitOnce`), без перехода дальше. Без стены робот жмёт Submit сам.
-  4. После записи заявки `resolve_for_posting` уже закрывает хендбэк. Конец finishMode: стоп
-     мини-кампании, окно закрыть, `finishMode` убрать.
-  5. Нельзя забыть: мини-кампания не должна считаться прогоном в дашборде, автостарте, heartbeat
-     и капах (см. `campaign-runtime`, `auto-daily-start`), и Stop должен её гасить.
-- Indeed/ZR в п.3 не входят: ZR `lk=` открывает пустую панель, у Indeed шаги теряют контекст.
-- Ashby yes/no-кнопки на НЕ-логистике (виза и т.п.) по-прежнему никто не нажимает.
-- Ashby-фикс #392 и чипсы #308 живьём не проверены.
-- Уже собранные резюме в storage держат тире до пересборки.
+- **Ревью #424/#334 не получено.** Перезапустить: агент-ревьюер по `git diff origin/main...HEAD`
+  обеих веток (что проверять: все читатели campaignRunning/atsQueue/captchaWaiting, двойная запись
+  belt + finishWall + recordWokeOnPostApply, гонки Start/закрытия окна, таймеры в хуке).
+- **Живой тест (ступень 5) не делался.** Нужен «давай» Игоря и окно без чужого прогона
+  (coral-merlin гонит Indeed ~30 мин с ~10-09 вечер HST; ждать её «прогон закончен»).
+- Ashby yes/no-кнопки на не-логистике по-прежнему не жмутся; Ashby #392 и чипсы #308 живьём не проверены.
+- Worktree'и этой сессии в scratchpad (`be`, `web`, `ho`): ветки запушены, локально можно удалить.
 
 ## Следующий шаг
 
-Модель: **Opus**. Новая сессия берёт лейн drop-finish и делает по порядку:
-
-1. **OFF/ON 1.8.46 у Игоря — только в окно, когда никто не гонит прогон.** Игорь: «не сбивать чужой
-   прогон». Сначала `python3 scripts/sessions.py board`: есть живой прогон → ждать его конца. Потом
-   попросить Игоря OFF/ON на `chrome://extensions` + перезагрузить дашборд, проверить пинг 1.8.46.
-   После первой подачи `form_answers` в строке заявки не пустой.
-2. ~~Развёртки History~~: сделано, web #332. После OFF/ON проверить на живой заявке, что
-   маркер стоит на ответах.
-3. **П.3 «Let Drop finish it»** по дизайну выше, `blast-radius` до мержа, живой тест на
-   GH-форме с email-кодом (стена до Submit), объявить соседям до прогона.
+Модель: **Opus**. 1) Ревью #424 + #334 (агент, см. выше) → починить находки. 2) После «прогон
+закончен» от coral-merlin и «давай» Игоря: `sync-ext.sh` из ветки #424 на Рабочий стол (`stat` папки —
+iCloud dataless), `HIREDROP_DEV_RELOAD`, проверить 1.8.48 на `?dev=1`, нажать «Let Drop finish it» на
+одной GH-хендбэк Игоря **с email-кодом** (стена после клика, без кода ничего не уходит), снять экран
+плашки. 3) Мерж #424 → web #334 → `cws_publish.py` 1.8.48. После теста вернуть Рабочий стол на main,
+если мерж откладывается.
