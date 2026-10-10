@@ -63,16 +63,69 @@ def test_the_fingerprint_follows_the_resume_not_the_keywords():
     assert a != c and a != d
 
 
-def test_recent_sums_pages_per_phrase():
-    rows = [
-        {"keyword": "project manager", "judged": 14, "fits": 0},
-        {"keyword": "project manager", "judged": 8, "fits": 0},
-        {"keyword": "social media", "judged": 6, "fits": 3},
+def _rows(*specs):
+    """(keyword, page_key, minute, judged, fits) -> rows as the table returns them."""
+    return [
+        {
+            "id": i,
+            "created_at": f"2026-10-09T{20 + minute // 60:02d}:{minute % 60:02d}:00+00:00",
+            "keyword": kw,
+            "page_key": key,
+            "judged": judged,
+            "fits": fits,
+        }
+        for i, (kw, key, minute, judged, fits) in enumerate(specs)
     ]
+
+
+def _recent(rows):
     with patch.object(ky, "fetch_paged", return_value=rows), patch.object(ky, "get_supabase"):
-        got = ky.recent("u1", "v1")
+        return ky.recent("u1", "v1")
+
+
+def test_recent_sums_pages_per_phrase():
+    got = _recent(
+        _rows(
+            ("project manager", None, 0, 14, 0),
+            ("project manager", None, 5, 8, 0),
+            ("social media", None, 6, 6, 3),
+        )
+    )
     assert got["project manager"] == {"pages": 2, "judged": 22, "fits": 0, "dry": True}
     assert got["social media"]["dry"] is False
+
+
+def test_the_chunks_of_one_page_count_as_one_page():
+    got = _recent(
+        _rows(
+            ("project manager", "0:0", 0, 5, 0),
+            ("project manager", "0:0", 1, 5, 0),
+            ("project manager", "0:0", 1, 4, 0),
+        )
+    )
+    assert got["project manager"]["pages"] == 1 and got["project manager"]["judged"] == 14
+    assert got["project manager"]["dry"] is False  # one page is one bad page
+
+
+def test_the_same_page_key_in_a_later_run_is_a_new_page():
+    got = _recent(
+        _rows(
+            ("project manager", "0:0", 0, 12, 0),
+            ("project manager", "0:0", 1, 3, 0),
+            ("project manager", "0:0", 150, 11, 0),  # next run restarts the key
+        )
+    )
+    assert got["project manager"]["pages"] == 2
+    assert got["project manager"]["dry"] is True
+
+
+def test_a_batch_passes_the_page_key_through():
+    with (
+        patch.object(ky, "record_page") as record,
+        patch.object(ky, "recent", return_value={}),
+    ):
+        _run([_card(1)], [_row(1)], scores={"1": 20}, keyword="pm", page="3:1")
+    assert record.call_args.kwargs["page_key"] == "3:1"
 
 
 def test_failures_never_cost_the_page():

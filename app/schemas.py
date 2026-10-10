@@ -94,6 +94,9 @@ class AssessFitBatchRequest(BaseModel):
     # The search phrase that brought this page (app/db/keyword_yield). Older extensions
     # don't send it; the page is then judged exactly the same, just not counted.
     keyword: str = Field("", max_length=200)
+    # Same for every request carrying one results page (the extension sends a page in
+    # chunks), so the chunks count as one page.
+    page: str = Field("", max_length=40)
 
 
 class FormAnswer(BaseModel):

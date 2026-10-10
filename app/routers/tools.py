@@ -651,13 +651,19 @@ def _assess_fit_batch(req: AssessFitBatchRequest, user) -> dict:
     }
     if req.keyword:
         response["keyword_yield"] = _count_keyword_page(
-            user.id, req.keyword, cards[0].platform, profile, resume_text, results
+            user.id, req.keyword, req.page, cards[0].platform, profile, resume_text, results
         )
     return response
 
 
 def _count_keyword_page(
-    user_id: str, keyword: str, platform: str, profile: dict, resume_text: str, results: list
+    user_id: str,
+    keyword: str,
+    page: str,
+    platform: str,
+    profile: dict,
+    resume_text: str,
+    results: list,
 ) -> dict | None:
     """Store how many of this page's verdicts cleared the bar; -> the phrase's recent tally.
 
@@ -675,6 +681,7 @@ def _count_keyword_page(
         version,
         judged=len(verdicts),
         fits=sum(1 for r in verdicts if r["decision"] == "apply"),
+        page_key=page,
     )
     tally = keyword_yield.recent(user_id, version, platform).get(keyword_yield.keyword_key(keyword))
     if not tally:
