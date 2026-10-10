@@ -1,81 +1,67 @@
-Сессия: hazel-yak · лейн drop-finish · цель: Хендбэк: «Let Drop finish it» перезаполняет форму в видимом окне до стены; логистика → Yes; копия Q&A в History · шаг: п.3: PR #424 (ext 1.8.48) + web #334 открыты, ждут ревью; живой тест после прогона coral-merlin и «давай» Игоря · доска: `python3 scripts/sessions.py board`
+Сессия: gentle-yak · лейн drop-finish · цель: Хендбэк: «Let Drop finish it» перезаполняет форму в видимом окне до стены; логистика → Yes; копия Q&A в History · шаг: блокеры #424 + 2-й раунд починены, #428 (silent-apply-path) открыт стеком; 3-е ревью дельты идёт; живой тест ждёт «давай» · доска: `python3 scripts/sessions.py board`
 
 # drop-finish — хендбэк доводится роботом, человек делает один шаг
 
-Обновлено: 2026-10-09 (hazel-yak) · ветки: `feat/drop-finish-handback` (HireDrop #424), `feat/drop-finish-button` (web #334)
+Обновлено: 2026-10-09 (gentle-yak) · ветки: `feat/drop-finish-handback` (HireDrop #424), `fix/silent-apply-path` (HireDrop #428, стек на #424), `feat/drop-finish-button` (web #334)
 
 ## Состояние
 
-- **П.1 логистика → «Yes»** и **П.2 копия Q&A в History**: в проде, ext 1.8.46+. У Игоря в Chrome
-  **1.8.47** (перезагрузила `HIREDROP_DEV_RELOAD`, пинг проверен на `?dev=1`). `form_answers` у старых
-  заявок пустой, наполнится с новых.
-- **Развёртки в карточке заявки: web #332 в проде.** `Fold` в `HistoryView.tsx`: ответы, письмо,
-  резюме свёрнуты; ответы робота с маркером `.hd-ours`, исправленные через «Change» маркер теряют.
-- **П.3 «Let Drop finish it»: код готов, PR открыты, НЕ смержены.**
-  - ext #424 (1.8.48): `ping.js` `HIREDROP_FINISH_HANDBACK` → bg `FINISH_HANDBACK` →
-    `startFinishRun` (фокусное окно about:blank → состояние → навигация; очередь из одной вакансии,
-    `atsPlatform:"pool"`, маркер `finishRun`). На стене `handBackJob` → `finishWall` (content.js):
-    плашка в closed shadow root, обводка, `pendingAtsSubmit` с ttl 30 мин, `FINISH_WALL` → bg
-    `endFinishRun` (окно остаётся), затем `waitForSubmissionConfirmation` на 30 мин пишет
-    подтверждение без смены URL. Без стены: `APPLICATION_SAVED` → `advanceAtsQueue({sent:true})`
-    → окно закрывается.
-  - Не кампания: пинг `campaign_running:false` и игнор `should_run`; `atsWalkWatchdog` и
-    `tapPoolIdleRefill` молчат; `autoDailyTick` ждёт; `startCampaign` перехватывает; STOP чистит;
-    `ATS_JOB_DONE` не PATCH-ит skipped; закрытие окна → `endFinishRun`.
-  - web #334: `useFinishHandback.ts` (кнопка только для GH/Lever/Ashby на их хостах; «Filling…»;
-    отказы фиксированным текстом: busy / daily_limit / old_extension (есть PONG) / no_extension;
-    через 20 с кнопка возвращается, ссылка «Finish form ↗» на месте при отказе).
-  - Тесты: `chrome-extension/tests/finish-run.test.js` (27 проверок, §0 доказывает, что обычная
-    кампания не изменилась), весь набор 60/60; web tsc/eslint/129 тестов.
+- **П.1 логистика → «Yes»** и **П.2 копия Q&A в History**: в проде, ext 1.8.46+. У Игоря в Chrome 1.8.47.
+- **Развёртки в карточке заявки** (web #332): в проде.
+- **П.3 «Let Drop finish it»: код и два раунда фиксов готовы, PR НЕ смержены, живого теста не было.**
+  - ext #424 (1.8.48): `29d5e53` фича, `40db994` 4 блокера ревью + риски, `22da66d` 9 находок второго ревью.
+    Устройство: `ping.js` `HIREDROP_FINISH_HANDBACK` → bg `startFinishRun`. Он проверяет дневной лимит,
+    лимит площадки и free-лимит: числа из `/campaign/status`, если сервер ответил за 1.5 с, иначе
+    сохранённые капы, fail-open. Дальше фокусное окно about:blank → состояние → навигация, очередь из
+    одной вакансии, маркер `finishRun`. Стена: `handBackJob` → `finishWall`: плашка, обводка, запись в
+    `finishPendingSubmits` (по вакансии), `FINISH_WALL`; окно остаётся. Подача роботом с подтверждением
+    закрывает окно. Без подтверждения: если форма на месте, это стена; если страница ушла, запись
+    `applied_unconfirmed` и окно остаётся.
+  - Защита от чужого прогона: токен прогона (id finish-прогона или `campaignStartedAt`). Он снимается
+    в init (`capturePageRun`) и при входе в `phase_ats` (`stillOurs`). Сообщения несут `finishId`
+    (`runMsg`), а bg `fromStaleRun` отбрасывает DONE / FAILED / WALL / PLATFORM_EXHAUSTED и продвижение
+    очереди от закончившегося прогона. Start всегда выигрывает гонку у finish.
+  - ext #428 (стек): находки №1, №2, №4 из `docs/reviews/2026-10-09-silent-apply-path.md`.
+    `reportJobStatus` (PATCH `skipped` с await, сбой → outbox/строка), outbox умеет PATCH, хендбэк идёт
+    через outbox, `advanceAtsQueue` больше не молчит при сбое и взводит сторожа. **По просьбе Игоря
+    через amber-newt: отдельная PR после #424, в том же релизе CWS.** Когда #428 смержен и выпущен,
+    лейн ecc-review закрыт целиком (бэкендовые №3, №5, №6 уже в #425).
+  - web #334: кнопка только на десктопе (на телефоне видна одна ссылка «Finish form ↗»). Рядом с
+    кнопкой всегда есть ссылка «Open form ↗». Отказы фиксированным текстом: busy / daily_limit /
+    free_limit / unsupported / old_extension / no_extension (`finishAnswerState`).
+  - Тесты: ext 61/61 на ветке #428. В `finish-run.test.js` настоящий `phase_ats` гоняется в jsdom,
+    сценарии ревью 1–9 и 11. В `silent-apply-path.test.js` 22 отката фиксов по одному, каждый
+    ловится. Web: tsc, eslint, 132/132. Вёрстка снята на 390 (iPhone UA) / 700 / 1280 / 1440 / 1920,
+    обе темы, на временной превью-странице (в git её нет).
 
 ## Последний заход
 
-- Карта движка ATS (агент): глобальные синглтоны run-state, heartbeat убил бы мини-прогон за ~60 с,
-  метки applied после стены после клика, сторож перезагрузил бы страницу под человеком — всё учтено.
-- Blast radius: факт безопасности доказан ступенью 4 (тест §0). Перекос версий закрыт на сайте
-  (PONG отличает старое расширение). Хосты/manifest не менялись, бэкенд не трогали.
-- Адверсариальное ревью обоих диффов вернулось: 4 блокера, список в «Сломано».
+- Ревью #424 (4 блокера) починено, второе адверсариальное ревью нашло ещё 9 гонок и дыр, все закрыты.
+  Одна из них была регрессией обычных прогонов из этой PR: `_autoDailyBusy` ставился после await,
+  и два тика автостарта могли оба стартовать день. Теперь флаг ставится до await.
+- Тест поймал баг в моём же фиксе: `markSubmitRecorded` стирал `pendingAtsSubmit` кампании при
+  записи подачи человека. Теперь функция принимает ключ (или null).
+- `next dev` в worktree: Turbopack не принимает симлинк node_modules, работает `--webpack`. Next
+  переписывает `AGENTS.md`: откатывать, не коммитить с PR.
 
 ## Сломано / не доделано
 
-**Ревью #424/#334 получено: 4 блокирующих бага, НЕ МЕРЖИТЬ до починки.**
-1. Start во время заполнения: `startCampaign`→`endFinishRun` оставляет окно, его `phase_ats` идёт
-   дальше на флаге НОВОЙ кампании; на стене `currentFinishRun()` уже null → обычный `handBackJob`
-   → `ATS_JOB_FAILED` PATCH-ит skipped голову новой очереди и сдвигает её. Фикс: передать `finish`
-   из входа `phase_ats` в `handBackJob` и молчать при смене id; в bg игнорировать
-   `ATS_JOB_DONE`/`ATS_JOB_FAILED`/advance из `APPLICATION_SAVED`, если `sender.tab.id !== campaignTabId`.
-2. Обратная гонка: Stop посреди кампании → «Let Drop finish it»: `phase_ats` старой кампании
-   (finish=null) проходит `isCampaignRunning()` на флаге finish и подаёт старую вакансию, её
-   `APPLICATION_SAVED` закрывает окно finish. Фикс: тот же sender-tab чек + run-токен для каждого `phase_ats`.
-3. Кап на платформу не проверяется в `startFinishRun`: `phase_ats` шлёт `STOP_CAMPAIGN`
-   («stopped_by_user» + `/campaign/stop`), окно с «Hands off» над пустой формой. Фикс: проверить
-   `platformCounts[platform]` против per-platform капа → `daily_limit`.
-4. `applied_unconfirmed` тоже закрывает окно (`advanceAtsQueue({sent:true})`) и закрывает хендбэк.
-   Фикс: в finish-run при `!result.verified` → `finishWall` («Check the form and press Submit»),
-   окно закрывать только при verified.
-
-Риски (чинить там же): 5) `finishRun` остаётся висеть на путях без `endFinishRun` (429 в
-`APPLICATION_SAVED`, `noteAuth401` закрывает окно, `onInstalled`) → автостарт вечно «busy»; в пинге
-завершать при `finishRun && (!windowAlive || !campaignRunning)`, чистить в onInstalled/noteAuth401.
-6) подача человеком на стене не считается локально (`recordLocalApplication`). 7) `startFinishRun`
-ждёт `addToActivityLog` (сеть) до ответа → сайт может показать «нет расширения»; не await-ить лог.
-8) `captureActiveAutomationTab` цепляет CDP к окну человека → вернуть false при finishRun.
-9) free-лимит не проверяется до старта. Сайт: 10) у finishable-строки может не быть входа (ссылка
-только при отказе) → ссылку показывать всегда рядом с кнопкой; 11) утечка `onPong`, `unsupported`
-с неверным текстом. Мелочи: 12) плашка «Hands off» висит после ранних выходов/Stop; 13) 30-мин
-`pendingAtsSubmit` может перезаписать следующая кампания.
-Тесты: `finish-run.test.js` не покрывает 1–5 → добавить сценарии вместе с фиксами.
-
-- **Живой тест (ступень 5) не делался.** Нужен «давай» Игоря и окно без чужого прогона
-  (coral-merlin гонит Indeed ~30 мин; ждать её «прогон закончен»).
-- Ashby yes/no-кнопки на не-логистике по-прежнему не жмутся; Ashby #392 и чипсы #308 живьём не проверены.
-- Worktree'и этой сессии в scratchpad (`be`, `web`): ветки запушены, локально можно удалить.
+- **Третье ревью дельты (`22da66d`, #428 `ef47257`, web `cc33ca9`) запущено.** Если вернёт находки,
+  чинить в тех же ветках до мержа.
+- Мелочи, которые ревью отметило, но я оставил: «Filling…» держится 4 мин и после стены (ссылка рядом
+  есть); кнопка видна и на хендбэках старше суток (для ATS форма живёт, робот заполняет с нуля).
+- **Живой тест не делался.** Нужен «давай» Игоря и окно без чужого прогона.
+- Ashby yes/no-кнопки на не-логистике не жмутся; Ashby #392 и чипсы #308 живьём не проверены.
+- Worktree'и gentle-yak в scratchpad (`be`, `sap`, `web`, `hd`): ветки запушены, локально можно удалить.
 
 ## Следующий шаг
 
-Модель: **Opus**. 1) Починить баги 1–4 + риски 5–11 из «Сломано» в ветках #424/#334 (`git checkout feat/drop-finish-handback` в worktree), тесты на сценарии 1–5, повторное ревью. 2) После «прогон
-закончен» от coral-merlin и «давай» Игоря: `sync-ext.sh` из ветки #424 на Рабочий стол (`stat` папки —
-iCloud dataless), `HIREDROP_DEV_RELOAD`, проверить 1.8.48 на `?dev=1`, нажать «Let Drop finish it» на
-одной GH-хендбэк Игоря **с email-кодом** (стена после клика, без кода ничего не уходит), снять экран
-плашки. 3) Мерж #424 → web #334 → `cws_publish.py` 1.8.48. После теста вернуть Рабочий стол на main,
-если мерж откладывается.
+Модель: **Opus**.
+1. Дочитать третье ревью и починить, если есть что (ветки #424 / #428 / #334, после правки в #424
+   сделать `git rebase origin/feat/drop-finish-handback` в ветке #428).
+2. После «давай» Игоря и без чужого прогона: `sync-ext.sh` из ветки **#428** (в ней #424 + #428) на
+   Рабочий стол (`stat` папки, iCloud dataless) → `HIREDROP_DEV_RELOAD` → проверить 1.8.48 на `?dev=1`
+   → «Let Drop finish it» на одной GH-хендбэк Игоря с email-кодом: стена после клика, без кода ничего
+   не уходит. Снять экран плашки.
+3. Мерж: #424 → перенацелить #428 на main → мерж #428 → web #334 → `cws_publish.py` 1.8.48. До мержа
+   скил `blast-radius` (стык content / background / ping). После теста вернуть Рабочий стол на main.
