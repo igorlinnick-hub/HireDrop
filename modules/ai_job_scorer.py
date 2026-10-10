@@ -11,7 +11,9 @@ from modules import ai_meter
 from modules.ai_cover_letter import get_anthropic_client
 from modules.ai_models import plain_answer_kwargs, refused, reply_text
 
-HAIKU_MODEL = "claude-haiku-4-5-20251001"
+# Chosen by scripts/measure_scorer_models.py: same band as the previous model, a fraction
+# of the cost per score.
+HAIKU_MODEL = "claude-haiku-5-5"
 
 
 def score_job(job: dict, profile: dict, resume_text: str = "") -> dict:
